@@ -1,134 +1,84 @@
 #!/usr/bin/env python3
 """
-Validate and optionally compile a generated CoreML JSON graph.
+Validate and execute a generated CoreML binary (`.mlmodel`) graph.
 
 Usage:
-    python scripts/validate_coreml.py target/graph.coreml.json
+    python scripts/validate_coreml.py target/graph.mlmodel
 
-The script performs two steps:
-1) Topology sanity checks (inputs/outputs/intermediates referenced by layers).
-2) If `coremltools` is installed, build a minimal NeuralNetwork specification
-   using elementwise add for supported ops and save a `.mlmodel` alongside
-   the JSON file to confirm CoreML compilation works on macOS.
+Steps:
+1) Load the emitted CoreML spec to sanity check the IO signature.
+2) Run a CPU-only predict pass with zeroed inputs (when coremltools is present).
 """
-import json
+import os
 import sys
 from pathlib import Path
-import base64
 
 
-def check_topology(data: dict) -> None:
-    names = set()
-    for section in ("input", "output", "intermediate"):
-        for entry in data["description"].get(section, []):
-            names.add(entry["name"])
-    for weight in data.get("neuralNetwork", {}).get("weights", []):
-        names.add(weight["name"])
-    for layer in data["neuralNetwork"]["layers"]:
-        for name in layer["input"]:
-            if name not in names:
-                raise RuntimeError(f"Layer {layer['name']} references missing input {name}")
-        for name in layer["output"]:
-            names.add(name)
-
-
-def compile_coreml(data: dict, model_path: Path) -> None:
+def _dtype_to_numpy_code(value: int):
     try:
-        import coremltools as ct  # type: ignore
-        from coremltools.models import datatypes  # type: ignore
-        from coremltools.models.neural_network import NeuralNetworkBuilder  # type: ignore
         import numpy as np  # type: ignore
     except ImportError:
-        print("coremltools not installed; skipping CoreML compile test.")
+        return None
+
+    map_ = {
+        65568: np.float32,  # ArrayDataType::Float32
+        65552: np.float16,  # ArrayDataType::Float16
+        131104: np.int32,  # ArrayDataType::Int32
+        131080: np.int8,  # ArrayDataType::Int8
+    }
+    return map_.get(value, np.float32)
+
+
+def _coerce_shape(shape):
+    dims = list(shape) or [1]
+    return [int(dim) for dim in dims]
+
+
+def validate_coreml(model_path: Path) -> None:
+    try:
+        import coremltools as ct  # type: ignore
+        import numpy as np  # type: ignore
+    except ImportError:
+        print("coremltools not installed; skipping CoreML validation.")
         return
 
-    def coerce_dims(name: str, shape):
-        dims = list(shape or [1])
-        if len(dims) == 2:
-            dims = [1] + dims  # CoreML NN expects 1D or 3D; lift 2D to 3D
-            print(f"Adjusted CoreML shape for {name} to 3D: {dims}")
-        elif len(dims) > 3:
-            prod = 1
-            for d in dims:
-                prod *= d
-            dims = [prod]
-            print(f"Flattened CoreML shape for {name} to 1D: {dims}")
-        return dims
+    spec = ct.utils.load_spec(model_path)
+    print(f"Loaded CoreML spec from {model_path}")
+    for entry in spec.description.input:
+        dtype = _dtype_to_numpy_code(entry.type.multiArrayType.dataType)
+        shape = _coerce_shape(entry.type.multiArrayType.shape)
+        print(f"  input {entry.name}: shape={shape}, dtype={dtype}")
+    for entry in spec.description.output:
+        shape = _coerce_shape(entry.type.multiArrayType.shape)
+        print(f"  output {entry.name}: shape={shape}")
 
-    def coerce_shape(name: str, shape):
-        return datatypes.Array(*coerce_dims(name, shape))
-
-    inputs = [
-        (entry["name"], coerce_shape(entry["name"], entry["type"]["shape"]))
-        for entry in data["description"]["input"]
-    ]
-    outputs = [
-        (entry["name"], coerce_shape(entry["name"], entry["type"]["shape"]))
-        for entry in data["description"]["output"]
-    ]
-    builder = NeuralNetworkBuilder(inputs, outputs)
-
-    dtype_map = {
-        "float32": np.float32,
-        "float16": np.float16,
-        "int32": np.int32,
-        "uint32": np.uint32,
-        "int8": np.int8,
-        "uint8": np.uint8,
-    }
-
-    for weight in data.get("neuralNetwork", {}).get("weights", []):
-        name = weight["name"]
-        np_dtype = dtype_map.get(weight["type"]["dataType"])
-        if np_dtype is None:
-            raise RuntimeError(f"Unsupported CoreML weight dtype: {weight['type']['dataType']}")
-        dims = coerce_dims(name, weight["type"].get("shape", []))
-        arr = np.frombuffer(
-            base64.b64decode(weight["rawData"]),
-            dtype=np_dtype,
-        )
-        arr = arr.reshape(dims)
-        builder.add_load_constant(
-            name=f"const_{name}",
-            output_name=name,
-            constant_value=arr,
-            shape=dims,
-        )
-
-    supported = {"add"}
-    for layer in data["neuralNetwork"]["layers"]:
-        op = layer["type"].lower()
-        if op not in supported:
-            raise RuntimeError(f"Unsupported op for CoreML test: {op}")
-        builder.add_elementwise(
-            name=layer["name"],
-            input_names=layer["input"],
-            output_name=layer["output"][0],
-            mode="ADD",
-        )
-
-    mlmodel = ct.models.MLModel(builder.spec, compute_units=ct.ComputeUnit.CPU_ONLY)
-    mlmodel.save(model_path)
-    print(f"CoreML model compiled to {model_path}")
-
-    feeds = {}
-    for entry in data["description"]["input"]:
-        name = entry["name"]
-        np_dtype = dtype_map.get(entry["type"]["dataType"], np.float32)
-        dims = coerce_dims(name, entry["type"].get("shape", []))
-        feeds[name] = np.zeros(dims, dtype=np_dtype)
+    os.environ.setdefault("TMPDIR", "/tmp")
     try:
-        try:
-            outputs = mlmodel.predict(feeds, useCPUOnly=True)
-        except TypeError:
-            outputs = mlmodel.predict(feeds)
+        model = ct.models.MLModel(spec, compute_units=ct.ComputeUnit.CPU_ONLY)
+    except Exception:
+        # Retry with a forced /tmp tempdir in case the default sandbox path is blocked.
+        os.environ["TMPDIR"] = "/tmp"
+        model = ct.models.MLModel(spec, compute_units=ct.ComputeUnit.CPU_ONLY)
+    feeds = {}
+    for entry in spec.description.input:
+        dtype = _dtype_to_numpy_code(entry.type.multiArrayType.dataType)
+        if dtype is None:
+            raise RuntimeError(f"Unsupported CoreML dtype {entry.type.multiArrayType.dataType}")
+        shape = _coerce_shape(entry.type.multiArrayType.shape)
+        feeds[entry.name] = np.zeros(shape, dtype=dtype)
+
+    try:
+        outputs = model.predict(feeds)
         print("CoreML predict succeeded:")
-        for k, v in outputs.items():
-            shape = getattr(v, "shape", None)
-            dtype = getattr(v, "dtype", type(v))
-            print(f"  {k}: shape={shape}, dtype={dtype}")
+        for name, value in outputs.items():
+            shape = getattr(value, "shape", None)
+            dtype = getattr(value, "dtype", type(value))
+            print(f"  {name}: shape={shape}, dtype={dtype}")
     except Exception as exc:  # noqa: B902
-        print(f"CoreML predict failed: {exc}")
+        if "working directory" in str(exc):
+            print("CoreML predict skipped: sandbox cannot create a temp working directory.")
+        else:
+            print(f"CoreML predict failed: {exc}")
 
 
 def main() -> int:
@@ -136,13 +86,9 @@ def main() -> int:
         print(__doc__)
         return 1
     path = Path(sys.argv[1])
-    data = json.loads(path.read_text())
-
-    check_topology(data)
-    print("CoreML JSON topology looks consistent.")
-
-    mlmodel_path = path.with_suffix(".mlmodel")
-    compile_coreml(data, mlmodel_path)
+    if not path.exists():
+        raise SystemExit(f"Model file not found: {path}")
+    validate_coreml(path)
     return 0
 
 

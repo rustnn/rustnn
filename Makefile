@@ -3,8 +3,8 @@ DOT ?= dot
 GRAPH_FILE ?= examples/sample_graph.json
 DOT_PATH ?= target/graph.dot
 PNG_PATH ?= target/graph.png
-ONNX_PATH ?= target/graph.onnx.json
-COREML_PATH ?= target/graph.coreml.json
+ONNX_PATH ?= target/graph.onnx
+COREML_PATH ?= target/graph.mlmodel
 PYTHON ?= python3
 VENV ?= .venv
 VENV_BIN := $(VENV)/bin
@@ -55,7 +55,7 @@ coreml-validate: coreml
 coreml-env:
 	$(PYTHON) -m venv $(VENV)
 	$(PIP) install --upgrade pip
-	$(PIP) install coremltools
+	$(PIP) install coremltools numpy
 
 coreml-validate-env: coreml coreml-env
 	$(PYTHON_VENV) scripts/validate_coreml.py $(COREML_PATH)

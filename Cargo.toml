@@ -10,3 +10,13 @@ serde_json = "1.0"
 serde_with = { version = "3.8", features = ["base64"] }
 thiserror = "1.0"
 base64 = "0.22"
+prost = "0.12"
+prost-types = "0.12"
+bytes = "1.6"
+bytemuck = { version = "1.15", features = ["extern_crate_std"] }
+
+[build-dependencies]
+prost-build = "0.12"
+
+[lib]
+doctest = false

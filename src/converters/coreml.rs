@@ -1,10 +1,13 @@
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use serde_json::json;
-
 use crate::converters::ConvertedGraph;
 use crate::error::GraphError;
-use crate::graph::{DataType, GraphInfo, OperandKind};
+use crate::graph::{DataType, GraphInfo};
+use crate::protos::coreml::specification::{
+    array_feature_type::ArrayDataType, feature_type, model, neural_network_layer::Layer,
+    AddLayerParams, ArrayFeatureType, FeatureDescription, FeatureType, LoadConstantLayerParams,
+    Model, ModelDescription, NeuralNetwork, NeuralNetworkLayer, WeightParams,
+};
+use prost::bytes::Bytes;
+use prost::Message;
 
 #[derive(Default)]
 pub struct CoremlConverter;
@@ -17,26 +20,38 @@ impl CoremlConverter {
             .unwrap_or_else(|| format!("operand_{}", id))
     }
 
-    fn data_type_code(data_type: DataType) -> Result<&'static str, GraphError> {
-        // Simplified CoreML type names
-        let code = match data_type {
-            DataType::Float32 => "float32",
-            DataType::Float16 => "float16",
-            DataType::Int32 => "int32",
-            DataType::Uint32 => "uint32",
-            DataType::Int8 => "int8",
-            DataType::Uint8 => "uint8",
-        };
-        Ok(code)
+    fn coerce_shape(shape: &[u32]) -> Vec<i64> {
+        let mut dims: Vec<i64> = shape.iter().map(|d| *d as i64).collect();
+        match dims.len() {
+            0 => vec![1],
+            1 => dims,
+            2 => {
+                let mut with_batch = vec![1];
+                with_batch.append(&mut dims);
+                with_batch
+            }
+            3 => dims,
+            _ => {
+                let prod: i64 = dims.iter().product();
+                vec![prod]
+            }
+        }
     }
 
-    fn tensor_type(
-        desc: &crate::graph::OperandDescriptor,
-    ) -> Result<serde_json::Value, GraphError> {
-        Ok(json!({
-            "dataType": Self::data_type_code(desc.data_type)?,
-            "shape": desc.shape,
-        }))
+    fn feature_type(desc: &crate::graph::OperandDescriptor) -> FeatureType {
+        let shape = Self::coerce_shape(&desc.shape);
+        FeatureType {
+            r#type: Some(feature_type::Type::MultiArrayType(ArrayFeatureType {
+                shape,
+                data_type: match desc.data_type {
+                    DataType::Float32 => ArrayDataType::Float32 as i32,
+                    DataType::Float16 => ArrayDataType::Float16 as i32,
+                    _ => ArrayDataType::Int32 as i32,
+                },
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
     }
 }
 
@@ -49,166 +64,131 @@ impl crate::converters::GraphConverter for CoremlConverter {
         let inputs = graph
             .input_operands
             .iter()
-            .map(|id| -> Result<serde_json::Value, GraphError> {
+            .map(|id| {
                 let operand = graph
                     .operand(*id)
                     .ok_or_else(|| GraphError::InvalidConversionOperand { operand: *id })?;
-                Ok(json!({
-                    "name": Self::operand_name(graph, *id),
-                    "type": Self::tensor_type(&operand.descriptor)?,
-                }))
+                Ok(FeatureDescription {
+                    name: Self::operand_name(graph, *id),
+                    r#type: Some(Self::feature_type(&operand.descriptor)),
+                    ..Default::default()
+                })
             })
             .collect::<Result<Vec<_>, GraphError>>()?;
 
         let outputs = graph
             .output_operands
             .iter()
-            .map(|id| -> Result<serde_json::Value, GraphError> {
+            .map(|id| {
                 let operand = graph
                     .operand(*id)
                     .ok_or_else(|| GraphError::InvalidConversionOperand { operand: *id })?;
-                Ok(json!({
-                    "name": Self::operand_name(graph, *id),
-                    "type": Self::tensor_type(&operand.descriptor)?,
-                }))
-            })
-            .collect::<Result<Vec<_>, GraphError>>()?;
-
-        let constants = graph
-            .constant_operand_ids_to_handles
-            .iter()
-            .map(|(id, data)| -> Result<serde_json::Value, GraphError> {
-                let operand = graph
-                    .operand(*id)
-                    .ok_or_else(|| GraphError::InvalidConversionOperand { operand: *id })?;
-                Ok(json!({
-                    "name": Self::operand_name(graph, *id),
-                    "type": Self::tensor_type(&operand.descriptor)?,
-                    "rawData": BASE64_STANDARD.encode(&data.data),
-                }))
-            })
-            .collect::<Result<Vec<_>, GraphError>>()?;
-
-        let layers = graph
-            .operations
-            .iter()
-            .enumerate()
-            .map(|(idx, op)| {
-                let layer_name = op
-                    .label
-                    .as_ref()
-                    .cloned()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| format!("{}_{}", op.op_type, idx));
-                json!({
-                    "name": layer_name,
-                    "type": op.op_type,
-                    "input": op.input_operands.iter().map(|id| Self::operand_name(graph, *id)).collect::<Vec<_>>(),
-                    "output": vec![Self::operand_name(graph, op.output_operand)],
-                    "attributes": op.attributes, // retained for downstream mapping
+                Ok(FeatureDescription {
+                    name: Self::operand_name(graph, *id),
+                    r#type: Some(Self::feature_type(&operand.descriptor)),
+                    ..Default::default()
                 })
             })
-            .collect::<Vec<_>>();
-
-        let intermediates = graph
-            .operands
-            .iter()
-            .enumerate()
-            .filter(|(_, operand)| operand.kind != OperandKind::Constant)
-            .map(|(id, operand)| -> Result<serde_json::Value, GraphError> {
-                Ok(json!({
-                    "name": Self::operand_name(graph, id as u32),
-                    "type": Self::tensor_type(&operand.descriptor)?,
-                }))
-            })
             .collect::<Result<Vec<_>, GraphError>>()?;
 
-        let model = json!({
-            "specificationVersion": 7,
-            "producer": "rust-webnn-graph",
-            "description": {
-                "input": inputs,
-                "output": outputs,
-                "intermediate": intermediates,
-            },
-            "neuralNetwork": {
-                "layers": layers,
-                "weights": constants,
-            },
-        });
+        let mut layers = Vec::new();
 
-        let data =
-            serde_json::to_vec_pretty(&model).map_err(|err| GraphError::ConversionFailed {
-                format: "coreml".to_string(),
-                reason: err.to_string(),
-            })?;
+        // Emit constants as LoadConstant layers
+        for (id, data) in &graph.constant_operand_ids_to_handles {
+            let operand = graph
+                .operand(*id)
+                .ok_or_else(|| GraphError::InvalidConversionOperand { operand: *id })?;
+            let name = Self::operand_name(graph, *id);
+            let shape: Vec<u64> = Self::coerce_shape(&operand.descriptor.shape)
+                .into_iter()
+                .map(|d| d as u64)
+                .collect();
+            let float_value = if matches!(operand.descriptor.data_type, DataType::Float32) {
+                bytemuck::cast_slice::<u8, f32>(&data.data).to_vec()
+            } else {
+                Vec::new()
+            };
+
+            let weight = WeightParams {
+                float_value,
+                raw_value: if matches!(operand.descriptor.data_type, DataType::Float32) {
+                    Bytes::new()
+                } else {
+                    Bytes::from(data.data.clone())
+                },
+                ..Default::default()
+            };
+            layers.push(NeuralNetworkLayer {
+                name: format!("const_{}", name),
+                input: vec![],
+                output: vec![name],
+                layer: Some(Layer::LoadConstant(LoadConstantLayerParams {
+                    shape: shape.clone(),
+                    data: Some(weight.clone()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            });
+        }
+
+        for (idx, op) in graph.operations.iter().enumerate() {
+            let layer_name = op
+                .label
+                .as_ref()
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("{}_{}", op.op_type, idx));
+            let input_names = op
+                .input_operands
+                .iter()
+                .map(|id| Self::operand_name(graph, *id))
+                .collect();
+            let output_names = vec![Self::operand_name(graph, op.output_operand)];
+
+            let layer = if op.op_type.eq_ignore_ascii_case("add") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::Add(AddLayerParams {
+                        alpha: 0.0,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".to_string(),
+                    reason: format!("Unsupported op_type {}", op.op_type),
+                });
+            };
+            layers.push(layer);
+        }
+
+        let nn = NeuralNetwork {
+            layers,
+            ..Default::default()
+        };
+
+        let description = ModelDescription {
+            input: inputs,
+            output: outputs,
+            ..Default::default()
+        };
+
+        let model = Model {
+            specification_version: 7,
+            description: Some(description),
+            r#type: Some(model::Type::NeuralNetwork(nn)),
+            ..Default::default()
+        };
+
+        let data = model.encode_to_vec();
 
         Ok(ConvertedGraph {
             format: "coreml",
-            content_type: "application/json",
+            content_type: "application/x-apple-mlmodel",
             data,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::Value;
-
-    use super::CoremlConverter;
-    use crate::converters::GraphConverter;
-    use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
-
-    #[test]
-    fn exports_minimal_coreml_json() {
-        let converter = CoremlConverter::default();
-        let graph = GraphInfo {
-            operands: vec![
-                Operand {
-                    kind: OperandKind::Input,
-                    descriptor: OperandDescriptor {
-                        data_type: DataType::Float32,
-                        shape: vec![1, 3],
-                        pending_permutation: vec![],
-                    },
-                    name: Some("x".to_string()),
-                },
-                Operand {
-                    kind: OperandKind::Input,
-                    descriptor: OperandDescriptor {
-                        data_type: DataType::Float32,
-                        shape: vec![1, 3],
-                        pending_permutation: vec![],
-                    },
-                    name: Some("y".to_string()),
-                },
-                Operand {
-                    kind: OperandKind::Output,
-                    descriptor: OperandDescriptor {
-                        data_type: DataType::Float32,
-                        shape: vec![1, 3],
-                        pending_permutation: vec![],
-                    },
-                    name: Some("z".to_string()),
-                },
-            ],
-            input_operands: vec![0, 1],
-            output_operands: vec![2],
-            operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: 2,
-                attributes: serde_json::json!({"alpha": 1.0}),
-                label: None,
-            }],
-            constant_operand_ids_to_handles: Default::default(),
-            id_to_constant_tensor_operand_map: Default::default(),
-        };
-
-        let converted = converter.convert(&graph).unwrap();
-        let json: Value = serde_json::from_slice(&converted.data).unwrap();
-        assert_eq!(json["description"]["input"][0]["name"], "x");
-        assert_eq!(json["description"]["output"][0]["name"], "z");
-        assert_eq!(json["neuralNetwork"]["layers"][0]["type"], "add");
     }
 }

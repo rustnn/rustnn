@@ -3,6 +3,7 @@ pub mod error;
 pub mod graph;
 pub mod graphviz;
 pub mod loader;
+pub mod protos;
 pub mod validator;
 
 pub use converters::{ConvertedGraph, ConverterRegistry, GraphConverter};

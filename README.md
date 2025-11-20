@@ -1,8 +1,8 @@
 # rustnn
 
 This standalone crate mirrors Chromium's WebNN graph handling while adding
-pluggable format converters (ONNX/CoreML) and helper tooling to visualize and
-validate exported graphs.
+pluggable format converters (ONNX/CoreML) and helper tooling to visualize,
+execute, and validate exported graphs on macOS.
 
 The Rust validator matches Chromium's C++ flow:
 
@@ -25,8 +25,8 @@ rustnn/
 ├── examples/
 │   └── sample_graph.json   # tiny graph with a constant weight
 ├── scripts/
-│   ├── validate_coreml.py  # builds/executes CoreML from exported JSON
-│   └── validate_onnx.py    # rebuilds/runs ONNX from exported JSON
+│   ├── validate_coreml.py  # loads/executes CoreML .mlmodel exports
+│   └── validate_onnx.py    # loads/executes ONNX .onnx exports
 └── src/
     ├── converters/         # ONNX/CoreML converters + registry
     ├── error.rs            # GraphError mirrors Chromium paths
@@ -64,23 +64,23 @@ make viz
 
 ## Converting graphs
 
-A pluggable converter registry can emit other graph formats. ONNX JSON is the
+A pluggable converter registry can emit other graph formats. ONNX is the
 first built-in converter:
 
 ```
-cargo run -- examples/sample_graph.json --convert onnx --convert-output /tmp/graph.onnx.json
+cargo run -- examples/sample_graph.json --convert onnx --convert-output /tmp/graph.onnx
 ```
 
-Omit `--convert-output` to print the converted graph to stdout. More converters
+CoreML export produces a `.mlmodel` blob:
+
+```
+cargo run -- examples/sample_graph.json --convert coreml --convert-output /tmp/graph.mlmodel
+```
+
+Omit `--convert-output` to print the converted bytes to stdout. More converters
 can be registered via `ConverterRegistry`.
 
-CoreML export works the same way:
-
-```
-cargo run -- examples/sample_graph.json --convert coreml --convert-output /tmp/graph.coreml.json
-```
-
-To validate the CoreML JSON locally with `coremltools` in a virtualenv:
+To validate the CoreML export locally with `coremltools` in a virtualenv:
 
 ```
 make coreml-validate-env
@@ -97,3 +97,7 @@ To run the whole pipeline (build, tests, converters, ONNX + CoreML validation wi
 ```
 make validate-all-env
 ```
+
+## License
+
+Licensed under the Apache License, Version 2.0.
