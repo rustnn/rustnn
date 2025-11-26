@@ -84,6 +84,10 @@ pub enum GraphError {
     CoremlRuntimeFailed { reason: String },
     #[error("coreml runtime only supports the coreml converter (got {format})")]
     UnsupportedRuntimeFormat { format: String },
+    #[error("onnx runtime is only available with the `onnx-runtime` feature enabled")]
+    OnnxRuntimeUnavailable,
+    #[error("onnx runtime failed: {reason}")]
+    OnnxRuntimeFailed { reason: String },
 }
 
 impl GraphError {

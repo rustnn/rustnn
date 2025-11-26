@@ -31,6 +31,10 @@ struct Cli {
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     #[arg(long, requires = "run_coreml")]
     coreml_compiled_output: Option<PathBuf>,
+    /// Execute the converted ONNX graph with zeroed inputs (requires `onnx-runtime` feature).
+    #[cfg(feature = "onnx-runtime")]
+    #[arg(long, requires = "convert")]
+    run_onnx: bool,
 }
 
 fn run() -> Result<(), GraphError> {
@@ -131,6 +135,24 @@ fn run() -> Result<(), GraphError> {
                         println!("  - {} failed: {}", attempt.compute_unit, err);
                     }
                 }
+            }
+        }
+
+        #[cfg(feature = "onnx-runtime")]
+        if cli.run_onnx {
+            if converted.format != "onnx" {
+                return Err(GraphError::UnsupportedRuntimeFormat {
+                    format: converted.format.to_string(),
+                });
+            }
+            let outputs =
+                rustnn::run_onnx_zeroed(&converted.data, &artifacts.input_names_to_descriptors)?;
+            println!("Executed ONNX model with zeroed inputs (CPU):");
+            for out in outputs {
+                println!(
+                    "  - {}: shape={:?} type={}",
+                    out.name, out.shape, out.data_type
+                );
             }
         }
     }

@@ -19,3 +19,5 @@ pub use loader::load_graph_from_path;
 pub use validator::{ContextProperties, GraphValidator, ValidationArtifacts};
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use coreml:: {CoremlOutput, CoremlRunAttempt, run_coreml_zeroed, run_coreml_zeroed_cached};
+#[cfg(feature = "onnx-runtime")]
+pub use executors::onnx::{OnnxOutput, run_onnx_zeroed};

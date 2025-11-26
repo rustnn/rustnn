@@ -28,7 +28,7 @@ rustnn/
 ├── examples/
 │   └── sample_graph.json   # tiny graph with a constant weight
 ├── scripts/
-│   └── validate_onnx.py    # loads/executes ONNX .onnx exports
+│   (none; ONNX validation handled by Rust executor)
 └── src/
     ├── converters/         # ONNX/CoreML converters + registry
     ├── executors/          # CoreML runtime bridge (macOS)
@@ -102,8 +102,14 @@ can be registered via `ConverterRegistry`.
 For ONNX, you can build and validate (optionally running inference via onnxruntime) with:
 
 ```
-make onnx-validate-env
+make onnx-validate
 ```
+
+The Makefile will download a macOS/arm64 ONNX Runtime into
+`target/onnxruntime/onnxruntime-osx-arm64-<version>` and run with
+`ORT_STRATEGY=system`, `ORT_LIB_LOCATION` pointing to that directory, and the
+library path exported. To use your own runtime, set those environment variables
+before invoking the Makefile targets.
 
 To run the whole pipeline (build, tests, converters, ONNX + CoreML validation):
 

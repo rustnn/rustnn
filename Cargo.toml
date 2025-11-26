@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 coreml-runtime = ["objc"]
+onnx-runtime = ["onnxruntime"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -19,6 +20,7 @@ prost-types = "0.12"
 bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 objc = { version = "0.2", optional = true }
+onnxruntime = { version = "0.0.14", optional = true }
 
 [build-dependencies]
 prost-build = "0.12"

@@ -6,18 +6,19 @@ PNG_PATH ?= target/graph.png
 ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
-PYTHON ?= python3
-VENV ?= .venv
-VENV_BIN := $(VENV)/bin
-PIP := $(VENV_BIN)/pip
-PYTHON_VENV := $(VENV_BIN)/python
-
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate onnx-env onnx-validate-env validate-all-env
+ORT_VERSION ?= 1.17.0
+ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
+ORT_TARBALL ?= onnxruntime-osx-arm64-$(ORT_VERSION).tgz
+ORT_DIR ?= target/onnxruntime
+ORT_LIB_DIR ?= $(ORT_DIR)/onnxruntime-osx-arm64-$(ORT_VERSION)/lib
+ORT_LIB_LOCATION ?= $(ORT_LIB_DIR)
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env
 
 clean:
 	$(CARGO) clean
 	rm -f target/graph.dot target/graph.png target/graph.onnx target/graph.mlmodel
 	rm -rf target/graph.mlmodelc
+	rm -rf $(ORT_DIR)
 
 build:
 	$(CARGO) build
@@ -36,20 +37,18 @@ viz:
 	$(DOT) -Tpng $(DOT_PATH) -o $(PNG_PATH)
 	open $(PNG_PATH)
 
-onnx:
-	$(CARGO) run -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH)
+
+onnxruntime-download:
+	mkdir -p $(ORT_DIR)
+	curl -L $(ORT_BASE)/$(ORT_TARBALL) -o $(ORT_DIR)/$(ORT_TARBALL)
+	tar -xzf $(ORT_DIR)/$(ORT_TARBALL) -C $(ORT_DIR)
+
+onnx: onnxruntime-download
+	ORT_STRATEGY=system ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) RUSTFLAGS="-L $(ORT_LIB_DIR)" $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH)
 	@echo "ONNX graph written to $(ONNX_PATH)"
 
 onnx-validate: onnx
-	python scripts/validate_onnx.py $(ONNX_PATH)
-
-onnx-env:
-	$(PYTHON) -m venv $(VENV)
-	$(PIP) install --upgrade pip
-	$(PIP) install onnx onnxruntime numpy
-
-onnx-validate-env: onnx onnx-env
-	$(PYTHON_VENV) scripts/validate_onnx.py $(ONNX_PATH)
+	ORT_STRATEGY=system ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) RUSTFLAGS="-L $(ORT_LIB_DIR)" $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
 
 coreml:
 	$(CARGO) run -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
@@ -58,5 +57,5 @@ coreml:
 coreml-validate: coreml
 	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
 
-validate-all-env: build test onnx-validate-env coreml-validate
+validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
