@@ -28,10 +28,10 @@ rustnn/
 ├── examples/
 │   └── sample_graph.json   # tiny graph with a constant weight
 ├── scripts/
-│   ├── validate_coreml.py  # loads/executes CoreML .mlmodel exports
 │   └── validate_onnx.py    # loads/executes ONNX .onnx exports
 └── src/
     ├── converters/         # ONNX/CoreML converters + registry
+    ├── executors/          # CoreML runtime bridge (macOS)
     ├── error.rs            # GraphError mirrors Chromium paths
     ├── graph.rs            # DataType/Operand/Operation/GraphInfo structs
     ├── graphviz.rs         # DOT exporter
@@ -80,14 +80,24 @@ CoreML export produces a `.mlmodel` blob:
 cargo run -- examples/sample_graph.json --convert coreml --convert-output /tmp/graph.mlmodel
 ```
 
+To execute the converted CoreML model directly from Rust (macOS only), enable
+the `coreml-runtime` feature and pass `--run-coreml`:
+
+```
+cargo run --features coreml-runtime -- examples/sample_graph.json --convert coreml --run-coreml
+```
+
+To cache the compiled `.mlmodelc` bundle for reuse, also pass
+`--coreml-compiled-output <path>`:
+
+```
+cargo run --features coreml-runtime -- examples/sample_graph.json --convert coreml --run-coreml --coreml-compiled-output target/graph.mlmodelc
+```
+If the compiled bundle already exists at that path, it will be loaded without
+recompiling; otherwise it is compiled once and persisted for future runs.
+
 Omit `--convert-output` to print the converted bytes to stdout. More converters
 can be registered via `ConverterRegistry`.
-
-To validate the CoreML export locally with `coremltools` in a virtualenv:
-
-```
-make coreml-validate-env
-```
 
 For ONNX, you can build and validate (optionally running inference via onnxruntime) with:
 
@@ -95,7 +105,7 @@ For ONNX, you can build and validate (optionally running inference via onnxrunti
 make onnx-validate-env
 ```
 
-To run the whole pipeline (build, tests, converters, ONNX + CoreML validation with venv-managed deps):
+To run the whole pipeline (build, tests, converters, ONNX + CoreML validation):
 
 ```
 make validate-all-env

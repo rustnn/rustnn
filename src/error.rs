@@ -78,6 +78,12 @@ pub enum GraphError {
         #[source]
         source: std::io::Error,
     },
+    #[error("coreml runtime is only available on macOS with the `coreml-runtime` feature enabled")]
+    CoremlRuntimeUnavailable,
+    #[error("coreml runtime failed: {reason}")]
+    CoremlRuntimeFailed { reason: String },
+    #[error("coreml runtime only supports the coreml converter (got {format})")]
+    UnsupportedRuntimeFormat { format: String },
 }
 
 impl GraphError {

@@ -5,17 +5,19 @@ DOT_PATH ?= target/graph.dot
 PNG_PATH ?= target/graph.png
 ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
+COREMLC_PATH ?= target/graph.mlmodelc
 PYTHON ?= python3
 VENV ?= .venv
 VENV_BIN := $(VENV)/bin
 PIP := $(VENV_BIN)/pip
 PYTHON_VENV := $(VENV_BIN)/python
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate coreml-env coreml-validate-env onnx-validate onnx-env onnx-validate-env validate-all-env
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate onnx-env onnx-validate-env validate-all-env
 
 clean:
 	$(CARGO) clean
 	rm -f target/graph.dot target/graph.png target/graph.onnx target/graph.mlmodel
+	rm -rf target/graph.mlmodelc
 
 build:
 	$(CARGO) build
@@ -54,15 +56,7 @@ coreml:
 	@echo "CoreML graph written to $(COREML_PATH)"
 
 coreml-validate: coreml
-	python scripts/validate_coreml.py $(COREML_PATH)
+	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
 
-coreml-env:
-	$(PYTHON) -m venv $(VENV)
-	$(PIP) install --upgrade pip
-	$(PIP) install coremltools numpy
-
-coreml-validate-env: coreml coreml-env
-	$(PYTHON_VENV) scripts/validate_coreml.py $(COREML_PATH)
-
-validate-all-env: build test onnx-validate-env coreml-validate-env
+validate-all-env: build test onnx-validate-env coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."

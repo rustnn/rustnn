@@ -1,0 +1,432 @@
+//! Minimal CoreML execution bridge for macOS.
+//! Loads a `.mlmodel`, compiles it if needed, and runs a zeroed inference
+//! using CoreML's Objective-C API.
+
+#![cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+#![allow(unexpected_cfgs)]
+
+use std::collections::HashMap;
+use std::ffi::{CStr, CString};
+use std::os::raw::{c_char, c_void};
+use std::path::{Path, PathBuf};
+use std::ptr;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use objc::rc::autoreleasepool;
+use objc::runtime::Object;
+use objc::{class, msg_send, sel, sel_impl};
+
+use crate::error::GraphError;
+use crate::graph::{DataType, OperandDescriptor};
+
+// Link against the system frameworks we use.
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {}
+#[link(name = "CoreML", kind = "framework")]
+unsafe extern "C" {}
+
+#[derive(Debug, Clone)]
+pub struct CoremlOutput {
+    pub name: String,
+    pub shape: Vec<i64>,
+    pub data_type_code: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CoremlRunAttempt {
+    pub compute_unit: &'static str,
+    pub result: Result<Vec<CoremlOutput>, String>,
+}
+
+pub fn run_coreml_zeroed(
+    model_bytes: &[u8],
+    inputs: &HashMap<String, OperandDescriptor>,
+) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    run_coreml_zeroed_cached(model_bytes, inputs, None)
+}
+
+pub fn run_coreml_zeroed_cached(
+    model_bytes: &[u8],
+    inputs: &HashMap<String, OperandDescriptor>,
+    compiled_path: Option<&Path>,
+) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    autoreleasepool(|| run_impl(model_bytes, inputs, compiled_path))
+}
+
+fn run_impl(
+    model_bytes: &[u8],
+    inputs: &HashMap<String, OperandDescriptor>,
+    compiled_path: Option<&Path>,
+) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    unsafe {
+        let (compiled_url, compiled_path_buf, temp_mlmodel) =
+            prepare_compiled_model(model_bytes, compiled_path)?;
+
+        let targets = [
+            (0i64, "ALL"),
+            (2i64, "CPU_AND_GPU"),
+            (3i64, "CPU_AND_NE"),
+            (1i64, "CPU_ONLY"),
+        ];
+        let mut attempts = Vec::new();
+
+        for (code, name) in targets {
+            let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let () = msg_send![config, setComputeUnits: code];
+            let mut error: *mut Object = ptr::null_mut();
+            let model: *mut Object = msg_send![class!(MLModel), modelWithContentsOfURL: compiled_url configuration: config error: &mut error];
+            if model.is_null() {
+                attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Err(ns_error_to_string(error, "MLModel load failed")),
+                });
+                continue;
+            }
+
+            let model_description: *mut Object = msg_send![model, modelDescription];
+            let input_descs: *mut Object = msg_send![model_description, inputDescriptionsByName];
+
+            let dict: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
+            let mut feature_err: Option<String> = None;
+            for (name, descriptor) in inputs {
+                let key = nsstring_from_str(name)?;
+                let desc_obj: *mut Object = msg_send![input_descs, objectForKey: key];
+                let (shape, data_type_code) = if desc_obj.is_null() {
+                    (coerce_shape(&descriptor.shape), map_dtype(descriptor.data_type)?)
+                } else {
+                    let constraint_obj: *mut Object = msg_send![desc_obj, multiArrayConstraint];
+                    if constraint_obj.is_null() {
+                        (coerce_shape(&descriptor.shape), map_dtype(descriptor.data_type)?)
+                    } else {
+                        let shape_obj: *mut Object = msg_send![constraint_obj, shape];
+                        let ml_data_type: i64 = msg_send![constraint_obj, dataType];
+                        (nsarray_to_i64_vec(shape_obj)?, ml_data_type as i32)
+                    }
+                };
+
+                let array = match create_multi_array(&shape, data_type_code) {
+                    Ok(arr) => arr,
+                    Err(err) => {
+                        feature_err = Some(err.to_string());
+                        break;
+                    }
+                };
+                let fill_kind = data_type_from_code(data_type_code).unwrap_or(descriptor.data_type);
+                if let Err(err) = fill_zero(array, fill_kind, &shape) {
+                    feature_err = Some(err.to_string());
+                    break;
+                }
+                let feature_value: *mut Object =
+                    msg_send![class!(MLFeatureValue), featureValueWithMultiArray: array];
+                let () = msg_send![dict, setObject: feature_value forKey: key];
+            }
+
+            if let Some(reason) = feature_err {
+                attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Err(reason),
+                });
+                continue;
+            }
+
+            let mut create_error: *mut Object = ptr::null_mut();
+            let provider_alloc: *mut Object = msg_send![class!(MLDictionaryFeatureProvider), alloc];
+            let provider: *mut Object =
+                msg_send![provider_alloc, initWithDictionary: dict error: &mut create_error];
+            if provider.is_null() {
+                attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Err(ns_error_to_string(
+                        create_error,
+                        "MLDictionaryFeatureProvider init failed",
+                    )),
+                });
+                continue;
+            }
+
+            let mut predict_error: *mut Object = ptr::null_mut();
+            let output_provider: *mut Object =
+                msg_send![model, predictionFromFeatures: provider error: &mut predict_error];
+            if output_provider.is_null() {
+                attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Err(ns_error_to_string(predict_error, "prediction failed")),
+                });
+                continue;
+            }
+
+            match collect_outputs(output_provider) {
+                Ok(outputs) => attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Ok(outputs),
+                }),
+                Err(err) => attempts.push(CoremlRunAttempt {
+                    compute_unit: name,
+                    result: Err(err.to_string()),
+                }),
+            }
+        }
+
+        if let Some(tmp) = temp_mlmodel {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        if compiled_path.is_none() {
+            let _ = std::fs::remove_dir_all(&compiled_path_buf);
+        }
+        Ok(attempts)
+    }
+}
+
+unsafe fn collect_outputs(provider: *mut Object) -> Result<Vec<CoremlOutput>, GraphError> {
+    let feature_names: *mut Object = msg_send![provider, featureNames];
+    let names_array: *mut Object = msg_send![feature_names, allObjects];
+    let count: usize = msg_send![names_array, count];
+
+    let mut outputs = Vec::new();
+    for idx in 0..count {
+        let name_obj: *mut Object = msg_send![names_array, objectAtIndex: idx];
+        let rust_name = nsstring_to_string(name_obj);
+        let value: *mut Object = msg_send![provider, featureValueForName: name_obj];
+        let array: *mut Object = msg_send![value, multiArrayValue];
+        if array.is_null() {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: format!("output `{}` is not a MLMultiArray", rust_name),
+            });
+        }
+        let data_type: i64 = msg_send![array, dataType];
+        let shape_nsarray: *mut Object = msg_send![array, shape];
+        let shape = nsarray_to_i64_vec(shape_nsarray)?;
+        outputs.push(CoremlOutput {
+            name: rust_name,
+            shape,
+            data_type_code: data_type,
+        });
+    }
+    Ok(outputs)
+}
+
+unsafe fn prepare_compiled_model(
+    model_bytes: &[u8],
+    cached_compiled: Option<&Path>,
+) -> Result<(*mut Object, PathBuf, Option<PathBuf>), GraphError> {
+    if let Some(path) = cached_compiled {
+        if path.exists() {
+            let url = nsurl_from_path(path)?;
+            return Ok((url, path.to_path_buf(), None));
+        }
+    }
+
+    let temp_mlmodel = write_temp_model(model_bytes)?;
+    let url = nsurl_from_path(&temp_mlmodel)?;
+    let mut compile_error: *mut Object = ptr::null_mut();
+    let compiled_url: *mut Object =
+        msg_send![class!(MLModel), compileModelAtURL: url error: &mut compile_error];
+    if compiled_url.is_null() {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: ns_error_to_string(compile_error, "MLModel compile failed"),
+        });
+    }
+
+    let compiled_path_obj: *mut Object = msg_send![compiled_url, path];
+    let compiled_src_path = PathBuf::from(nsstring_to_string(compiled_path_obj));
+
+    if let Some(path) = cached_compiled {
+        if let Err(err) = copy_dir_recursively(&compiled_src_path, path) {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: format!("failed to persist compiled model: {}", err),
+            });
+        }
+        let persisted_url = nsurl_from_path(path)?;
+        return Ok((persisted_url, path.to_path_buf(), Some(temp_mlmodel)));
+    }
+
+    Ok((compiled_url, compiled_src_path, Some(temp_mlmodel)))
+}
+
+fn write_temp_model(model_bytes: &[u8]) -> Result<PathBuf, GraphError> {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let path = std::env::temp_dir().join(format!("rustnn_coreml_{ts}.mlmodel"));
+    std::fs::write(&path, model_bytes).map_err(|err| GraphError::export(&path, err))?;
+    Ok(path)
+}
+
+fn coerce_shape(shape: &[u32]) -> Vec<i64> {
+    let mut dims: Vec<i64> = shape.iter().map(|d| *d as i64).collect();
+    match dims.len() {
+        0 => vec![1],
+        1 => dims,
+        2 => {
+            let mut with_batch = vec![1];
+            with_batch.append(&mut dims);
+            with_batch
+        }
+        3 => dims,
+        _ => {
+            let prod: i64 = dims.iter().product();
+            vec![prod]
+        }
+    }
+}
+
+fn element_count(shape: &[i64]) -> Option<usize> {
+    let mut count: i64 = 1;
+    for dim in shape {
+        count = count.checked_mul(*dim)?;
+    }
+    usize::try_from(count).ok()
+}
+
+fn map_dtype(data_type: DataType) -> Result<i32, GraphError> {
+    // `MLMultiArrayDataType` enum values from Apple docs.
+    let code = match data_type {
+        DataType::Float32 => 32, // MLMultiArrayDataTypeFloat32
+        DataType::Float16 => 16, // MLMultiArrayDataTypeFloat16
+        DataType::Int32 => 3,    // MLMultiArrayDataTypeInt32
+        DataType::Int8 => 1,     // MLMultiArrayDataTypeInt8
+        DataType::Uint8 => 1,    // closest available signed byte type
+        DataType::Uint32 => 3,   // closest available signed int type
+    };
+    Ok(code)
+}
+
+fn data_type_from_code(code: i32) -> Option<DataType> {
+    match code {
+        32 => Some(DataType::Float32),
+        16 => Some(DataType::Float16),
+        3 => Some(DataType::Int32),
+        1 => Some(DataType::Int8),
+        _ => None,
+    }
+}
+
+unsafe fn nsstring_from_str(value: &str) -> Result<*mut Object, GraphError> {
+    let c_string = CString::new(value).map_err(|err| GraphError::CoremlRuntimeFailed {
+        reason: format!("failed to build NSString: {err}"),
+    })?;
+    let obj: *mut Object = msg_send![class!(NSString), stringWithUTF8String: c_string.as_ptr()];
+    Ok(obj)
+}
+
+unsafe fn nsurl_from_path(path: &Path) -> Result<*mut Object, GraphError> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| GraphError::CoremlRuntimeFailed {
+            reason: format!("invalid path for CoreML model: {}", path.display()),
+        })?;
+    let ns_path = nsstring_from_str(path_str)?;
+    let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: ns_path];
+    Ok(url)
+}
+
+unsafe fn create_multi_array(shape: &[i64], data_type: i32) -> Result<*mut Object, GraphError> {
+    let numbers: Vec<*mut Object> = shape
+        .iter()
+        .map(|dim| {
+            let number: *mut Object = msg_send![class!(NSNumber), numberWithLongLong: *dim];
+            number
+        })
+        .collect();
+    let nsarray: *mut Object =
+        msg_send![class!(NSArray), arrayWithObjects: numbers.as_ptr() count: numbers.len()];
+    let mut error: *mut Object = ptr::null_mut();
+    let alloc: *mut Object = msg_send![class!(MLMultiArray), alloc];
+    let array: *mut Object =
+        msg_send![alloc, initWithShape: nsarray dataType: data_type error: &mut error];
+    if array.is_null() {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: ns_error_to_string(error, "MLMultiArray init failed"),
+        });
+    }
+    Ok(array)
+}
+
+unsafe fn fill_zero(array: *mut Object, data_type: DataType, shape: &[i64]) -> Result<(), GraphError> {
+    // Prefer the runtime-reported element count to avoid mismatches with coerced shapes.
+    let count_obj: isize = msg_send![array, count];
+    let count_from_runtime: Option<usize> = usize::try_from(count_obj).ok();
+    let count_from_shape = element_count(shape);
+    let Some(count) = count_from_runtime.or(count_from_shape) else {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: format!("shape {:?} overflows element count", shape),
+        });
+    };
+    let ptr: *mut c_void = msg_send![array, dataPointer];
+    match data_type {
+        DataType::Float32 => {
+            let slice = std::slice::from_raw_parts_mut(ptr as *mut f32, count);
+            for v in slice.iter_mut() {
+                *v = 0.0;
+            }
+        }
+        DataType::Float16 => {
+            let slice = std::slice::from_raw_parts_mut(ptr as *mut u16, count);
+            for v in slice.iter_mut() {
+                *v = 0;
+            }
+        }
+        DataType::Int32 | DataType::Uint32 => {
+            let slice = std::slice::from_raw_parts_mut(ptr as *mut i32, count);
+            for v in slice.iter_mut() {
+                *v = 0;
+            }
+        }
+        DataType::Int8 | DataType::Uint8 => {
+            let slice = std::slice::from_raw_parts_mut(ptr as *mut i8, count);
+            for v in slice.iter_mut() {
+                *v = 0;
+            }
+        }
+    }
+    Ok(())
+}
+
+unsafe fn nsarray_to_i64_vec(array: *mut Object) -> Result<Vec<i64>, GraphError> {
+    let count: usize = msg_send![array, count];
+    let mut result = Vec::with_capacity(count);
+    for idx in 0..count {
+        let obj: *mut Object = msg_send![array, objectAtIndex: idx];
+        let value: i64 = msg_send![obj, longLongValue];
+        result.push(value);
+    }
+    Ok(result)
+}
+
+unsafe fn nsstring_to_string(obj: *mut Object) -> String {
+    let c_str: *const c_char = msg_send![obj, UTF8String];
+    if c_str.is_null() {
+        return String::new();
+    }
+    CStr::from_ptr(c_str).to_string_lossy().into_owned()
+}
+
+unsafe fn ns_error_to_string(error: *mut Object, default: &str) -> String {
+    if error.is_null() {
+        return default.to_string();
+    }
+    let desc: *mut Object = msg_send![error, localizedDescription];
+    if desc.is_null() {
+        return default.to_string();
+    }
+    nsstring_to_string(desc)
+}
+
+fn copy_dir_recursively(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.exists() {
+        std::fs::remove_dir_all(dst)?;
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursively(&entry.path(), &dst_path)?;
+        } else {
+            std::fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
