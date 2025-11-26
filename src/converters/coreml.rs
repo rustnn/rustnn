@@ -3,8 +3,9 @@ use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo};
 use crate::protos::coreml::specification::{
     array_feature_type::ArrayDataType, feature_type, model, neural_network_layer::Layer,
-    AddLayerParams, ArrayFeatureType, FeatureDescription, FeatureType, LoadConstantLayerParams,
-    Model, ModelDescription, NeuralNetwork, NeuralNetworkLayer, WeightParams,
+    AddLayerParams, ArrayFeatureType, FeatureDescription, FeatureType, InnerProductLayerParams,
+    LoadConstantLayerParams, Model, ModelDescription, NeuralNetwork, NeuralNetworkLayer,
+    WeightParams,
 };
 use prost::bytes::Bytes;
 use prost::Message;
@@ -152,6 +153,76 @@ impl crate::converters::GraphConverter for CoremlConverter {
                     output: output_names,
                     layer: Some(Layer::Add(AddLayerParams {
                         alpha: 0.0,
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("matmul") {
+                let rhs_id = *op.input_operands.get(1).ok_or_else(|| GraphError::ConversionFailed {
+                    format: "coreml".to_string(),
+                    reason: "matmul requires two inputs".to_string(),
+                })?;
+                let rhs_operand = graph
+                    .operand(rhs_id)
+                    .ok_or_else(|| GraphError::InvalidConversionOperand { operand: rhs_id })?;
+                let rhs_shape = rhs_operand.descriptor.shape.clone();
+                if rhs_shape.len() != 2 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "coreml".to_string(),
+                        reason: format!("matmul constant must be 2D, got shape {:?}", rhs_shape),
+                    });
+                }
+                let (in_ch, out_ch) = (rhs_shape[0] as usize, rhs_shape[1] as usize);
+                let rhs_data = graph.constant_operand_ids_to_handles.get(&rhs_id).ok_or_else(
+                    || GraphError::ConversionFailed {
+                        format: "coreml".to_string(),
+                        reason: "matmul weights must be constant".to_string(),
+                    },
+                )?;
+                let floats: &[f32] = bytemuck::try_cast_slice(&rhs_data.data).map_err(|_| {
+                    GraphError::ConversionFailed {
+                        format: "coreml".to_string(),
+                        reason: "matmul weights must be float32".to_string(),
+                    }
+                })?;
+                if floats.len() != in_ch * out_ch {
+                    return Err(GraphError::ConversionFailed {
+                        format: "coreml".to_string(),
+                        reason: format!(
+                            "matmul weight size mismatch (expected {} got {})",
+                            in_ch * out_ch,
+                            floats.len()
+                        ),
+                    });
+                }
+                let mut transposed = Vec::with_capacity(floats.len());
+                for o in 0..out_ch {
+                    for i in 0..in_ch {
+                        transposed.push(floats[i * out_ch + o]);
+                    }
+                }
+                let weight = WeightParams {
+                    float_value: transposed,
+                    raw_value: Bytes::new(),
+                    ..Default::default()
+                };
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: vec![input_names
+                        .get(0)
+                        .cloned()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml".to_string(),
+                            reason: "matmul missing lhs input".to_string(),
+                        })?],
+                    output: output_names,
+                    layer: Some(Layer::InnerProduct(InnerProductLayerParams {
+                        input_channels: in_ch as u64,
+                        output_channels: out_ch as u64,
+                        has_bias: false,
+                        weights: Some(weight),
+                        bias: None,
+                        int8_dynamic_quantize: false,
                         ..Default::default()
                     })),
                     ..Default::default()

@@ -209,13 +209,6 @@ unsafe fn prepare_compiled_model(
     model_bytes: &[u8],
     cached_compiled: Option<&Path>,
 ) -> Result<(*mut Object, PathBuf, Option<PathBuf>), GraphError> {
-    if let Some(path) = cached_compiled {
-        if path.exists() {
-            let url = nsurl_from_path(path)?;
-            return Ok((url, path.to_path_buf(), None));
-        }
-    }
-
     let temp_mlmodel = write_temp_model(model_bytes)?;
     let url = nsurl_from_path(&temp_mlmodel)?;
     let mut compile_error: *mut Object = ptr::null_mut();
@@ -231,6 +224,9 @@ unsafe fn prepare_compiled_model(
     let compiled_src_path = PathBuf::from(nsstring_to_string(compiled_path_obj));
 
     if let Some(path) = cached_compiled {
+        if path.exists() {
+            let _ = std::fs::remove_dir_all(path);
+        }
         if let Err(err) = copy_dir_recursively(&compiled_src_path, path) {
             return Err(GraphError::CoremlRuntimeFailed {
                 reason: format!("failed to persist compiled model: {}", err),

@@ -27,8 +27,6 @@ rustnn/
 ├── protos/                 # vendored ONNX/CoreML protobuf definitions
 ├── examples/
 │   └── sample_graph.json   # tiny graph with a constant weight
-├── scripts/
-│   (none; ONNX validation handled by Rust executor)
 └── src/
     ├── converters/         # ONNX/CoreML converters + registry
     ├── executors/          # CoreML runtime bridge (macOS)

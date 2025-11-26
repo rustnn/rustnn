@@ -57,5 +57,9 @@ coreml:
 coreml-validate: coreml
 	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
 
+webnn-venv:
+	python3 -m venv .venv-webnn
+	. .venv-webnn/bin/activate && pip install --upgrade pip && pip install git+https://github.com/huningxin/onnx2webnn.git
+
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
