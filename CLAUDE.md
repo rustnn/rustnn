@@ -390,6 +390,7 @@ The following operations have been approved for Claude Code to execute without r
 ### Build & Development
 - `cargo check` - Run Rust type checking
 - `cargo build` - Build the Rust project
+- `cargo fmt` - Format Rust code according to style guidelines
 - `pip install` - Install Python packages
 - `maturin develop` - Install Python package in development mode
 - `make help` - Display Makefile help
@@ -410,11 +411,17 @@ The following operations have been approved for Claude Code to execute without r
 - `git add` - Stage files for commit
 - `git commit` - Create commits
 - `git push` - Push commits to remote
+- `git tag` - Create and manage version tags
+- `git show` - Display commit information
+
+### GitHub Operations
+- `gh run list` - List GitHub Actions workflow runs
+- `gh run view` - View details of GitHub Actions runs
 
 ### Web Resources
 - `WebFetch(domain:www.w3.org)` - Fetch W3C WebNN specifications
 
-These permissions enable Claude Code to efficiently assist with development, testing, documentation, and version control tasks without interrupting the workflow.
+These permissions enable Claude Code to efficiently assist with development, testing, documentation, version control, and CI/CD monitoring tasks without interrupting the workflow.
 
 ## Resources
 
