@@ -1,0 +1,458 @@
+# TODO - Future Implementation Tasks
+
+## Python API - Core Functionality
+
+### Execution Engine
+[ ] Implement actual tensor execution in MLContext.compute()
+    - Currently returns placeholder zeros
+    - Need to integrate with ONNX/CoreML runtimes
+    - Support actual input/output tensor data flow
+
+[ ] Add MLTensor class for explicit tensor management
+    - createTensor() for pre-allocating tensors
+    - readTensor() for reading results
+    - writeTensor() for setting input data
+
+[ ] Implement async execution support
+    - WebNN spec uses async/await
+    - Python asyncio integration
+    - Non-blocking compute operations
+
+### Operations - Missing Implementations
+
+[ ] Convolution operations
+    - conv2d
+    - convTranspose2d
+    - depthwiseConv2d
+
+[ ] Pooling operations
+    - averagePool2d
+    - maxPool2d
+    - l2Pool2d
+    - globalAveragePool
+    - globalMaxPool
+
+[ ] Normalization operations
+    - batchNormalization
+    - instanceNormalization
+    - layerNormalization
+    - localResponseNormalization
+
+[ ] Reduction operations
+    - reduceSum
+    - reduceMean
+    - reduceMax
+    - reduceMin
+    - reduceProduct
+    - reduceL1
+    - reduceL2
+    - reduceLogSum
+    - reduceLogSumExp
+
+[ ] Element-wise operations
+    - abs, ceil, floor, round
+    - exp, log, sqrt, reciprocal
+    - sin, cos, tan, asin, acos, atan
+    - sinh, cosh, tanh, asinh, acosh, atanh
+    - erf, identity, neg, sign
+
+[ ] Logic operations
+    - equal, greater, greaterOrEqual
+    - lesser, lesserOrEqual, logicalNot
+    - logicalAnd, logicalOr, logicalXor
+
+[ ] Advanced operations
+    - concat (concatenate tensors)
+    - expand (broadcast dimensions)
+    - gather, scatter
+    - slice (extract sub-tensors)
+    - split (split tensor into parts)
+    - squeeze (remove dimensions of size 1)
+    - tile (repeat tensor)
+    - transpose
+    - where (conditional selection)
+    - pad (add padding)
+    - prelu, elu, leakyRelu, hardSigmoid, hardSwish, gelu
+    - softplus, softsign
+
+[ ] Recurrent operations
+    - gru, gruCell
+    - lstm, lstmCell
+
+[ ] Quantization operations
+    - dequantizeLinear
+    - quantizeLinear
+
+[ ] Shape inference and broadcasting
+    - Automatic shape computation for operations
+    - Broadcasting rules for binary operations
+    - Shape validation at graph build time
+
+### CoreML Converter - Missing Operations
+
+[ ] Add support for activation functions
+    - relu (currently unsupported!)
+    - sigmoid
+    - tanh
+    - softmax
+    - leakyRelu, prelu, elu
+
+[ ] Add support for element-wise operations
+    - sub, mul, div (only add is supported)
+    - power, sqrt, exp, log
+
+[ ] Add support for shape operations
+    - reshape (currently unsupported!)
+    - transpose
+    - concat, split
+
+[ ] Add support for pooling operations
+    - averagePool2d, maxPool2d
+
+[ ] Add support for convolution operations
+    - conv2d, convTranspose2d
+
+[ ] Add support for normalization operations
+    - batchNormalization, instanceNormalization
+
+## Testing & Quality
+
+### Python Tests
+[ ] Comprehensive operation tests
+    - Test each operation independently
+    - Test with different data types
+    - Test edge cases (empty tensors, scalars)
+    - Test shape broadcasting
+
+[ ] Integration tests
+    - End-to-end graph building and conversion
+    - Multi-layer network tests
+    - Complex graph patterns
+
+[ ] Property-based testing
+    - Use hypothesis for generative testing
+    - Random graph generation and validation
+
+[ ] Performance benchmarks
+    - Compilation time benchmarks
+    - Conversion speed benchmarks
+    - Memory usage profiling
+
+[ ] Test coverage
+    - Aim for >80% code coverage
+    - Add coverage reporting to CI
+
+### Type Checking & Linting
+[ ] Add mypy for static type checking
+    - Type check all Python bindings
+    - Add mypy to CI pipeline
+
+[ ] Add ruff/flake8 for Python linting
+    - Enforce PEP 8 style
+    - Add to pre-commit hooks
+
+[ ] Add black for code formatting
+    - Auto-format Python code
+    - Check formatting in CI
+
+### Rust Code Quality
+[ ] Fix Rust 2024 edition warnings
+    - Add unsafe blocks where needed
+    - Update to new edition idioms
+
+[ ] Add more Rust unit tests
+    - Test converters with various graphs
+    - Test validation edge cases
+
+[ ] Reduce compiler warnings
+    - Fix unused variable warnings
+    - Address clippy suggestions
+
+## Documentation
+
+### API Documentation
+[ ] Auto-generate API docs from docstrings
+    - Add comprehensive docstrings to all Python classes
+    - Use mkdocstrings to auto-generate reference docs
+    - Add type hints throughout
+
+[ ] Add more code examples
+    - Real-world use cases (MNIST, ResNet, etc.)
+    - Transfer learning examples
+    - Model optimization examples
+
+[ ] Video tutorials
+    - Getting started video
+    - Building complex models
+    - Deployment guide
+
+[ ] Interactive examples
+    - Jupyter notebook examples
+    - Google Colab notebooks
+    - Try-it-live web interface
+
+### Performance Documentation
+[ ] Benchmarking guide
+    - How to benchmark models
+    - Performance comparison ONNX vs CoreML
+    - Optimization tips
+
+[ ] Memory usage guide
+    - Understanding memory consumption
+    - Reducing memory footprint
+    - Float16 vs Float32 trade-offs
+
+### Platform-Specific Guides
+[ ] macOS Neural Engine guide
+    - How to use ANE effectively
+    - Performance characteristics
+    - Supported operations
+
+[ ] Windows DirectML guide (future)
+    - DirectML integration
+    - GPU acceleration on Windows
+
+[ ] Linux GPU guide
+    - CUDA/ROCm integration
+    - CPU optimization flags
+
+## CI/CD & Packaging
+
+### PyPI Publishing
+[ ] Create PyPI package publishing workflow
+    - Build wheels for multiple platforms
+    - manylinux wheels for Linux
+    - macOS universal2 wheels
+    - Windows wheels
+
+[ ] Automated version bumping
+    - Semantic versioning
+    - Changelog generation
+    - Git tag automation
+
+[ ] Release automation
+    - GitHub Releases on tag push
+    - Automated release notes
+    - Asset uploading (wheels, docs)
+
+### Multi-Platform Support
+[ ] Test on multiple Python versions
+    - Python 3.8, 3.9, 3.10, 3.11, 3.12
+    - Matrix testing in CI
+
+[ ] Test on multiple platforms
+    - Ubuntu (latest, 20.04, 22.04)
+    - macOS (Intel, Apple Silicon)
+    - Windows (latest)
+
+[ ] Platform-specific features
+    - Conditional compilation for platform features
+    - Feature detection at runtime
+
+### Docker Images
+[ ] Create Docker images
+    - Python + Rust development image
+    - Runtime-only image
+    - GPU-enabled image
+
+[ ] Docker Hub publishing
+    - Automated image builds
+    - Multi-architecture images
+    - Version tagging
+
+## Features & Enhancements
+
+### Graph Optimization
+[ ] Implement graph optimization passes
+    - Constant folding
+    - Dead code elimination
+    - Operation fusion
+    - Common subexpression elimination
+
+[ ] Graph analysis tools
+    - Visualize graphs (beyond Graphviz)
+    - Memory usage estimation
+    - Computational complexity analysis
+
+### Model Import/Export
+[ ] ONNX model import
+    - Parse existing ONNX models
+    - Convert ONNX → WebNN graph
+    - Preserve metadata
+
+[ ] PyTorch integration
+    - Export PyTorch models to WebNN
+    - torch.fx graph conversion
+    - Maintain gradient information (future)
+
+[ ] TensorFlow integration
+    - Export TensorFlow models
+    - SavedModel → WebNN conversion
+
+[ ] Hugging Face integration
+    - Export transformers models
+    - Easy model hub integration
+
+### Developer Experience
+[ ] Better error messages
+    - More descriptive validation errors
+    - Suggestions for fixes
+    - Error recovery hints
+
+[ ] Debugging tools
+    - Graph visualization in Jupyter
+    - Intermediate value inspection
+    - Step-by-step execution
+
+[ ] Profiling tools
+    - Operation-level timing
+    - Memory profiling
+    - Bottleneck identification
+
+### WebNN Spec Compliance
+[ ] Full WebNN API compliance
+    - Implement all missing operations
+    - Match behavior exactly
+    - Pass WebNN conformance tests (if available)
+
+[ ] Context options
+    - Power preference enforcement
+    - Device preference handling
+    - Capability querying (opSupportLimits)
+
+[ ] Graph execution modes
+    - Sync vs async execution
+    - Streaming execution for large inputs
+    - Batch processing
+
+## Ecosystem Integration
+
+### NumPy Integration
+[ ] Better NumPy interop
+    - Zero-copy where possible
+    - Support NumPy's __array_interface__
+    - Proper dtype conversion
+
+[ ] NumPy-like API
+    - Operator overloading (+, -, *, /)
+    - Slicing support
+    - Pythonic indexing
+
+### ML Framework Integration
+[ ] JAX integration
+    - Export JAX computations
+    - jax.tree_util support
+
+[ ] scikit-learn integration
+    - Convert simple sklearn models
+    - Pipeline integration
+
+### Visualization
+[ ] Netron support
+    - Ensure exported models work in Netron
+    - Add metadata for better visualization
+
+[ ] TensorBoard integration
+    - Graph visualization
+    - Profiling data export
+
+## Infrastructure
+
+### Build System
+[ ] Optimize build times
+    - Incremental compilation
+    - Build caching in CI
+    - Parallel builds
+
+[ ] Cross-compilation support
+    - Build for different targets
+    - Static linking options
+
+### Security
+[ ] Security audit
+    - Dependency vulnerability scanning
+    - SAST (Static Application Security Testing)
+    - Regular security updates
+
+[ ] Sandboxing
+    - Restrict file system access
+    - Memory limits
+    - Timeout enforcement
+
+### Monitoring
+[ ] Usage analytics (opt-in)
+    - Track which operations are used
+    - Performance telemetry
+    - Error reporting
+
+[ ] Crash reporting
+    - Automated crash reports (opt-in)
+    - Stack trace collection
+    - Issue auto-creation
+
+## Community
+
+### Examples & Templates
+[ ] Example repository
+    - Real-world examples
+    - Template projects
+    - Starter kits
+
+[ ] Model zoo
+    - Pre-built models
+    - Optimized for WebNN
+    - Various domains (CV, NLP, etc.)
+
+### Documentation
+[ ] Contributing guide
+    - How to contribute
+    - Development setup
+    - Code review process
+
+[ ] Architecture documentation
+    - High-level design
+    - Component interactions
+    - Extension points
+
+### Community Building
+[ ] Discord/Slack channel
+    - Community discussions
+    - Support channel
+    - Show & tell
+
+[ ] Blog posts & tutorials
+    - Getting started blog post
+    - Technical deep dives
+    - Performance case studies
+
+## Priority Levels
+
+HIGH PRIORITY (Next Session):
+- [ ] Fix CoreML converter to support relu, sigmoid, tanh, softmax
+- [ ] Implement actual compute() with ONNX runtime integration
+- [ ] Add comprehensive Python tests
+- [ ] Fix Rust 2024 edition warnings
+- [ ] Add basic shape inference/validation
+
+MEDIUM PRIORITY:
+- [ ] Add more operations (conv2d, pooling, normalization)
+- [ ] PyPI packaging and publishing
+- [ ] Better error messages
+- [ ] Performance benchmarks
+
+LOW PRIORITY:
+- [ ] Full WebNN spec compliance
+- [ ] Advanced graph optimizations
+- [ ] Multi-framework integration
+- [ ] Community infrastructure
+
+## Notes
+
+- Most missing functionality is in the Rust backend (converters, executors)
+- Python bindings are complete for the architecture - just need more operations
+- CoreML converter is significantly behind ONNX converter in feature support
+- Documentation is comprehensive and ready for community use
+- Testing infrastructure needs expansion
+- CI/CD for packaging and publishing not yet set up
+
+Last Updated: 2024-12-05

@@ -6,6 +6,10 @@ pub mod loader;
 pub mod protos;
 pub mod validator;
 pub mod executors;
+
+#[cfg(feature = "python")]
+pub mod python;
+
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;
 

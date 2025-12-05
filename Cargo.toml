@@ -7,6 +7,7 @@ edition = "2024"
 default = []
 coreml-runtime = ["objc"]
 onnx-runtime = ["onnxruntime"]
+python = ["pyo3"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -21,9 +22,12 @@ bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 objc = { version = "0.2", optional = true }
 onnxruntime = { version = "0.0.14", optional = true }
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 
 [build-dependencies]
 prost-build = "0.12"
 
 [lib]
+name = "rustnn"
+crate-type = ["rlib", "cdylib"]
 doctest = false

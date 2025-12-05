@@ -12,7 +12,10 @@ ORT_TARBALL ?= onnxruntime-osx-arm64-$(ORT_VERSION).tgz
 ORT_DIR ?= target/onnxruntime
 ORT_LIB_DIR ?= $(ORT_DIR)/onnxruntime-osx-arm64-$(ORT_VERSION)/lib
 ORT_LIB_LOCATION ?= $(ORT_LIB_DIR)
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
+	python-dev python-build python-test python-clean python-example \
+	docs-serve docs-build docs-clean ci-docs \
+	help clean-all
 
 clean:
 	$(CARGO) clean
@@ -63,3 +66,112 @@ webnn-venv:
 
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
+
+# ==============================================================================
+# Python Targets
+# ==============================================================================
+
+python-dev:
+	@echo "Installing Python package in development mode..."
+	pip install maturin
+	maturin develop --features python
+
+python-build:
+	@echo "Building Python wheel..."
+	pip install maturin
+	maturin build --features python --release
+
+python-test: python-dev
+	@echo "Running Python tests..."
+	python -m pytest tests/ -v
+
+python-example: python-dev
+	@echo "Running Python examples..."
+	python examples/python_simple.py
+	python examples/python_matmul.py
+
+python-clean:
+	@echo "Cleaning Python artifacts..."
+	rm -rf target/wheels
+	rm -rf python/webnn/__pycache__
+	rm -rf tests/__pycache__
+	rm -rf examples/__pycache__
+	find . -name "*.pyc" -delete
+	find . -name "*.so" -delete
+	find . -name "*.pyd" -delete
+
+# ==============================================================================
+# Documentation Targets
+# ==============================================================================
+
+docs-serve:
+	@echo "Serving documentation with live reload..."
+	@command -v mkdocs >/dev/null 2>&1 || { echo "Installing mkdocs..."; pip install -r docs/requirements.txt; }
+	mkdocs serve
+
+docs-build:
+	@echo "Building documentation..."
+	@command -v mkdocs >/dev/null 2>&1 || { echo "Installing mkdocs..."; pip install -r docs/requirements.txt; }
+	mkdocs build
+
+ci-docs:
+	@echo "Building documentation in strict mode (CI)..."
+	@command -v mkdocs >/dev/null 2>&1 || { echo "Installing mkdocs..."; pip install -r docs/requirements.txt; }
+	mkdocs build --strict
+
+docs-clean:
+	@echo "Cleaning documentation build artifacts..."
+	rm -rf site/
+
+# ==============================================================================
+# Comprehensive Clean
+# ==============================================================================
+
+clean-all: clean python-clean docs-clean
+	@echo "All build artifacts cleaned."
+
+# ==============================================================================
+# Help Target
+# ==============================================================================
+
+help:
+	@echo "Rust WebNN Graph - Available Targets"
+	@echo "===================================="
+	@echo ""
+	@echo "Rust Targets:"
+	@echo "  build              - Build the Rust project"
+	@echo "  test               - Run Rust tests"
+	@echo "  fmt                - Format Rust code"
+	@echo "  run                - Run with sample graph"
+	@echo "  clean              - Clean Rust build artifacts"
+	@echo ""
+	@echo "Visualization:"
+	@echo "  viz                - Generate and open graph visualization"
+	@echo ""
+	@echo "ONNX Conversion:"
+	@echo "  onnxruntime-download - Download ONNX Runtime"
+	@echo "  onnx               - Convert graph to ONNX format"
+	@echo "  onnx-validate      - Convert and validate ONNX graph"
+	@echo ""
+	@echo "CoreML Conversion:"
+	@echo "  coreml             - Convert graph to CoreML format"
+	@echo "  coreml-validate    - Convert and validate CoreML graph"
+	@echo ""
+	@echo "Python API:"
+	@echo "  python-dev         - Install Python package in development mode"
+	@echo "  python-build       - Build Python wheel"
+	@echo "  python-test        - Run Python tests"
+	@echo "  python-example     - Run Python examples"
+	@echo "  python-clean       - Clean Python artifacts"
+	@echo ""
+	@echo "Documentation:"
+	@echo "  docs-serve         - Serve documentation with live reload"
+	@echo "  docs-build         - Build static documentation site"
+	@echo "  ci-docs            - Build documentation in strict mode (CI)"
+	@echo "  docs-clean         - Clean documentation artifacts"
+	@echo ""
+	@echo "Comprehensive:"
+	@echo "  validate-all-env   - Run full pipeline (build/test/convert/validate)"
+	@echo "  clean-all          - Clean all artifacts (Rust + Python + docs)"
+	@echo "  help               - Show this help message"
+	@echo ""
