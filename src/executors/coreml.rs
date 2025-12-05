@@ -92,11 +92,17 @@ fn run_impl(
                 let key = nsstring_from_str(name)?;
                 let desc_obj: *mut Object = msg_send![input_descs, objectForKey: key];
                 let (shape, data_type_code) = if desc_obj.is_null() {
-                    (coerce_shape(&descriptor.shape), map_dtype(descriptor.data_type)?)
+                    (
+                        coerce_shape(&descriptor.shape),
+                        map_dtype(descriptor.data_type)?,
+                    )
                 } else {
                     let constraint_obj: *mut Object = msg_send![desc_obj, multiArrayConstraint];
                     if constraint_obj.is_null() {
-                        (coerce_shape(&descriptor.shape), map_dtype(descriptor.data_type)?)
+                        (
+                            coerce_shape(&descriptor.shape),
+                            map_dtype(descriptor.data_type)?,
+                        )
                     } else {
                         let shape_obj: *mut Object = msg_send![constraint_obj, shape];
                         let ml_data_type: i64 = msg_send![constraint_obj, dataType];
@@ -339,7 +345,11 @@ unsafe fn create_multi_array(shape: &[i64], data_type: i32) -> Result<*mut Objec
     Ok(array)
 }
 
-unsafe fn fill_zero(array: *mut Object, data_type: DataType, shape: &[i64]) -> Result<(), GraphError> {
+unsafe fn fill_zero(
+    array: *mut Object,
+    data_type: DataType,
+    shape: &[i64],
+) -> Result<(), GraphError> {
     // Prefer the runtime-reported element count to avoid mismatches with coerced shapes.
     let count_obj: isize = msg_send![array, count];
     let count_from_runtime: Option<usize> = usize::try_from(count_obj).ok();

@@ -2,15 +2,15 @@
 
 use pyo3::prelude::*;
 
-mod operand;
-mod graph_builder;
 mod context;
 mod graph;
+mod graph_builder;
+mod operand;
 
-pub use operand::PyMLOperand;
-pub use graph_builder::PyMLGraphBuilder;
 pub use context::{PyML, PyMLContext};
 pub use graph::PyMLGraph;
+pub use graph_builder::PyMLGraphBuilder;
+pub use operand::PyMLOperand;
 
 /// WebNN Python module
 #[pymodule]

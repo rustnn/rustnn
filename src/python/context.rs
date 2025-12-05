@@ -1,9 +1,9 @@
+use super::graph::PyMLGraph;
+use super::graph_builder::PyMLGraphBuilder;
+use crate::converters::GraphConverter;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
-use crate::converters::GraphConverter;
-use super::graph_builder::PyMLGraphBuilder;
-use super::graph::PyMLGraph;
 
 #[cfg(feature = "onnx-runtime")]
 use crate::executors::onnx::run_onnx_zeroed;
@@ -32,7 +32,10 @@ impl PyML {
     ///     MLContext: A new context for graph operations
     #[pyo3(signature = (device_type="cpu", power_preference="default"))]
     fn create_context(&self, device_type: &str, power_preference: &str) -> PyResult<PyMLContext> {
-        Ok(PyMLContext::new(device_type.to_string(), power_preference.to_string()))
+        Ok(PyMLContext::new(
+            device_type.to_string(),
+            power_preference.to_string(),
+        ))
     }
 }
 
@@ -79,10 +82,16 @@ impl PyMLContext {
         // In a real implementation, this would execute the graph
         for output_id in &graph.graph_info.output_operands {
             // Find the output operand
-            let output_op = graph.graph_info.operands.get(*output_id as usize)
-                .ok_or_else(|| pyo3::exceptions::PyValueError::new_err(
-                    format!("Output operand {} not found in graph", output_id)
-                ))?;
+            let output_op = graph
+                .graph_info
+                .operands
+                .get(*output_id as usize)
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Output operand {} not found in graph",
+                        output_id
+                    ))
+                })?;
 
             let output_name = output_op.name.as_deref().unwrap_or("output");
 
@@ -112,11 +121,13 @@ impl PyMLContext {
     ///     output_path: Path to save the ONNX model
     fn convert_to_onnx(&self, graph: &PyMLGraph, output_path: &str) -> PyResult<()> {
         let converter = crate::converters::OnnxConverter;
-        let converted = converter.convert(&graph.graph_info)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e)))?;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e))
+        })?;
 
-        std::fs::write(output_path, &converted.data)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to write ONNX file: {}", e)))?;
+        std::fs::write(output_path, &converted.data).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to write ONNX file: {}", e))
+        })?;
 
         Ok(())
     }
@@ -129,11 +140,13 @@ impl PyMLContext {
     #[cfg(target_os = "macos")]
     fn convert_to_coreml(&self, graph: &PyMLGraph, output_path: &str) -> PyResult<()> {
         let converter = crate::converters::CoremlConverter;
-        let converted = converter.convert(&graph.graph_info)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e)))?;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e))
+        })?;
 
-        std::fs::write(output_path, &converted.data)
-            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to write CoreML file: {}", e)))?;
+        std::fs::write(output_path, &converted.data).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to write CoreML file: {}", e))
+        })?;
 
         Ok(())
     }
@@ -149,13 +162,15 @@ impl PyMLContext {
     fn execute_with_onnx(&self, py: Python, graph: &PyMLGraph) -> PyResult<Py<PyDict>> {
         // Convert to ONNX
         let converter = crate::converters::OnnxConverter;
-        let converted = converter.convert(&graph.graph_info)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e)))?;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e))
+        })?;
 
         // Execute with empty inputs map (for now)
         let inputs = HashMap::new();
-        run_onnx_zeroed(&converted.data, &inputs)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX execution failed: {}", e)))?;
+        run_onnx_zeroed(&converted.data, &inputs).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX execution failed: {}", e))
+        })?;
 
         // Return empty dict for now (actual implementation would return outputs)
         let result = PyDict::new_bound(py);
@@ -172,25 +187,35 @@ impl PyMLContext {
     ///     Dictionary with execution results
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     #[pyo3(signature = (graph, device="cpu"))]
-    fn execute_with_coreml(&self, py: Python, graph: &PyMLGraph, device: &str) -> PyResult<Py<PyDict>> {
+    fn execute_with_coreml(
+        &self,
+        py: Python,
+        graph: &PyMLGraph,
+        device: &str,
+    ) -> PyResult<Py<PyDict>> {
         // Convert to CoreML
         let converter = crate::converters::CoremlConverter;
-        let converted = converter.convert(&graph.graph_info)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e)))?;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e))
+        })?;
 
         // Parse device type
         let compute_units = match device {
             "cpu" => 0,
             "gpu" => 1,
             "npu" => 2,
-            _ => return Err(pyo3::exceptions::PyValueError::new_err(
-                format!("Invalid device type: {}. Use 'cpu', 'gpu', or 'npu'", device)
-            )),
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid device type: {}. Use 'cpu', 'gpu', or 'npu'",
+                    device
+                )));
+            }
         };
 
         // Execute
-        run_coreml_zeroed_cached(&converted.data, compute_units)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML execution failed: {}", e)))?;
+        run_coreml_zeroed_cached(&converted.data, compute_units).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML execution failed: {}", e))
+        })?;
 
         // Return empty dict for now (actual implementation would return outputs)
         let result = PyDict::new_bound(py);

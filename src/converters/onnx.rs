@@ -2,9 +2,9 @@ use crate::converters::ConvertedGraph;
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo};
 use crate::protos::onnx::{
-    tensor_proto::DataType as ProtoDataType, type_proto::Tensor as TensorTypeProto, GraphProto,
-    ModelProto, NodeProto, OperatorSetIdProto, TensorProto, TensorShapeProto, TypeProto,
-    ValueInfoProto,
+    GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto, TensorShapeProto,
+    TypeProto, ValueInfoProto, tensor_proto::DataType as ProtoDataType,
+    type_proto::Tensor as TensorTypeProto,
 };
 use prost::Message;
 

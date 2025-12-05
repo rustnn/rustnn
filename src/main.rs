@@ -2,9 +2,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Parser;
-use rustnn::{
-    ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path,
-};
+use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Validate WebNN graph descriptions", long_about = None)]

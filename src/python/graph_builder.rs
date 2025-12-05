@@ -1,10 +1,10 @@
+use super::graph::PyMLGraph;
+use super::operand::{PyMLOperand, parse_data_type};
+use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+use crate::validator::GraphValidator;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::collections::HashMap;
-use crate::graph::{GraphInfo, Operand, OperandDescriptor, OperandKind, Operation, ConstantData};
-use crate::validator::GraphValidator;
-use super::operand::{PyMLOperand, parse_data_type};
-use super::graph::PyMLGraph;
 
 /// Builder for constructing WebNN computational graphs
 #[pyclass(name = "MLGraphBuilder")]
@@ -271,7 +271,12 @@ impl PyMLGraphBuilder {
     }
 
     /// Helper for binary operations
-    fn binary_op(&mut self, op_type: &str, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+    fn binary_op(
+        &mut self,
+        op_type: &str,
+        a: &PyMLOperand,
+        b: &PyMLOperand,
+    ) -> PyResult<PyMLOperand> {
         // For simplicity, use the shape of the first operand
         // In a real implementation, this should handle broadcasting
         let output_descriptor = a.descriptor.clone();

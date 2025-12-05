@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use crate::graph::{DataType, OperandDescriptor, OperandKind};
+use pyo3::prelude::*;
 
 /// Represents an operand in the computational graph
 #[pyclass(name = "MLOperand")]
@@ -42,12 +42,20 @@ impl PyMLOperand {
         let name = self.name.as_deref().unwrap_or("unnamed");
         let dtype = self.data_type();
         let shape = format!("{:?}", self.shape());
-        format!("MLOperand(name='{}', dtype='{}', shape={})", name, dtype, shape)
+        format!(
+            "MLOperand(name='{}', dtype='{}', shape={})",
+            name, dtype, shape
+        )
     }
 }
 
 impl PyMLOperand {
-    pub fn new(id: u32, descriptor: OperandDescriptor, kind: OperandKind, name: Option<String>) -> Self {
+    pub fn new(
+        id: u32,
+        descriptor: OperandDescriptor,
+        kind: OperandKind,
+        name: Option<String>,
+    ) -> Self {
         Self {
             id,
             descriptor,
@@ -66,8 +74,9 @@ pub fn parse_data_type(dtype: &str) -> PyResult<DataType> {
         "uint32" => Ok(DataType::Uint32),
         "int8" => Ok(DataType::Int8),
         "uint8" => Ok(DataType::Uint8),
-        _ => Err(pyo3::exceptions::PyValueError::new_err(
-            format!("Unsupported data type: {}", dtype)
-        )),
+        _ => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Unsupported data type: {}",
+            dtype
+        ))),
     }
 }

@@ -2,13 +2,13 @@ use crate::converters::ConvertedGraph;
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo};
 use crate::protos::coreml::specification::{
-    array_feature_type::ArrayDataType, feature_type, model, neural_network_layer::Layer,
     AddLayerParams, ArrayFeatureType, FeatureDescription, FeatureType, InnerProductLayerParams,
     LoadConstantLayerParams, Model, ModelDescription, NeuralNetwork, NeuralNetworkLayer,
-    WeightParams,
+    WeightParams, array_feature_type::ArrayDataType, feature_type, model,
+    neural_network_layer::Layer,
 };
-use prost::bytes::Bytes;
 use prost::Message;
+use prost::bytes::Bytes;
 
 #[derive(Default)]
 pub struct CoremlConverter;
@@ -158,10 +158,13 @@ impl crate::converters::GraphConverter for CoremlConverter {
                     ..Default::default()
                 }
             } else if op.op_type.eq_ignore_ascii_case("matmul") {
-                let rhs_id = *op.input_operands.get(1).ok_or_else(|| GraphError::ConversionFailed {
-                    format: "coreml".to_string(),
-                    reason: "matmul requires two inputs".to_string(),
-                })?;
+                let rhs_id =
+                    *op.input_operands
+                        .get(1)
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml".to_string(),
+                            reason: "matmul requires two inputs".to_string(),
+                        })?;
                 let rhs_operand = graph
                     .operand(rhs_id)
                     .ok_or_else(|| GraphError::InvalidConversionOperand { operand: rhs_id })?;
@@ -173,12 +176,13 @@ impl crate::converters::GraphConverter for CoremlConverter {
                     });
                 }
                 let (in_ch, out_ch) = (rhs_shape[0] as usize, rhs_shape[1] as usize);
-                let rhs_data = graph.constant_operand_ids_to_handles.get(&rhs_id).ok_or_else(
-                    || GraphError::ConversionFailed {
+                let rhs_data = graph
+                    .constant_operand_ids_to_handles
+                    .get(&rhs_id)
+                    .ok_or_else(|| GraphError::ConversionFailed {
                         format: "coreml".to_string(),
                         reason: "matmul weights must be constant".to_string(),
-                    },
-                )?;
+                    })?;
                 let floats: &[f32] = bytemuck::try_cast_slice(&rhs_data.data).map_err(|_| {
                     GraphError::ConversionFailed {
                         format: "coreml".to_string(),
@@ -208,13 +212,12 @@ impl crate::converters::GraphConverter for CoremlConverter {
                 };
                 NeuralNetworkLayer {
                     name: layer_name,
-                    input: vec![input_names
-                        .get(0)
-                        .cloned()
-                        .ok_or_else(|| GraphError::ConversionFailed {
+                    input: vec![input_names.get(0).cloned().ok_or_else(|| {
+                        GraphError::ConversionFailed {
                             format: "coreml".to_string(),
                             reason: "matmul missing lhs input".to_string(),
-                        })?],
+                        }
+                    })?],
                     output: output_names,
                     layer: Some(Layer::InnerProduct(InnerProductLayerParams {
                         input_channels: in_ch as u64,

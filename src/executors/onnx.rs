@@ -41,12 +41,7 @@ pub fn run_onnx_zeroed(
 
     let mut results = Vec::new();
     for (idx, tensor) in outputs.into_iter().enumerate() {
-        let shape: Vec<i64> = tensor
-            .view()
-            .shape()
-            .iter()
-            .map(|d| *d as i64)
-            .collect();
+        let shape: Vec<i64> = tensor.view().shape().iter().map(|d| *d as i64).collect();
         results.push(OnnxOutput {
             name: format!("output_{idx}"),
             shape,
@@ -74,9 +69,7 @@ fn build_session<'a>(env: &'a Environment, model_bytes: &[u8]) -> Result<Session
         })
 }
 
-fn build_feeds<'a>(
-    session: &'a Session,
-) -> Result<Vec<(&'a str, ArrayD<f32>)>, GraphError> {
+fn build_feeds<'a>(session: &'a Session) -> Result<Vec<(&'a str, ArrayD<f32>)>, GraphError> {
     let mut feeds = Vec::new();
     for input_info in session.inputs.iter() {
         let name = input_info.name.as_str();

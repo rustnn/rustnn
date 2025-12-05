@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use crate::graph::GraphInfo;
+use pyo3::prelude::*;
 
 /// Represents a compiled computational graph
 #[pyclass(name = "MLGraph")]
