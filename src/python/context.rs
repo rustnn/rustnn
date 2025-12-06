@@ -97,7 +97,8 @@ impl PyMLContext {
                         ))
                     })?;
 
-                let input_name = input_op.name.as_deref().unwrap_or(&format!("input_{}", input_id));
+                let default_name = format!("input_{}", input_id);
+                let input_name = input_op.name.as_deref().unwrap_or(&default_name);
 
                 // Get the numpy array from inputs dict
                 let array = inputs.get_item(input_name)?.ok_or_else(|| {
@@ -218,32 +219,6 @@ impl PyMLContext {
         })?;
 
         Ok(())
-    }
-
-    /// Execute graph using ONNX runtime (requires onnx-runtime feature)
-    ///
-    /// Args:
-    ///     graph: The MLGraph to execute
-    ///
-    /// Returns:
-    ///     Dictionary with execution results
-    #[cfg(feature = "onnx-runtime")]
-    fn execute_with_onnx(&self, py: Python, graph: &PyMLGraph) -> PyResult<Py<PyDict>> {
-        // Convert to ONNX
-        let converter = crate::converters::OnnxConverter;
-        let converted = converter.convert(&graph.graph_info).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e))
-        })?;
-
-        // Execute with empty inputs map (for now)
-        let inputs = HashMap::new();
-        run_onnx_zeroed(&converted.data, &inputs).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX execution failed: {}", e))
-        })?;
-
-        // Return empty dict for now (actual implementation would return outputs)
-        let result = PyDict::new_bound(py);
-        Ok(result.into())
     }
 
     /// Execute graph using CoreML runtime (macOS only, requires coreml-runtime feature)

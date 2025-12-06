@@ -74,16 +74,24 @@ validate-all-env: build test onnx-validate coreml-validate
 python-dev:
 	@echo "Installing Python package in development mode..."
 	pip install maturin
-	maturin develop --features python
+	ORT_STRATEGY=system \
+	ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) \
+	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) \
+	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
+	maturin develop --features python,onnx-runtime
 
 python-build:
 	@echo "Building Python wheel..."
 	pip install maturin
-	maturin build --features python --release
+	ORT_STRATEGY=system \
+	ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) \
+	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) \
+	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
+	maturin build --features python,onnx-runtime --release
 
 python-test: python-dev
 	@echo "Running Python tests..."
-	python -m pytest tests/ -v
+	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python -m pytest tests/ -v
 
 python-example: python-dev
 	@echo "Running Python examples..."

@@ -119,32 +119,33 @@ pub fn run_onnx_with_inputs(
 
     let mut session = build_session(&env, model_bytes)?;
 
-    // Build feeds from provided inputs
-    let mut feeds = Vec::new();
-    for input in inputs {
-        let array = ArrayD::from_shape_vec(IxDyn(&input.shape), input.data).map_err(|e| {
-            GraphError::OnnxRuntimeFailed {
-                reason: format!("shape build failed for {}: {e}", input.name),
-            }
-        })?;
-        feeds.push((input.name.as_str(), array));
-    }
-
-    // Run inference
-    let outputs: Vec<OrtOwnedTensor<f32, _>> = session
-        .run(feeds.into_iter().map(|(_, arr)| arr).collect::<Vec<_>>())
-        .map_err(|e| GraphError::OnnxRuntimeFailed {
-            reason: format!("run failed: {e}"),
-        })?;
-
-    // Extract output tensors with data
-    let mut results = Vec::new();
+    // Extract output names before running inference (before mutable borrow)
     let output_names: Vec<String> = session
         .outputs
         .iter()
         .map(|o| o.name.clone())
         .collect();
 
+    // Build array inputs from provided inputs
+    let mut feed_arrays = Vec::new();
+    for input in inputs {
+        let array = ArrayD::from_shape_vec(IxDyn(&input.shape), input.data).map_err(|e| {
+            GraphError::OnnxRuntimeFailed {
+                reason: format!("shape build failed for {}: {e}", input.name),
+            }
+        })?;
+        feed_arrays.push(array);
+    }
+
+    // Run inference
+    let outputs: Vec<OrtOwnedTensor<f32, _>> = session
+        .run(feed_arrays)
+        .map_err(|e| GraphError::OnnxRuntimeFailed {
+            reason: format!("run failed: {e}"),
+        })?;
+
+    // Extract output tensors with data
+    let mut results = Vec::new();
     for (idx, tensor) in outputs.into_iter().enumerate() {
         let shape: Vec<usize> = tensor.view().shape().iter().map(|d| *d as usize).collect();
         let data: Vec<f32> = tensor.view().iter().copied().collect();

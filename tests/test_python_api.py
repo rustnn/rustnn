@@ -22,10 +22,11 @@ def _has_onnx_runtime():
         ctx = ml.create_context(device_type="cpu")
         builder = ctx.create_graph_builder()
         x = builder.input("x", [1, 1], "float32")
-        graph = builder.build({"x": x})
+        y = builder.relu(x)
+        graph = builder.build({"output": y})
         result = ctx.compute(graph, {"x": np.array([[1.0]], dtype=np.float32)})
         # If ONNX runtime is available, result should be non-zero
-        return np.any(result["x"] != 0)
+        return np.any(result["output"] != 0)
     except:
         return False
 

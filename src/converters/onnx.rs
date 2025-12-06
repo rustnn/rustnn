@@ -31,6 +31,12 @@ impl OnnxConverter {
     }
 
     fn onnx_op_type(op_type: &str) -> String {
+        // Handle special case for matmul -> MatMul
+        if op_type.eq_ignore_ascii_case("matmul") {
+            return "MatMul".to_string();
+        }
+
+        // Default: capitalize first letter
         let mut chars = op_type.chars();
         if let Some(first) = chars.next() {
             let mut s = first.to_ascii_uppercase().to_string();
