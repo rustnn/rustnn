@@ -376,6 +376,26 @@ context.convert_to_onnx(graph, "model.onnx")
 
 See **README_PYTHON.md** for complete documentation and examples.
 
+### Python-Rust Integration Architecture
+
+**Important:** The Python API is a thin wrapper around the Rust implementation. All core functionality is implemented in Rust:
+
+**Execution Flow:**
+```
+Python compute() → Rust OnnxConverter → Rust run_onnx_with_inputs() → Results to Python
+```
+
+**Key Integration Points:**
+- `context.rs:79` - Uses Rust `OnnxConverter.convert()` to convert graphs
+- `context.rs:129` - Calls Rust `run_onnx_with_inputs()` executor
+- Data conversion: NumPy arrays → Rust Vec<f32> → ONNX Runtime → Rust Vec<f32> → NumPy arrays
+
+**Benefits:**
+- Python provides W3C WebNN API interface
+- Rust provides performance-critical validation, conversion, and execution
+- Zero-copy operations where possible for efficiency
+- Native ONNX Runtime integration through Rust bindings
+
 ### ONNX to WebNN Converter Script
 
 The `scripts/convert_onnx_to_webnn.py` script converts ONNX models to WebNN JSON format:
@@ -391,14 +411,20 @@ The following operations have been approved for Claude Code to execute without r
 - `cargo check` - Run Rust type checking
 - `cargo build` - Build the Rust project
 - `cargo fmt` - Format Rust code according to style guidelines
+- `cargo test` - Run Rust test suite
 - `pip install` - Install Python packages
 - `maturin develop` - Install Python package in development mode
 - `make help` - Display Makefile help
 - `make ci-docs` - Build documentation in strict mode
 
-### Python Execution
+### Python Execution & Testing
 - `python` - Run Python scripts
+- `python3.12` - Run Python 3.12 interpreter specifically
 - `.venv/bin/python` - Run Python from virtual environment
+- `.venv-test/bin/python` - Run Python from test virtual environment
+- `python3.12 -m venv` - Create Python virtual environments
+- `source` - Activate virtual environments (e.g., `source .venv-test/bin/activate`)
+- `pytest` - Run Python test suite
 
 ### Documentation
 - `mkdocs build` - Build documentation site
@@ -408,6 +434,7 @@ The following operations have been approved for Claude Code to execute without r
 - `cat` - Read file contents
 
 ### Git Operations
+- `git status` - Check repository status
 - `git add` - Stage files for commit
 - `git commit` - Create commits
 - `git push` - Push commits to remote
@@ -422,6 +449,39 @@ The following operations have been approved for Claude Code to execute without r
 - `WebFetch(domain:www.w3.org)` - Fetch W3C WebNN specifications
 
 These permissions enable Claude Code to efficiently assist with development, testing, documentation, version control, and CI/CD monitoring tasks without interrupting the workflow.
+
+## Git Commit Attribution Policy
+
+**CRITICAL: All commits must use ONLY the user's identity - NEVER add Claude attribution.**
+
+When creating git commits:
+- ❌ **NEVER** add "Co-Authored-By: Claude <noreply@anthropic.com>"
+- ❌ **NEVER** add "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+- ❌ **NEVER** add any other Claude attribution or signature
+- ✅ **ALWAYS** use ONLY the user's git identity from `git config user.name` and `git config user.email`
+- ✅ **NEVER** modify git config - use the existing user configuration
+
+**Rationale:** The user's commits should reflect their own work and identity. Claude Code is a tool that assists the user, but the commits belong to the user, not to Claude.
+
+**Example of correct commit:**
+```
+git commit -m "Add feature X
+
+- Implementation details
+- Test coverage
+- Documentation updates"
+```
+
+**Example of INCORRECT commit (DO NOT DO THIS):**
+```
+git commit -m "Add feature X
+
+- Implementation details
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
 
 ## Resources
 
