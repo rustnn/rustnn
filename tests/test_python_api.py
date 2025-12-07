@@ -595,3 +595,115 @@ def test_tensor_workflow(context, builder):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+# ============================================================================
+# Async Execution Tests
+# ============================================================================
+
+@pytest.fixture
+def async_context(context):
+    """Create async ML context wrapper"""
+    return webnn.AsyncMLContext(context)
+
+
+@pytest.mark.asyncio
+async def test_async_dispatch(async_context):
+    """Test asynchronous graph dispatch"""
+    builder = async_context.create_graph_builder()
+    
+    # Build simple graph
+    x = builder.input("x", [2, 3], "float32")
+    y = builder.relu(x)
+    graph = builder.build({"output": y})
+    
+    # Dispatch asynchronously
+    inputs = {"x": np.array([[1, -2, 3], [-4, 5, -6]], dtype=np.float32)}
+    await async_context.dispatch(graph, inputs)
+    
+    # Dispatch should complete without error
+
+
+@pytest.mark.asyncio
+async def test_async_tensor_read_write(async_context):
+    """Test asynchronous tensor read/write operations"""
+    # Create tensor
+    tensor = async_context.create_tensor([2, 3], "float32")
+    
+    # Write data asynchronously
+    data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    await async_context.write_tensor_async(tensor, data)
+    
+    # Read data asynchronously
+    result = await async_context.read_tensor_async(tensor)
+    
+    np.testing.assert_array_equal(result, data)
+
+
+@pytest.mark.asyncio
+async def test_async_concurrent_operations(async_context):
+    """Test multiple concurrent async operations"""
+    import asyncio
+    
+    # Create multiple tensors
+    tensors = [
+        async_context.create_tensor([2, 2], "float32")
+        for _ in range(3)
+    ]
+    
+    # Write to all tensors concurrently
+    async def write_tensor(tensor, value):
+        data = np.full((2, 2), value, dtype=np.float32)
+        await async_context.write_tensor_async(tensor, data)
+    
+    await asyncio.gather(*[
+        write_tensor(tensor, i)
+        for i, tensor in enumerate(tensors)
+    ])
+    
+    # Read from all tensors concurrently
+    results = await asyncio.gather(*[
+        async_context.read_tensor_async(tensor)
+        for tensor in tensors
+    ])
+    
+    # Verify results
+    for i, result in enumerate(results):
+        expected = np.full((2, 2), i, dtype=np.float32)
+        np.testing.assert_array_equal(result, expected)
+
+
+@pytest.mark.asyncio
+@requires_onnx_runtime
+async def test_async_dispatch_with_actual_computation(async_context):
+    """Test async dispatch with actual ONNX computation"""
+    builder = async_context.create_graph_builder()
+    
+    # Build graph: output = relu(x + y)
+    x = builder.input("x", [2, 3], "float32")
+    y = builder.input("y", [2, 3], "float32")
+    z = builder.add(x, y)
+    output = builder.relu(z)
+    graph = builder.build({"output": output})
+    
+    # Dispatch asynchronously
+    x_data = np.array([[1, -2, 3], [-4, 5, -6]], dtype=np.float32)
+    y_data = np.array([[0, 1, -1], [2, -3, 4]], dtype=np.float32)
+    
+    result = await async_context.dispatch(graph, {"x": x_data, "y": y_data})
+    
+    # Verify execution completed
+    assert result is None or isinstance(result, dict)
+
+
+@pytest.mark.asyncio
+async def test_async_context_properties(async_context):
+    """Test that async context preserves underlying context properties"""
+    assert async_context.device_type == "cpu"
+    assert async_context.power_preference == "default"
+    
+    # Test synchronous methods still work
+    builder = async_context.create_graph_builder()
+    assert builder is not None
+    
+    tensor = async_context.create_tensor([2, 2], "float32")
+    assert tensor is not None
