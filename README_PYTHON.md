@@ -63,11 +63,11 @@ graph = builder.build({"output": output})
 x_data = np.array([[1, -2, 3], [4, -5, 6]], dtype=np.float32)
 y_data = np.array([[-1, 2, -3], [-4, 5, -6]], dtype=np.float32)
 
-# Execute the graph with actual computation
+# Execute: internally converts WebNN graph to ONNX, then runs with ONNX Runtime
 results = context.compute(graph, {"x": x_data, "y": y_data})
-print(results["output"])  # Contains actual computed values
+print(results["output"])  # Actual computed values from ONNX Runtime
 
-# Convert to ONNX for deployment
+# Optional: Export the ONNX model to file (for deployment, inspection, etc.)
 context.convert_to_onnx(graph, "model.onnx")
 ```
 
@@ -192,8 +192,8 @@ Execution context for neural network operations.
   - Accepts numpy arrays as inputs
   - Returns dictionary of numpy arrays as outputs
   - Falls back to zeros if ONNX runtime not available
-- `convert_to_onnx(graph, output_path)`: Convert graph to ONNX format
-- `convert_to_coreml(graph, output_path)`: Convert graph to CoreML format (macOS only)
+- `convert_to_onnx(graph, output_path)`: Export graph to ONNX file (for deployment/inspection)
+- `convert_to_coreml(graph, output_path)`: Export graph to CoreML file (macOS only, for deployment)
 - `create_tensor(shape, data_type)`: Create a tensor for explicit memory management
 - `read_tensor(tensor)`: Read tensor data (synchronous)
 - `write_tensor(tensor, data)`: Write tensor data (synchronous)
@@ -392,7 +392,7 @@ z = builder.matmul(x, y)
 print(f"Matmul result shape: {z.shape}")  # [2, 4]
 ```
 
-### Converting to Different Formats
+### Exporting to Different Formats
 
 ```python
 import webnn
@@ -406,10 +406,10 @@ x = builder.input("x", [1, 3, 224, 224], "float32")
 output = builder.relu(x)
 graph = builder.build({"output": output})
 
-# Convert to ONNX
+# Export to ONNX file (for deployment, sharing, or inspection)
 context.convert_to_onnx(graph, "model.onnx")
 
-# Convert to CoreML (macOS only)
+# Export to CoreML file (macOS only, for deployment on iOS/macOS)
 # context.convert_to_coreml(graph, "model.mlmodel")
 ```
 
