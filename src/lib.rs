@@ -5,6 +5,7 @@ pub mod graph;
 pub mod graphviz;
 pub mod loader;
 pub mod protos;
+pub mod shape_inference;
 pub mod validator;
 
 #[cfg(feature = "python")]

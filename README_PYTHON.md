@@ -111,11 +111,23 @@ Builder for constructing computational graphs.
 - `constant(value, shape=None, data_type=None)`: Create a constant from NumPy array
 
 **Binary Operations:**
-- `add(a, b)`: Element-wise addition
-- `sub(a, b)`: Element-wise subtraction
-- `mul(a, b)`: Element-wise multiplication
-- `div(a, b)`: Element-wise division
-- `matmul(a, b)`: Matrix multiplication
+- `add(a, b)`: Element-wise addition (with broadcasting)
+- `sub(a, b)`: Element-wise subtraction (with broadcasting)
+- `mul(a, b)`: Element-wise multiplication (with broadcasting)
+- `div(a, b)`: Element-wise division (with broadcasting)
+- `matmul(a, b)`: Matrix multiplication (with batched matmul support)
+
+**Shape Inference:**
+Binary operations automatically compute output shapes using NumPy-style broadcasting rules:
+- Dimensions are aligned from right to left
+- Two dimensions are compatible if they are equal or one is 1
+- Output shape is the maximum of each dimension
+- Incompatible shapes raise `ValueError` at graph build time
+
+Matrix multiplication follows proper matmul shape rules:
+- For 2D: `[M, K] @ [K, N] -> [M, N]`
+- For batched: batch dimensions are broadcasted
+- Inner dimensions must match or a `ValueError` is raised
 
 **Unary Operations:**
 - `relu(x)`: ReLU activation
@@ -219,6 +231,41 @@ x = builder.input("x", [2, 2], "float32")
 result = builder.add(x, const_operand)
 
 graph = builder.build({"result": result})
+```
+
+### Broadcasting and Shape Inference
+
+```python
+import webnn
+import numpy as np
+
+ml = webnn.ML()
+context = ml.create_context()
+builder = context.create_graph_builder()
+
+# Broadcasting example: [2, 3] + [1, 3] -> [2, 3]
+a = builder.input("a", [2, 3], "float32")
+b = builder.input("b", [1, 3], "float32")
+result = builder.add(a, b)
+
+print(f"Result shape: {result.shape}")  # [2, 3]
+
+graph = builder.build({"result": result})
+
+# Execute with actual data
+a_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+b_data = np.array([[10, 20, 30]], dtype=np.float32)
+
+outputs = context.compute(graph, {"a": a_data, "b": b_data})
+print(outputs["result"])
+# Output: [[11, 22, 33], [14, 25, 36]]
+
+# Matmul shape inference: [2, 3] @ [3, 4] -> [2, 4]
+x = builder.input("x", [2, 3], "float32")
+y = builder.input("y", [3, 4], "float32")
+z = builder.matmul(x, y)
+
+print(f"Matmul result shape: {z.shape}")  # [2, 4]
 ```
 
 ### Converting to Different Formats

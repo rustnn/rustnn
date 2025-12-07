@@ -397,5 +397,112 @@ def test_multi_output_computation(context, builder):
     np.testing.assert_allclose(results["tanh_out"], np.tanh(x_data), rtol=1e-5)
 
 
+# Shape Inference Tests
+def test_broadcasting_same_shape(builder):
+    """Test broadcasting with same shapes"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [2, 3], "float32")
+    c = builder.add(a, b)
+
+    assert c.shape == [2, 3], f"Expected [2, 3], got {c.shape}"
+
+
+def test_broadcasting_with_ones(builder):
+    """Test broadcasting with dimensions of size 1"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [1, 3], "float32")
+    c = builder.add(a, b)
+
+    assert c.shape == [2, 3], f"Expected [2, 3], got {c.shape}"
+
+
+def test_broadcasting_different_ranks(builder):
+    """Test broadcasting with different tensor ranks"""
+    a = builder.input("a", [2, 3, 4], "float32")
+    b = builder.input("b", [3, 4], "float32")
+    c = builder.add(a, b)
+
+    assert c.shape == [2, 3, 4], f"Expected [2, 3, 4], got {c.shape}"
+
+
+def test_broadcasting_scalar(builder):
+    """Test broadcasting with scalar-like tensor"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [1], "float32")
+    c = builder.mul(a, b)
+
+    assert c.shape == [2, 3], f"Expected [2, 3], got {c.shape}"
+
+
+def test_broadcasting_incompatible(builder):
+    """Test that incompatible shapes raise errors"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [2, 4], "float32")
+
+    with pytest.raises(ValueError, match="Incompatible shapes"):
+        builder.add(a, b)
+
+
+def test_matmul_shape_inference(builder):
+    """Test matmul shape inference"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [3, 4], "float32")
+    c = builder.matmul(a, b)
+
+    assert c.shape == [2, 4], f"Expected [2, 4], got {c.shape}"
+
+
+def test_matmul_batched(builder):
+    """Test batched matmul shape inference"""
+    a = builder.input("a", [5, 2, 3], "float32")
+    b = builder.input("b", [5, 3, 4], "float32")
+    c = builder.matmul(a, b)
+
+    assert c.shape == [5, 2, 4], f"Expected [5, 2, 4], got {c.shape}"
+
+
+def test_matmul_incompatible(builder):
+    """Test that incompatible matmul shapes raise errors"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [4, 5], "float32")
+
+    with pytest.raises(ValueError, match="Incompatible shapes for matmul"):
+        builder.matmul(a, b)
+
+
+def test_reshape_valid(builder):
+    """Test valid reshape operation"""
+    x = builder.input("x", [2, 3], "float32")
+    y = builder.reshape(x, [6])
+
+    assert y.shape == [6], f"Expected [6], got {y.shape}"
+
+
+def test_reshape_invalid(builder):
+    """Test that invalid reshape raises error"""
+    x = builder.input("x", [2, 3], "float32")
+
+    with pytest.raises(ValueError, match="Reshape requires same number of elements"):
+        builder.reshape(x, [5])
+
+
+@requires_onnx_runtime
+def test_broadcasting_computation(context, builder):
+    """Test that broadcasting works with actual computation"""
+    a = builder.input("a", [2, 3], "float32")
+    b = builder.input("b", [1, 3], "float32")
+    c = builder.add(a, b)
+
+    graph = builder.build({"c": c})
+
+    a_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    b_data = np.array([[10, 20, 30]], dtype=np.float32)
+
+    results = context.compute(graph, {"a": a_data, "b": b_data})
+    expected = a_data + b_data
+
+    np.testing.assert_allclose(results["c"], expected, rtol=1e-5)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -84,10 +84,11 @@
     - dequantizeLinear
     - quantizeLinear
 
-[ ] Shape inference and broadcasting
+[x] Shape inference and broadcasting
     - Automatic shape computation for operations
-    - Broadcasting rules for binary operations
+    - Broadcasting rules for binary operations (NumPy-style)
     - Shape validation at graph build time
+    - Proper matmul shape inference with batching support
 
 ### CoreML Converter - Missing Operations
 
@@ -433,7 +434,7 @@ HIGH PRIORITY (Next Session):
 - [x] Implement actual compute() with ONNX runtime integration
 - [x] Add comprehensive Python tests
 - [x] Fix Rust 2024 edition warnings (PyO3 internal warnings, will be fixed in PyO3 update)
-- [ ] Add basic shape inference/validation
+- [x] Add basic shape inference/validation
 
 MEDIUM PRIORITY:
 - [ ] Add more operations (conv2d, pooling, normalization)
@@ -460,6 +461,16 @@ LOW PRIORITY:
 Last Updated: 2025-12-06
 
 ## Recent Changes (2025-12-06)
+
+### Shape Inference and Validation (Latest)
+- Implemented NumPy-style broadcasting for binary operations
+- Added proper matmul shape inference with batched matmul support
+- Added reshape validation to ensure element count consistency
+- Created comprehensive shape_inference module with full test coverage
+- Added 11 new Python tests for shape inference functionality
+- All shape errors now caught at graph build time with clear error messages
+
+### ONNX Runtime Integration
 - Added CoreML support for relu, sigmoid, tanh, softmax activations
 - Implemented run_onnx_with_inputs() for actual tensor execution
 - Updated MLContext.compute() to use ONNX runtime with real inputs/outputs

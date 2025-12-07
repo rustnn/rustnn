@@ -19,6 +19,7 @@ This is an early-stage experiment to explore WebNN graph handling and format con
 - 🚀 **Model Execution**: Run converted models on CPU, GPU, and Neural Engine (macOS)
 - 🔍 **Graph Visualization**: Generate Graphviz diagrams of your neural networks
 - ✅ **Validation**: Comprehensive graph validation matching Chromium's WebNN implementation
+- 📐 **Shape Inference**: Automatic shape computation with NumPy-style broadcasting
 
 ---
 

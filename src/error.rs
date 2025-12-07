@@ -88,6 +88,8 @@ pub enum GraphError {
     OnnxRuntimeUnavailable,
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
+    #[error("shape inference failed: {reason}")]
+    ShapeInferenceFailed { reason: String },
 }
 
 impl GraphError {

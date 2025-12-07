@@ -1,6 +1,7 @@
 use super::graph::PyMLGraph;
 use super::operand::{PyMLOperand, parse_data_type};
 use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+use crate::shape_inference::{broadcast_shapes, infer_matmul_shape, validate_reshape};
 use crate::validator::GraphValidator;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -155,7 +156,40 @@ impl PyMLGraphBuilder {
 
     /// Matrix multiplication
     fn matmul(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
-        self.binary_op("matmul", a, b)
+        // Use proper matmul shape inference
+        let output_shape = infer_matmul_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: a.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "matmul".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
     }
 
     // Unary operations
@@ -182,6 +216,10 @@ impl PyMLGraphBuilder {
 
     /// Reshape operation
     fn reshape(&mut self, x: &PyMLOperand, new_shape: Vec<u32>) -> PyResult<PyMLOperand> {
+        // Validate that reshape is possible
+        validate_reshape(&x.descriptor.shape, &new_shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
         let output_descriptor = OperandDescriptor {
             data_type: x.descriptor.data_type,
             shape: new_shape,
@@ -270,16 +308,22 @@ impl PyMLGraphBuilder {
         }
     }
 
-    /// Helper for binary operations
+    /// Helper for binary operations with broadcasting
     fn binary_op(
         &mut self,
         op_type: &str,
         a: &PyMLOperand,
         b: &PyMLOperand,
     ) -> PyResult<PyMLOperand> {
-        // For simplicity, use the shape of the first operand
-        // In a real implementation, this should handle broadcasting
-        let output_descriptor = a.descriptor.clone();
+        // Compute broadcasted output shape
+        let output_shape = broadcast_shapes(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: a.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
 
         let output_id = self.next_operand_id;
         self.next_operand_id += 1;
