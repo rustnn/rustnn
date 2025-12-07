@@ -568,6 +568,7 @@ def test_tensor_repr(context):
     assert "float32" in repr_str
 
 
+@requires_onnx_runtime
 def test_tensor_workflow(context, builder):
     """Test complete tensor workflow with graph execution"""
     # Create tensors for inputs and outputs
