@@ -15,8 +15,10 @@ This is an early-stage experiment to explore WebNN graph handling and format con
 **Features:**
 - 🦀 **Rust Library**: Validates WebNN graphs and converts to ONNX/CoreML formats
 - 🐍 **Python API**: Complete W3C WebNN API implementation via PyO3 bindings
+- 🎯 **Runtime Backend Selection**: Choose CPU, GPU, or NPU execution at context creation
 - 📊 **Format Conversion**: Export graphs to ONNX (cross-platform) and CoreML (macOS)
 - 🚀 **Model Execution**: Run converted models on CPU, GPU, and Neural Engine (macOS)
+- ⚡ **Async Support**: Non-blocking execution with Python asyncio integration
 - 🔍 **Graph Visualization**: Generate Graphviz diagrams of your neural networks
 - ✅ **Validation**: Comprehensive graph validation matching Chromium's WebNN implementation
 - 📐 **Shape Inference**: Automatic shape computation with NumPy-style broadcasting
@@ -43,6 +45,9 @@ cd rustnn
 # Install in development mode
 pip install maturin
 maturin develop --features python
+
+# With optional runtime features
+maturin develop --features python,onnx-runtime,coreml-runtime
 ```
 
 **Requirements:** Python 3.11+, NumPy 1.20+
@@ -68,44 +73,87 @@ Or use directly from this repository.
 import webnn
 import numpy as np
 
-# Create ML context
+# Create ML context - device_type controls which backend is used
 ml = webnn.ML()
-context = ml.create_context(device_type="cpu")
+context = ml.create_context(device_type="cpu")  # Selects ONNX Runtime CPU backend
+
+# Create graph builder
 builder = context.create_graph_builder()
 
-# Build a simple neural network: output = relu(matmul(input, weights) + bias)
-input_tensor = builder.input("input", [1, 4], "float32")
+# Define a simple graph: z = relu(x + y)
+x = builder.input("x", [2, 3], "float32")
+y = builder.input("y", [2, 3], "float32")
+z = builder.add(x, y)
+output = builder.relu(z)
 
-# Define weights and bias as constants
-weights = np.array([[0.1, 0.2, 0.3],
-                    [0.4, 0.5, 0.6],
-                    [0.7, 0.8, 0.9],
-                    [1.0, 1.1, 1.2]], dtype=np.float32)
-bias = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-
-weights_const = builder.constant(weights)
-bias_const = builder.constant(bias)
-
-# Build computation graph
-matmul_result = builder.matmul(input_tensor, weights_const)
-add_result = builder.add(matmul_result, bias_const)
-output = builder.relu(add_result)
-
-# Compile the graph
+# Compile the graph (creates backend-agnostic representation)
 graph = builder.build({"output": output})
 
-# Execute the graph with actual data
-input_data = np.array([[1.0, 2.0, 3.0, 4.0]], dtype=np.float32)
-results = context.compute(graph, {"input": input_data})
-print(f"✓ Computation result: {results['output']}")
+# Prepare input data
+x_data = np.array([[1, -2, 3], [4, -5, 6]], dtype=np.float32)
+y_data = np.array([[-1, 2, -3], [-4, 5, -6]], dtype=np.float32)
 
-# Convert to ONNX
+# Execute: converts to backend-specific format (ONNX for CPU) and runs
+results = context.compute(graph, {"x": x_data, "y": y_data})
+print(results["output"])  # Actual computed values from ONNX Runtime
+
+# Optional: Export the ONNX model to file (for deployment, inspection, etc.)
 context.convert_to_onnx(graph, "model.onnx")
-print(f"✓ ONNX model saved: model.onnx")
+```
 
-# Convert to CoreML (macOS only)
-context.convert_to_coreml(graph, "model.mlmodel")
-print(f"✓ CoreML model saved: model.mlmodel")
+### Backend Selection
+
+The `device_type` parameter at context creation controls which execution backend is used:
+
+```python
+# CPU execution - uses ONNX Runtime CPU backend
+context = ml.create_context(device_type="cpu")
+
+# GPU execution - uses CoreML on macOS, ONNX Runtime GPU elsewhere
+context = ml.create_context(device_type="gpu")
+
+# NPU execution - uses CoreML Neural Engine on Apple Silicon (macOS only)
+context = ml.create_context(device_type="npu")
+```
+
+**Backend Selection Rules:**
+- **"cpu"** → ONNX Runtime CPU backend (cross-platform)
+- **"gpu"** → CoreML on macOS (GPU/Neural Engine), ONNX Runtime GPU elsewhere
+- **"npu"** → CoreML Neural Engine on Apple Silicon, not available on other platforms
+
+The graph compilation (`builder.build()`) creates a **backend-agnostic representation**. The backend-specific conversion happens automatically during `compute()` based on the context's selected backend.
+
+### Async Execution
+
+WebNN supports asynchronous execution following the W3C specification. Use `AsyncMLContext` for non-blocking operations:
+
+```python
+import asyncio
+import numpy as np
+import webnn
+
+async def main():
+    # Create context
+    ml = webnn.ML()
+    context = ml.create_context(device_type="cpu")
+    async_context = webnn.AsyncMLContext(context)
+
+    # Build graph
+    builder = async_context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    y = builder.input("y", [2, 3], "float32")
+    z = builder.add(x, y)
+    output = builder.relu(z)
+    graph = builder.build({"output": output})
+
+    # Async dispatch (non-blocking execution)
+    x_data = np.array([[1, -2, 3], [4, -5, 6]], dtype=np.float32)
+    y_data = np.array([[-1, 2, -3], [-4, 5, -6]], dtype=np.float32)
+    await async_context.dispatch(graph, {"x": x_data, "y": y_data})
+
+    print("Graph executed asynchronously!")
+
+asyncio.run(main())
 ```
 
 ### Rust Library
@@ -132,29 +180,148 @@ std::fs::write("model.onnx", &converted.data)?;
 
 ---
 
-## 📚 Documentation
+## 📚 Python API Reference
 
-- **Python API**: Full documentation at [https://tarekziade.github.io/rustnn/](https://tarekziade.github.io/rustnn/)
-- **Getting Started Guide**: [docs/getting-started.md](docs/getting-started.md)
-- **API Reference**: [docs/api-reference.md](docs/api-reference.md)
-- **Examples**: [docs/examples.md](docs/examples.md)
-- **Advanced Topics**: [docs/advanced.md](docs/advanced.md)
-- **Python-Specific**: [README_PYTHON.md](README_PYTHON.md)
-- **Project Guide**: [CLAUDE.md](CLAUDE.md)
-
----
-
-## 🎯 Python API Overview
-
-The Python API implements the [W3C WebNN specification](https://www.w3.org/TR/webnn/):
+The Python API implements the [W3C WebNN specification](https://www.w3.org/TR/webnn/).
 
 ### Core Classes
 
-- **`webnn.ML`** - Entry point for creating ML contexts
-- **`webnn.MLContext`** - Manages graph builders and model conversion
-- **`webnn.MLGraphBuilder`** - Builds computational graphs with operations
-- **`webnn.MLGraph`** - Compiled graph ready for execution or conversion
-- **`webnn.MLOperand`** - Represents tensors in the computation graph
+#### `webnn.ML`
+Entry point for the WebNN API.
+
+**Methods:**
+- `create_context(device_type="cpu", power_preference="default")`: Create an execution context
+  - `device_type`: Selects the backend - "cpu" (ONNX Runtime), "gpu" (CoreML/ONNX), "npu" (CoreML Neural Engine)
+  - `power_preference`: Hint for power/performance tradeoffs
+
+```python
+ml = webnn.ML()
+context = ml.create_context(device_type="cpu", power_preference="default")
+```
+
+#### `webnn.MLContext`
+Execution context for neural network operations.
+
+**Properties:**
+- `device_type`: The device type ("cpu", "gpu", "npu") - determines which backend is used
+- `power_preference`: Power preference setting ("default", "high-performance", "low-power")
+
+**Methods:**
+- `create_graph_builder()`: Create a new graph builder
+- `compute(graph, inputs, outputs=None)`: Execute a compiled graph with actual computation
+  - Uses the backend selected at context creation (based on device_type)
+  - Automatically converts backend-agnostic graph to backend-specific format
+  - "cpu" device → ONNX Runtime CPU backend
+  - "gpu" device → CoreML (macOS) or ONNX Runtime GPU
+  - "npu" device → CoreML Neural Engine (Apple Silicon)
+  - Accepts numpy arrays as inputs
+  - Returns dictionary of numpy arrays as outputs
+- `convert_to_onnx(graph, output_path)`: Export graph to ONNX file (for deployment/inspection)
+- `convert_to_coreml(graph, output_path)`: Export graph to CoreML file (macOS only, for deployment)
+- `create_tensor(shape, data_type)`: Create a tensor for explicit memory management
+- `read_tensor(tensor)`: Read tensor data (synchronous)
+- `write_tensor(tensor, data)`: Write tensor data (synchronous)
+
+#### `webnn.AsyncMLContext`
+Async wrapper for MLContext providing WebNN-compliant asynchronous execution.
+
+**Creation:**
+```python
+context = ml.create_context(device_type="cpu")
+async_context = webnn.AsyncMLContext(context)
+```
+
+**Async Methods:**
+- `async dispatch(graph, inputs, outputs=None)`: Execute graph asynchronously (WebNN spec-compliant)
+  - Returns immediately, execution happens in background
+  - Use for non-blocking computation
+- `async read_tensor_async(tensor)`: Read tensor data asynchronously
+- `async write_tensor_async(tensor, data)`: Write tensor data asynchronously
+
+**Synchronous Methods (pass-through):**
+- `create_graph_builder()`: Create a new graph builder
+- `create_tensor(shape, data_type)`: Create a tensor
+- `compute(graph, inputs, outputs=None)`: Synchronous execution
+- `read_tensor(tensor)`: Synchronous tensor read
+- `write_tensor(tensor, data)`: Synchronous tensor write
+
+**Properties:**
+- `device_type`: The device type
+- `power_preference`: Power preference setting
+
+#### `webnn.MLGraphBuilder`
+Builder for constructing computational graphs.
+
+**Input/Constant Operations:**
+- `input(name, shape, data_type="float32")`: Create an input operand
+- `constant(value, shape=None, data_type=None)`: Create a constant from NumPy array
+
+**Binary Operations:**
+- `add(a, b)`: Element-wise addition (with broadcasting)
+- `sub(a, b)`: Element-wise subtraction (with broadcasting)
+- `mul(a, b)`: Element-wise multiplication (with broadcasting)
+- `div(a, b)`: Element-wise division (with broadcasting)
+- `matmul(a, b)`: Matrix multiplication (with batched matmul support)
+
+**Shape Inference:**
+Binary operations automatically compute output shapes using NumPy-style broadcasting rules:
+- Dimensions are aligned from right to left
+- Two dimensions are compatible if they are equal or one is 1
+- Output shape is the maximum of each dimension
+- Incompatible shapes raise `ValueError` at graph build time
+
+Matrix multiplication follows proper matmul shape rules:
+- For 2D: `[M, K] @ [K, N] -> [M, N]`
+- For batched: batch dimensions are broadcasted
+- Inner dimensions must match or a `ValueError` is raised
+
+**Unary Operations:**
+- `relu(x)`: ReLU activation
+- `sigmoid(x)`: Sigmoid activation
+- `tanh(x)`: Tanh activation
+- `softmax(x)`: Softmax activation
+
+**Shape Operations:**
+- `reshape(x, new_shape)`: Reshape operand
+
+**Graph Building:**
+- `build(outputs)`: Compile the graph with specified outputs
+
+#### `webnn.MLOperand`
+Represents an operand (tensor) in the computational graph.
+
+**Properties:**
+- `data_type`: Data type string (e.g., "float32")
+- `shape`: List of dimensions
+- `name`: Optional name of the operand
+
+#### `webnn.MLGraph`
+Compiled computational graph.
+
+**Properties:**
+- `operand_count`: Number of operands in the graph
+- `operation_count`: Number of operations in the graph
+
+**Methods:**
+- `get_input_names()`: Get list of input names
+- `get_output_names()`: Get list of output names
+
+#### `webnn.MLTensor`
+Explicit tensor for memory management.
+
+**Properties:**
+- `data_type`: Data type string
+- `shape`: Tensor dimensions
+- `size`: Total number of elements
+
+### Supported Data Types
+
+- `"float32"`: 32-bit floating point
+- `"float16"`: 16-bit floating point
+- `"int32"`: 32-bit signed integer
+- `"uint32"`: 32-bit unsigned integer
+- `"int8"`: 8-bit signed integer
+- `"uint8"`: 8-bit unsigned integer
 
 ### Supported Operations
 
@@ -172,8 +339,6 @@ The Python API implements the [W3C WebNN specification](https://www.w3.org/TR/we
 |--------|--------|----------|----------|
 | **ONNX** | ✅ Full | All | All operations, cross-platform |
 | **CoreML** | ✅ Good | macOS | add, matmul, relu, sigmoid, tanh, softmax |
-
-See [TODO.txt](TODO.txt) for planned features and improvements.
 
 ---
 
@@ -251,47 +416,102 @@ make validate-all-env  # Run full test pipeline
 
 ---
 
-## 🏗️ Project Structure
+## 🏗️ Architecture
+
+### Core Components
 
 ```
-rustnn/
-├── src/
-│   ├── lib.rs              # Public Rust API
-│   ├── main.rs             # CLI tool
-│   ├── graph.rs            # WebNN graph data structures
-│   ├── validator.rs        # Graph validation logic
-│   ├── converters/         # ONNX and CoreML converters
-│   ├── executors/          # Runtime execution
-│   └── python/             # Python bindings (PyO3)
-│       ├── context.rs      # ML and MLContext classes
-│       ├── graph_builder.rs # MLGraphBuilder class
-│       ├── graph.rs        # MLGraph class
-│       └── operand.rs      # MLOperand class
-│
-├── python/webnn/           # Python package
-│   ├── __init__.py         # Public API exports
-│   └── __init__.pyi        # Type stubs for IDEs
-│
-├── docs/                   # Documentation (MkDocs)
-│   ├── index.md
-│   ├── getting-started.md
-│   ├── api-reference.md
-│   ├── examples.md
-│   └── advanced.md
-│
-├── tests/                  # Python tests
-│   ├── test_python_api.py
-│   ├── test_integration.py
-│   └── test_coreml_basic.py
-│
-├── examples/               # Example code and graphs
-│   ├── sample_graph.json
-│   ├── python_simple.py
-│   └── python_matmul.py
-│
-├── pyproject.toml          # Python package configuration
-├── Cargo.toml              # Rust package configuration
-└── Makefile                # Build automation
+┌─────────────────────────────────────────────────────────────┐
+│ CLI (main.rs) / Library API (lib.rs) / Python API (PyO3)    │
+└──────────────┬──────────────────────────────────────────────┘
+               │
+    ┌──────────┴──────────┬──────────────┬─────────────────┐
+    ▼                     ▼              ▼                 ▼
+┌────────┐     ┌──────────────┐   ┌──────────┐    ┌──────────────┐
+│Loader  │────▶│  Validator   │──▶│ Context  │───▶│  Backend     │
+│(JSON)  │     │(graph.rs)    │   │(selects) │    │  Selection   │
+└────────┘     └──────────────┘   └────┬─────┘    └──────┬───────┘
+                                        │                 │
+                                        ▼                 ▼
+                                  ┌──────────┐    ┌──────────────┐
+                                  │ Builder  │    │  Converter   │
+                                  │(backend- │    │  (Runtime)   │
+                                  │agnostic) │    │              │
+                                  └────┬─────┘    └──────┬───────┘
+                                       │                 │
+                                       ▼                 ▼
+                              ┌─────────────┐   ┌────────────────┐
+                              │  MLGraph    │   │ ONNX / CoreML  │
+                              │(immutable)  │   │   Execution    │
+                              └─────────────┘   └────────────────┘
+```
+
+### Key Principles
+
+**1. Backend-Agnostic Graph Representation**
+- `builder.build()` creates an immutable, platform-independent `GraphInfo` structure
+- Contains operands, operations, inputs, outputs, and constant data
+- No backend-specific artifacts at this stage
+
+**2. Runtime Backend Selection (WebNN Spec-Compliant)**
+- Backend selection happens at **context creation** via `device_type` parameter
+- "cpu" → ONNX Runtime CPU
+- "gpu" → CoreML (macOS) or ONNX Runtime GPU
+- "npu" → CoreML Neural Engine (Apple Silicon)
+- Selection logic in `PyMLContext::select_backend()`
+
+**3. Lazy Backend Conversion**
+- Backend-specific conversion happens during `compute()`, not `build()`
+- `compute()` routes to appropriate backend method:
+  - `compute_onnx()` for ONNX Runtime
+  - `compute_coreml()` for CoreML
+  - `compute_fallback()` when no backend available
+- Same graph can be executed on different backends via different contexts
+
+**4. Rust-First Architecture**
+- All core functionality in pure Rust (validation, conversion, execution)
+- Python bindings are thin wrappers exposing Rust functionality
+- Rust library usable independently without Python
+- Design principle: "Rust is the implementation, Python is the interface"
+
+### File Organization
+
+```
+src/
+├── lib.rs              # Public Rust API exports
+├── main.rs             # CLI entry point
+├── graph.rs            # Core data structures (backend-agnostic)
+├── error.rs            # Error types
+├── validator.rs        # Graph validation
+├── loader.rs           # JSON loading
+├── graphviz.rs         # DOT export
+├── protos.rs           # Protobuf module setup
+├── converters/
+│   ├── mod.rs          # Registry and trait
+│   ├── onnx.rs         # ONNX converter
+│   └── coreml.rs       # CoreML converter
+├── executors/
+│   ├── mod.rs          # Conditional compilation
+│   ├── onnx.rs         # ONNX runtime
+│   └── coreml.rs       # CoreML runtime
+└── python/             # Python bindings (PyO3)
+    ├── mod.rs          # Python module definition
+    ├── context.rs      # ML and MLContext classes (backend selection)
+    ├── graph_builder.rs # MLGraphBuilder class
+    ├── graph.rs        # MLGraph class
+    ├── operand.rs      # MLOperand class
+    └── tensor.rs       # MLTensor class
+
+python/webnn/           # Python package
+├── __init__.py         # Package exports (AsyncMLContext)
+└── __init__.pyi        # Type stubs
+
+tests/
+└── test_python_api.py  # Python API tests (45 tests)
+
+examples/
+├── python_simple.py    # Basic Python example
+└── python_matmul.py    # Matrix multiplication example
 ```
 
 ---
@@ -301,7 +521,7 @@ rustnn/
 ### Prerequisites
 
 - **Rust**: 1.70+ (install from [rustup.rs](https://rustup.rs/))
-- **Python**: 3.12+ with pip
+- **Python**: 3.11+ with pip
 - **Maturin**: `pip install maturin`
 - **Optional**: Graphviz for visualization (`brew install graphviz` on macOS)
 
@@ -389,16 +609,21 @@ cargo test --features onnx-runtime,coreml-runtime
 
 See [TODO.txt](TODO.txt) for a comprehensive list of planned features.
 
-**High Priority:**
+**Completed:**
 - ✅ Python WebNN API implementation
+- ✅ Runtime backend selection (WebNN spec-compliant)
 - ✅ ONNX conversion with full operation support
+- ✅ Actual tensor execution with ONNX Runtime
+- ✅ Async execution support (AsyncMLContext)
+- ✅ Shape inference and broadcasting
 - ✅ Comprehensive documentation
-- ⬜ CoreML support for activation functions (relu, sigmoid, tanh, softmax)
-- ⬜ Actual tensor execution in `MLContext.compute()`
+
+**High Priority:**
 - ⬜ PyPI package publishing automation
+- ⬜ More operations (conv2d, pooling, normalization)
+- ⬜ CoreML execution with actual tensor I/O
 
 **Medium Priority:**
-- ⬜ More operations (conv2d, pooling, normalization)
 - ⬜ Graph optimization passes
 - ⬜ Multi-platform wheel building (manylinux, Windows)
 - ⬜ Performance benchmarks
@@ -410,7 +635,6 @@ See [TODO.txt](TODO.txt) for a comprehensive list of planned features.
 Contributions are welcome! Please see:
 
 - [CLAUDE.md](CLAUDE.md) - Project architecture and conventions
-- [docs/README.md](docs/README.md) - Documentation guide
 - [TODO.txt](TODO.txt) - Feature requests and known limitations
 
 ### Quick Contribution Guide

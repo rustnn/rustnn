@@ -18,23 +18,60 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ CLI (main.rs) / Library API (lib.rs)                        │
+│ CLI (main.rs) / Library API (lib.rs) / Python API (PyO3)    │
 └──────────────┬──────────────────────────────────────────────┘
                │
     ┌──────────┴──────────┬──────────────┬─────────────────┐
     ▼                     ▼              ▼                 ▼
 ┌────────┐     ┌──────────────┐   ┌──────────┐    ┌──────────────┐
-│Loader  │────▶│  Validator   │──▶│Converter │───▶│  Executor    │
-│(JSON)  │     │(graph.rs)    │   │(Registry)│    │(ONNX/CoreML) │
-└────────┘     └──────────────┘   └────┬─────┘    └──────────────┘
-                                        │
-                              ┌─────────┴─────────┐
-                              ▼                   ▼
-                        ┌──────────┐       ┌──────────┐
-                        │  ONNX    │       │ CoreML   │
-                        │Converter │       │Converter │
-                        └──────────┘       └──────────┘
+│Loader  │────▶│  Validator   │──▶│ Context  │───▶│  Backend     │
+│(JSON)  │     │(graph.rs)    │   │(selects) │    │  Selection   │
+└────────┘     └──────────────┘   └────┬─────┘    └──────┬───────┘
+                                        │                 │
+                                        ▼                 ▼
+                                  ┌──────────┐    ┌──────────────┐
+                                  │ Builder  │    │  Converter   │
+                                  │(backend- │    │  (Runtime)   │
+                                  │agnostic) │    │              │
+                                  └────┬─────┘    └──────┬───────┘
+                                       │                 │
+                                       ▼                 ▼
+                              ┌─────────────┐   ┌────────────────┐
+                              │  MLGraph    │   │ ONNX / CoreML  │
+                              │(immutable)  │   │   Execution    │
+                              └─────────────┘   └────────────────┘
 ```
+
+### Key Architectural Principles
+
+**1. Backend-Agnostic Graph Representation (WebNN Spec-Compliant)**
+- `builder.build()` creates an immutable `GraphInfo` structure
+- Graph representation is **platform-independent** and **backend-agnostic**
+- No backend-specific artifacts at graph build time
+- Same graph can be executed on multiple backends
+
+**2. Runtime Backend Selection (WebNN Spec-Compliant)**
+- Backend selection happens at **context creation**, not compile-time
+- `MLContext::new()` selects backend based on `device_type` parameter:
+  - "cpu" → `Backend::OnnxCpu` (ONNX Runtime CPU)
+  - "gpu" → `Backend::CoreML` (macOS) or `Backend::OnnxGpu` elsewhere
+  - "npu" → `Backend::CoreML` (Apple Silicon Neural Engine)
+- Selection logic in `PyMLContext::select_backend()` (src/python/context.rs)
+- Feature flags control availability, not selection
+
+**3. Lazy Backend Conversion**
+- Backend conversion happens during **`compute()`**, not `build()`
+- `compute()` method routes to backend-specific execution:
+  - `compute_onnx()` → Converts to ONNX protobuf, executes with ONNX Runtime
+  - `compute_coreml()` → Converts to CoreML protobuf, executes with CoreML
+  - `compute_fallback()` → Returns zeros when no backend available
+- Conversion is transparent to the user
+
+**4. Rust-First Architecture**
+- All core logic implemented in pure Rust
+- Python bindings are thin PyO3 wrappers
+- Zero Python code in critical path (validation, conversion, execution)
+- Rust library usable independently without Python
 
 ### Key Modules
 
@@ -71,8 +108,17 @@
 
 #### **executors/** - Runtime Execution
 - **Platform-specific**: Conditional compilation for macOS
-- **ONNX Runtime**: `run_onnx_zeroed()` - cross-platform
+- **ONNX Runtime**: `run_onnx_with_inputs()` - executes with actual tensor I/O (cross-platform)
 - **CoreML Runtime**: `run_coreml_zeroed_cached()` - macOS only via Objective-C FFI
+
+#### **python/context.rs** - Backend Selection & Execution
+- **Backend Enum**: Tracks selected backend (OnnxCpu, OnnxGpu, CoreML, None)
+- **Context Creation**: `PyMLContext::new()` selects backend based on device_type
+- **Backend Selection**: `select_backend()` maps device_type to available backend
+- **Compute Routing**: `compute()` routes to appropriate backend method
+  - `compute_onnx()` - ONNX Runtime execution (feature-gated)
+  - `compute_coreml()` - CoreML execution (feature-gated)
+  - `compute_fallback()` - Fallback when no backend available
 
 #### **graphviz.rs** - Visualization
 - Generates DOT format for graph visualization
@@ -384,7 +430,7 @@ context.convert_to_onnx(graph, "model.onnx")
 - `webnn.MLGraph` - Compiled graph
 - `webnn.MLOperand` - Tensor operands
 
-See **README_PYTHON.md** for complete documentation and examples.
+See **README.md** (Python API Reference section) for complete documentation and examples.
 
 ### Python-Rust Integration Architecture
 
@@ -536,10 +582,9 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 
 ## Resources
 
-- **README.md**: User-facing documentation and usage examples
-- **README_PYTHON.md**: Complete Python API documentation
+- **README.md**: Complete documentation including Python API, Rust CLI, and architecture
 - **examples/**: Sample WebNN graph JSON files and Python examples
-- **tests/test_python_api.py**: Python API test suite
+- **tests/test_python_api.py**: Python API test suite (45 tests)
 - **Makefile**: Common build and validation targets
 - **pyproject.toml**: Python package configuration
 - **LICENSE**: Apache 2.0 license
