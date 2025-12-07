@@ -7,7 +7,7 @@ allowing you to build, validate, and execute neural network graphs.
 Example usage:
     >>> import webnn
     >>> ml = webnn.ML()
-    >>> context = ml.create_context(device_type="cpu")
+    >>> context = ml.create_context(accelerated=False)
     >>> builder = context.create_graph_builder()
     >>>
     >>> # Build a simple graph
@@ -42,7 +42,7 @@ class AsyncMLContext:
 
     Example:
         >>> ml = webnn.ML()
-        >>> context = ml.create_context(device_type="cpu")
+        >>> context = ml.create_context(accelerated=False)
         >>> async_context = webnn.AsyncMLContext(context)
         >>>
         >>> # Async execution
@@ -134,9 +134,9 @@ class AsyncMLContext:
         return self._context.write_tensor(tensor, data)
 
     @property
-    def device_type(self) -> str:
-        """Get device type."""
-        return self._context.device_type
+    def accelerated(self) -> bool:
+        """Check if GPU/NPU acceleration is available."""
+        return self._context.accelerated
 
     @property
     def power_preference(self) -> str:
