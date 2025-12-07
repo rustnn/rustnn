@@ -123,14 +123,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
         };
 
         let model = ModelProto {
-            ir_version: Some(7),  // IR version 7 = ONNX 1.6-1.9 (supports opset 12-13)
+            ir_version: Some(7), // IR version 7 = ONNX 1.6-1.9 (supports opset 12-13)
             model_version: Some(1),
             producer_name: Some("rustnn".to_string()),
             producer_version: Some("0.1.0".to_string()),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
                 version: Some(13),
-                domain: Some("".to_string()),  // Empty string = default ONNX domain
+                domain: Some("".to_string()), // Empty string = default ONNX domain
                 ..Default::default()
             }],
             ..Default::default()
