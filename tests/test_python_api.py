@@ -504,5 +504,94 @@ def test_broadcasting_computation(context, builder):
     np.testing.assert_allclose(results["c"], expected, rtol=1e-5)
 
 
+# MLTensor Tests
+def test_create_tensor(context):
+    """Test creating a tensor"""
+    tensor = context.create_tensor([2, 3], "float32")
+
+    assert tensor.shape == [2, 3]
+    assert tensor.data_type == "float32"
+    assert tensor.size == 6
+
+
+def test_write_read_tensor(context):
+    """Test writing and reading tensor data"""
+    tensor = context.create_tensor([2, 3], "float32")
+
+    # Write data to tensor
+    data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    context.write_tensor(tensor, data)
+
+    # Read data back
+    result = context.read_tensor(tensor)
+
+    np.testing.assert_array_equal(result, data)
+
+
+def test_write_tensor_shape_mismatch(context):
+    """Test that writing wrong shape raises error"""
+    tensor = context.create_tensor([2, 3], "float32")
+    wrong_data = np.array([[1, 2], [3, 4]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="Shape mismatch"):
+        context.write_tensor(tensor, wrong_data)
+
+
+def test_tensor_initial_data(context):
+    """Test that tensors are initialized with zeros"""
+    tensor = context.create_tensor([2, 3], "float32")
+    result = context.read_tensor(tensor)
+
+    expected = np.zeros((2, 3), dtype=np.float32)
+    np.testing.assert_array_equal(result, expected)
+
+
+def test_tensor_different_shapes(context):
+    """Test creating tensors with different shapes"""
+    tensor1 = context.create_tensor([5], "float32")
+    tensor2 = context.create_tensor([2, 3, 4], "float32")
+
+    assert tensor1.shape == [5]
+    assert tensor1.size == 5
+
+    assert tensor2.shape == [2, 3, 4]
+    assert tensor2.size == 24
+
+
+def test_tensor_repr(context):
+    """Test tensor string representation"""
+    tensor = context.create_tensor([2, 3], "float32")
+    repr_str = repr(tensor)
+
+    assert "MLTensor" in repr_str
+    assert "[2, 3]" in repr_str
+    assert "float32" in repr_str
+
+
+def test_tensor_workflow(context, builder):
+    """Test complete tensor workflow with graph execution"""
+    # Create tensors for inputs and outputs
+    input_tensor = context.create_tensor([2, 3], "float32")
+
+    # Write input data
+    input_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    context.write_tensor(input_tensor, input_data)
+
+    # Build a simple graph
+    x = builder.input("x", [2, 3], "float32")
+    y = builder.relu(x)
+    graph = builder.build({"output": y})
+
+    # Read input from tensor for compute
+    tensor_data = context.read_tensor(input_tensor)
+
+    # Execute graph
+    results = context.compute(graph, {"x": tensor_data})
+
+    # Verify result
+    expected = np.maximum(input_data, 0)
+    np.testing.assert_array_equal(results["output"], expected)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

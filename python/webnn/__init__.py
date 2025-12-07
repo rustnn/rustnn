@@ -26,6 +26,7 @@ from ._rustnn import (
     MLGraphBuilder,
     MLOperand,
     MLGraph,
+    MLTensor,
 )
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "MLGraphBuilder",
     "MLOperand",
     "MLGraph",
+    "MLTensor",
 ]
 
 __version__ = "0.1.0"

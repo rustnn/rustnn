@@ -1,9 +1,11 @@
 use super::graph::PyMLGraph;
 use super::graph_builder::PyMLGraphBuilder;
+use super::operand::parse_data_type;
+use super::tensor::PyMLTensor;
 use crate::converters::GraphConverter;
+use crate::graph::OperandDescriptor;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::HashMap;
 
 #[cfg(feature = "onnx-runtime")]
 use crate::executors::onnx::{OnnxInput, run_onnx_with_inputs};
@@ -65,13 +67,13 @@ impl PyMLContext {
     ///
     /// Returns:
     ///     Dictionary mapping output names to result numpy arrays
-    #[pyo3(signature = (graph, inputs, outputs=None))]
+    #[pyo3(signature = (graph, inputs, _outputs=None))]
     fn compute(
         &self,
         py: Python,
         graph: &PyMLGraph,
         inputs: &Bound<'_, PyDict>,
-        outputs: Option<&Bound<'_, PyDict>>,
+        _outputs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyDict>> {
         #[cfg(feature = "onnx-runtime")]
         {
@@ -262,6 +264,83 @@ impl PyMLContext {
         // Return empty dict for now (actual implementation would return outputs)
         let result = PyDict::new_bound(py);
         Ok(result.into())
+    }
+
+    /// Create a tensor for explicit tensor management
+    ///
+    /// Args:
+    ///     shape: Shape of the tensor
+    ///     data_type: Data type string (e.g., "float32")
+    ///
+    /// Returns:
+    ///     MLTensor: A new tensor with the specified shape and type
+    fn create_tensor(&self, shape: Vec<u32>, data_type: &str) -> PyResult<PyMLTensor> {
+        let dtype = parse_data_type(data_type)?;
+        let descriptor = OperandDescriptor {
+            data_type: dtype,
+            shape,
+            pending_permutation: Vec::new(),
+        };
+
+        Ok(PyMLTensor::new(descriptor))
+    }
+
+    /// Read data from a tensor into a numpy array
+    ///
+    /// Args:
+    ///     tensor: The MLTensor to read from
+    ///
+    /// Returns:
+    ///     numpy.ndarray: The tensor data as a numpy array
+    fn read_tensor(&self, py: Python, tensor: &PyMLTensor) -> PyResult<PyObject> {
+        let numpy = py.import_bound("numpy")?;
+        let data = tensor.get_data();
+        let shape_tuple =
+            pyo3::types::PyTuple::new_bound(py, tensor.descriptor.shape.iter().map(|&d| d as i64));
+
+        let array = numpy.call_method1("array", (data,))?;
+        let reshaped = array.call_method1("reshape", (shape_tuple,))?;
+
+        Ok(reshaped.into())
+    }
+
+    /// Write data from a numpy array into a tensor
+    ///
+    /// Args:
+    ///     tensor: The MLTensor to write to
+    ///     data: Numpy array or array-like data to write
+    fn write_tensor(&self, py: Python, tensor: &PyMLTensor, data: PyObject) -> PyResult<()> {
+        let numpy = py.import_bound("numpy")?;
+
+        // Convert to numpy array
+        let array = numpy.call_method1("asarray", (data,))?;
+
+        // Convert to float32
+        let array_f32 = array.call_method1("astype", ("float32",))?;
+
+        // Get shape
+        let shape_obj = array_f32.getattr("shape")?;
+        let shape: Vec<u32> = shape_obj
+            .extract::<Vec<usize>>()?
+            .iter()
+            .map(|&d| d as u32)
+            .collect();
+
+        // Validate shape
+        if shape != tensor.descriptor.shape {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Shape mismatch: tensor has shape {:?}, but data has shape {:?}",
+                tensor.descriptor.shape, shape
+            )));
+        }
+
+        // Get flattened data
+        let flat = array_f32.call_method0("flatten")?;
+        let data: Vec<f32> = flat.call_method0("tolist")?.extract()?;
+
+        tensor.set_data(data)?;
+
+        Ok(())
     }
 
     /// Get device type
