@@ -14,10 +14,10 @@
     - readTensor() for reading results
     - writeTensor() for setting input data
 
-[ ] Implement async execution support
+[x] Implement async execution support
     - WebNN spec uses async/await
-    - Python asyncio integration
-    - Non-blocking compute operations
+    - Python asyncio integration via AsyncMLContext wrapper
+    - Non-blocking compute operations with dispatch()
 
 ### Operations - Missing Implementations
 
@@ -462,7 +462,18 @@ Last Updated: 2025-12-07
 
 ## Recent Changes (2025-12-07)
 
-### MLTensor Implementation (Latest)
+### Async Execution Support (Latest)
+- Implemented AsyncMLContext wrapper for async/await syntax
+- Added dispatch() method for non-blocking graph execution
+- Added read_tensor_async() and write_tensor_async() for async tensor I/O
+- WebNN spec-compliant asynchronous execution model
+- Uses Python's asyncio.run_in_executor() for thread pool execution
+- 5 new async tests covering dispatch, tensor I/O, and concurrent operations
+- All 45 tests passing (40 existing + 5 new async)
+- Rust code remains synchronous (follows Rust-first principle)
+- Zero Rust async dependencies - clean Python-layer solution
+
+### MLTensor Implementation
 - Implemented MLTensor class for explicit tensor management
 - Added createTensor(), readTensor(), writeTensor() methods to MLContext
 - Thread-safe data storage using Arc<Mutex<Vec<f32>>>
