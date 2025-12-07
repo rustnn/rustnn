@@ -2,15 +2,15 @@
 
 ## Project Overview
 
-**rustnn** is a standalone Rust crate that mirrors Chromium's WebNN (Web Neural Network) graph handling while adding pluggable format converters and helper tooling to visualize, execute, and validate exported graphs on macOS.
+**rustnn** is a cross-platform Rust crate that implements the W3C WebNN (Web Neural Network) specification, mirroring Chromium's graph handling while adding pluggable format converters and tooling for visualization, execution, and validation.
 
 **Core Capabilities:**
 - Validates WebNN graph descriptions from JSON files
-- Converts WebNN graphs to ONNX and CoreML formats
-- Executes converted models on various compute units (CPU, GPU, Neural Engine)
+- Converts WebNN graphs to ONNX (cross-platform) and CoreML (macOS) formats
+- Executes models on various backends: ONNX Runtime (CPU/GPU) and CoreML (macOS: GPU/Neural Engine)
 - Visualizes graph structures using Graphviz DOT format
-- Provides both a CLI tool and library API
-- **Python bindings** via PyO3/maturin implementing the W3C WebNN API specification
+- Provides CLI tool, Rust library API, and Python bindings (PyO3)
+- **Python bindings** implement the W3C WebNN API specification with full spec compliance
 
 ## Architecture
 
@@ -314,54 +314,15 @@ Currently, operations are validated but not typed. To add operation-specific val
    }
    ```
 
-## Common Tasks
+## Development
 
-### Building the Project
+For detailed development instructions, build commands, and troubleshooting, see **[docs/development.md](docs/development.md)**.
+
+Quick reference:
 ```bash
-make build                    # Debug build
-cargo build --release         # Release build
-cargo build --features coreml-runtime,onnx-runtime  # All features
-```
-
-### Running Validation
-```bash
-cargo run -- validate examples/sample_graph.json
-```
-
-### Converting Graphs
-```bash
-# To ONNX
-cargo run -- convert examples/sample_graph.json onnx -o output.onnx
-
-# To CoreML
-cargo run -- convert examples/sample_graph.json coreml -o output.mlmodel
-```
-
-### Executing Models
-```bash
-# ONNX (requires onnx-runtime feature)
-cargo run --features onnx-runtime -- run-onnx model.onnx
-
-# CoreML (macOS only, requires coreml-runtime feature)
-cargo run --features coreml-runtime -- run-coreml model.mlmodel --device gpu
-```
-
-### Visualization
-```bash
-cargo run -- visualize examples/sample_graph.json -o graph.dot
-dot -Tpng graph.dot -o graph.png
-```
-
-### Running Tests
-```bash
-cargo test                    # All tests
-cargo test --lib              # Library tests only
-cargo test converters         # Specific module
-```
-
-### Clean Build Artifacts
-```bash
-make clean
+cargo build --release                      # Build Rust library
+maturin develop --features python          # Build Python package
+cargo test && python -m pytest tests/      # Run all tests
 ```
 
 ## Dependencies
