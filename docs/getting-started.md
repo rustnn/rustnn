@@ -65,12 +65,14 @@ import numpy as np
 
 # Create the ML namespace and context
 ml = webnn.ML()
-context = ml.create_context(device_type="cpu", power_preference="default")
+context = ml.create_context(accelerated=False, power_preference="default")
 ```
 
-The `MLContext` represents the execution environment. You can specify:
-- `device_type`: "cpu", "gpu", or "npu"
+The `MLContext` represents the execution environment. Following the [W3C WebNN Device Selection spec](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md), you provide hints:
+- `accelerated`: `True` to request GPU/NPU, `False` for CPU-only
 - `power_preference`: "default", "high-performance", or "low-power"
+
+The platform autonomously selects the actual device based on availability.
 
 ### Step 2: Create a Graph Builder
 
@@ -150,7 +152,7 @@ import numpy as np
 def main():
     # Setup
     ml = webnn.ML()
-    context = ml.create_context(device_type="cpu")
+    context = ml.create_context(accelerated=False)
     builder = context.create_graph_builder()
 
     # Build graph

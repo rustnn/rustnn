@@ -50,14 +50,18 @@
 - No backend-specific artifacts at graph build time
 - Same graph can be executed on multiple backends
 
-**2. Runtime Backend Selection (WebNN Spec-Compliant)**
-- Backend selection happens at **context creation**, not compile-time
-- `MLContext::new()` selects backend based on `device_type` parameter:
-  - "cpu" → `Backend::OnnxCpu` (ONNX Runtime CPU)
-  - "gpu" → `Backend::CoreML` (macOS) or `Backend::OnnxGpu` elsewhere
-  - "npu" → `Backend::CoreML` (Apple Silicon Neural Engine)
-- Selection logic in `PyMLContext::select_backend()` (src/python/context.rs)
+**2. Runtime Backend Selection (WebNN Device Selection Explainer)**
+- Follows [W3C WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md)
+- Backend selection happens at **context creation** using hints, not compile-time
+- `MLContext::new()` takes `accelerated` (bool) and `power_preference` (str) hints:
+  - `accelerated=false` → `Backend::OnnxCpu` (CPU only)
+  - `accelerated=true` + `power="low-power"` → NPU > GPU > CPU
+  - `accelerated=true` + `power="high-performance"` → GPU > NPU > CPU
+  - `accelerated=true` + `power="default"` → GPU > NPU > CPU
+- Platform autonomously selects actual device based on availability
+- Selection logic in `PyMLContext::select_backend()` (src/python/context.rs:473)
 - Feature flags control availability, not selection
+- Per explainer: "implementations have a better grasp of the system...control should be relinquished to them"
 
 **3. Lazy Backend Conversion**
 - Backend conversion happens during **`compute()`**, not `build()`
@@ -113,8 +117,13 @@
 
 #### **python/context.rs** - Backend Selection & Execution
 - **Backend Enum**: Tracks selected backend (OnnxCpu, OnnxGpu, CoreML, None)
-- **Context Creation**: `PyMLContext::new()` selects backend based on device_type
-- **Backend Selection**: `select_backend()` maps device_type to available backend
+- **Context Creation**: `PyMLContext::new()` implements [WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md)
+  - Takes `accelerated` (bool) and `power_preference` (str) hints
+  - Returns `(Backend, accelerated_available)` tuple
+  - `accelerated` property indicates actual platform capability
+- **Backend Selection**: `select_backend()` maps hints to available backend using platform autonomy
+  - No explicit device types - uses hints and availability
+  - Platform decides actual device allocation
 - **Compute Routing**: `compute()` routes to appropriate backend method
   - `compute_onnx()` - ONNX Runtime execution (feature-gated)
   - `compute_coreml()` - CoreML execution (feature-gated)
@@ -370,12 +379,13 @@ make clean
 
 ## Key Technical Decisions
 
-1. **Protobuf for interop**: Native format for ONNX and CoreML
-2. **Compile-time codegen**: Protobufs compiled at build time
-3. **Feature flags**: Optional runtimes to minimize dependencies
-4. **Objective-C FFI**: Direct CoreML access on macOS
-5. **Zero-copy where possible**: `Bytes` type for efficiency
-6. **Registry pattern**: Pluggable converters without core changes
+1. **WebNN Device Selection Explainer**: Follows [W3C WebNN Device Selection spec](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md) for platform-autonomous device selection using hints
+2. **Protobuf for interop**: Native format for ONNX and CoreML
+3. **Compile-time codegen**: Protobufs compiled at build time
+4. **Feature flags**: Optional runtimes to minimize dependencies
+5. **Objective-C FFI**: Direct CoreML access on macOS
+6. **Zero-copy where possible**: `Bytes` type for efficiency
+7. **Registry pattern**: Pluggable converters without core changes
 
 ## Future Extension Points
 

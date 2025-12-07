@@ -33,7 +33,7 @@ import numpy as np
 
 # Create ML context
 ml = webnn.ML()
-context = ml.create_context(device_type="cpu")
+context = ml.create_context(accelerated=False)  # CPU-only for this example
 builder = context.create_graph_builder()
 
 # Build a simple neural network
