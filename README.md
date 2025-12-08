@@ -390,15 +390,15 @@ See the [examples/](examples/) directory for more code samples.
 
 ---
 
-## 📚 Python API Reference
-## 📚 Python API Reference
+## 📚 Documentation
 
 The Python API implements the [W3C WebNN specification](https://www.w3.org/TR/webnn/).
 
-For complete API documentation, see:
-- **[API Reference](docs/api-reference.md)** - Full class and method documentation
-- **[Getting Started Guide](docs/getting-started.md)** - Quick start tutorial
-- **[Examples](examples/)** - Working code examples
+**Quick Links:**
+- **[API Reference](docs/api-reference.md)** - Complete Python API documentation
+- **[Getting Started](docs/getting-started.md)** - Installation and first steps
+- **[Architecture](docs/architecture.md)** - Design principles and structure
+- **[Examples](examples/)** - Working code samples
 
 ---
 
@@ -477,23 +477,19 @@ make validate-all-env  # Run full test pipeline
 ---
 
 ## 🏗️ Architecture
-## 🏗️ Architecture
 
-For detailed architecture documentation, see **[Architecture Guide](docs/architecture.md)**.
+**Design Principles:**
+- **Backend-Agnostic Graphs** - Platform-independent representation, runtime backend selection
+- **WebNN Spec Compliance** - Implements W3C Device Selection and MLTensor specs
+- **Rust-First** - Pure Rust core with thin Python bindings
+- **Lazy Conversion** - Backend conversion happens during execution, not compilation
 
-Key principles:
-- **Backend-Agnostic Graph Representation**: Platform-independent `GraphInfo` structure
-- **Runtime Backend Selection**: WebNN spec-compliant device selection via hints
-- **MLTensor Management**: Explicit tensor control with descriptor flags
-- **Rust-First Design**: Pure Rust core with thin Python bindings
+See **[Architecture Guide](docs/architecture.md)** for details.
 
 ---
 
 ## 🔧 Development
 
-For detailed development documentation, see **[Development Guide](docs/development.md)**.
-
-Quick start:
 ```bash
 # Clone and build
 git clone https://github.com/tarekziade/rustnn.git
@@ -502,9 +498,10 @@ cargo build --release
 maturin develop --features python
 
 # Run tests
-cargo test
-python -m pytest tests/
+cargo test && python -m pytest tests/
 ```
+
+See **[Development Guide](docs/development.md)** for detailed instructions.
 
 ---
 
@@ -542,28 +539,27 @@ cargo test --features onnx-runtime,coreml-runtime
 
 ---
 
-## 📋 Roadmap
+## 📋 Project Status
 
-See [TODO.txt](TODO.txt) for a comprehensive list of planned features.
+**🎉 85 WebNN operations fully implemented across all backends!**
 
-**Completed:**
-- ✅ Python WebNN API implementation
-- ✅ Runtime backend selection (WebNN spec-compliant)
-- ✅ ONNX conversion with full operation support
-- ✅ Actual tensor execution with ONNX Runtime
-- ✅ Async execution support (AsyncMLContext)
-- ✅ Shape inference and broadcasting
-- ✅ Comprehensive documentation
+**Completed Features:**
+- ✅ W3C WebNN API implementation in Python
+- ✅ Runtime backend selection (CPU, GPU, Neural Engine)
+- ✅ 85/95 WebNN operations (89% spec coverage)
+- ✅ ONNX Runtime execution (cross-platform)
+- ✅ CoreML execution (macOS GPU/Neural Engine)
+- ✅ Async execution with MLTensor management
+- ✅ Shape inference with NumPy-style broadcasting
+- ✅ Complete MobileNetV2 + Transformer examples
 
-**High Priority:**
-- ⬜ PyPI package publishing automation
-- ⬜ More operations (conv2d, pooling, normalization)
-- ⬜ CoreML execution with actual tensor I/O
+**What's Next:**
+- PyPI package automation
+- Additional specialized activations (~6 operations)
+- Graph optimization passes
+- Multi-platform wheels (manylinux, Windows)
 
-**Medium Priority:**
-- ⬜ Graph optimization passes
-- ⬜ Multi-platform wheel building (manylinux, Windows)
-- ⬜ Performance benchmarks
+See [TODO.txt](TODO.txt) and [docs/operator-status.md](docs/operator-status.md) for details.
 
 ---
 
@@ -571,7 +567,7 @@ See [TODO.txt](TODO.txt) for a comprehensive list of planned features.
 
 Contributions are welcome! Please see:
 
-- [CLAUDE.md](CLAUDE.md) - Project architecture and conventions
+- [AGENTS.md](AGENTS.md) - Project architecture and conventions for AI agents
 - [TODO.txt](TODO.txt) - Feature requests and known limitations
 
 ### Quick Contribution Guide

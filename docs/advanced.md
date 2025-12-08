@@ -62,7 +62,7 @@ print(f"Memory saved: {large_weights.nbytes / 1024 / 1024:.2f} MB vs "
 
 ## Integration with Other Libraries
 
-### NumPy Integration
+### NumPy Integration with Execution
 
 Seamless conversion between NumPy and WebNN:
 
@@ -71,23 +71,27 @@ import webnn
 import numpy as np
 
 ml = webnn.ML()
-context = ml.create_context()
+context = ml.create_context(accelerated=False)
 builder = context.create_graph_builder()
 
-# NumPy arrays are automatically converted
-weights = np.random.randn(100, 50).astype('float32')
+# Build a simple matmul with NumPy weights
+x = builder.input("x", [1, 100], "float32")
+weights = np.random.randn(100, 50).astype('float32') * 0.01
 bias = np.zeros(50, dtype='float32')
 
-# Direct usage
 w_op = builder.constant(weights)
 b_op = builder.constant(bias)
 
-# Different NumPy dtypes
-fp16_array = np.random.randn(10, 10).astype('float16')
-int8_array = np.random.randint(-128, 127, (10, 10), dtype='int8')
+output = builder.add(builder.matmul(x, w_op), b_op)
+graph = builder.build({"output": output})
 
-fp16_op = builder.constant(fp16_array)
-int8_op = builder.constant(int8_array)
+# Execute with NumPy input
+x_data = np.random.randn(1, 100).astype('float32')
+results = context.compute(graph, {"x": x_data})
+
+print(f"Input shape: {x_data.shape}")
+print(f"Output shape: {results['output'].shape}")
+print(f"Result is NumPy array: {isinstance(results['output'], np.ndarray)}")
 ```
 
 ### ONNX Integration
@@ -139,20 +143,21 @@ weights = load_onnx_weights("model.onnx")
 graph = build_from_onnx_weights(weights)
 ```
 
-## Graph Introspection
+## Graph Introspection and Execution
 
-Inspect and analyze compiled graphs:
+Inspect and analyze compiled graphs, then execute them:
 
 ```python
 import webnn
+import numpy as np
 
 ml = webnn.ML()
-context = ml.create_context()
+context = ml.create_context(accelerated=False)
 builder = context.create_graph_builder()
 
 # Build a complex graph
-x = builder.input("x", [10, 20], "float32")
-y = builder.input("y", [20, 30], "float32")
+x = builder.input("x", [2, 3], "float32")
+y = builder.input("y", [3, 4], "float32")
 z = builder.matmul(x, y)
 w = builder.relu(z)
 output = builder.sigmoid(w)
@@ -165,7 +170,15 @@ print(f"  Inputs: {graph.get_input_names()}")
 print(f"  Outputs: {graph.get_output_names()}")
 print(f"  Total operands: {graph.operand_count}")
 print(f"  Total operations: {graph.operation_count}")
-print(f"  Operations per input: {graph.operation_count / len(graph.get_input_names()):.1f}")
+
+# Execute the graph
+x_data = np.random.randn(2, 3).astype('float32')
+y_data = np.random.randn(3, 4).astype('float32')
+results = context.compute(graph, {"x": x_data, "y": y_data})
+
+print(f"\nExecution:")
+print(f"  Output shape: {results['final'].shape}")
+print(f"  Output range: [{results['final'].min():.4f}, {results['final'].max():.4f}]")
 ```
 
 ## Custom Graph Patterns
@@ -420,43 +433,44 @@ Building graph with 1 output(s)...
 
 ## Platform-Specific Features
 
-### macOS CoreML
+### Backend Selection and Execution
+
+Choose the best backend for your platform and execute models:
 
 ```python
 import webnn
+import numpy as np
 import platform
 
-def export_for_platform(graph, base_name="model"):
-    """Export model in the best format for the current platform."""
-    ml = webnn.ML()
-    context = ml.create_context()
-
-    # Always export ONNX (cross-platform)
-    onnx_path = f"{base_name}.onnx"
-    context.convert_to_onnx(graph, onnx_path)
-    print(f"✓ Exported ONNX: {onnx_path}")
-
-    # Export CoreML if on macOS
-    if platform.system() == "Darwin":
-        try:
-            coreml_path = f"{base_name}.mlmodel"
-            context.convert_to_coreml(graph, coreml_path)
-            print(f"✓ Exported CoreML: {coreml_path}")
-        except RuntimeError as e:
-            print(f"⚠ CoreML export failed: {e}")
-    else:
-        print("ℹ CoreML export skipped (not on macOS)")
-
-# Usage
 ml = webnn.ML()
-context = ml.create_context()
-builder = context.create_graph_builder()
 
+# Try GPU/NPU acceleration first
+context = ml.create_context(accelerated=True, power_preference="high-performance")
+print(f"Platform: {platform.system()}")
+print(f"Accelerated: {context.accelerated}")
+
+# Build a simple graph
+builder = context.create_graph_builder()
 x = builder.input("x", [10], "float32")
-y = builder.add(x, x)  # Use only CoreML-supported ops
+y = builder.relu(x)
 graph = builder.build({"y": y})
 
-export_for_platform(graph, "my_model")
+# Execute on selected backend
+x_data = np.array([-5, -3, -1, 0, 1, 3, 5, 7, 9, 11], dtype=np.float32)
+results = context.compute(graph, {"x": x_data})
+
+print(f"Result: {results['y']}")
+
+# Export for different platforms
+context.convert_to_onnx(graph, "model.onnx")
+print("✓ Exported ONNX (cross-platform)")
+
+if platform.system() == "Darwin":
+    try:
+        context.convert_to_coreml(graph, "model.mlmodel")
+        print("✓ Exported CoreML (macOS GPU/Neural Engine)")
+    except Exception as e:
+        print(f"⚠ CoreML export: {e}")
 ```
 
 ## Best Practices Summary

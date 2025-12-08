@@ -14,19 +14,22 @@
 git clone https://github.com/tarekziade/rustnn.git
 cd rustnn
 
-# Build Rust library
-cargo build --release
+# See all available commands
+make help
 
-# Build Python package
-maturin develop --features python
+# Build Rust library
+make build
+
+# Build Python package (downloads ONNX Runtime automatically)
+make python-dev
 
 # Run tests
-cargo test                    # Rust tests
-python -m pytest tests/       # Python tests
+make test                     # Rust tests
+make python-test              # Python tests (includes WPT conformance)
 
 # Build documentation
-mkdocs serve                  # Live preview at http://127.0.0.1:8000
-mkdocs build                  # Build static site
+make docs-serve               # Live preview at http://127.0.0.1:8000
+make docs-build               # Build static site
 ```
 
 ## Running Examples
@@ -35,21 +38,35 @@ mkdocs build                  # Build static site
 
 ```bash
 # Install package first
-maturin develop --features python
+make python-dev
 
 # Run examples
+make python-example           # Run all examples
+make mobilenet-demo           # MobileNetV2 on all 3 backends
+make text-gen-demo            # Text generation with attention
+make text-gen-train           # Train model on sample data
+make text-gen-trained         # Generate with trained weights
+
+# Or run individual examples
 python examples/python_simple.py
 python examples/python_matmul.py
-
-# Run integration tests
-python tests/test_integration.py
-python tests/test_coreml_basic.py --cleanup
+python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu
 ```
 
 ### Rust Examples
 
 ```bash
-cargo run -- examples/sample_graph.json --export-dot graph.dot
+# Validate a graph
+make run
+
+# Generate visualization
+make viz
+
+# Convert to ONNX
+make onnx
+
+# Convert to CoreML
+make coreml
 ```
 
 ## Testing
@@ -57,23 +74,29 @@ cargo run -- examples/sample_graph.json --export-dot graph.dot
 ### Python Tests
 
 ```bash
-# All tests
-python -m pytest tests/
+# All tests (includes WPT conformance tests)
+make python-test
 
-# With coverage
-python -m pytest tests/ --cov=webnn --cov-report=html
+# WPT conformance tests only
+make python-test-wpt
+
+# Or use pytest directly
+python -m pytest tests/ -v
 
 # Specific test
 python -m pytest tests/test_python_api.py::test_context_creation -v
 
-# Run integration tests with cleanup
-python tests/test_integration.py --cleanup
+# With coverage
+python -m pytest tests/ --cov=webnn --cov-report=html
 ```
 
 ### Rust Tests
 
 ```bash
-# All tests
+# All Rust tests
+make test
+
+# Or use cargo directly
 cargo test
 
 # Specific module
@@ -81,29 +104,21 @@ cargo test validator
 
 # With output
 cargo test -- --nocapture
-
-# Integration tests only
-cargo test --test '*'
 ```
 
 ## Feature Flags
 
-The project uses Cargo feature flags to control optional functionality:
+The project uses Cargo feature flags to control optional functionality. The Makefile handles these automatically:
 
 ```bash
-# Python bindings
-cargo build --features python
+# Python bindings with ONNX Runtime (recommended)
+make python-dev              # Includes python,onnx-runtime features
 
-# ONNX Runtime support
-cargo build --features onnx-runtime
+# Build Python wheel
+make python-build            # Production build with all features
 
-# CoreML Runtime support (macOS only)
-cargo build --features coreml-runtime
-
-# All features
-cargo build --features python,onnx-runtime,coreml-runtime
-
-# Python package with all features
+# Or use cargo/maturin directly if needed
+cargo build --features python,onnx-runtime
 maturin develop --features python,onnx-runtime,coreml-runtime
 ```
 
@@ -116,8 +131,8 @@ Edit Rust code in `src/` or Python code in `python/webnn/`.
 ### 2. Format Code
 
 ```bash
-# Rust
-cargo fmt
+# Rust (automatically formats)
+make fmt
 
 # Python
 black python/ tests/
@@ -126,19 +141,19 @@ black python/ tests/
 ### 3. Run Tests
 
 ```bash
-# Quick check (Rust only)
-cargo check --features python
-
 # Full test suite
-cargo test
-python -m pytest tests/
+make test                    # Rust tests
+make python-test             # Python tests
+
+# Or run comprehensive validation
+make validate-all-env        # Build, test, convert, validate
 ```
 
 ### 4. Build and Test Python Package
 
 ```bash
-maturin develop --features python
-python -m pytest tests/
+make python-dev              # Install in development mode
+make python-test             # Run all tests
 ```
 
 ### 5. Update Documentation
@@ -146,7 +161,9 @@ python -m pytest tests/
 Edit files in `docs/` and preview:
 
 ```bash
-mkdocs serve
+make docs-serve              # Live preview at http://127.0.0.1:8000
+make docs-build              # Build static site
+make ci-docs                 # Build in strict mode (CI)
 ```
 
 ## Debugging
@@ -154,16 +171,23 @@ mkdocs serve
 ### Rust
 
 ```bash
-# Debug build with symbols
-cargo build --features python
+# Debug build
+make build
+
+# Run with visualization
+make viz
 
 # Run with backtrace
-RUST_BACKTRACE=1 cargo run -- examples/sample_graph.json
+RUST_BACKTRACE=1 make run
 ```
 
 ### Python
 
-```python
+```bash
+# Run specific example with verbose output
+python examples/python_simple.py
+
+# Or enable debug logging in code
 import webnn
 import logging
 
@@ -194,9 +218,10 @@ logging.basicConfig(level=logging.DEBUG)
 ### Update Documentation
 
 1. Edit markdown files in `docs/`
-2. Preview with `mkdocs serve`
+2. Preview with `make docs-serve`
 3. Check links and formatting
-4. Build with `mkdocs build`
+4. Build with `make docs-build`
+5. Test in strict mode with `make ci-docs`
 
 ## Troubleshooting
 
@@ -206,12 +231,11 @@ logging.basicConfig(level=logging.DEBUG)
 # Update Rust
 rustup update
 
-# Clean build artifacts
-cargo clean
-rm -rf target/
+# Clean all build artifacts
+make clean-all
 
-# Rebuild
-maturin develop --features python
+# Rebuild from scratch
+make python-dev
 ```
 
 ### Import Errors
@@ -220,8 +244,9 @@ maturin develop --features python
 # Ensure you're in the right virtual environment
 which python
 
-# Reinstall
-maturin develop --features python --force
+# Clean and reinstall
+make python-clean
+make python-dev
 
 # Verify installation
 python -c "import webnn; print(webnn.__version__)"
@@ -229,24 +254,28 @@ python -c "import webnn; print(webnn.__version__)"
 
 ### ONNX Runtime Issues
 
-On macOS ARM64, ONNX Runtime prebuilt binaries may not be available. Use system library:
+The Makefile automatically downloads ONNX Runtime for you:
 
 ```bash
-# Install ONNX Runtime
+# Download ONNX Runtime manually if needed
+make onnxruntime-download
+
+# Or install system-wide (optional)
 brew install onnxruntime
 
-# Set environment variables
+# Build with system ONNX Runtime
 export ORT_STRATEGY=system
 export ORT_LIB_LOCATION=/opt/homebrew/lib
-
-# Build
-maturin develop --features python,onnx-runtime
+make python-dev
 ```
 
 ### Test Failures
 
 ```bash
-# Run specific failing test with verbose output
+# Run tests with verbose output
+make python-test
+
+# Run specific test
 python -m pytest tests/test_python_api.py::test_name -xvs
 
 # Check if backend is available
@@ -312,10 +341,10 @@ The project uses GitHub Actions for CI:
 
 ```bash
 # Run the same checks as CI
-cargo fmt --check
-cargo clippy -- -D warnings
-cargo test
-python -m pytest tests/
+make fmt                     # Format code
+cargo clippy -- -D warnings  # Lint checks
+make validate-all-env        # Full validation pipeline
+make ci-docs                 # Documentation build (strict mode)
 ```
 
 ## Resources

@@ -19,9 +19,12 @@ The WebNN Python API allows you to:
 ## Key Features
 
 ✅ **W3C Standard Compliant** - Implements the official WebNN specification
+✅ **85 Operations** - 89% coverage of WebNN spec operations
 ✅ **Type-Safe** - Full type hints for IDE autocomplete
-✅ **NumPy Integration** - Seamless conversion between NumPy arrays and graph operands
-✅ **Multiple Backends** - ONNX and CoreML export support
+✅ **NumPy Integration** - Seamless conversion between NumPy arrays
+✅ **Multiple Backends** - ONNX Runtime (CPU/GPU) and CoreML (macOS)
+✅ **Actual Execution** - Run models with real tensor inputs/outputs
+✅ **Async Support** - Non-blocking execution with Python asyncio
 ✅ **Fast** - Built with Rust and PyO3 for maximum performance
 ✅ **Cross-Platform** - Works on Linux, macOS, and Windows
 
@@ -31,27 +34,29 @@ The WebNN Python API allows you to:
 import webnn
 import numpy as np
 
-# Create ML context
+# Create ML context with device hints
 ml = webnn.ML()
-context = ml.create_context(accelerated=False)  # CPU-only for this example
+context = ml.create_context(accelerated=True)  # Request GPU/NPU if available
 builder = context.create_graph_builder()
 
-# Build a simple neural network
-input_tensor = builder.input("input", [1, 784], "float32")
-weights = builder.constant(np.random.randn(784, 10).astype('float32'))
-bias = builder.constant(np.zeros(10, dtype='float32'))
+# Build a simple computation: z = relu(x + y)
+x = builder.input("x", [2, 3], "float32")
+y = builder.input("y", [2, 3], "float32")
+z = builder.add(x, y)
+output = builder.relu(z)
 
-# Forward pass: output = relu(input @ weights + bias)
-matmul_result = builder.matmul(input_tensor, weights)
-add_result = builder.add(matmul_result, bias)
-output = builder.relu(add_result)
-
-# Compile the graph
+# Compile the graph (backend-agnostic)
 graph = builder.build({"output": output})
 
-# Export to ONNX
+# Execute with actual data
+x_data = np.array([[1, -2, 3], [4, -5, 6]], dtype=np.float32)
+y_data = np.array([[-1, 2, -3], [-4, 5, -6]], dtype=np.float32)
+results = context.compute(graph, {"x": x_data, "y": y_data})
+
+print(results["output"])  # [[0. 0. 0.] [0. 0. 0.]]
+
+# Export to ONNX for deployment
 context.convert_to_onnx(graph, "model.onnx")
-print(f"Graph compiled: {graph.operand_count} operands, {graph.operation_count} operations")
 ```
 
 ## Installation
@@ -70,10 +75,10 @@ pip install maturin
 maturin develop --features python
 ```
 
-### From PyPI (Coming Soon)
+### From PyPI
 
 ```bash
-pip install webnn
+pip install pywebnn
 ```
 
 ## Documentation Structure

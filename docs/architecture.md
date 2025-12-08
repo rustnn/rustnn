@@ -102,11 +102,16 @@ python/webnn/           # Python package
 └── __init__.pyi        # Type stubs
 
 tests/
-└── test_python_api.py  # Python API tests (45 tests)
+├── test_python_api.py  # Python API tests (320+ tests)
+├── test_wpt_conformance.py # WPT spec compliance tests
+└── test_integration.py # Integration tests
 
 examples/
-├── python_simple.py    # Basic Python example
-└── python_matmul.py    # Matrix multiplication example
+├── python_simple.py          # Basic Python example
+├── python_matmul.py          # Matrix multiplication
+├── mobilenetv2_complete.py   # Complete pretrained MobileNetV2
+├── text_generation_gpt.py    # Transformer with attention
+└── train_text_model.py       # Model training script
 ```
 
 ## Design Patterns
@@ -144,7 +149,17 @@ examples/
 ## Platform Support
 
 - **Validation & Conversion**: Cross-platform (Linux, macOS, Windows)
-- **ONNX Execution**: Cross-platform with `onnx-runtime` feature
-- **CoreML Execution**: macOS only with `coreml-runtime` feature
+- **ONNX Execution**: Cross-platform with `onnx-runtime` feature (CPU/GPU)
+- **CoreML Execution**: macOS only with `coreml-runtime` feature (GPU/Neural Engine)
 - **Neural Engine**: macOS with Apple Silicon (via CoreML)
-- **Python Bindings**: Cross-platform with `python` feature (Python 3.8+)
+- **Python Bindings**: Cross-platform with `python` feature (Python 3.11+)
+
+## Implementation Status
+
+**85 WebNN operations fully implemented** across all backends:
+- Shape Inference: 85/85 (100%)
+- Python API: 85/85 (100%)
+- ONNX Backend: 85/85 (100%)
+- CoreML MLProgram: 85/85 (100%)
+
+See [operator-status.md](operator-status.md) for complete details.

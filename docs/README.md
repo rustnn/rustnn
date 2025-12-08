@@ -11,6 +11,9 @@ docs/
 ├── api-reference.md      # Complete API documentation
 ├── examples.md           # Code examples and tutorials
 ├── advanced.md           # Advanced usage patterns
+├── architecture.md       # System architecture and design
+├── development.md        # Development guide
+├── operator-status.md    # WebNN operator implementation status
 └── requirements.txt      # Python dependencies for building docs
 ```
 
@@ -27,7 +30,7 @@ pip install -r requirements.txt
 To preview documentation with live reload:
 
 ```bash
-mkdocs serve
+make docs-serve
 ```
 
 Then open http://127.0.0.1:8000 in your browser.
@@ -37,17 +40,17 @@ Then open http://127.0.0.1:8000 in your browser.
 To build the static site:
 
 ```bash
-mkdocs build
+make docs-build
 ```
 
 The built site will be in the `site/` directory.
 
 ### Strict Build
 
-To build with strict mode (fails on warnings):
+To build with strict mode (fails on warnings, used in CI):
 
 ```bash
-mkdocs build --strict
+make ci-docs
 ```
 
 ## Writing Documentation
@@ -60,9 +63,10 @@ The documentation uses [Material for MkDocs](https://squidfunk.github.io/mkdocs-
 
 ```python
 import webnn
+import numpy as np
 
 ml = webnn.ML()
-context = ml.create_context()
+context = ml.create_context(accelerated=False)
 ```
 
 #### Admonitions
@@ -102,7 +106,7 @@ context = ml.create_context()
 
 Documentation is automatically built and deployed to GitHub Pages when changes are pushed to the `main` branch.
 
-See [`.github/workflows/README.md`](../.github/workflows/README.md) for details.
+See [`.github/workflows/`](../.github/workflows/) for CI configuration.
 
 ## Style Guide
 
@@ -112,15 +116,17 @@ See [`.github/workflows/README.md`](../.github/workflows/README.md) for details.
 - Add type hints to Python code examples
 - Keep paragraphs short and focused
 - Use headers to organize content hierarchically
+- Show actual execution with `compute()`, not just graph building
+- Use `make` commands instead of raw `cargo`/`maturin` commands
 
 ## Contributing
 
 When adding new features to the Python API:
 
 1. Document the feature in the appropriate section
-2. Add code examples
+2. Add code examples showing actual execution
 3. Update the API reference
-4. Test the documentation build locally
+4. Test the documentation build locally: `make docs-serve`
 5. Submit a pull request
 
 The documentation will be automatically checked for build errors in the PR.

@@ -6,7 +6,7 @@ This guide will help you get started with the WebNN Python API.
 
 ### Prerequisites
 
-- Python 3.8 or later
+- Python 3.11 or later
 - Rust toolchain (for building from source)
 - NumPy (automatically installed as a dependency)
 
@@ -19,7 +19,7 @@ This guide will help you get started with the WebNN Python API.
 
 2. **Clone the repository**:
    ```bash
-   git clone https://github.com/your-org/rustnn.git
+   git clone https://github.com/tarekziade/rustnn.git
    cd rustnn
    ```
 
@@ -126,14 +126,36 @@ The `build()` method:
 - Returns a compiled `MLGraph` object
 - Takes a dictionary mapping output names to operands
 
-### Step 6: Convert to Other Formats
+### Step 6: Execute the Graph
 
 ```python
-# Convert to ONNX
+import numpy as np
+
+# Prepare input data
+x_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+y_data = np.array([[1, 1, 1], [1, 1, 1]], dtype=np.float32)
+
+# Execute the graph with actual inputs
+results = context.compute(graph, {"x": x_data, "y": y_data})
+
+print("Input x:")
+print(x_data)
+print("\nInput y:")
+print(y_data)
+print("\nOutput (relu(x + y)):")
+print(results["output"])
+# [[2. 3. 4.]
+#  [5. 6. 7.]]
+```
+
+### Step 7: Export to Other Formats (Optional)
+
+```python
+# Export to ONNX for deployment
 context.convert_to_onnx(graph, "my_model.onnx")
 print("✓ ONNX model saved")
 
-# Convert to CoreML (macOS only, basic operations)
+# Export to CoreML (macOS only)
 try:
     context.convert_to_coreml(graph, "my_model.mlmodel")
     print("✓ CoreML model saved")
@@ -143,7 +165,7 @@ except Exception as e:
 
 ## Complete Example
 
-Here's the complete code:
+Here's the complete code with execution:
 
 ```python
 import webnn
@@ -155,7 +177,7 @@ def main():
     context = ml.create_context(accelerated=False)
     builder = context.create_graph_builder()
 
-    # Build graph
+    # Build graph: output = relu(x + y)
     x = builder.input("x", [2, 3], "float32")
     y = builder.input("y", [2, 3], "float32")
     sum_result = builder.add(x, y)
@@ -164,11 +186,18 @@ def main():
     # Compile
     graph = builder.build({"output": output})
 
-    # Export
-    context.convert_to_onnx(graph, "model.onnx")
-
     print(f"✓ Graph compiled: {graph.operand_count} operands, "
           f"{graph.operation_count} operations")
+
+    # Execute with real data
+    x_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+    y_data = np.array([[1, 1, 1], [1, 1, 1]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data, "y": y_data})
+
+    print(f"✓ Computed output:\n{results['output']}")
+
+    # Optional: Export to ONNX
+    context.convert_to_onnx(graph, "model.onnx")
     print(f"✓ Model exported to model.onnx")
 
 if __name__ == "__main__":
