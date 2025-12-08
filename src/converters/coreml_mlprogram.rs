@@ -26,7 +26,6 @@ mod mil_ops {
     pub const DIV: &str = "real_div";
     pub const POW: &str = "pow";
     pub const MATMUL: &str = "matmul";
-    pub const LINEAR: &str = "linear"; // For gemm with bias
 
     // Activation functions
     pub const RELU: &str = "relu";
