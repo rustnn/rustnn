@@ -122,15 +122,27 @@ mobilenet-demo: python-dev
 	@echo ""
 	@echo "Backend 1/3: ONNX CPU"
 	@echo "------------------------------------------------------------------------"
-	@DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu
+	@if [ -f .venv-webnn/bin/python ]; then \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu; \
+	else \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu; \
+	fi
 	@echo ""
 	@echo "Backend 2/3: ONNX GPU"
 	@echo "------------------------------------------------------------------------"
-	@DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend gpu
+	@if [ -f .venv-webnn/bin/python ]; then \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python examples/mobilenetv2_complete.py examples/images/test.jpg --backend gpu; \
+	else \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend gpu; \
+	fi
 	@echo ""
 	@echo "Backend 3/3: CoreML (Neural Engine)"
 	@echo "------------------------------------------------------------------------"
-	@DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend coreml
+	@if [ -f .venv-webnn/bin/python ]; then \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python examples/mobilenetv2_complete.py examples/images/test.jpg --backend coreml; \
+	else \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/mobilenetv2_complete.py examples/images/test.jpg --backend coreml; \
+	fi
 	@echo ""
 	@echo "========================================================================"
 	@echo "All three backends completed successfully!"
