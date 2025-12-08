@@ -6,7 +6,9 @@ WebNN Image Classification Demo
 This example demonstrates image classification using the WebNN Python API.
 It shows how to:
 - Load and preprocess images
-- Build a neural network graph
+- Build a neural network graph using modern WebNN operations
+- Use clamp for ReLU6 activation (common in MobileNet)
+- Use gemm for fully connected layers
 - Run inference
 - Display top predictions
 
@@ -108,7 +110,8 @@ def build_simple_classifier(builder, num_classes=1000):
         padding=[1, 1, 1, 1],
         strides=[2, 2]
     )
-    conv1 = builder.relu(conv1)
+    # Use clamp for ReLU6 activation (commonly used in MobileNet)
+    conv1 = builder.clamp(conv1, min_value=0.0, max_value=6.0)
 
     # Depthwise convolution: 32 -> 32 (groups=32)
     dw_weights = builder.constant(
@@ -122,7 +125,8 @@ def build_simple_classifier(builder, num_classes=1000):
         padding=[1, 1, 1, 1],
         groups=32
     )
-    dw_conv = builder.relu(dw_conv)
+    # ReLU6 activation
+    dw_conv = builder.clamp(dw_conv, min_value=0.0, max_value=6.0)
 
     # Pointwise convolution: 32 -> 64
     pw_weights = builder.constant(
@@ -131,7 +135,8 @@ def build_simple_classifier(builder, num_classes=1000):
         "float32"
     )
     pw_conv = builder.conv2d(dw_conv, pw_weights)
-    pw_conv = builder.relu(pw_conv)
+    # ReLU6 activation
+    pw_conv = builder.clamp(pw_conv, min_value=0.0, max_value=6.0)
 
     # Global average pooling
     pooled = builder.global_average_pool(pw_conv)
@@ -139,13 +144,15 @@ def build_simple_classifier(builder, num_classes=1000):
     # Reshape to (1, 64)
     flattened = builder.reshape(pooled, [1, 64])
 
-    # Fully connected layer: 64 -> num_classes
+    # Fully connected layer: 64 -> num_classes using GEMM
+    # GEMM computes: output = flattened * weights^T
     fc_weights = builder.constant(
         np.random.randn(num_classes, 64).astype(np.float32) * 0.01,
         [num_classes, 64],
         "float32"
     )
-    logits = builder.matmul(flattened, builder.transpose(fc_weights, [1, 0]))
+    # Use gemm with b_transpose=True instead of matmul(x, transpose(weights))
+    logits = builder.gemm(flattened, fc_weights, b_transpose=True)
 
     # Softmax for class probabilities
     output = builder.softmax(logits)
@@ -250,6 +257,13 @@ def main():
     print()
     print("Note: This demo uses random weights for demonstration.")
     print("For real classification, load pretrained model weights.")
+    print()
+    print("Operations demonstrated:")
+    print("  - conv2d: Standard and depthwise convolutions")
+    print("  - clamp: ReLU6 activation (min=0, max=6)")
+    print("  - global_average_pool: Spatial dimension reduction")
+    print("  - gemm: Fully connected layer with transpose")
+    print("  - softmax: Class probability distribution")
 
 
 if __name__ == "__main__":
