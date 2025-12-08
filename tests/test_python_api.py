@@ -2041,3 +2041,77 @@ def test_reduce_sum_non_contiguous_axes_keep_dims(context):
     output = builder.reduce_sum(x, axes=[0, 2], keep_dimensions=True)
     assert output.shape == [1, 3, 1, 5]
     graph = builder.build({"output": output})
+
+
+# Quantization operations
+def test_dequantize_linear(context):
+    """Test dequantizeLinear operation"""
+    builder = context.create_graph_builder()
+    # Create quantized input (int8)
+    x = builder.input("x", [1, 3, 224, 224], "int8")
+    # Scale and zero_point for dequantization
+    scale = builder.input("scale", [1], "float32")
+    zero_point = builder.input("zero_point", [1], "int8")
+    # Dequantize: output = (x - zero_point) * scale
+    output = builder.dequantize_linear(x, scale, zero_point)
+    # Output should be float32 with same shape as input
+    assert output.shape == [1, 3, 224, 224]
+    assert output.data_type == "float32"
+    graph = builder.build({"output": output})
+
+
+def test_quantize_linear(context):
+    """Test quantizeLinear operation"""
+    builder = context.create_graph_builder()
+    # Create float input
+    x = builder.input("x", [1, 3, 224, 224], "float32")
+    # Scale and zero_point for quantization
+    scale = builder.input("scale", [1], "float32")
+    zero_point = builder.input("zero_point", [1], "int8")
+    # Quantize: output = x / scale + zero_point
+    output = builder.quantize_linear(x, scale, zero_point)
+    # Output should be int8 with same shape as input
+    assert output.shape == [1, 3, 224, 224]
+    assert output.data_type == "int8"
+    graph = builder.build({"output": output})
+
+
+def test_quantize_linear_uint8(context):
+    """Test quantizeLinear operation with uint8 output"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [8, 128], "float32")
+    scale = builder.input("scale", [1], "float32")
+    zero_point = builder.input("zero_point", [1], "uint8")
+    output = builder.quantize_linear(x, scale, zero_point)
+    # Output data type matches zero_point
+    assert output.shape == [8, 128]
+    assert output.data_type == "uint8"
+    graph = builder.build({"output": output})
+
+
+def test_dequantize_linear_uint8(context):
+    """Test dequantizeLinear operation with uint8 input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [8, 128], "uint8")
+    scale = builder.input("scale", [1], "float32")
+    zero_point = builder.input("zero_point", [1], "uint8")
+    output = builder.dequantize_linear(x, scale, zero_point)
+    assert output.shape == [8, 128]
+    assert output.data_type == "float32"
+    graph = builder.build({"output": output})
+
+
+def test_quantization_roundtrip(context):
+    """Test quantize followed by dequantize"""
+    builder = context.create_graph_builder()
+    # Original float input
+    x = builder.input("x", [10, 20], "float32")
+    scale = builder.input("scale", [1], "float32")
+    zero_point = builder.input("zero_point", [1], "int8")
+    # Quantize then dequantize
+    quantized = builder.quantize_linear(x, scale, zero_point)
+    dequantized = builder.dequantize_linear(quantized, scale, zero_point)
+    # Final output should be float32 with same shape
+    assert dequantized.shape == [10, 20]
+    assert dequantized.data_type == "float32"
+    graph = builder.build({"output": dequantized})

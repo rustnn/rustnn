@@ -931,6 +931,20 @@ pub fn infer_logical_xor_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Infer the output shape for dequantizeLinear
+/// Converts quantized integer values to floating-point, preserving shape
+/// Formula: output = (input - zeroPoint) * scale
+pub fn infer_dequantize_linear_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for quantizeLinear
+/// Converts floating-point values to quantized integers, preserving shape
+/// Formula: output = input / scale + zeroPoint
+pub fn infer_quantize_linear_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1507,5 +1521,34 @@ mod tests {
         // [2, 3, 4, 5] reduce axes [0, 2] keep_dims -> [1, 3, 1, 5]
         let output = infer_reduce_shape(&[2, 3, 4, 5], &options).unwrap();
         assert_eq!(output, vec![1, 3, 1, 5]);
+    }
+
+    // Quantization operation tests
+    #[test]
+    fn test_dequantize_linear_shape() {
+        // dequantizeLinear preserves input shape
+        let output = infer_dequantize_linear_shape(&[1, 3, 224, 224]).unwrap();
+        assert_eq!(output, vec![1, 3, 224, 224]);
+
+        let output = infer_dequantize_linear_shape(&[8, 128]).unwrap();
+        assert_eq!(output, vec![8, 128]);
+
+        // Works with any dimensional input
+        let output = infer_dequantize_linear_shape(&[10]).unwrap();
+        assert_eq!(output, vec![10]);
+    }
+
+    #[test]
+    fn test_quantize_linear_shape() {
+        // quantizeLinear preserves input shape
+        let output = infer_quantize_linear_shape(&[1, 3, 224, 224]).unwrap();
+        assert_eq!(output, vec![1, 3, 224, 224]);
+
+        let output = infer_quantize_linear_shape(&[8, 128]).unwrap();
+        assert_eq!(output, vec![8, 128]);
+
+        // Works with any dimensional input
+        let output = infer_quantize_linear_shape(&[10]).unwrap();
+        assert_eq!(output, vec![10]);
     }
 }

@@ -118,6 +118,13 @@ impl OnnxConverter {
         if op_type.eq_ignore_ascii_case("logicalXor") {
             return "Xor".to_string();
         }
+        // Quantization operations
+        if op_type.eq_ignore_ascii_case("dequantizeLinear") {
+            return "DequantizeLinear".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("quantizeLinear") {
+            return "QuantizeLinear".to_string();
+        }
 
         // Default: capitalize first letter
         let mut chars = op_type.chars();

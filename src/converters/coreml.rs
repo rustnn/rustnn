@@ -1093,7 +1093,14 @@ impl crate::converters::GraphConverter for CoremlConverter {
                     layer: Some(Layer::LogicalXor(LogicalXorLayerParams {})),
                     ..Default::default()
                 }
-            } else {
+            }
+            // NOTE: Quantization operations (dequantizeLinear, quantizeLinear) are supported
+            // in Chromium's CoreML backend but not in our current CoreML protobuf definitions
+            // (spec version 5, iOS 14/macOS 11.0). These operations were likely added in a
+            // later CoreML spec version. To add support, update protos/coreml/*.proto with
+            // newer CoreML spec definitions that include DequantizeLinearLayerParams and
+            // QuantizeLinearLayerParams.
+            else {
                 return Err(GraphError::ConversionFailed {
                     format: "coreml".to_string(),
                     reason: format!("Unsupported op_type {}", op.op_type),

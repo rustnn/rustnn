@@ -1478,6 +1478,100 @@ impl PyMLGraphBuilder {
         Ok(py_operand)
     }
 
+    /// DequantizeLinear operation
+    /// Converts quantized integer values to floating-point representation
+    /// Formula: output = (input - zeroPoint) * scale
+    fn dequantize_linear(
+        &mut self,
+        input: &PyMLOperand,
+        scale: &PyMLOperand,
+        zero_point: &PyMLOperand,
+    ) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_dequantize_linear_shape;
+
+        let output_shape = infer_dequantize_linear_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        // Output is always float32 for dequantization
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "dequantizeLinear".to_string(),
+            input_operands: vec![input.id, scale.id, zero_point.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// QuantizeLinear operation
+    /// Converts floating-point values to quantized integer representation
+    /// Formula: output = input / scale + zeroPoint
+    fn quantize_linear(
+        &mut self,
+        input: &PyMLOperand,
+        scale: &PyMLOperand,
+        zero_point: &PyMLOperand,
+    ) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_quantize_linear_shape;
+
+        let output_shape = infer_quantize_linear_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        // Output data type matches zero_point's data type (typically int8 or uint8)
+        let output_descriptor = OperandDescriptor {
+            data_type: zero_point.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "quantizeLinear".to_string(),
+            input_operands: vec![input.id, scale.id, zero_point.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
     /// Reshape operation
     fn reshape(&mut self, x: &PyMLOperand, new_shape: Vec<u32>) -> PyResult<PyMLOperand> {
         // Validate that reshape is possible

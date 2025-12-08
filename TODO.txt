@@ -84,9 +84,15 @@
     - gru, gruCell
     - lstm, lstmCell
 
-[ ] Quantization operations
-    - dequantizeLinear
-    - quantizeLinear
+[x] Quantization operations (2025-12-08)
+    - dequantizeLinear: Converts quantized integers to float32
+    - quantizeLinear: Converts float32 to quantized integers
+    - Shape inference: Preserves input shape
+    - ONNX support: Fully implemented, maps to DequantizeLinear/QuantizeLinear ops
+    - CoreML support: Operations exist in Chromium's implementation but not in our protobuf
+      definitions (spec v5). Need to update to newer CoreML spec to add DequantizeLinearLayerParams
+      and QuantizeLinearLayerParams.
+    - Tests: 5 tests added (test_dequantize_linear, test_quantize_linear, uint8 variants, roundtrip)
 
 [x] Shape inference and broadcasting
     - Automatic shape computation for operations
