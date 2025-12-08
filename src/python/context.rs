@@ -202,7 +202,7 @@ impl PyMLContext {
         device: &str,
     ) -> PyResult<Py<PyDict>> {
         // Convert to CoreML
-        let converter = crate::converters::CoremlConverter;
+        let converter = crate::converters::CoremlMlProgramConverter::default();
         let converted = converter.convert(&graph.graph_info).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e))
         })?;
@@ -485,7 +485,7 @@ impl PyMLContext {
         _inputs: &Bound<'_, PyDict>,
     ) -> PyResult<Py<PyDict>> {
         // Convert graph to CoreML
-        let converter = crate::converters::CoremlConverter;
+        let converter = crate::converters::CoremlMlProgramConverter::default();
         let converted = converter.convert(&graph.graph_info).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e))
         })?;

@@ -108,7 +108,7 @@
 - **Trait Interface**: `GraphConverter` defines conversion contract
 - **Implementations**:
   - `OnnxConverter` → ONNX protobuf format
-  - `CoremlConverter` → CoreML protobuf format
+  - `CoremlMlProgramConverter` → CoreML MLProgram (MIL) protobuf format
 
 #### **executors/** - Runtime Execution
 - **Platform-specific**: Conditional compilation for macOS
@@ -224,9 +224,9 @@ src/
 ├── graphviz.rs         # DOT export
 ├── protos.rs           # Protobuf module setup
 ├── converters/
-│   ├── mod.rs          # Registry and trait
-│   ├── onnx.rs         # ONNX converter
-│   └── coreml.rs       # CoreML converter
+│   ├── mod.rs              # Registry and trait
+│   ├── onnx.rs             # ONNX converter
+│   └── coreml_mlprogram.rs # CoreML MLProgram (MIL) converter
 ├── executors/
 │   ├── mod.rs          # Conditional compilation
 │   ├── onnx.rs         # ONNX runtime
@@ -322,10 +322,10 @@ examples/
    - Add operation name mapping in `onnx_op_type()`
    - Add attribute handling if needed (see `create_conv2d_attributes()` example)
 
-4. **CoreML Converter** (`src/converters/coreml.rs`):
-   - Add layer creation (may not have direct mapping)
-   - Use workarounds if no dedicated layer exists (e.g., multiply by -1 for neg)
-   - CoreML conversion is mandatory for all operations
+4. **CoreML Converter** (`src/converters/coreml_mlprogram.rs`):
+   - Add MIL operation name mapping in `get_mil_op_type()`
+   - Add operation input handling in `create_operation_inputs()` if needed
+   - CoreML MLProgram uses MIL operations (more flexible than old NeuralNetwork format)
 
 5. **Tests** (`tests/test_python_api.py`):
    - Add 3-5 tests covering:

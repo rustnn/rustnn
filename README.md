@@ -208,10 +208,10 @@ std::fs::write("model.onnx", &converted.data)?;
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 {
     use rustnn::executors::coreml::run_coreml_zeroed_cached;
-    use rustnn::converters::CoremlConverter;
+    use rustnn::converters::CoremlMlProgramConverter;
 
-    // Convert to CoreML
-    registry.register(Box::new(CoremlConverter));
+    // Convert to CoreML MLProgram
+    registry.register(Box::new(CoremlMlProgramConverter::default()));
     let coreml = registry.convert("coreml", &graph_info)?;
 
     // Execute on GPU (0=CPU, 1=GPU, 2=Neural Engine)
