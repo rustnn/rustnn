@@ -366,7 +366,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         // Create main function
         let mut main_function = Function::default();
 
-        // TODO: Add function inputs from graph inputs
+        // Add function inputs from graph inputs
+        for &input_id in &graph_info.input_operands {
+            let (_name, value_type) = Self::create_value(graph_info, input_id)?;
+            main_function.inputs.push(value_type);
+        }
 
         // Create main block
         let mut main_block = Block::default();
@@ -375,6 +379,12 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         for op in &graph_info.operations {
             let mil_op = self.convert_operation(graph_info, op)?;
             main_block.operations.push(mil_op);
+        }
+
+        // Add block outputs (output operand names)
+        for &output_id in &graph_info.output_operands {
+            let output_name = Self::operand_name(graph_info, output_id);
+            main_block.outputs.push(output_name);
         }
 
         // Add block to function
