@@ -51,12 +51,13 @@
     - [x] reduceLogSumExp (ONNX: ReduceLogSumExp, CoreML: ReduceLogSumExpLayerParams)
     - [x] reduceSumSquare (ONNX: ReduceSumSquare, CoreML: ReduceSumSquareLayerParams)
 
-[ ] Element-wise operations
-    - abs, ceil, floor, round
-    - exp, log, sqrt, reciprocal
-    - sin, cos, tan, asin, acos, atan
-    - sinh, cosh, tanh, asinh, acosh, atanh
-    - erf, identity, neg, sign
+[x] Element-wise operations (DONE: shape inference, Python API, ONNX/CoreML converters, 23 tests - all passing, 6 WPT test files)
+    - [x] Basic math: abs, ceil, floor, round, neg, sign (CoreML: dedicated layers + multiply workaround for neg)
+    - [x] Exponential/log: exp, log, sqrt, reciprocal (ONNX: capitalized names, CoreML: UnaryFunctionLayerParams)
+    - [x] Trigonometric: sin, cos, tan, asin, acos, atan (ONNX/CoreML: dedicated layer types)
+    - [x] Hyperbolic: sinh, cosh, asinh, acosh, atanh (ONNX/CoreML: dedicated layer types)
+    - [x] Special functions: erf, identity (CoreML: ErfLayerParams, multiply workaround for identity)
+    - [x] WPT conformance test data: abs, ceil, floor, exp, log, sqrt (14 test cases total)
 
 [ ] Logic operations
     - equal, greater, greaterOrEqual
@@ -100,9 +101,10 @@
     - softmax (DONE)
     - leakyRelu, prelu, elu
 
-[ ] Add support for element-wise operations
-    - sub, mul, div (only add is supported)
-    - power, sqrt, exp, log
+[x] Add support for element-wise operations (DONE: 2025-12-08)
+    - [x] All 23 unary element-wise operations (abs, ceil, floor, round, neg, sign, exp, log, sqrt, reciprocal, sin, cos, tan, asin, acos, atan, sinh, cosh, asinh, acosh, atanh, erf, identity)
+    - [ ] Binary operations: sub, mul, div (only add is currently supported)
+    - [ ] power operation
 
 [ ] Add support for shape operations
     - reshape (currently unsupported!)
@@ -459,11 +461,28 @@ LOW PRIORITY:
 - Testing infrastructure expanded with comprehensive compute tests
 - CI/CD for packaging and publishing not yet set up
 
-Last Updated: 2025-12-07
+Last Updated: 2025-12-08
+
+## Recent Changes (2025-12-08)
+
+### Element-wise Operations Implementation (Latest)
+- Implemented all 23 unary element-wise operations with full WebNN spec compliance
+- Shape inference: All operations preserve input shape (src/shape_inference.rs)
+- Python API: Added 23 methods to MLGraphBuilder (src/python/graph_builder.rs)
+- ONNX conversion: Operations map via capitalization (Abs, Ceil, etc.)
+- CoreML conversion: Full support with dedicated layer types and workarounds
+  - UnaryFunctionLayerParams: abs, exp, log, sqrt, reciprocal
+  - Dedicated layers: ceil, floor, round, sign, trig/hyperbolic operations, erf
+  - Multiply workaround: neg (alpha=-1), identity (alpha=1)
+- Python tests: 23 new tests, all passing with NumPy/SciPy validation (tests/test_python_api.py)
+- WPT conformance data: 6 operations with 14 test cases (abs, ceil, floor, exp, log, sqrt)
+- Updated CLAUDE.md: CoreML conversion now mandatory for all operations
+- All 132 tests passing (109 regular + 23 element-wise)
+- Commits: 7ff609d6 (implementation), af2e5a9d (WPT data), dde8208c (CoreML)
 
 ## Recent Changes (2025-12-07)
 
-### Async Execution Support (Latest)
+### Async Execution Support
 - Implemented AsyncMLContext wrapper for async/await syntax
 - Added dispatch() method for non-blocking graph execution
 - Added read_tensor_async() and write_tensor_async() for async tensor I/O
