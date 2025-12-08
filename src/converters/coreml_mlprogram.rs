@@ -225,6 +225,91 @@ impl CoremlMlProgramConverter {
         })
     }
 
+    /// Create a const operation for a constant operand
+    fn create_const_operation(
+        graph: &GraphInfo,
+        operand_id: u32,
+        operand: &crate::graph::Operand,
+        constant_data: &crate::graph::ConstantData,
+    ) -> Result<MilOperation, GraphError> {
+        use crate::protos::coreml::mil_spec::{TensorValue, Value, tensor_value, value};
+
+        let (_name, output_type) = Self::create_value(graph, operand_id)?;
+
+        // Create tensor value from constant data
+        let tensor_value = match operand.descriptor.data_type {
+            crate::graph::DataType::Float32 => {
+                // Convert raw bytes to f32 values
+                let float_count = constant_data.data.len() / 4;
+                let mut floats = Vec::with_capacity(float_count);
+                for i in 0..float_count {
+                    let bytes = [
+                        constant_data.data[i * 4],
+                        constant_data.data[i * 4 + 1],
+                        constant_data.data[i * 4 + 2],
+                        constant_data.data[i * 4 + 3],
+                    ];
+                    floats.push(f32::from_le_bytes(bytes));
+                }
+                TensorValue {
+                    value: Some(tensor_value::Value::Floats(tensor_value::RepeatedFloats {
+                        values: floats,
+                    })),
+                }
+            }
+            crate::graph::DataType::Int32 => {
+                // Convert raw bytes to i32 values
+                let int_count = constant_data.data.len() / 4;
+                let mut ints = Vec::with_capacity(int_count);
+                for i in 0..int_count {
+                    let bytes = [
+                        constant_data.data[i * 4],
+                        constant_data.data[i * 4 + 1],
+                        constant_data.data[i * 4 + 2],
+                        constant_data.data[i * 4 + 3],
+                    ];
+                    ints.push(i32::from_le_bytes(bytes));
+                }
+                TensorValue {
+                    value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                        values: ints,
+                    })),
+                }
+            }
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml_mlprogram".to_string(),
+                    reason: format!(
+                        "Unsupported constant data type: {:?}",
+                        operand.descriptor.data_type
+                    ),
+                });
+            }
+        };
+
+        // Create immediate value
+        let immediate_value = Value {
+            doc_string: String::new(),
+            r#type: output_type.r#type.clone(),
+            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+            })),
+        };
+
+        // Create const operation
+        // Note: const operations in CoreML MIL use attributes, not inputs, for the value
+        let mut attributes = HashMap::new();
+        attributes.insert("val".to_string(), immediate_value);
+
+        Ok(MilOperation {
+            r#type: "const".to_string(),
+            inputs: HashMap::new(),
+            outputs: vec![output_type],
+            attributes,
+            ..Default::default()
+        })
+    }
+
     /// Create a MIL operation
     fn create_mil_operation(
         op_type: &str,
@@ -248,26 +333,26 @@ impl CoremlMlProgramConverter {
         }
     }
 
-    /// Create an Argument from an immediate integer array value
+    /// Create an Argument from an immediate integer array value (int32)
     fn create_immediate_int_array(values: &[u32]) -> Argument {
         use crate::protos::coreml::mil_spec::{
             DataType as MilDataType, TensorType, TensorValue, Value, ValueType, dimension,
             tensor_value, value, value_type,
         };
 
-        let int_values: Vec<i64> = values.iter().map(|&v| v as i64).collect();
+        let int_values: Vec<i32> = values.iter().map(|&v| v as i32).collect();
 
         let tensor_value = TensorValue {
-            value: Some(tensor_value::Value::LongInts(
-                tensor_value::RepeatedLongInts { values: int_values },
-            )),
+            value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                values: int_values,
+            })),
         };
 
         let value = Value {
             doc_string: String::new(),
             r#type: Some(ValueType {
                 r#type: Some(value_type::Type::TensorType(TensorType {
-                    data_type: MilDataType::Int64 as i32,
+                    data_type: MilDataType::Int32 as i32,
                     rank: 1,
                     dimensions: vec![Dimension {
                         dimension: Some(dimension::Dimension::Constant(
@@ -291,7 +376,7 @@ impl CoremlMlProgramConverter {
         }
     }
 
-    /// Create an Argument from an immediate integer scalar value
+    /// Create an Argument from an immediate integer scalar value (int32)
     fn create_immediate_int(value: u32) -> Argument {
         use crate::protos::coreml::mil_spec::{
             DataType as MilDataType, TensorType, TensorValue, Value, ValueType, tensor_value,
@@ -299,18 +384,16 @@ impl CoremlMlProgramConverter {
         };
 
         let tensor_value = TensorValue {
-            value: Some(tensor_value::Value::LongInts(
-                tensor_value::RepeatedLongInts {
-                    values: vec![value as i64],
-                },
-            )),
+            value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                values: vec![value as i32],
+            })),
         };
 
         let val = Value {
             doc_string: String::new(),
             r#type: Some(ValueType {
                 r#type: Some(value_type::Type::TensorType(TensorType {
-                    data_type: MilDataType::Int64 as i32,
+                    data_type: MilDataType::Int32 as i32,
                     rank: 0, // Scalar
                     dimensions: vec![],
                     attributes: HashMap::new(),
@@ -347,6 +430,43 @@ impl CoremlMlProgramConverter {
                 r#type: Some(value_type::Type::TensorType(TensorType {
                     data_type: MilDataType::Float32 as i32,
                     rank: 0, // Scalar
+                    dimensions: vec![],
+                    attributes: HashMap::new(),
+                })),
+            }),
+            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+            })),
+        };
+
+        Argument {
+            arguments: vec![crate::protos::coreml::mil_spec::argument::Binding {
+                binding: Some(Binding::Value(val)),
+            }],
+        }
+    }
+
+    /// Create an Argument from an immediate string value
+    fn create_immediate_string(value: &str) -> Argument {
+        use crate::protos::coreml::mil_spec::{
+            DataType as MilDataType, TensorType, TensorValue, Value, ValueType, tensor_value,
+            value, value_type,
+        };
+
+        let tensor_value = TensorValue {
+            value: Some(tensor_value::Value::Strings(
+                tensor_value::RepeatedStrings {
+                    values: vec![value.to_string()],
+                },
+            )),
+        };
+
+        let val = Value {
+            doc_string: String::new(),
+            r#type: Some(ValueType {
+                r#type: Some(value_type::Type::TensorType(TensorType {
+                    data_type: MilDataType::String as i32,
+                    rank: 0, // Scalar string
                     dimensions: vec![],
                     attributes: HashMap::new(),
                 })),
@@ -625,12 +745,25 @@ impl CoremlMlProgramConverter {
                 // 3. add beta * C if C is provided
             }
 
+            // Global pooling operations (reduce over spatial dimensions)
+            "globalaveragepool" | "globalmaxpool" => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                // Global pooling reduces over spatial dimensions (2, 3) for NCHW format
+                inputs.insert(
+                    "axes".to_string(),
+                    Self::create_immediate_int_array(&[2, 3]),
+                );
+                // Keep dimensions to maintain rank
+                inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
+            }
+
             // Unary operations: x
             "relu" | "sigmoid" | "tanh" | "softmax" | "abs" | "ceil" | "floor" | "round"
             | "neg" | "sign" | "identity" | "exp" | "log" | "sqrt" | "reciprocal" | "sin"
             | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh"
-            | "atanh" | "erf" | "logicalnot" | "globalaveragepool" | "globalmaxpool"
-            | "softplus" | "softsign" => {
+            | "atanh" | "erf" | "logicalnot" | "softplus" | "softsign" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -778,6 +911,13 @@ impl CoremlMlProgramConverter {
                         Self::create_immediate_int(groups as u32),
                     );
                 }
+
+                // Add pad_type - required parameter in CoreML
+                // Use "custom" when explicit padding is provided
+                inputs.insert(
+                    "pad_type".to_string(),
+                    Self::create_immediate_string("custom"),
+                );
             }
 
             // Transposed convolution: input, filter + parameters
@@ -1366,6 +1506,21 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         // Create main block
         let mut main_block = Block::default();
 
+        // Add constant operands as const operations
+        for (operand_id, constant_data) in &graph_info.constant_operand_ids_to_handles {
+            let operand =
+                graph_info
+                    .operand(*operand_id)
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Constant operand {} not found", operand_id),
+                    })?;
+
+            let const_op =
+                Self::create_const_operation(graph_info, *operand_id, operand, constant_data)?;
+            main_block.operations.push(const_op);
+        }
+
         // Convert all operations to MIL operations
         for op in &graph_info.operations {
             let mil_op = self.convert_operation(graph_info, op)?;
@@ -1379,6 +1534,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         // Add block to function
+        main_function.opset = "CoreML7".to_string(); // Specify the active block specialization
         main_function
             .block_specializations
             .insert("CoreML7".to_string(), main_block);
