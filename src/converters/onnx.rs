@@ -90,6 +90,34 @@ impl OnnxConverter {
         if op_type.eq_ignore_ascii_case("reduceSumSquare") {
             return "ReduceSumSquare".to_string();
         }
+        // Logic operations
+        if op_type.eq_ignore_ascii_case("equal") {
+            return "Equal".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("greater") {
+            return "Greater".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("greaterOrEqual") {
+            return "GreaterOrEqual".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("lesser") {
+            return "Less".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("lesserOrEqual") {
+            return "LessOrEqual".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("logicalNot") {
+            return "Not".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("logicalAnd") {
+            return "And".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("logicalOr") {
+            return "Or".to_string();
+        }
+        if op_type.eq_ignore_ascii_case("logicalXor") {
+            return "Xor".to_string();
+        }
 
         // Default: capitalize first letter
         let mut chars = op_type.chars();

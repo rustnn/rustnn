@@ -5,10 +5,12 @@ use crate::protos::coreml::specification::{
     AcosLayerParams, AcoshLayerParams, ActivationParams, ActivationReLu, ActivationSigmoid,
     AddLayerParams, ArrayFeatureType, AsinLayerParams, AsinhLayerParams, AtanLayerParams,
     AtanhLayerParams, CeilLayerParams, ConvolutionLayerParams, CosLayerParams, CoshLayerParams,
-    ErfLayerParams, FeatureDescription, FeatureType, FloorLayerParams, InnerProductLayerParams,
-    LoadConstantLayerParams, Model, ModelDescription, MultiplyLayerParams, NeuralNetwork,
-    NeuralNetworkLayer, PoolingLayerParams, ReduceL1LayerParams, ReduceL2LayerParams,
-    ReduceLogSumExpLayerParams, ReduceLogSumLayerParams, ReduceMaxLayerParams,
+    EqualLayerParams, ErfLayerParams, FeatureDescription, FeatureType, FloorLayerParams,
+    GreaterEqualLayerParams, GreaterThanLayerParams, InnerProductLayerParams, LessEqualLayerParams,
+    LessThanLayerParams, LoadConstantLayerParams, LogicalAndLayerParams, LogicalNotLayerParams,
+    LogicalOrLayerParams, LogicalXorLayerParams, Model, ModelDescription, MultiplyLayerParams,
+    NeuralNetwork, NeuralNetworkLayer, PoolingLayerParams, ReduceL1LayerParams,
+    ReduceL2LayerParams, ReduceLogSumExpLayerParams, ReduceLogSumLayerParams, ReduceMaxLayerParams,
     ReduceMeanLayerParams, ReduceMinLayerParams, ReduceProdLayerParams, ReduceSumLayerParams,
     ReduceSumSquareLayerParams, RoundLayerParams, SignLayerParams, SinLayerParams, SinhLayerParams,
     SoftmaxLayerParams, TanLayerParams, TanhLayerParams, UnaryFunctionLayerParams, WeightParams,
@@ -1015,6 +1017,80 @@ impl crate::converters::GraphConverter for CoremlConverter {
                     input: input_names,
                     output: output_names,
                     layer: Some(Layer::Multiply(MultiplyLayerParams { alpha: 1.0 })),
+                    ..Default::default()
+                }
+            // Logic operations - Comparison
+            } else if op.op_type.eq_ignore_ascii_case("equal") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::Equal(EqualLayerParams { alpha: 0.0 })),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("greater") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::GreaterThan(GreaterThanLayerParams { alpha: 0.0 })),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("greaterOrEqual") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::GreaterEqual(GreaterEqualLayerParams { alpha: 0.0 })),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("lesser") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LessThan(LessThanLayerParams { alpha: 0.0 })),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("lesserOrEqual") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LessEqual(LessEqualLayerParams { alpha: 0.0 })),
+                    ..Default::default()
+                }
+            // Logic operations - Logical
+            } else if op.op_type.eq_ignore_ascii_case("logicalNot") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LogicalNot(LogicalNotLayerParams {})),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("logicalAnd") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LogicalAnd(LogicalAndLayerParams {})),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("logicalOr") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LogicalOr(LogicalOrLayerParams {})),
+                    ..Default::default()
+                }
+            } else if op.op_type.eq_ignore_ascii_case("logicalXor") {
+                NeuralNetworkLayer {
+                    name: layer_name,
+                    input: input_names,
+                    output: output_names,
+                    layer: Some(Layer::LogicalXor(LogicalXorLayerParams {})),
                     ..Default::default()
                 }
             } else {

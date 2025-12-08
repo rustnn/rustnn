@@ -1,6 +1,8 @@
 use super::graph::PyMLGraph;
 use super::operand::{PyMLOperand, parse_data_type};
-use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+use crate::graph::{
+    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+};
 use crate::shape_inference::{broadcast_shapes, infer_matmul_shape, validate_reshape};
 use crate::validator::GraphValidator;
 use pyo3::prelude::*;
@@ -1121,6 +1123,359 @@ impl PyMLGraphBuilder {
     /// Identity operation (returns input unchanged)
     fn identity(&mut self, x: &PyMLOperand) -> PyResult<PyMLOperand> {
         self.unary_op("identity", x)
+    }
+
+    // Logic operations
+
+    /// Element-wise equality comparison
+    fn equal(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_equal_shape;
+
+        let output_shape = infer_equal_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8, // Boolean output as uint8
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "equal".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise greater than comparison
+    fn greater(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_greater_shape;
+
+        let output_shape = infer_greater_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "greater".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise greater than or equal comparison
+    fn greater_or_equal(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_greater_or_equal_shape;
+
+        let output_shape = infer_greater_or_equal_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "greaterOrEqual".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise less than comparison
+    fn lesser(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_lesser_shape;
+
+        let output_shape = infer_lesser_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "lesser".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise less than or equal comparison
+    fn lesser_or_equal(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_lesser_or_equal_shape;
+
+        let output_shape = infer_lesser_or_equal_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "lesserOrEqual".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise logical NOT
+    fn logical_not(&mut self, x: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_logical_not_shape;
+
+        let output_shape = infer_logical_not_shape(&x.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "logicalNot".to_string(),
+            input_operands: vec![x.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise logical AND
+    fn logical_and(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_logical_and_shape;
+
+        let output_shape = infer_logical_and_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "logicalAnd".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise logical OR
+    fn logical_or(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_logical_or_shape;
+
+        let output_shape = infer_logical_or_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "logicalOr".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Element-wise logical XOR
+    fn logical_xor(&mut self, a: &PyMLOperand, b: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_logical_xor_shape;
+
+        let output_shape = infer_logical_xor_shape(&a.descriptor.shape, &b.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "logicalXor".to_string(),
+            input_operands: vec![a.id, b.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
     }
 
     /// Reshape operation

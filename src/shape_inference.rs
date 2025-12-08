@@ -883,6 +883,54 @@ pub fn infer_identity_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError>
     Ok(input_shape.to_vec())
 }
 
+/// Infer the output shape for binary comparison operations
+/// Comparison operations use NumPy-style broadcasting and return uint8 output
+pub fn infer_equal_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_greater_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_greater_or_equal_shape(
+    shape_a: &[u32],
+    shape_b: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_lesser_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_lesser_or_equal_shape(
+    shape_a: &[u32],
+    shape_b: &[u32],
+) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+/// Infer the output shape for unary logical operations
+/// logicalNot preserves input shape and returns uint8 output
+pub fn infer_logical_not_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer the output shape for binary logical operations
+/// Logical operations use NumPy-style broadcasting and return uint8 output
+pub fn infer_logical_and_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_logical_or_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
+pub fn infer_logical_xor_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
+    broadcast_shapes(shape_a, shape_b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
