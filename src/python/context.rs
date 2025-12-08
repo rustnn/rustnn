@@ -539,6 +539,7 @@ impl PyMLContext {
                 crate::graph::DataType::Uint32 => "uint32",
                 crate::graph::DataType::Int8 => "int8",
                 crate::graph::DataType::Uint8 => "uint8",
+                crate::graph::DataType::Int64 => "int64",
             };
 
             let zeros = numpy.call_method1("zeros", (shape, dtype_str))?;

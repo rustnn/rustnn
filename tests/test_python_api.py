@@ -2445,3 +2445,272 @@ def test_pad_asymmetric(context):
     output = builder.pad(x, padding=[1, 2, 3, 4])
     assert output.shape == [7, 9]
     graph = builder.build({"output": output})
+
+
+# ========================================
+# Advanced Architecture Operations Tests
+# ========================================
+
+# GELU tests
+def test_gelu_basic(context):
+    """Test GELU activation"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.gelu(x)
+    assert output.shape == [2, 3]
+    assert output.data_type == "float32"
+    graph = builder.build({"output": output})
+
+
+def test_gelu_multidimensional(context):
+    """Test GELU with multidimensional input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4, 5], "float32")
+    output = builder.gelu(x)
+    assert output.shape == [2, 3, 4, 5]
+    graph = builder.build({"output": output})
+
+
+def test_gelu_1d(context):
+    """Test GELU with 1D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [10], "float32")
+    output = builder.gelu(x)
+    assert output.shape == [10]
+    graph = builder.build({"output": output})
+
+
+# Squeeze tests
+def test_squeeze_all_ones(context):
+    """Test squeeze removing all dimensions of size 1"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 3, 1, 4, 1], "float32")
+    output = builder.squeeze(x)
+    assert output.shape == [3, 4]
+    graph = builder.build({"output": output})
+
+
+def test_squeeze_specific_axes(context):
+    """Test squeeze with specific axes"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 3, 1, 4], "float32")
+    output = builder.squeeze(x, axes=[0, 2])
+    assert output.shape == [3, 4]
+    graph = builder.build({"output": output})
+
+
+def test_squeeze_single_axis(context):
+    """Test squeeze single axis"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 3, 4], "float32")
+    output = builder.squeeze(x, axes=[0])
+    assert output.shape == [3, 4]
+    graph = builder.build({"output": output})
+
+
+def test_squeeze_no_ones(context):
+    """Test squeeze with no dimensions of size 1"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.squeeze(x)
+    assert output.shape == [2, 3, 4]
+    graph = builder.build({"output": output})
+
+
+# Unsqueeze tests
+def test_unsqueeze_single_axis_front(context):
+    """Test unsqueeze adding dimension at front"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [3, 4], "float32")
+    output = builder.unsqueeze(x, axes=[0])
+    assert output.shape == [1, 3, 4]
+    graph = builder.build({"output": output})
+
+
+def test_unsqueeze_single_axis_middle(context):
+    """Test unsqueeze adding dimension in middle"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [3, 4], "float32")
+    output = builder.unsqueeze(x, axes=[1])
+    assert output.shape == [3, 1, 4]
+    graph = builder.build({"output": output})
+
+
+def test_unsqueeze_single_axis_end(context):
+    """Test unsqueeze adding dimension at end"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [3, 4], "float32")
+    output = builder.unsqueeze(x, axes=[2])
+    assert output.shape == [3, 4, 1]
+    graph = builder.build({"output": output})
+
+
+def test_unsqueeze_multiple_axes(context):
+    """Test unsqueeze adding multiple dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [3, 4], "float32")
+    output = builder.unsqueeze(x, axes=[0, 2])
+    assert output.shape == [1, 3, 1, 4]
+    graph = builder.build({"output": output})
+
+
+def test_unsqueeze_1d_to_4d(context):
+    """Test unsqueeze expanding 1D to 4D"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [5], "float32")
+    output = builder.unsqueeze(x, axes=[0, 2, 3])
+    assert output.shape == [1, 5, 1, 1]
+    graph = builder.build({"output": output})
+
+
+# ArgMax tests
+def test_arg_max_axis_0_no_keep(context):
+    """Test argMax along axis 0 without keeping dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_max(x, axis=0)
+    assert output.shape == [3, 4]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_arg_max_axis_1_keep_dims(context):
+    """Test argMax along axis 1 with keep_dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_max(x, axis=1, keep_dimensions=True)
+    assert output.shape == [2, 1, 4]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_arg_max_axis_2_int32(context):
+    """Test argMax with int32 output type"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_max(x, axis=2, output_data_type="int32")
+    assert output.shape == [2, 3]
+    assert output.data_type == "int32"
+    graph = builder.build({"output": output})
+
+
+def test_arg_max_1d(context):
+    """Test argMax on 1D tensor"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [10], "float32")
+    output = builder.arg_max(x, axis=0)
+    assert output.shape == []
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_arg_max_1d_keep_dims(context):
+    """Test argMax on 1D tensor with keep_dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [10], "float32")
+    output = builder.arg_max(x, axis=0, keep_dimensions=True)
+    assert output.shape == [1]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+# ArgMin tests
+def test_arg_min_axis_0_no_keep(context):
+    """Test argMin along axis 0 without keeping dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_min(x, axis=0)
+    assert output.shape == [3, 4]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_arg_min_axis_1_keep_dims(context):
+    """Test argMin along axis 1 with keep_dimensions"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_min(x, axis=1, keep_dimensions=True)
+    assert output.shape == [2, 1, 4]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_arg_min_axis_2_int32(context):
+    """Test argMin with int32 output type"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.arg_min(x, axis=2, output_data_type="int32")
+    assert output.shape == [2, 3]
+    assert output.data_type == "int32"
+    graph = builder.build({"output": output})
+
+
+def test_arg_min_1d(context):
+    """Test argMin on 1D tensor"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [10], "float32")
+    output = builder.arg_min(x, axis=0)
+    assert output.shape == []
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+# Cast tests
+def test_cast_float32_to_int32(context):
+    """Test cast from float32 to int32"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.cast(x, "int32")
+    assert output.shape == [2, 3]
+    assert output.data_type == "int32"
+    graph = builder.build({"output": output})
+
+
+def test_cast_int32_to_float32(context):
+    """Test cast from int32 to float32"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "int32")
+    output = builder.cast(x, "float32")
+    assert output.shape == [2, 3]
+    assert output.data_type == "float32"
+    graph = builder.build({"output": output})
+
+
+def test_cast_float32_to_float16(context):
+    """Test cast from float32 to float16"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4], "float32")
+    output = builder.cast(x, "float16")
+    assert output.shape == [2, 3, 4]
+    assert output.data_type == "float16"
+    graph = builder.build({"output": output})
+
+
+def test_cast_int8_to_uint8(context):
+    """Test cast from int8 to uint8"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [10], "int8")
+    output = builder.cast(x, "uint8")
+    assert output.shape == [10]
+    assert output.data_type == "uint8"
+    graph = builder.build({"output": output})
+
+
+def test_cast_to_int64(context):
+    """Test cast to int64"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [5, 5], "int32")
+    output = builder.cast(x, "int64")
+    assert output.shape == [5, 5]
+    assert output.data_type == "int64"
+    graph = builder.build({"output": output})
+
+
+def test_cast_preserves_shape(context):
+    """Test that cast preserves multidimensional shape"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3, 4, 5], "float32")
+    output = builder.cast(x, "int32")
+    assert output.shape == [2, 3, 4, 5]
+    assert output.data_type == "int32"
+    graph = builder.build({"output": output})

@@ -153,6 +153,17 @@ This document tracks the implementation status of all WebNN operators across dif
 | `where` | ✅ | ✅ | ✅ | ✅ |
 | `pad` | ✅ | ✅ | ✅ | ✅ |
 
+## Advanced Architecture Operations
+
+| Operation | Shape Inference | Python API | ONNX | CoreML MLProgram |
+|-----------|----------------|------------|------|------------------|
+| `gelu` | ✅ | ✅ | ✅ | ✅ |
+| `squeeze` | ✅ | ✅ | ✅ | ✅ |
+| `unsqueeze` | ✅ | ✅ | ✅ | ✅ |
+| `argMax` | ✅ | ✅ | ✅ | ✅ |
+| `argMin` | ✅ | ✅ | ✅ | ✅ |
+| `cast` | ✅ | ✅ | ✅ | ✅ |
+
 ---
 
 ## Summary Statistics
@@ -160,27 +171,34 @@ This document tracks the implementation status of all WebNN operators across dif
 ```
 WebNN Spec (CR Draft Dec 2025): ~95 total operations
 Core Operations Implemented:     68/68 (100%) ✅
+Advanced Architecture Ops:        6/6  (100%) ✅
+Total Implemented:               74/95 (78%)
 Deferred Operations:              4 (RNN: lstm, lstmCell, gru, gruCell)
-Remaining Operations:             ~23 (advanced tensor ops, additional activations)
+Remaining Operations:            ~17 (specialized activations, scatter, tile, etc.)
 
 Implementation Status:
-Shape Inference:                  68/68 (100%)
-Python API:                       68/68 (100%)
-ONNX Backend:                     68/68 (100%)
-CoreML MLProgram:                 68/68 (100%) ✅
+Shape Inference:                 74/74 (100%)
+Python API:                      74/74 (100%)
+ONNX Backend:                    74/74 (100%)
+CoreML MLProgram:                74/74 (100%) ✅
 ```
 
-**🎉 CORE OPERATIONS FULLY IMPLEMENTED! 🎉**
+**🎉 74 WEBNN OPERATIONS FULLY IMPLEMENTED! 🎉**
 
 ### Implementation Status
 
-All 68 core WebNN operations are now fully implemented across all backends:
+All 74 implemented WebNN operations are now fully functional across all backends:
 - ✅ **Shape Inference**: Complete type and shape validation for all operations
 - ✅ **Python API**: W3C WebNN spec-compliant Python bindings
 - ✅ **ONNX Backend**: Cross-platform execution with full parameter support
 - ✅ **CoreML MLProgram**: macOS GPU/Neural Engine execution with full parameter support
 
 **Recent Additions:**
+- **Advanced Architecture Operations (6 operations):** `gelu`, `squeeze`, `unsqueeze`, `argMax`, `argMin`, `cast`
+  - Full implementation across all backends (shape inference, Python API, ONNX, CoreML)
+  - Added Int64 data type support for argMax/argMin output
+  - 31 comprehensive Python tests covering all scenarios
+  - Essential for Transformers, dimension manipulation, and type conversion
 - **Tensor Manipulation Operations (8 operations):** `transpose`, `concat`, `slice`, `expand`, `gather`, `split`, `where`, `pad`
   - Full implementation across all backends (shape inference, Python API, ONNX, CoreML)
   - 46 comprehensive Python tests covering various scenarios
@@ -216,19 +234,12 @@ The following operations are defined in the WebNN specification but are **intent
 
 Based on modern ML architecture requirements, the following operations should be prioritized:
 
-**High Priority (Advanced architectures):**
-- `gelu` - GELU activation (Transformers)
-- `squeeze` / `unsqueeze` - Dimension manipulation
-- `argMax` / `argMin` - Find indices of extreme values
-- `cast` - Type conversion
-
-**Medium Priority (Additional features):**
-- `softmax` parameters - Add axis parameter
+**High Priority (Additional features):**
 - `scatter` - Scatter updates
 - `tile` - Repeat tensor
 - `triangular` - Extract triangular part
 
-**Lower Priority (Specialized activations):**
+**Medium Priority (Specialized activations):**
 - `prelu`, `elu`, `leakyRelu` - Additional activations
 - `hardSigmoid`, `hardSwish`, `softplus`, `softsign` - Specialized activations
 

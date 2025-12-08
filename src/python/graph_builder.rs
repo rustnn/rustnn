@@ -2352,6 +2352,368 @@ impl PyMLGraphBuilder {
         Ok(py_operand)
     }
 
+    /// GELU activation operation
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with GELU activation applied
+    fn gelu(&mut self, input: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_gelu_shape;
+
+        let output_shape = infer_gelu_shape(&input.descriptor.shape);
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let operation = Operation {
+            op_type: "gelu".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Squeeze operation (remove dimensions of size 1)
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///     axes: Optional sequence of axes to squeeze. If None, all dimensions of size 1 are removed
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with dimensions squeezed
+    #[pyo3(signature = (input, axes=None))]
+    fn squeeze(&mut self, input: &PyMLOperand, axes: Option<Vec<u32>>) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_squeeze_shape;
+
+        let output_shape = infer_squeeze_shape(&input.descriptor.shape, axes.as_deref())
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let mut attributes = serde_json::json!({});
+        if let Some(axes) = axes {
+            attributes["axes"] = serde_json::json!(axes);
+        }
+
+        let operation = Operation {
+            op_type: "squeeze".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Unsqueeze operation (add dimensions of size 1)
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///     axes: Sequence of axes where dimensions of size 1 should be inserted
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with dimensions unsqueezed
+    fn unsqueeze(&mut self, input: &PyMLOperand, axes: Vec<u32>) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_unsqueeze_shape;
+
+        let output_shape = infer_unsqueeze_shape(&input.descriptor.shape, &axes)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "axes": axes
+        });
+
+        let operation = Operation {
+            op_type: "unsqueeze".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// ArgMax operation (find indices of maximum values)
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///     axis: The axis to reduce along
+    ///     keep_dimensions: If True, keep the reduced axis with size 1. Default is False
+    ///     output_data_type: Output data type for indices ("int32" or "int64"). Default is "int64"
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand containing indices of maximum values
+    #[pyo3(signature = (input, axis, keep_dimensions=false, output_data_type=None))]
+    fn arg_max(
+        &mut self,
+        input: &PyMLOperand,
+        axis: u32,
+        keep_dimensions: bool,
+        output_data_type: Option<&str>,
+    ) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_arg_reduce_shape;
+
+        let output_shape = infer_arg_reduce_shape(&input.descriptor.shape, axis, keep_dimensions)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        // Parse output data type, default to int64
+        let output_type = match output_data_type {
+            Some("int32") => DataType::Int32,
+            Some("int64") | None => DataType::Int64,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid output_data_type '{}', must be 'int32' or 'int64'",
+                    other
+                )));
+            }
+        };
+
+        let output_descriptor = OperandDescriptor {
+            data_type: output_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let mut attributes = serde_json::json!({
+            "axis": axis,
+            "keepDimensions": keep_dimensions
+        });
+        if let Some(dtype) = output_data_type {
+            attributes["outputDataType"] = serde_json::json!(dtype);
+        }
+
+        let operation = Operation {
+            op_type: "argMax".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// ArgMin operation (find indices of minimum values)
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///     axis: The axis to reduce along
+    ///     keep_dimensions: If True, keep the reduced axis with size 1. Default is False
+    ///     output_data_type: Output data type for indices ("int32" or "int64"). Default is "int64"
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand containing indices of minimum values
+    #[pyo3(signature = (input, axis, keep_dimensions=false, output_data_type=None))]
+    fn arg_min(
+        &mut self,
+        input: &PyMLOperand,
+        axis: u32,
+        keep_dimensions: bool,
+        output_data_type: Option<&str>,
+    ) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_arg_reduce_shape;
+
+        let output_shape = infer_arg_reduce_shape(&input.descriptor.shape, axis, keep_dimensions)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        // Parse output data type, default to int64
+        let output_type = match output_data_type {
+            Some("int32") => DataType::Int32,
+            Some("int64") | None => DataType::Int64,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid output_data_type '{}', must be 'int32' or 'int64'",
+                    other
+                )));
+            }
+        };
+
+        let output_descriptor = OperandDescriptor {
+            data_type: output_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let mut attributes = serde_json::json!({
+            "axis": axis,
+            "keepDimensions": keep_dimensions
+        });
+        if let Some(dtype) = output_data_type {
+            attributes["outputDataType"] = serde_json::json!(dtype);
+        }
+
+        let operation = Operation {
+            op_type: "argMin".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// Cast operation (type conversion)
+    ///
+    /// Args:
+    ///     input: The input tensor
+    ///     data_type: Target data type ("float32", "float16", "int32", "uint32", "int8", "uint8", "int64")
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with converted type
+    fn cast(&mut self, input: &PyMLOperand, data_type: &str) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_cast_shape;
+
+        let output_shape = infer_cast_shape(&input.descriptor.shape);
+
+        // Parse target data type
+        let target_type = match data_type {
+            "float32" => DataType::Float32,
+            "float16" => DataType::Float16,
+            "int32" => DataType::Int32,
+            "uint32" => DataType::Uint32,
+            "int8" => DataType::Int8,
+            "uint8" => DataType::Uint8,
+            "int64" => DataType::Int64,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Invalid data_type '{}', must be one of: float32, float16, int32, uint32, int8, uint8, int64",
+                    other
+                )));
+            }
+        };
+
+        let output_descriptor = OperandDescriptor {
+            data_type: target_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "to": data_type
+        });
+
+        let operation = Operation {
+            op_type: "cast".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
     /// Build the computational graph
     ///
     /// Args:

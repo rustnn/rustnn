@@ -110,6 +110,20 @@ mod mil_ops {
     pub const SPLIT: &str = "split";
     pub const WHERE: &str = "select";
     pub const PAD: &str = "pad";
+
+    // Advanced activation operations
+    pub const GELU: &str = "gelu";
+
+    // Dimension manipulation operations
+    pub const SQUEEZE: &str = "squeeze";
+    pub const UNSQUEEZE: &str = "expand_dims";
+
+    // Arg reduce operations
+    pub const ARG_MAX: &str = "reduce_argmax";
+    pub const ARG_MIN: &str = "reduce_argmin";
+
+    // Type conversion operations
+    pub const CAST: &str = "cast";
 }
 
 #[derive(Default)]
@@ -184,6 +198,7 @@ impl CoremlMlProgramConverter {
             DataType::Int8 => MilDataType::Int8 as i32,
             DataType::Uint32 => MilDataType::Uint32 as i32,
             DataType::Uint8 => MilDataType::Uint8 as i32,
+            DataType::Int64 => MilDataType::Int64 as i32,
         })
     }
 
@@ -325,6 +340,41 @@ impl CoremlMlProgramConverter {
         }
     }
 
+    /// Create an immediate bool argument
+    fn create_immediate_bool(value: bool) -> Argument {
+        use crate::protos::coreml::mil_spec::{
+            DataType as MilDataType, TensorType, TensorValue, Value, ValueType, tensor_value,
+            value, value_type,
+        };
+
+        let tensor_value = TensorValue {
+            value: Some(tensor_value::Value::Bools(tensor_value::RepeatedBools {
+                values: vec![value],
+            })),
+        };
+
+        let val = Value {
+            doc_string: String::new(),
+            r#type: Some(ValueType {
+                r#type: Some(value_type::Type::TensorType(TensorType {
+                    data_type: MilDataType::Bool as i32,
+                    rank: 0, // Scalar
+                    dimensions: vec![],
+                    attributes: HashMap::new(),
+                })),
+            }),
+            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+            })),
+        };
+
+        Argument {
+            arguments: vec![crate::protos::coreml::mil_spec::argument::Binding {
+                binding: Some(Binding::Value(val)),
+            }],
+        }
+    }
+
     /// Map WebNN operation to MIL operation
     fn convert_operation(
         &self,
@@ -446,6 +496,14 @@ impl CoremlMlProgramConverter {
             "split" => mil_ops::SPLIT,
             "where" => mil_ops::WHERE,
             "pad" => mil_ops::PAD,
+
+            // Advanced operations
+            "gelu" => mil_ops::GELU,
+            "squeeze" => mil_ops::SQUEEZE,
+            "unsqueeze" => mil_ops::UNSQUEEZE,
+            "argmax" => mil_ops::ARG_MAX,
+            "argmin" => mil_ops::ARG_MIN,
+            "cast" => mil_ops::CAST,
 
             _ => {
                 return Err(GraphError::ConversionFailed {
@@ -921,6 +979,108 @@ impl CoremlMlProgramConverter {
                         "constant_val".to_string(),
                         Self::create_immediate_float(value as f32),
                     );
+                }
+            }
+
+            "gelu" => {
+                // gelu: x (mode is optional, defaults to "EXACT")
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                // CoreML GELU supports "EXACT" and "TANH_APPROXIMATION" modes
+                // WebNN GELU has no mode parameter (uses exact by default)
+            }
+
+            "squeeze" => {
+                // squeeze: x, axes (optional)
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                // Add axes parameter if present
+                if let Some(axes) = op.attributes.get("axes").and_then(|v| v.as_array()) {
+                    let axes_u32: Vec<u32> = axes
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|u| u as u32))
+                        .collect();
+                    if !axes_u32.is_empty() {
+                        inputs.insert(
+                            "axes".to_string(),
+                            Self::create_immediate_int_array(&axes_u32),
+                        );
+                    }
+                }
+            }
+
+            "unsqueeze" => {
+                // expand_dims: x, axes
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                // Add axes parameter (required for unsqueeze)
+                if let Some(axes) = op.attributes.get("axes").and_then(|v| v.as_array()) {
+                    let axes_u32: Vec<u32> = axes
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|u| u as u32))
+                        .collect();
+                    if !axes_u32.is_empty() {
+                        inputs.insert(
+                            "axes".to_string(),
+                            Self::create_immediate_int_array(&axes_u32),
+                        );
+                    }
+                }
+            }
+
+            "argMax" | "argMin" => {
+                // reduce_argmax/reduce_argmin: x, axis, keep_dims
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                // Add axis parameter (required)
+                if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_u64()) {
+                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
+                }
+
+                // Add keep_dims parameter (defaults to false)
+                if let Some(keep_dims) = op
+                    .attributes
+                    .get("keepDimensions")
+                    .and_then(|v| v.as_bool())
+                {
+                    inputs.insert(
+                        "keep_dims".to_string(),
+                        Self::create_immediate_bool(keep_dims),
+                    );
+                }
+
+                // Note: outputDataType is handled by the output tensor's data type
+            }
+
+            "cast" => {
+                // cast: x, dtype
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                // Add dtype parameter (required)
+                // CoreML dtype values as integers from MilDataType enum
+                if let Some(to_type) = op.attributes.get("to").and_then(|v| v.as_str()) {
+                    use crate::protos::coreml::mil_spec::DataType as MilDataType;
+
+                    let dtype_code = match to_type {
+                        "float32" => MilDataType::Float32 as u32,
+                        "float16" => MilDataType::Float16 as u32,
+                        "int32" => MilDataType::Int32 as u32,
+                        "uint32" => MilDataType::Uint32 as u32,
+                        "int8" => MilDataType::Int8 as u32,
+                        "uint8" => MilDataType::Uint8 as u32,
+                        "int64" => MilDataType::Int64 as u32,
+                        _ => MilDataType::Float32 as u32, // default
+                    };
+                    inputs.insert("dtype".to_string(), Self::create_immediate_int(dtype_code));
                 }
             }
 

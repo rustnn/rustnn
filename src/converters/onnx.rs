@@ -27,6 +27,7 @@ impl OnnxConverter {
             DataType::Int32 => ProtoDataType::Int32,
             DataType::Float16 => ProtoDataType::Float16,
             DataType::Uint32 => ProtoDataType::Uint32,
+            DataType::Int64 => ProtoDataType::Int64,
         }
     }
 
@@ -410,6 +411,83 @@ impl OnnxConverter {
         }
     }
 
+    /// Create ONNX attributes for squeeze/unsqueeze operations
+    fn create_squeeze_unsqueeze_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(axes) = op.attributes.get("axes").and_then(|v| v.as_array()) {
+            let axes_i64: Vec<i64> = axes
+                .iter()
+                .filter_map(|v| v.as_u64().map(|u| u as i64))
+                .collect();
+            if !axes_i64.is_empty() {
+                attributes.push(AttributeProto {
+                    name: Some("axes".to_string()),
+                    ints: axes_i64,
+                    ..Default::default()
+                });
+            }
+        }
+
+        attributes
+    }
+
+    /// Create ONNX attributes for argMax/argMin operations
+    fn create_arg_reduce_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_u64()) {
+            attributes.push(AttributeProto {
+                name: Some("axis".to_string()),
+                i: Some(axis as i64),
+                ..Default::default()
+            });
+        }
+
+        if let Some(keep_dims) = op
+            .attributes
+            .get("keepDimensions")
+            .and_then(|v| v.as_bool())
+        {
+            attributes.push(AttributeProto {
+                name: Some("keepdims".to_string()), // ONNX uses "keepdims" not "keepDimensions"
+                i: Some(if keep_dims { 1 } else { 0 }),
+                ..Default::default()
+            });
+        }
+
+        // Note: outputDataType is handled by the output tensor's data type, not as an attribute
+
+        attributes
+    }
+
+    /// Create ONNX attributes for cast operation
+    fn create_cast_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(to_type) = op.attributes.get("to").and_then(|v| v.as_str()) {
+            // Convert string data type to ONNX data type code
+            let type_code = match to_type {
+                "float32" => ProtoDataType::Float as i64,
+                "float16" => ProtoDataType::Float16 as i64,
+                "int32" => ProtoDataType::Int32 as i64,
+                "uint32" => ProtoDataType::Uint32 as i64,
+                "int8" => ProtoDataType::Int8 as i64,
+                "uint8" => ProtoDataType::Uint8 as i64,
+                "int64" => ProtoDataType::Int64 as i64,
+                _ => ProtoDataType::Undefined as i64,
+            };
+
+            attributes.push(AttributeProto {
+                name: Some("to".to_string()),
+                i: Some(type_code),
+                ..Default::default()
+            });
+        }
+
+        attributes
+    }
+
     fn create_operation_attributes(op: &Operation) -> Vec<AttributeProto> {
         if op.op_type == "conv2d" {
             Self::create_conv2d_attributes(op)
@@ -419,6 +497,12 @@ impl OnnxConverter {
             Self::create_pool2d_attributes(op)
         } else if op.op_type.starts_with("reduce") {
             Self::create_reduce_attributes(op)
+        } else if op.op_type == "squeeze" || op.op_type == "unsqueeze" {
+            Self::create_squeeze_unsqueeze_attributes(op)
+        } else if op.op_type == "argMax" || op.op_type == "argMin" {
+            Self::create_arg_reduce_attributes(op)
+        } else if op.op_type == "cast" {
+            Self::create_cast_attributes(op)
         } else {
             Vec::new()
         }

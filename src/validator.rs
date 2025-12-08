@@ -18,6 +18,7 @@ impl Default for ContextProperties {
             DataType::Uint32,
             DataType::Int8,
             DataType::Uint8,
+            DataType::Int64,
         ]
         .into_iter()
         .collect();

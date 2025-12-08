@@ -1327,6 +1327,150 @@ pub fn infer_pad_shape(input_shape: &[u32], padding: &[u32]) -> Result<Vec<u32>,
 
     Ok(output_shape)
 }
+/// Infer output shape for gelu operation (element-wise)
+pub fn infer_gelu_shape(input_shape: &[u32]) -> Vec<u32> {
+    // GELU is element-wise: output shape = input shape
+    input_shape.to_vec()
+}
+
+/// Infer output shape for squeeze operation (remove dimensions of size 1)
+pub fn infer_squeeze_shape(
+    input_shape: &[u32],
+    axes: Option<&[u32]>,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    let axes_to_squeeze = if let Some(axes) = axes {
+        // Validate axes
+        for &axis in axes {
+            if axis >= rank as u32 {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Squeeze axis {} out of bounds for rank {}, input shape: {:?}",
+                        axis, rank, input_shape
+                    ),
+                });
+            }
+            // Verify dimension is 1
+            if input_shape[axis as usize] != 1 {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Squeeze axis {} has size {}, must be 1, input shape: {:?}",
+                        axis, input_shape[axis as usize], input_shape
+                    ),
+                });
+            }
+        }
+        axes.to_vec()
+    } else {
+        // No axes specified: squeeze all dimensions of size 1
+        (0..rank)
+            .filter(|&i| input_shape[i] == 1)
+            .map(|i| i as u32)
+            .collect()
+    };
+
+    // Build output shape by excluding squeezed axes
+    let mut output_shape = Vec::new();
+    for (i, &dim) in input_shape.iter().enumerate() {
+        if !axes_to_squeeze.contains(&(i as u32)) {
+            output_shape.push(dim);
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for unsqueeze operation (add dimensions of size 1)
+pub fn infer_unsqueeze_shape(input_shape: &[u32], axes: &[u32]) -> Result<Vec<u32>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = input_rank + axes.len();
+
+    // Validate axes: must be in range [0, output_rank]
+    for &axis in axes {
+        if axis > output_rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
+                    axis, output_rank, input_shape
+                ),
+            });
+        }
+    }
+
+    // Check for duplicate axes
+    let mut sorted_axes = axes.to_vec();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Unsqueeze axes contain duplicate: {}", sorted_axes[i]),
+            });
+        }
+    }
+
+    // Build output shape by inserting 1s at specified axes
+    let mut output_shape = Vec::with_capacity(output_rank);
+    let mut input_idx = 0;
+
+    for out_idx in 0..output_rank {
+        if sorted_axes.contains(&(out_idx as u32)) {
+            output_shape.push(1);
+        } else {
+            output_shape.push(input_shape[input_idx]);
+            input_idx += 1;
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for argMax/argMin operations
+pub fn infer_arg_reduce_shape(
+    input_shape: &[u32],
+    axis: u32,
+    keep_dimensions: bool,
+) -> Result<Vec<u32>, GraphError> {
+    let rank = input_shape.len();
+
+    // Validate axis
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Arg reduce axis {} out of bounds for rank {}, input shape: {:?}",
+                axis, rank, input_shape
+            ),
+        });
+    }
+
+    let mut output_shape = Vec::new();
+
+    if keep_dimensions {
+        // Keep the reduced axis with size 1
+        for (i, &dim) in input_shape.iter().enumerate() {
+            if i == axis as usize {
+                output_shape.push(1);
+            } else {
+                output_shape.push(dim);
+            }
+        }
+    } else {
+        // Remove the reduced axis
+        for (i, &dim) in input_shape.iter().enumerate() {
+            if i != axis as usize {
+                output_shape.push(dim);
+            }
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for cast operation (shape unchanged, only type changes)
+pub fn infer_cast_shape(input_shape: &[u32]) -> Vec<u32> {
+    // Cast is element-wise: output shape = input shape
+    input_shape.to_vec()
+}
 
 #[cfg(test)]
 mod tests {
@@ -2202,5 +2346,152 @@ mod tests {
     fn test_pad_invalid() {
         // Wrong padding length
         assert!(infer_pad_shape(&[3, 3], &[1, 1, 1]).is_err());
+    }
+
+    // Gelu tests
+    #[test]
+    fn test_gelu() {
+        // Element-wise: output shape = input shape
+        assert_eq!(infer_gelu_shape(&[2, 3]), vec![2, 3]);
+        assert_eq!(infer_gelu_shape(&[4, 5, 6]), vec![4, 5, 6]);
+        assert_eq!(infer_gelu_shape(&[1]), vec![1]);
+    }
+
+    // Squeeze tests
+    #[test]
+    fn test_squeeze_all_ones() {
+        // Squeeze all dimensions of size 1
+        assert_eq!(
+            infer_squeeze_shape(&[1, 3, 1, 4, 1], None).unwrap(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_specific_axes() {
+        // Squeeze specific axes
+        assert_eq!(
+            infer_squeeze_shape(&[1, 3, 1, 4], Some(&[0, 2])).unwrap(),
+            vec![3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_no_ones() {
+        // No dimensions of size 1
+        assert_eq!(
+            infer_squeeze_shape(&[2, 3, 4], None).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_squeeze_invalid() {
+        // Axis has size > 1
+        assert!(infer_squeeze_shape(&[2, 3, 4], Some(&[1])).is_err());
+
+        // Axis out of bounds
+        assert!(infer_squeeze_shape(&[1, 3, 1], Some(&[5])).is_err());
+    }
+
+    // Unsqueeze tests
+    #[test]
+    fn test_unsqueeze_single_axis() {
+        // Add dimension at front
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[0]).unwrap(), vec![1, 3, 4]);
+
+        // Add dimension in middle
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[1]).unwrap(), vec![3, 1, 4]);
+
+        // Add dimension at end
+        assert_eq!(infer_unsqueeze_shape(&[3, 4], &[2]).unwrap(), vec![3, 4, 1]);
+    }
+
+    #[test]
+    fn test_unsqueeze_multiple_axes() {
+        // Add multiple dimensions
+        assert_eq!(
+            infer_unsqueeze_shape(&[3, 4], &[0, 2]).unwrap(),
+            vec![1, 3, 1, 4]
+        );
+
+        assert_eq!(
+            infer_unsqueeze_shape(&[2], &[0, 2, 3]).unwrap(),
+            vec![1, 2, 1, 1]
+        );
+    }
+
+    #[test]
+    fn test_unsqueeze_invalid() {
+        // Axis out of bounds
+        assert!(infer_unsqueeze_shape(&[3, 4], &[5]).is_err());
+
+        // Duplicate axes
+        assert!(infer_unsqueeze_shape(&[3, 4], &[0, 0]).is_err());
+    }
+
+    // ArgMax/ArgMin tests
+    #[test]
+    fn test_arg_reduce_no_keep() {
+        // Remove axis 0
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 0, false).unwrap(),
+            vec![3, 4]
+        );
+
+        // Remove axis 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 1, false).unwrap(),
+            vec![2, 4]
+        );
+
+        // Remove axis 2
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 2, false).unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn test_arg_reduce_keep_dims() {
+        // Keep axis 0 with size 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 0, true).unwrap(),
+            vec![1, 3, 4]
+        );
+
+        // Keep axis 1 with size 1
+        assert_eq!(
+            infer_arg_reduce_shape(&[2, 3, 4], 1, true).unwrap(),
+            vec![2, 1, 4]
+        );
+    }
+
+    #[test]
+    fn test_arg_reduce_1d() {
+        // 1D tensor without keep
+        assert_eq!(
+            infer_arg_reduce_shape(&[10], 0, false).unwrap(),
+            Vec::<u32>::new()
+        );
+
+        // 1D tensor with keep
+        assert_eq!(infer_arg_reduce_shape(&[10], 0, true).unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn test_arg_reduce_invalid() {
+        // Axis out of bounds
+        assert!(infer_arg_reduce_shape(&[2, 3, 4], 3, false).is_err());
+        assert!(infer_arg_reduce_shape(&[2, 3, 4], 5, true).is_err());
+    }
+
+    // Cast tests
+    #[test]
+    fn test_cast() {
+        // Cast preserves shape
+        assert_eq!(infer_cast_shape(&[2, 3]), vec![2, 3]);
+        assert_eq!(infer_cast_shape(&[4, 5, 6, 7]), vec![4, 5, 6, 7]);
+        assert_eq!(infer_cast_shape(&[1]), vec![1]);
     }
 }

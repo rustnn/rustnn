@@ -119,6 +119,7 @@ impl PyMLTensor {
             DataType::Uint32 => "uint32".to_string(),
             DataType::Int8 => "int8".to_string(),
             DataType::Uint8 => "uint8".to_string(),
+            DataType::Int64 => "int64".to_string(),
         }
     }
 
