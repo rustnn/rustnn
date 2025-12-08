@@ -20,7 +20,7 @@ This document tracks the implementation status of all WebNN operators across dif
 | `mul` | ✅ | ✅ | ✅ | ✅ |
 | `div` | ✅ | ✅ | ✅ | ✅ |
 | `matmul` | ✅ | ✅ | ✅ | ✅ |
-| `pow` | ✅ | ✅ | ✅ | ❌ |
+| `pow` | ✅ | ✅ | ✅ | ✅ |
 
 ## Activation Functions
 
@@ -38,14 +38,14 @@ This document tracks the implementation status of all WebNN operators across dif
 | `abs` | ✅ | ✅ | ✅ | ✅ |
 | `ceil` | ✅ | ✅ | ✅ | ✅ |
 | `floor` | ✅ | ✅ | ✅ | ✅ |
-| `round` | ✅ | ✅ | ✅ | ❌ |
-| `neg` | ✅ | ✅ | ✅ | ❌ |
+| `round` | ✅ | ✅ | ✅ | ✅ |
+| `neg` | ✅ | ✅ | ✅ | ✅ |
 | `sign` | ✅ | ✅ | ✅ | ✅ |
 | `exp` | ✅ | ✅ | ✅ | ✅ |
 | `log` | ✅ | ✅ | ✅ | ✅ |
 | `sqrt` | ✅ | ✅ | ✅ | ✅ |
 | `reciprocal` | ✅ | ✅ | ✅ | ✅ |
-| `identity` | ✅ | ✅ | ✅ | ❌ |
+| `identity` | ✅ | ✅ | ✅ | ✅ |
 
 ## Trigonometric
 
@@ -54,19 +54,19 @@ This document tracks the implementation status of all WebNN operators across dif
 | `sin` | ✅ | ✅ | ✅ | ✅ |
 | `cos` | ✅ | ✅ | ✅ | ✅ |
 | `tan` | ✅ | ✅ | ✅ | ✅ |
-| `asin` | ✅ | ✅ | ✅ | ❌ |
-| `acos` | ✅ | ✅ | ✅ | ❌ |
-| `atan` | ✅ | ✅ | ✅ | ❌ |
+| `asin` | ✅ | ✅ | ✅ | ✅ |
+| `acos` | ✅ | ✅ | ✅ | ✅ |
+| `atan` | ✅ | ✅ | ✅ | ✅ |
 
 ## Hyperbolic
 
 | Operation | Shape Inference | Python API | ONNX | CoreML MLProgram |
 |-----------|----------------|------------|------|------------------|
-| `sinh` | ✅ | ✅ | ✅ | ❌ |
-| `cosh` | ✅ | ✅ | ✅ | ❌ |
-| `asinh` | ✅ | ✅ | ✅ | ❌ |
-| `acosh` | ✅ | ✅ | ✅ | ❌ |
-| `atanh` | ✅ | ✅ | ✅ | ❌ |
+| `sinh` | ✅ | ✅ | ✅ | ✅ |
+| `cosh` | ✅ | ✅ | ✅ | ✅ |
+| `asinh` | ✅ | ✅ | ✅ | ✅ |
+| `acosh` | ✅ | ✅ | ✅ | ✅ |
+| `atanh` | ✅ | ✅ | ✅ | ✅ |
 
 ## Special Functions
 
@@ -101,8 +101,8 @@ This document tracks the implementation status of all WebNN operators across dif
 |-----------|----------------|------------|------|------------------|
 | `average_pool2d` | ✅ | ✅ | ✅ | ⏸️ |
 | `max_pool2d` | ✅ | ✅ | ✅ | ⏸️ |
-| `global_average_pool` | ✅ | ✅ | ✅ | ❌ |
-| `global_max_pool` | ✅ | ✅ | ✅ | ❌ |
+| `global_average_pool` | ✅ | ✅ | ✅ | ✅ |
+| `global_max_pool` | ✅ | ✅ | ✅ | ✅ |
 
 ## Normalization
 
@@ -149,24 +149,25 @@ Total WebNN Operations: 60
 Shape Inference:        60/60 (100%)
 Python API:             60/60 (100%)
 ONNX Backend:           60/60 (100%)
-CoreML MLProgram:       44/60 (73%)
+CoreML MLProgram:       57/60 (95%)
 ```
 
-**Missing in CoreML MLProgram:** 16 operations
-- 13 missing completely (❌)
+**Remaining Work in CoreML MLProgram:** 3 operations
+- 0 missing completely (❌) - ALL OPERATIONS NOW MAPPED! ✅
 - 3 partially implemented (⏸️ - operation mapping exists but parameters not fully handled)
 
 ### Breakdown by Status
 
-**❌ Not Implemented (13):**
-- Global pooling: `global_average_pool`, `global_max_pool`
-- Element-wise: `round`, `neg`, `identity`, `pow`
-- Trigonometric: `asin`, `acos`, `atan`
-- Hyperbolic: `sinh`, `cosh`, `asinh`, `acosh`, `atanh`
+**✅ All Basic Operations Implemented (57):**
+All 60 WebNN operations now have MIL operation mappings in CoreML MLProgram!
 
-**⏸️ Partially Implemented (3):**
-- Convolution/pooling operations have operation mapping but lack parameter handling (strides, padding, etc.)
-- These need MIL Value immediate value creation for parameters
+**⏸️ Partially Implemented - Need Parameter Handling (3):**
+These operations are mapped but lack full parameter support (strides, padding, dilations, etc.):
+- `conv2d`, `conv_transpose2d` - need convolution parameter handling
+- `average_pool2d`, `max_pool2d` - need pooling parameter handling
+- `batch_normalization`, `instance_normalization`, `layer_normalization` - need normalization parameter handling
+
+**Note:** These partially implemented operations work for basic cases but need MIL Value immediate value creation for complete parameter support.
 
 ---
 
