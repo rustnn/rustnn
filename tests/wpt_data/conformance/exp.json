@@ -1,0 +1,101 @@
+{
+  "operation": "exp",
+  "wpt_version": "2025-12-08",
+  "wpt_commit": "manual_extraction",
+  "source_file": "webnn/conformance_tests/exp.https.any.js",
+  "conversion_note": "Test cases manually extracted and adapted from WPT WebNN test suite",
+  "tests": [
+    {
+      "name": "exp float32 1D tensor",
+      "inputs": {
+        "input": {
+          "data": [
+            0.0,
+            1.0,
+            -1.0,
+            2.0,
+            -2.0
+          ],
+          "shape": [
+            5
+          ],
+          "dataType": "float32"
+        }
+      },
+      "operators": [
+        {
+          "name": "exp",
+          "arguments": {
+            "input": "input"
+          },
+          "output": "output"
+        }
+      ],
+      "expectedOutputs": {
+        "output": {
+          "data": [
+            1.0,
+            2.7182817,
+            0.36787945,
+            7.389056,
+            0.13533528
+          ],
+          "shape": [
+            5
+          ],
+          "dataType": "float32"
+        }
+      },
+      "tolerance": {
+        "type": "ULP",
+        "value": 32
+      }
+    },
+    {
+      "name": "exp float32 2D tensor",
+      "inputs": {
+        "input": {
+          "data": [
+            0.0,
+            0.5,
+            1.0,
+            1.5
+          ],
+          "shape": [
+            2,
+            2
+          ],
+          "dataType": "float32"
+        }
+      },
+      "operators": [
+        {
+          "name": "exp",
+          "arguments": {
+            "input": "input"
+          },
+          "output": "output"
+        }
+      ],
+      "expectedOutputs": {
+        "output": {
+          "data": [
+            1.0,
+            1.6487213,
+            2.7182817,
+            4.481689
+          ],
+          "shape": [
+            2,
+            2
+          ],
+          "dataType": "float32"
+        }
+      },
+      "tolerance": {
+        "type": "ULP",
+        "value": 32
+      }
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "operation": "floor",
+  "wpt_version": "2025-12-08",
+  "wpt_commit": "manual_extraction",
+  "source_file": "webnn/conformance_tests/floor.https.any.js",
+  "conversion_note": "Test cases manually extracted and adapted from WPT WebNN test suite",
+  "tests": [
+    {
+      "name": "floor float32 1D tensor",
+      "inputs": {
+        "input": {
+          "data": [
+            -2.5,
+            -1.5,
+            -0.5,
+            0.5,
+            1.5
+          ],
+          "shape": [
+            5
+          ],
+          "dataType": "float32"
+        }
+      },
+      "operators": [
+        {
+          "name": "floor",
+          "arguments": {
+            "input": "input"
+          },
+          "output": "output"
+        }
+      ],
+      "expectedOutputs": {
+        "output": {
+          "data": [
+            -3.0,
+            -2.0,
+            -1.0,
+            0.0,
+            1.0
+          ],
+          "shape": [
+            5
+          ],
+          "dataType": "float32"
+        }
+      },
+      "tolerance": {
+        "type": "ULP",
+        "value": 0
+      }
+    },
+    {
+      "name": "floor float32 2D tensor",
+      "inputs": {
+        "input": {
+          "data": [
+            -1.9,
+            2.1,
+            -3.1,
+            4.8
+          ],
+          "shape": [
+            2,
+            2
+          ],
+          "dataType": "float32"
+        }
+      },
+      "operators": [
+        {
+          "name": "floor",
+          "arguments": {
+            "input": "input"
+          },
+          "output": "output"
+        }
+      ],
+      "expectedOutputs": {
+        "output": {
+          "data": [
+            -2.0,
+            2.0,
+            -4.0,
+            4.0
+          ],
+          "shape": [
+            2,
+            2
+          ],
+          "dataType": "float32"
+        }
+      },
+      "tolerance": {
+        "type": "ULP",
+        "value": 0
+      }
+    }
+  ]
+}
