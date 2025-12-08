@@ -2934,3 +2934,343 @@ def test_triangular_non_square(context):
     output = builder.triangular(x, True, 0)
     assert output.shape == [4, 5]
     graph = builder.build({"output": output})
+
+
+# ============================================================================
+# Specialized Activation Operations Tests
+# ============================================================================
+
+
+@requires_onnx_runtime
+def test_prelu_basic(context):
+    """Test PReLU activation with basic slope tensor"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    slope = builder.constant(np.array([[0.25, 0.25, 0.25]], dtype=np.float32), [1, 3], "float32")
+    output = builder.prelu(x, slope)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    # PReLU: x if x >= 0 else slope * x
+    x_data = np.array([[-1, 2, -3], [4, -5, 6]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Verify PReLU: x if x >= 0 else slope * x
+    expected = np.where(x_data >= 0, x_data, 0.25 * x_data)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_prelu_per_channel(context):
+    """Test PReLU with per-channel slopes"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    slope = builder.constant(np.array([[0.1, 0.2, 0.3]], dtype=np.float32), [1, 3], "float32")
+    output = builder.prelu(x, slope)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, -2, -3], [1, 2, 3]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    # Each channel has different slope: [0.1, 0.2, 0.3]
+    expected = np.array([[-0.1, -0.4, -0.9], [1, 2, 3]], dtype=np.float32)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_prelu_broadcast_slope(context):
+    """Test PReLU with broadcasted slope"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    slope = builder.constant(np.array([0.5], dtype=np.float32), [1], "float32")
+    output = builder.prelu(x, slope)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-2, 4, -6], [8, -10, 12]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.where(x_data >= 0, x_data, 0.5 * x_data)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_elu_default_alpha(context):
+    """Test ELU activation with default alpha=1.0"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.elu(x)  # Default alpha=1.0
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, 0, 1], [-2, 2, -0.5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # ELU: x if x >= 0 else alpha * (exp(x) - 1)
+    expected = np.where(x_data >= 0, x_data, 1.0 * (np.exp(x_data) - 1))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_elu_custom_alpha(context):
+    """Test ELU activation with custom alpha"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.elu(x, alpha=0.5)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, 0, 1], [-2, 2, -0.5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.where(x_data >= 0, x_data, 0.5 * (np.exp(x_data) - 1))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_elu_multidimensional(context):
+    """Test ELU with multidimensional input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2, 2], "float32")
+    output = builder.elu(x, alpha=2.0)
+    assert output.shape == [2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[-1, 1], [0, -0.5]], [[2, -2], [-3, 3]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.where(x_data >= 0, x_data, 2.0 * (np.exp(x_data) - 1))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_leaky_relu_default_alpha(context):
+    """Test Leaky ReLU with default alpha=0.01"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.leaky_relu(x)  # Default alpha=0.01
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, 0, 1], [-10, 10, -5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Leaky ReLU: x if x >= 0 else alpha * x
+    expected = np.where(x_data >= 0, x_data, 0.01 * x_data)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_leaky_relu_custom_alpha(context):
+    """Test Leaky ReLU with custom alpha"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.leaky_relu(x, alpha=0.2)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-5, 5, 0], [10, -10, -1]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.where(x_data >= 0, x_data, 0.2 * x_data)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_leaky_relu_multidimensional(context):
+    """Test Leaky ReLU with 4D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 2, 2, 2], "float32")
+    output = builder.leaky_relu(x, alpha=0.1)
+    assert output.shape == [1, 2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[[-1, 1], [2, -2]], [[3, -3], [-4, 4]]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.where(x_data >= 0, x_data, 0.1 * x_data)
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_softplus_basic(context):
+    """Test softplus activation: log(1 + exp(x))"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.softplus(x)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, 0, 1], [-2, 2, 0.5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Softplus: log(1 + exp(x))
+    expected = np.log(1 + np.exp(x_data))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_softplus_multidimensional(context):
+    """Test softplus with 3D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2, 2], "float32")
+    output = builder.softplus(x)
+    assert output.shape == [2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[-5, 0], [5, 10]], [[1, -1], [-10, 2]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.log(1 + np.exp(x_data))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_softsign_basic(context):
+    """Test softsign activation: x / (1 + |x|)"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.softsign(x)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-1, 0, 1], [-2, 2, 0.5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Softsign: x / (1 + |x|)
+    expected = x_data / (1 + np.abs(x_data))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_softsign_multidimensional(context):
+    """Test softsign with 3D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2, 2], "float32")
+    output = builder.softsign(x)
+    assert output.shape == [2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[-5, 0], [5, 10]], [[1, -1], [-10, 2]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = x_data / (1 + np.abs(x_data))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_sigmoid_default_params(context):
+    """Test hard sigmoid with default alpha=0.2, beta=0.5"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.hard_sigmoid(x)  # Default alpha=0.2, beta=0.5
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-3, -1, 0], [1, 3, 5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Hard sigmoid: max(0, min(1, alpha * x + beta))
+    expected = np.maximum(0, np.minimum(1, 0.2 * x_data + 0.5))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_sigmoid_custom_params(context):
+    """Test hard sigmoid with custom alpha and beta"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.hard_sigmoid(x, alpha=0.5, beta=0.3)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-2, -1, 0], [1, 2, 3]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.maximum(0, np.minimum(1, 0.5 * x_data + 0.3))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_sigmoid_multidimensional(context):
+    """Test hard sigmoid with 4D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 2, 2, 2], "float32")
+    output = builder.hard_sigmoid(x, alpha=0.2, beta=0.5)
+    assert output.shape == [1, 2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[[-3, -1], [0, 1]], [[2, 3], [4, 5]]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    expected = np.maximum(0, np.minimum(1, 0.2 * x_data + 0.5))
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_swish_default_params(context):
+    """Test hard swish with default alpha=1/6, beta=0.5"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.hard_swish(x)  # Default alpha=0.16666..., beta=0.5
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-3, -1, 0], [1, 3, 5]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+    assert "output" in results
+    assert results["output"].shape == (2, 3)
+
+    # Hard swish: x * hardSigmoid(x)
+    alpha = 1.0 / 6.0
+    beta = 0.5
+    hard_sigmoid = np.maximum(0, np.minimum(1, alpha * x_data + beta))
+    expected = x_data * hard_sigmoid
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_swish_custom_params(context):
+    """Test hard swish with custom alpha and beta"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 3], "float32")
+    output = builder.hard_swish(x, alpha=0.2, beta=0.5)
+    assert output.shape == [2, 3]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[-2, -1, 0], [1, 2, 3]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    hard_sigmoid = np.maximum(0, np.minimum(1, 0.2 * x_data + 0.5))
+    expected = x_data * hard_sigmoid
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)
+
+
+@requires_onnx_runtime
+def test_hard_swish_multidimensional(context):
+    """Test hard swish with 3D input"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2, 2], "float32")
+    output = builder.hard_swish(x, alpha=0.2, beta=0.5)
+    assert output.shape == [2, 2, 2]
+    graph = builder.build({"output": output})
+
+    x_data = np.array([[[-3, -1], [0, 1]], [[2, 3], [4, 5]]], dtype=np.float32)
+    results = context.compute(graph, {"x": x_data})
+
+    hard_sigmoid = np.maximum(0, np.minimum(1, 0.2 * x_data + 0.5))
+    expected = x_data * hard_sigmoid
+    np.testing.assert_allclose(results["output"], expected, rtol=1e-5)

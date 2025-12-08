@@ -130,6 +130,13 @@ impl OnnxConverter {
         if op_type.eq_ignore_ascii_case("triangular") {
             return "Trilu".to_string(); // ONNX Trilu (triangle lower/upper)
         }
+        // Specialized activation functions
+        if op_type.eq_ignore_ascii_case("prelu") {
+            return "PRelu".to_string(); // ONNX uses PRelu (not Prelu)
+        }
+        if op_type.eq_ignore_ascii_case("leakyRelu") {
+            return "LeakyRelu".to_string();
+        }
 
         // Default: capitalize first letter
         let mut chars = op_type.chars();
@@ -537,6 +544,82 @@ impl OnnxConverter {
         attributes
     }
 
+    /// Create ONNX attributes for hardSigmoid operation
+    fn create_hardsigmoid_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("alpha".to_string()),
+                f: Some(alpha as f32),
+                ..Default::default()
+            });
+        }
+
+        if let Some(beta) = op.attributes.get("beta").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("beta".to_string()),
+                f: Some(beta as f32),
+                ..Default::default()
+            });
+        }
+
+        attributes
+    }
+
+    /// Create ONNX attributes for hardSwish operation
+    fn create_hardswish_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("alpha".to_string()),
+                f: Some(alpha as f32),
+                ..Default::default()
+            });
+        }
+
+        if let Some(beta) = op.attributes.get("beta").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("beta".to_string()),
+                f: Some(beta as f32),
+                ..Default::default()
+            });
+        }
+
+        attributes
+    }
+
+    /// Create ONNX attributes for elu operation
+    fn create_elu_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("alpha".to_string()),
+                f: Some(alpha as f32),
+                ..Default::default()
+            });
+        }
+
+        attributes
+    }
+
+    /// Create ONNX attributes for leakyRelu operation
+    fn create_leakyrelu_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+            attributes.push(AttributeProto {
+                name: Some("alpha".to_string()),
+                f: Some(alpha as f32),
+                ..Default::default()
+            });
+        }
+
+        attributes
+    }
+
     fn create_operation_attributes(op: &Operation) -> Vec<AttributeProto> {
         if op.op_type == "conv2d" {
             Self::create_conv2d_attributes(op)
@@ -558,6 +641,14 @@ impl OnnxConverter {
             Self::create_tile_attributes(op)
         } else if op.op_type == "triangular" {
             Self::create_triangular_attributes(op)
+        } else if op.op_type == "hardSigmoid" {
+            Self::create_hardsigmoid_attributes(op)
+        } else if op.op_type == "hardSwish" {
+            Self::create_hardswish_attributes(op)
+        } else if op.op_type == "elu" {
+            Self::create_elu_attributes(op)
+        } else if op.op_type == "leakyRelu" {
+            Self::create_leakyrelu_attributes(op)
         } else {
             Vec::new()
         }

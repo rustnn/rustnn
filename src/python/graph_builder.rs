@@ -2991,6 +2991,383 @@ impl PyMLGraphBuilder {
 
         Ok(py_operand)
     }
+
+    /// hardSigmoid activation operation
+    ///
+    /// Computes element-wise: y = max(0, min(1, alpha * x + beta))
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///     alpha: Multiplicative coefficient (default: 0.2)
+    ///     beta: Additive offset (default: 0.5)
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with values clipped to [0, 1]
+    #[pyo3(signature = (input, alpha=0.2, beta=0.5))]
+    fn hard_sigmoid(
+        &mut self,
+        input: &PyMLOperand,
+        alpha: f32,
+        beta: f32,
+    ) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_hardsigmoid_shape;
+
+        let output_shape = infer_hardsigmoid_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "alpha": alpha,
+            "beta": beta,
+        });
+
+        let operation = Operation {
+            op_type: "hardSigmoid".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// hardSwish activation operation
+    ///
+    /// Computes element-wise: y = x * max(0, min(1, alpha * x + beta))
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///     alpha: Multiplicative coefficient for hardSigmoid (default: 1/6)
+    ///     beta: Additive offset for hardSigmoid (default: 0.5)
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand
+    #[pyo3(signature = (input, alpha=0.16666666666666666, beta=0.5))]
+    fn hard_swish(&mut self, input: &PyMLOperand, alpha: f32, beta: f32) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_hardswish_shape;
+
+        let output_shape = infer_hardswish_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "alpha": alpha,
+            "beta": beta,
+        });
+
+        let operation = Operation {
+            op_type: "hardSwish".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// softplus activation operation
+    ///
+    /// Computes element-wise: y = log(1 + exp(x))
+    /// Smooth approximation of ReLU
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with positive values
+    fn softplus(&mut self, input: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_softplus_shape;
+
+        let output_shape = infer_softplus_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({});
+
+        let operation = Operation {
+            op_type: "softplus".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// softsign activation operation
+    ///
+    /// Computes element-wise: y = x / (1 + |x|)
+    /// Bounded activation with output in (-1, 1)
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand with values in (-1, 1)
+    fn softsign(&mut self, input: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_softsign_shape;
+
+        let output_shape = infer_softsign_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({});
+
+        let operation = Operation {
+            op_type: "softsign".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// elu activation operation (Exponential Linear Unit)
+    ///
+    /// Computes element-wise:
+    ///   y = x if x >= 0
+    ///   y = alpha * (exp(x) - 1) if x < 0
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///     alpha: Coefficient for negative values (default: 1.0)
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand
+    #[pyo3(signature = (input, alpha=1.0))]
+    fn elu(&mut self, input: &PyMLOperand, alpha: f32) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_elu_shape;
+
+        let output_shape = infer_elu_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "alpha": alpha,
+        });
+
+        let operation = Operation {
+            op_type: "elu".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// leakyRelu activation operation (Leaky Rectified Linear Unit)
+    ///
+    /// Computes element-wise:
+    ///   y = x if x >= 0
+    ///   y = alpha * x if x < 0
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///     alpha: Leakage coefficient for negative values (default: 0.01)
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand
+    #[pyo3(signature = (input, alpha=0.01))]
+    fn leaky_relu(&mut self, input: &PyMLOperand, alpha: f32) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_leakyrelu_shape;
+
+        let output_shape = infer_leakyrelu_shape(&input.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({
+            "alpha": alpha,
+        });
+
+        let operation = Operation {
+            op_type: "leakyRelu".to_string(),
+            input_operands: vec![input.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
+
+    /// prelu activation operation (Parametric Rectified Linear Unit)
+    ///
+    /// Computes element-wise:
+    ///   y = x if x >= 0
+    ///   y = slope * x if x < 0
+    ///
+    /// Args:
+    ///     input: Input tensor
+    ///     slope: Learnable slope tensor (must be unidirectionally broadcastable to input)
+    ///
+    /// Returns:
+    ///     MLOperand: Output operand
+    fn prelu(&mut self, input: &PyMLOperand, slope: &PyMLOperand) -> PyResult<PyMLOperand> {
+        use crate::shape_inference::infer_prelu_shape;
+
+        let output_shape = infer_prelu_shape(&input.descriptor.shape, &slope.descriptor.shape)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+        let output_descriptor = OperandDescriptor {
+            data_type: input.descriptor.data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_id = self.next_operand_id;
+        self.next_operand_id += 1;
+
+        let attributes = serde_json::json!({});
+
+        let operation = Operation {
+            op_type: "prelu".to_string(),
+            input_operands: vec![input.id, slope.id],
+            output_operand: output_id,
+            attributes,
+            label: None,
+        };
+
+        self.operations.push(operation);
+
+        let output_operand = Operand {
+            descriptor: output_descriptor.clone(),
+            kind: OperandKind::Output,
+            name: None,
+        };
+        self.operands.push(output_operand);
+
+        let py_operand = PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
+        self.operand_map.insert(output_id, py_operand.clone());
+
+        Ok(py_operand)
+    }
 }
 
 impl PyMLGraphBuilder {

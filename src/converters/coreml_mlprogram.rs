@@ -114,6 +114,15 @@ mod mil_ops {
     // Advanced activation operations
     pub const GELU: &str = "gelu";
 
+    // Specialized activation operations
+    pub const PRELU: &str = "prelu";
+    pub const ELU: &str = "elu";
+    pub const LEAKY_RELU: &str = "leaky_relu";
+    pub const SOFTPLUS: &str = "softplus";
+    pub const SOFTSIGN: &str = "softsign";
+    pub const HARD_SIGMOID: &str = "sigmoid_hard";
+    pub const HARD_SWISH: &str = "mul"; // TODO: Implement as x * hardSigmoid(x)
+
     // Dimension manipulation operations
     pub const SQUEEZE: &str = "squeeze";
     pub const UNSQUEEZE: &str = "expand_dims";
@@ -515,6 +524,15 @@ impl CoremlMlProgramConverter {
             "argmin" => mil_ops::ARG_MIN,
             "cast" => mil_ops::CAST,
 
+            // Specialized activation operations
+            "prelu" => mil_ops::PRELU,
+            "elu" => mil_ops::ELU,
+            "leakyrelu" => mil_ops::LEAKY_RELU,
+            "softplus" => mil_ops::SOFTPLUS,
+            "softsign" => mil_ops::SOFTSIGN,
+            "hardsigmoid" => mil_ops::HARD_SIGMOID,
+            "hardswish" => mil_ops::HARD_SWISH,
+
             // Scatter operations
             "scatterelements" => mil_ops::SCATTER_ELEMENTS,
             "scatternd" => mil_ops::SCATTER_ND,
@@ -560,7 +578,8 @@ impl CoremlMlProgramConverter {
             "relu" | "sigmoid" | "tanh" | "softmax" | "abs" | "ceil" | "floor" | "round"
             | "neg" | "sign" | "identity" | "exp" | "log" | "sqrt" | "reciprocal" | "sin"
             | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh"
-            | "atanh" | "erf" | "logicalnot" | "globalaveragepool" | "globalmaxpool" => {
+            | "atanh" | "erf" | "logicalnot" | "globalaveragepool" | "globalmaxpool"
+            | "softplus" | "softsign" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -574,6 +593,49 @@ impl CoremlMlProgramConverter {
                     inputs.insert(
                         "zero_point".to_string(),
                         Self::create_argument(&input_names[2]),
+                    );
+                }
+            }
+
+            // Specialized activation: prelu - x, slope (two inputs)
+            "prelu" => {
+                if input_names.len() >= 2 {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                    inputs.insert("alpha".to_string(), Self::create_argument(&input_names[1]));
+                }
+            }
+
+            // Specialized activations with alpha parameter: elu, leakyRelu
+            "elu" | "leakyrelu" => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                // Add alpha parameter from attributes
+                if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+                    inputs.insert(
+                        "alpha".to_string(),
+                        Self::create_immediate_float(alpha as f32),
+                    );
+                }
+            }
+
+            // Specialized activations with alpha and beta parameters: hardSigmoid, hardSwish
+            "hardsigmoid" | "hardswish" => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                // Add alpha parameter from attributes
+                if let Some(alpha) = op.attributes.get("alpha").and_then(|v| v.as_f64()) {
+                    inputs.insert(
+                        "alpha".to_string(),
+                        Self::create_immediate_float(alpha as f32),
+                    );
+                }
+                // Add beta parameter from attributes
+                if let Some(beta) = op.attributes.get("beta").and_then(|v| v.as_f64()) {
+                    inputs.insert(
+                        "beta".to_string(),
+                        Self::create_immediate_float(beta as f32),
                     );
                 }
             }

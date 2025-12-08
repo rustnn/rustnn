@@ -1607,6 +1607,82 @@ pub fn infer_triangular_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphErro
     Ok(input_shape.to_vec())
 }
 
+/// Infer output shape for hardSigmoid operation
+/// hardSigmoid is an element-wise operation: output shape = input shape
+pub fn infer_hardsigmoid_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for hardSwish operation
+/// hardSwish is an element-wise operation: output shape = input shape
+pub fn infer_hardswish_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for softplus operation
+/// softplus is an element-wise operation: output shape = input shape
+pub fn infer_softplus_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for softsign operation
+/// softsign is an element-wise operation: output shape = input shape
+pub fn infer_softsign_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for elu operation
+/// elu is an element-wise operation: output shape = input shape
+pub fn infer_elu_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for leakyRelu operation
+/// leakyRelu is an element-wise operation: output shape = input shape
+pub fn infer_leakyrelu_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    Ok(input_shape.to_vec())
+}
+
+/// Infer output shape for prelu operation
+/// prelu has input and slope tensors; slope must be unidirectionally broadcastable to input
+pub fn infer_prelu_shape(input_shape: &[u32], slope_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Validate that slope is unidirectionally broadcastable to input
+    // This means slope can be broadcast to input, but not vice versa
+
+    let input_rank = input_shape.len();
+    let slope_rank = slope_shape.len();
+
+    // Slope must have at most the same rank as input
+    if slope_rank > input_rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "PReLU slope rank {} cannot exceed input rank {}",
+                slope_rank, input_rank
+            ),
+        });
+    }
+
+    // Check if slope can be broadcast to input
+    // Prepend 1s to slope to match input rank
+    let mut extended_slope = vec![1u32; input_rank - slope_rank];
+    extended_slope.extend_from_slice(slope_shape);
+
+    // Check each dimension
+    for (i, (&input_dim, &slope_dim)) in input_shape.iter().zip(extended_slope.iter()).enumerate() {
+        if slope_dim != 1 && slope_dim != input_dim {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "PReLU slope dimension {} (value {}) must be 1 or match input dimension {} (value {})",
+                    i, slope_dim, i, input_dim
+                ),
+            });
+        }
+    }
+
+    // Output shape equals input shape
+    Ok(input_shape.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2775,5 +2851,133 @@ mod tests {
         // Rank < 2
         assert!(infer_triangular_shape(&[5]).is_err());
         assert!(infer_triangular_shape(&[]).is_err());
+    }
+
+    // Tests for specialized activation functions
+
+    #[test]
+    fn test_hardsigmoid_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_hardsigmoid_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_hardsigmoid_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_hardsigmoid_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_hardswish_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_hardswish_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_hardswish_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_hardswish_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_softplus_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_softplus_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_softplus_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_softplus_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_softsign_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_softsign_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_softsign_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_softsign_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_elu_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_elu_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(infer_elu_shape(&[1, 2, 3, 4]).unwrap(), vec![1, 2, 3, 4]);
+        assert_eq!(infer_elu_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_leakyrelu_shape() {
+        // Element-wise operation preserves shape
+        assert_eq!(infer_leakyrelu_shape(&[2, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_leakyrelu_shape(&[1, 2, 3, 4]).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(infer_leakyrelu_shape(&[10]).unwrap(), vec![10]);
+    }
+
+    #[test]
+    fn test_prelu_same_shape() {
+        // Exact same shape
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[2, 3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_ones() {
+        // Slope has 1s that can be broadcast
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[1, 3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[1, 1, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[1, 1, 1, 5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_fewer_dims() {
+        // Slope has fewer dimensions (prepend with 1s)
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4, 5], &[4, 5]).unwrap(),
+            vec![2, 3, 4, 5]
+        );
+        assert_eq!(
+            infer_prelu_shape(&[2, 3, 4], &[3, 4]).unwrap(),
+            vec![2, 3, 4]
+        );
+    }
+
+    #[test]
+    fn test_prelu_broadcast_scalar() {
+        // Scalar slope (shape [1])
+        assert_eq!(infer_prelu_shape(&[2, 3, 4], &[1]).unwrap(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_prelu_invalid_rank() {
+        // Slope rank exceeds input rank
+        assert!(infer_prelu_shape(&[2, 3], &[1, 2, 3, 4]).is_err());
+        assert!(infer_prelu_shape(&[5], &[2, 5]).is_err());
+    }
+
+    #[test]
+    fn test_prelu_invalid_dimension() {
+        // Dimension mismatch (not 1 and not equal)
+        assert!(infer_prelu_shape(&[2, 3, 4], &[2, 5, 4]).is_err());
+        assert!(infer_prelu_shape(&[2, 3, 4], &[3, 3, 4]).is_err());
     }
 }

@@ -31,6 +31,18 @@ This document tracks the implementation status of all WebNN operators across dif
 | `tanh` | ✅ | ✅ | ✅ | ✅ |
 | `softmax` | ✅ | ✅ | ✅ | ✅ |
 
+## Specialized Activations
+
+| Operation | Shape Inference | Python API | ONNX | CoreML MLProgram |
+|-----------|----------------|------------|------|------------------|
+| `prelu` | ✅ | ✅ | ✅ | ✅ |
+| `elu` | ✅ | ✅ | ✅ | ✅ |
+| `leakyRelu` | ✅ | ✅ | ✅ | ✅ |
+| `hardSigmoid` | ✅ | ✅ | ✅ | ✅ |
+| `hardSwish` | ✅ | ✅ | ✅ | ✅ |
+| `softplus` | ✅ | ✅ | ✅ | ✅ |
+| `softsign` | ✅ | ✅ | ✅ | ✅ |
+
 ## Element-wise Math
 
 | Operation | Shape Inference | Python API | ONNX | CoreML MLProgram |
@@ -180,30 +192,38 @@ This document tracks the implementation status of all WebNN operators across dif
 ```
 WebNN Spec (CR Draft Dec 2025): ~95 total operations
 Core Operations Implemented:     68/68 (100%) ✅
+Specialized Activations:          7/7  (100%) ✅
 Advanced Architecture Ops:        6/6  (100%) ✅
 Additional Features:              4/4  (100%) ✅
-Total Implemented:               78/95 (82%)
+Total Implemented:               85/95 (89%)
 Deferred Operations:              4 (RNN: lstm, lstmCell, gru, gruCell)
-Remaining Operations:            ~13 (specialized activations)
+Remaining Operations:            ~6 (specialized activations)
 
 Implementation Status:
-Shape Inference:                 78/78 (100%)
-Python API:                      78/78 (100%)
-ONNX Backend:                    78/78 (100%)
-CoreML MLProgram:                78/78 (100%) ✅
+Shape Inference:                 85/85 (100%)
+Python API:                      85/85 (100%)
+ONNX Backend:                    85/85 (100%)
+CoreML MLProgram:                85/85 (100%) ✅
 ```
 
-**🎉 78 WEBNN OPERATIONS FULLY IMPLEMENTED! 🎉**
+**🎉 85 WEBNN OPERATIONS FULLY IMPLEMENTED! 🎉**
 
 ### Implementation Status
 
-All 78 implemented WebNN operations are now fully functional across all backends:
+All 85 implemented WebNN operations are now fully functional across all backends:
 - ✅ **Shape Inference**: Complete type and shape validation for all operations
 - ✅ **Python API**: W3C WebNN spec-compliant Python bindings
 - ✅ **ONNX Backend**: Cross-platform execution with full parameter support
 - ✅ **CoreML MLProgram**: macOS GPU/Neural Engine execution with full parameter support
 
 **Recent Additions:**
+- **Specialized Activations (7 operations):** `prelu`, `elu`, `leakyRelu`, `hardSigmoid`, `hardSwish`, `softplus`, `softsign`
+  - Full implementation across all backends (shape inference, Python API, ONNX, CoreML)
+  - PReLU supports unidirectional broadcasting for slope tensor
+  - ELU and leakyRelu with configurable alpha parameter (defaults: 1.0 and 0.01)
+  - hardSigmoid and hardSwish with alpha/beta parameters (defaults match WebNN spec)
+  - 21 comprehensive Python tests covering all operations and parameter variations
+  - Essential for modern neural networks (MobileNet, EfficientNet, etc.)
 - **Additional Features (4 operations):** `scatterElements`, `scatterND`, `tile`, `triangular`
   - Full implementation across all backends (shape inference, Python API, ONNX, CoreML)
   - scatterElements: Scatter updates into tensor at specified indices along an axis
@@ -252,9 +272,8 @@ The following operations are defined in the WebNN specification but are **intent
 
 Based on modern ML architecture requirements, the following operations should be prioritized:
 
-**High Priority (Specialized activations):**
-- `prelu`, `elu`, `leakyRelu` - Additional activations
-- `hardSigmoid`, `hardSwish`, `softplus`, `softsign` - Specialized activations
+**Remaining Specialized Activations (~6 operations):**
+These activations are less commonly used in modern architectures but may be useful for specific models
 
 ---
 
