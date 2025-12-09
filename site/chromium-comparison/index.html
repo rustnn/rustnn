@@ -930,12 +930,12 @@
    <div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1">// WORKAROUND: Cast bool → float32 (should be bool → uint8)</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1">// Chromium: Cast(bool → uint8)</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1">// Ours: Cast(bool → float32)</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1">// Reason: onnxruntime-rs v0.0.14 doesn&#39;t support Uint8 tensor extraction</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1">// Reason: Simplified implementation; ort v2.0 supports uint8 but requires multi-type output handling</span>
 </span></code></pre></div></li>
 <li><strong>Status</strong>: ✅ Documented limitation, not a design flaw</li>
 <li><strong>Impact</strong>: ⚠️ Functional but semantically incorrect type</li>
 <li>
-<p><strong>Fix</strong>: Requires onnxruntime-rs update to support <code>try_extract::&lt;u8&gt;</code></p>
+<p><strong>Fix</strong>: Now possible with ort v2.0 - requires multi-type output pipeline (future PR)</p>
 </li>
 <li>
 <p><strong>Conv Transpose Output Padding</strong>:</p>
