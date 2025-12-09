@@ -15,6 +15,10 @@
         <link rel="canonical" href="https://your-org.github.io/rustnn/chromium-comparison/">
       
       
+        <link rel="prev" href="../architecture/">
+      
+      
+        <link rel="next" href="../development/">
       
       
         
@@ -25,7 +29,7 @@
     
     
       
-        <title>Chromium WebNN Implementation Comparison - WebNN Python API</title>
+        <title>Chromium Comparison - WebNN Python API</title>
       
     
     
@@ -115,7 +119,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Chromium WebNN Implementation Comparison
+              Chromium Comparison
             
           </span>
         </div>
@@ -311,6 +315,27 @@
     
   
   Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Chromium Comparison
 
       </a>
     </li>
@@ -530,6 +555,330 @@
   
 
       </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chromium Comparison
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chromium Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overall-assessment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        🎯 Overall Assessment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#onnx-runtime-backend-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ONNX Runtime Backend Comparison
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ONNX Runtime Backend Comparison">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-we-match" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ✅ What We Match
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#known-differences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ⚠️ Known Differences
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-score-98" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        📊 Compatibility Score: 98%
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#coreml-mlprogram-backend-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CoreML MLProgram Backend Comparison
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CoreML MLProgram Backend Comparison">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-we-match_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ✅ What We Match
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#potential-gaps-need-investigation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ⚠️ Potential Gaps (Need Investigation)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-score-85" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        📊 Compatibility Score: 85%
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-differences" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Differences
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture Differences">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#design-philosophy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Philosophy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trade-offs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trade-offs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#action-items" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Action Items
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Action Items">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#high-priority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        High Priority
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#medium-priority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Medium Priority
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#low-priority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Low Priority
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#conclusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Conclusion
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Conclusion">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#strengths" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Strengths
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#areas-for-improvement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Areas for Improvement
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overall-verdict" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overall Verdict
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 

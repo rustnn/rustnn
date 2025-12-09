@@ -79,6 +79,7 @@ nav:
   - API Reference: api-reference.md
   - Examples: examples.md
   - Architecture: architecture.md
+  - Chromium Comparison: chromium-comparison.md
   - Development: development.md
   - Advanced Topics: advanced.md
 
