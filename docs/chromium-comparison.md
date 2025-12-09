@@ -2,8 +2,9 @@
 
 This document compares our WebNN implementation with Chromium's reference implementation.
 
-**Date:** December 8, 2024
+**Date:** December 9, 2024 (Updated after ort v2.0 migration)
 **Chromium Source:** https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/
+**Our ONNX Runtime:** ort v2.0.0-rc.10 + ONNX Runtime 1.23.2
 
 ---
 
@@ -49,7 +50,10 @@ Our implementation follows Chromium's architectural patterns closely, with a few
    ```
    - **Status**: ✅ Documented limitation, not a design flaw
    - **Impact**: ⚠️ Functional but semantically incorrect type
-   - **Fix**: Now possible with ort v2.0 - requires multi-type output pipeline (future PR)
+   - **Fix**: ✅ Now possible with ort v2.0.0-rc.10 (migrated Dec 2024)
+     - Has `try_extract_tensor<T>()` for dynamic type extraction
+     - Requires implementing multi-type output pipeline (future PR)
+     - Can properly extract uint8 tensors from ONNX Runtime
 
 2. **Conv Transpose Output Padding**:
    - **Chromium**: Explicitly calculates output padding
@@ -187,7 +191,14 @@ Our implementation follows Chromium's architectural patterns closely, with a few
 
 ### Areas for Improvement
 
-- ⚠️ **ONNX float32 workaround**: Update onnxruntime-rs dependency when possible
+- ✅ **ONNX Runtime upgrade**: Migrated to ort v2.0.0-rc.10 (Dec 2024)
+  - Replaces deprecated onnxruntime-rs
+  - ONNX Runtime 1.23.2 (stable, no cleanup crashes)
+  - Enables uint8 tensor extraction via `try_extract_tensor<T>()`
+- ⚠️ **ONNX bool → uint8 casting**: Implement multi-type output pipeline
+  - Library now supports it (ort v2.0)
+  - Requires refactoring compute pipeline to handle multiple output types
+  - Future PR to match Chromium's bool → uint8 behavior
 - ⚠️ **CoreML bool casting**: Add explicit type conversion for logical ops
 - ⚠️ **Weights file format**: Consider MLPackage support for large models
 
@@ -196,8 +207,14 @@ Our implementation follows Chromium's architectural patterns closely, with a few
 **Our implementation is architecturally sound and follows Chromium's patterns correctly.**
 
 The differences are primarily:
-1. **Library limitations** (onnxruntime-rs) - documented and acceptable
-2. **Design choices** (inline vs external weights) - intentional trade-offs
-3. **Minor gaps** (bool casting, scalar handling) - easily addressable
+1. **Library capabilities**: ✅ Now using modern ort v2.0 with full type support
+2. **Design choices**: (inline vs external weights) - intentional trade-offs
+3. **Minor gaps**: (bool casting, scalar handling) - easily addressable with current library
 
-**Recommendation**: Continue current approach, address high-priority items for production readiness.
+**Latest Update (Dec 2024):**
+- ✅ Successfully migrated to ort v2.0.0-rc.10
+- ✅ ONNX Runtime 1.23.2 (stable, tested with 257 Python tests)
+- ✅ All tests passing (115 Rust + 257 Python)
+- 🎯 Next: Implement uint8 output pipeline to match Chromium exactly
+
+**Recommendation**: Continue current approach, implement multi-type output pipeline to close remaining gaps with Chromium.
