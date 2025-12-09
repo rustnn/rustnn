@@ -769,42 +769,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 .operand(id)
                 .ok_or_else(|| GraphError::InvalidConversionOperand { operand: id })?;
 
-            // WORKAROUND: Logic operations output uint8 in WebNN but float32 in ONNX
-            //
-            // We now use ort (pykeio/ort) v2.0 which supports dynamic tensor types via
-            // try_extract_tensor<T>(), so uint8 extraction is technically possible.
-            //
-            // However, full uint8 support requires updating:
-            // - OnnxOutputWithData struct to support multiple data types (not just Vec<f32>)
-            // - Executor to extract correct type based on model output
-            // - Python bindings to handle uint8 → NumPy conversion
-            //
-            // PROPER FIX (future PR): Cast(bool → uint8) matching Chromium's implementation
-            // For now, we keep the float32 workaround for simplicity.
-            let mut descriptor = operand.descriptor.clone();
-            if descriptor.data_type == DataType::Uint8 {
-                // Check if this output comes from a logic operation
-                let is_logic_output = graph.operations.iter().any(|op| {
-                    op.output_operand == id
-                        && matches!(
-                            op.op_type.as_str(),
-                            "equal"
-                                | "greater"
-                                | "greaterOrEqual"
-                                | "lesser"
-                                | "lesserOrEqual"
-                                | "logicalNot"
-                                | "logicalAnd"
-                                | "logicalOr"
-                                | "logicalXor"
-                        )
-                });
-                if is_logic_output {
-                    descriptor.data_type = DataType::Float32;
-                }
-            }
-
-            outputs_val.push(value_info(&Self::operand_name(graph, id), &descriptor));
+            // Logic operations output uint8 in WebNN (matching Chromium)
+            // ONNX models will correctly use uint8 for logical operation outputs
+            // The executor handles uint8 → f32 conversion for Python compatibility
+            outputs_val.push(value_info(
+                &Self::operand_name(graph, id),
+                &operand.descriptor,
+            ));
         }
 
         for (id, data) in &graph.constant_operand_ids_to_handles {
@@ -873,13 +844,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                // WORKAROUND: Cast bool → float32 (should be bool → uint8)
-                // See comment at line 772 for details on why we keep this workaround
+                // Cast bool → uint8 (matching Chromium's WebNN implementation)
                 nodes.push(Self::create_cast_node(
-                    &format!("cast_to_float_{}", cast_counter),
+                    &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
                     Self::operand_name(graph, op.output_operand),
-                    ProtoDataType::Float,
+                    ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
             } else if is_comparison_op {
@@ -901,13 +871,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                // WORKAROUND: Cast bool → float32 (should be bool → uint8)
-                // See comment at line 772 for details on why we keep this workaround
+                // Cast bool → uint8 (matching Chromium's WebNN implementation)
                 nodes.push(Self::create_cast_node(
-                    &format!("cast_to_float_{}", cast_counter),
+                    &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
                     Self::operand_name(graph, op.output_operand),
-                    ProtoDataType::Float,
+                    ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
             } else if op.op_type == "clamp" {

@@ -192,20 +192,32 @@ pub fn run_onnx_with_inputs(
     // Extract output tensors with data
     let mut results = Vec::new();
     for (idx, (_name, value)) in outputs.iter().enumerate() {
-        // Extract tensor data
-        let (shape, data) =
-            value
-                .try_extract_tensor::<f32>()
-                .map_err(|e| GraphError::OnnxRuntimeFailed {
-                    reason: format!("failed to extract output tensor: {e}"),
-                })?;
-
-        let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
-        let data_vec: Vec<f32> = data.to_vec();
         let name = output_names
             .get(idx)
             .cloned()
             .unwrap_or_else(|| format!("output_{}", idx));
+
+        // Try to extract as f32 first, then uint8 if that fails
+        // (for logical operation outputs that are uint8 in ONNX)
+        let (shape_vec, data_vec) = match value.try_extract_tensor::<f32>() {
+            Ok((shape, data)) => {
+                let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
+                let data_vec: Vec<f32> = data.to_vec();
+                (shape_vec, data_vec)
+            }
+            Err(_) => {
+                // Try uint8 extraction (for logical operations)
+                let (shape, data) = value.try_extract_tensor::<u8>().map_err(|e| {
+                    GraphError::OnnxRuntimeFailed {
+                        reason: format!("failed to extract output tensor as f32 or u8: {e}"),
+                    }
+                })?;
+                let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
+                // Convert u8 to f32 for Python compatibility
+                let data_vec: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+                (shape_vec, data_vec)
+            }
+        };
 
         results.push(OnnxOutputWithData {
             name,
