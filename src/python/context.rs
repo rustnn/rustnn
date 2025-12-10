@@ -29,6 +29,8 @@ enum Backend {
     OnnxGpu,
     /// CoreML (macOS Neural Engine or GPU)
     CoreML,
+    /// TensorRT (NVIDIA GPU execution)
+    TensorRT,
     /// No backend available (returns zeros)
     None,
 }
@@ -105,6 +107,7 @@ impl PyMLContext {
         match self.backend {
             Backend::OnnxCpu | Backend::OnnxGpu => self.compute_onnx(py, graph, inputs),
             Backend::CoreML => self.compute_coreml(py, graph, inputs),
+            Backend::TensorRT => self.compute_trtx(py, graph, inputs),
             Backend::None => self.compute_fallback(py, graph),
         }
     }
@@ -545,6 +548,95 @@ impl PyMLContext {
         ))
     }
 
+    /// Execute graph using TensorRT backend
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    fn compute_trtx(
+        &self,
+        py: Python,
+        graph: &PyMLGraph,
+        inputs: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyDict>> {
+        use crate::executors::trtx::{TrtxInput, run_trtx_with_inputs};
+
+        // Convert graph to ONNX (TensorRT uses ONNX as input format)
+        let converter = crate::converters::OnnxConverter;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e))
+        })?;
+
+        // Convert Python inputs to TrtxInput structs
+        let numpy = py.import_bound("numpy")?;
+        let mut trtx_inputs = Vec::new();
+
+        for input_id in &graph.graph_info.input_operands {
+            let input_op = graph
+                .graph_info
+                .operands
+                .get(*input_id as usize)
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(format!(
+                        "Input operand {} not found in graph",
+                        input_id
+                    ))
+                })?;
+
+            let default_name = format!("input_{}", input_id);
+            let input_name = input_op.name.as_deref().unwrap_or(&default_name);
+
+            // Get the numpy array from inputs dict
+            let array = inputs.get_item(input_name)?.ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(format!("Missing input: {}", input_name))
+            })?;
+
+            // Convert to float32 array
+            let array_f32 = array.call_method1("astype", ("float32",))?;
+
+            // Get shape
+            let shape_obj = array_f32.getattr("shape")?;
+            let shape: Vec<usize> = shape_obj.extract()?;
+
+            // Get flattened data
+            let flat = array_f32.call_method0("flatten")?;
+            let data: Vec<f32> = flat.call_method0("tolist")?.extract()?;
+
+            trtx_inputs.push(TrtxInput {
+                name: input_name.to_string(),
+                shape,
+                data,
+            });
+        }
+
+        // Execute with TensorRT
+        let trtx_outputs = run_trtx_with_inputs(&converted.data, trtx_inputs).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("TensorRT execution failed: {}", e))
+        })?;
+
+        // Convert outputs back to numpy arrays
+        let result = PyDict::new_bound(py);
+        for output in trtx_outputs {
+            let shape_tuple =
+                pyo3::types::PyTuple::new_bound(py, output.shape.iter().map(|&d| d as i64));
+            let array = numpy.call_method1("array", (output.data,))?;
+            let reshaped = array.call_method1("reshape", (shape_tuple,))?;
+            result.set_item(output.name, reshaped)?;
+        }
+
+        Ok(result.into())
+    }
+
+    /// Stub for when TensorRT is not available but backend was selected as TensorRT
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
+    fn compute_trtx(
+        &self,
+        _py: Python,
+        _graph: &PyMLGraph,
+        _inputs: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyDict>> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "TensorRT backend selected but not compiled with trtx-runtime feature",
+        ))
+    }
+
     /// Fallback computation that returns zeros (when no backend available)
     fn compute_fallback(&self, py: Python, graph: &PyMLGraph) -> PyResult<Py<PyDict>> {
         let result = PyDict::new_bound(py);
@@ -644,8 +736,17 @@ impl PyMLContext {
                 }
             }
             "high-performance" | "default" => {
-                // Prefer GPU for high performance or default
-                #[cfg(feature = "onnx-runtime")]
+                // Prefer TensorRT for NVIDIA GPU when available (highest performance)
+                #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+                {
+                    return (Backend::TensorRT, true);
+                }
+
+                // Fallback to ONNX GPU
+                #[cfg(all(
+                    feature = "onnx-runtime",
+                    not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))
+                ))]
                 {
                     return (Backend::OnnxGpu, true);
                 }
@@ -654,26 +755,40 @@ impl PyMLContext {
                 #[cfg(all(
                     target_os = "macos",
                     feature = "coreml-runtime",
-                    not(feature = "onnx-runtime")
+                    not(feature = "onnx-runtime"),
+                    not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))
                 ))]
                 {
                     return (Backend::CoreML, true);
                 }
 
                 // No acceleration available, fallback to CPU
-                #[cfg(not(feature = "onnx-runtime"))]
-                #[cfg(not(feature = "coreml-runtime"))]
+                #[cfg(all(
+                    not(feature = "onnx-runtime"),
+                    not(feature = "coreml-runtime"),
+                    not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))
+                ))]
                 {
                     return (Backend::None, false);
                 }
             }
             _ => {
                 // Unknown power preference, use default behavior (GPU preferred)
-                #[cfg(feature = "onnx-runtime")]
+                #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+                {
+                    return (Backend::TensorRT, true);
+                }
+                #[cfg(all(
+                    feature = "onnx-runtime",
+                    not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))
+                ))]
                 {
                     return (Backend::OnnxGpu, true);
                 }
-                #[cfg(not(feature = "onnx-runtime"))]
+                #[cfg(all(
+                    not(feature = "onnx-runtime"),
+                    not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))
+                ))]
                 {
                     return (Backend::None, false);
                 }

@@ -7,7 +7,7 @@
 **Core Capabilities:**
 - Validates WebNN graph descriptions from JSON files
 - Converts WebNN graphs to ONNX (cross-platform) and CoreML (macOS) formats
-- Executes models on various backends: ONNX Runtime (CPU/GPU) and CoreML (macOS: GPU/Neural Engine)
+- Executes models on various backends: TensorRT (NVIDIA GPU), ONNX Runtime (CPU/GPU), and CoreML (macOS: GPU/Neural Engine)
 - Visualizes graph structures using Graphviz DOT format
 - Provides CLI tool, Rust library API, and Python bindings (PyO3)
 - **Python bindings** implement the W3C WebNN API specification with full spec compliance
@@ -56,8 +56,8 @@ Loader    Validator    Context    Backend
 - `MLContext::new()` takes `accelerated` (bool) and `power_preference` (str) hints:
   - `accelerated=false` → `Backend::OnnxCpu` (CPU only)
   - `accelerated=true` + `power="low-power"` → NPU > GPU > CPU
-  - `accelerated=true` + `power="high-performance"` → GPU > NPU > CPU
-  - `accelerated=true` + `power="default"` → GPU > NPU > CPU
+  - `accelerated=true` + `power="high-performance"` → TensorRT > GPU > NPU > CPU
+  - `accelerated=true` + `power="default"` → TensorRT > GPU > NPU > CPU
 - Platform autonomously selects actual device based on availability
 - Selection logic in `PyMLContext::select_backend()` (src/python/context.rs:473)
 - Feature flags control availability, not selection
@@ -66,6 +66,7 @@ Loader    Validator    Context    Backend
 **3. Lazy Backend Conversion**
 - Backend conversion happens during **`compute()`**, not `build()`
 - `compute()` method routes to backend-specific execution:
+  - `compute_trtx()` → Converts to ONNX protobuf, executes with TensorRT
   - `compute_onnx()` → Converts to ONNX protobuf, executes with ONNX Runtime
   - `compute_coreml()` → Converts to CoreML protobuf, executes with CoreML
   - `compute_fallback()` → Returns zeros when no backend available
@@ -112,11 +113,12 @@ Loader    Validator    Context    Backend
 
 #### **executors/** - Runtime Execution
 - **Platform-specific**: Conditional compilation for macOS
+- **TensorRT Runtime**: `run_trtx_with_inputs()` - NVIDIA GPU execution (Linux/Windows, with mock mode for development)
 - **ONNX Runtime**: `run_onnx_with_inputs()` - executes with actual tensor I/O (cross-platform)
 - **CoreML Runtime**: `run_coreml_zeroed_cached()` - macOS only via Objective-C FFI
 
 #### **python/context.rs** - Backend Selection & Execution
-- **Backend Enum**: Tracks selected backend (OnnxCpu, OnnxGpu, CoreML, None)
+- **Backend Enum**: Tracks selected backend (TensorRT, OnnxCpu, OnnxGpu, CoreML, None)
 - **Context Creation**: `PyMLContext::new()` implements [WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md)
   - Takes `accelerated` (bool) and `power_preference` (str) hints
   - Returns `(Backend, accelerated_available)` tuple
@@ -125,6 +127,7 @@ Loader    Validator    Context    Backend
   - No explicit device types - uses hints and availability
   - Platform decides actual device allocation
 - **Compute Routing**: `compute()` routes to appropriate backend method
+  - `compute_trtx()` - TensorRT execution (feature-gated)
   - `compute_onnx()` - ONNX Runtime execution (feature-gated)
   - `compute_coreml()` - CoreML execution (feature-gated)
   - `compute_fallback()` - Fallback when no backend available
@@ -235,6 +238,7 @@ src/
     coreml_mlprogram.rs # CoreML MLProgram (MIL) converter
  executors/
     mod.rs          # Conditional compilation
+    trtx.rs         # TensorRT runtime
     onnx.rs         # ONNX runtime
     coreml.rs       # CoreML runtime
  python/             # Python bindings (PyO3)
@@ -417,6 +421,7 @@ cargo test && python -m pytest tests/      # Run all tests
 - **bytemuck 1.15** - Type casting
 
 ### Optional Runtime Dependencies
+- **trtx 0.2.0** - TensorRT execution (NVIDIA GPU, with mock mode for development)
 - **objc 0.2** - Objective-C FFI for CoreML (macOS)
 - **ort 2.0.0-rc.10** - ONNX execution (successor to onnxruntime-rs)
 - **pyo3 0.22** - Python bindings (optional, with `python` feature)
@@ -428,6 +433,7 @@ cargo test && python -m pytest tests/      # Run all tests
 ## Platform Support
 
 - **Validation & Conversion**: Cross-platform (Linux, macOS, Windows)
+- **TensorRT Execution**: Linux/Windows with NVIDIA GPU and `trtx-runtime` feature (mock mode via `trtx-runtime-mock` for development on any platform)
 - **ONNX Execution**: Cross-platform with `onnx-runtime` feature
 - **CoreML Execution**: macOS only with `coreml-runtime` feature
 - **Neural Engine**: macOS with Apple Silicon (via CoreML)
