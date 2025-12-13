@@ -13,7 +13,7 @@ ORT_DIR ?= target/onnxruntime
 ORT_LIB_DIR ?= $(ORT_DIR)/onnxruntime-osx-arm64-$(ORT_VERSION)/lib
 ORT_LIB_LOCATION ?= $(ORT_LIB_DIR)
 .PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
-	python-dev python-build python-test python-test-wpt python-clean python-example \
+	python-dev python-build python-test python-test-wpt python-perf python-perf-full python-clean python-example \
 	mobilenet-demo text-gen-demo text-gen-train text-gen-trained text-gen-enhanced text-gen-train-simple \
 	docs-serve docs-build docs-clean ci-docs \
 	help clean-all
@@ -132,6 +132,22 @@ python-test-wpt: python-dev
 		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -v; \
 	else \
 		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python -m pytest tests/test_wpt_conformance.py -v; \
+	fi
+
+python-perf: python-dev
+	@echo "Running performance benchmarks (quick)..."
+	@if [ -f .venv-webnn/bin/python ]; then \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
+	else \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
+	fi
+
+python-perf-full: python-dev
+	@echo "Running full performance benchmark suite..."
+	@if [ -f .venv-webnn/bin/python ]; then \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
+	else \
+		DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
 	fi
 
 python-example: python-dev
@@ -352,6 +368,8 @@ help:
 	@echo "  python-build       - Build Python wheel"
 	@echo "  python-test        - Run all Python tests (includes WPT tests)"
 	@echo "  python-test-wpt    - Run WPT conformance tests only"
+	@echo "  python-perf        - Run quick performance benchmarks"
+	@echo "  python-perf-full   - Run full performance benchmark suite"
 	@echo "  python-example     - Run Python examples"
 	@echo "  mobilenet-demo     - Run MobileNetV2 classifier on all 3 backends"
 	@echo "  text-gen-demo      - Run basic text generation with attention"

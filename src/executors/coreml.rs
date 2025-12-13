@@ -66,7 +66,16 @@ pub fn run_coreml_with_inputs(
     model_bytes: &[u8],
     inputs: Vec<CoremlInput>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
-    autoreleasepool(|| run_impl_with_inputs(model_bytes, inputs))
+    autoreleasepool(|| run_impl_with_inputs(model_bytes, inputs, None))
+}
+
+/// Run CoreML inference with actual input data and model caching
+pub fn run_coreml_with_inputs_cached(
+    model_bytes: &[u8],
+    inputs: Vec<CoremlInput>,
+    cache_path: Option<&Path>,
+) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    autoreleasepool(|| run_impl_with_inputs(model_bytes, inputs, cache_path))
 }
 
 fn run_impl_zeroed(
@@ -202,10 +211,11 @@ fn run_impl_zeroed(
 fn run_impl_with_inputs(
     model_bytes: &[u8],
     inputs: Vec<CoremlInput>,
+    cache_path: Option<&Path>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
     unsafe {
         let (compiled_url, compiled_path_buf, temp_mlmodel) =
-            prepare_compiled_model(model_bytes, None)?;
+            prepare_compiled_model(model_bytes, cache_path)?;
 
         // Try only Neural Engine + GPU (best performance on Apple Silicon)
         // Fallback to ALL if that fails
@@ -305,7 +315,10 @@ fn run_impl_with_inputs(
         if let Some(tmp) = temp_mlmodel {
             let _ = std::fs::remove_file(&tmp);
         }
-        let _ = std::fs::remove_dir_all(&compiled_path_buf);
+        // Only delete compiled model if not cached
+        if cache_path.is_none() {
+            let _ = std::fs::remove_dir_all(&compiled_path_buf);
+        }
 
         Ok(attempts)
     }
