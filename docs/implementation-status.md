@@ -10,8 +10,9 @@ rustnn implements 85 of ~95 WebNN operations (89% coverage) with full backend su
 - ✓ 85 operations fully implemented (Shape Inference + Python API + ONNX + CoreML)
 - ✓ WPT test infrastructure in place
 - ✓ WPT test data converter working (44 operations with test data)
-- ✓ 1128+ WPT conformance tests passing
-- ✓ Major test fixes completed (expand: 88/88, clamp: 96/102, concat: 90/90)
+- ✓ 1456 WPT conformance tests passing (49% pass rate)
+- ✓ Major test fixes completed (expand, clamp, concat, conv2d, reshape, split, gather, relu, sub)
+- ✓ Only 6 remaining failures (4 out-of-bounds error tests, 2 ONNX limitations)
 
 ---
 
@@ -55,7 +56,7 @@ rustnn implements 85 of ~95 WebNN operations (89% coverage) with full backend su
 | `exp` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `expand` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `floor` | ✓ | ✓ | ✓ | ✓ | ⚠ |
-| `gather` | ✓ | ✓ | ✓ | ✓ | ⚠ |
+| `gather` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `gelu` | ✓ | ✓ | ✓ | ✓ | - |
 | `global_average_pool` | ✓ | ✓ | ✓ | ✓ | - |
 | `global_max_pool` | ✓ | ✓ | ✓ | ✓ | - |
@@ -98,7 +99,7 @@ rustnn implements 85 of ~95 WebNN operations (89% coverage) with full backend su
 | `reduce_sum` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `reduce_sum_square` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `relu` | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `reshape` | ✓ | ✓ | ✓ | ✓ | ⚠ |
+| `reshape` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `round` | ✓ | ✓ | ✓ | ✓ | - |
 | `scatterElements` | ✓ | ✓ | ✓ | ✓ | - |
 | `scatterND` | ✓ | ✓ | ✓ | ✓ | - |
@@ -110,10 +111,10 @@ rustnn implements 85 of ~95 WebNN operations (89% coverage) with full backend su
 | `softmax` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `softplus` | ✓ | ✓ | ✓ | ✓ | - |
 | `softsign` | ✓ | ✓ | ✓ | ✓ | - |
-| `split` | ✓ | ✓ | ✓ | ✓ | ⚠ |
+| `split` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `sqrt` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `squeeze` | ✓ | ✓ | ✓ | ✓ | - |
-| `sub` | ✓ | ✓ | ✓ | ✓ | ⚠ |
+| `sub` | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `tan` | ✓ | ✓ | ✓ | ✓ | - |
 | `tanh` | ✓ | ✓ | ✓ | ✓ | ⚠ |
 | `tile` | ✓ | ✓ | ✓ | ✓ | - |
@@ -152,14 +153,22 @@ Test Coverage:
   WPT Test Infrastructure:        ✓ Complete (converter + runner)
   WPT Conformance Files:          44 operations with test data
   WPT Tests Collected:            2958 total tests
-  WPT Tests Passing:              1128+ tests (38% pass rate)
-  WPT Tests Failing:              ~300 tests (needs investigation)
-  WPT Tests Skipped:              ~1530 tests (unsupported data types)
+  WPT Tests Passing:              1456 tests (49% pass rate) ✓
+  WPT Tests Failing:              6 tests (0.2% failure rate) ✓
+  WPT Tests Skipped:              1496 tests (unsupported data types)
 
 Recent Test Fixes (2025-12-13):
-  - expand: 88/88 passing (100%) ✓
-  - clamp: 96/102 passing (94%) ✓
-  - concat: 90/90 passing (100%) ✓
+  - reshape: 132/132 passing (100%) ✓ - Fixed parameter name mapping
+  - gather: 76/80 passing (95%) ✓ - Added uint32 index casting
+  - relu: All integer type tests passing ✓ - Added automatic float casting
+  - sub: All integer type tests passing ✓ - Added automatic float casting
+  - conv2d: 80/80 passing (100%) ✓ - Fixed layout transformations
+  - split: 40/40 passing (100%) ✓ - Fixed array splits
+  - slice: 24/38 passing (63%) ⚠ - Strides parameter added
+
+Remaining Failures (6 tests):
+  - 4 gather out-of-bounds tests (testing error handling)
+  - 2 slice 0D scalar tests (ONNX limitation)
 ```
 
 ---
