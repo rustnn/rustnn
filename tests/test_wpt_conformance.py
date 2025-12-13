@@ -225,18 +225,18 @@ def call_builder_method(builder, op_name: str, args: Dict[str, Any]) -> Any:
             raise NotImplementedError(f"softmax with axis={axis} not yet supported")
         return method(input_op)
 
-    # Map operation names to builder method names
+    # Map operation names to builder method names (WPT uses camelCase)
     method_name_map = {
-        "reduce_sum": "reduce_sum",
-        "reduce_mean": "reduce_mean",
-        "reduce_max": "reduce_max",
-        "reduce_min": "reduce_min",
-        "reduce_product": "reduce_product",
-        "reduce_l1": "reduce_l1",
-        "reduce_l2": "reduce_l2",
-        "reduce_log_sum": "reduce_log_sum",
-        "reduce_log_sum_exp": "reduce_log_sum_exp",
-        "reduce_sum_square": "reduce_sum_square",
+        "reduceSum": "reduce_sum",
+        "reduceMean": "reduce_mean",
+        "reduceMax": "reduce_max",
+        "reduceMin": "reduce_min",
+        "reduceProduct": "reduce_product",
+        "reduceL1": "reduce_l1",
+        "reduceL2": "reduce_l2",
+        "reduceLogSum": "reduce_log_sum",
+        "reduceLogSumExp": "reduce_log_sum_exp",
+        "reduceSumSquare": "reduce_sum_square",
         "relu": "relu",
         "sigmoid": "sigmoid",
         "tanh": "tanh",
