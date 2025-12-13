@@ -78,11 +78,27 @@ pub struct Operation {
     pub op_type: String,
     #[serde(default)]
     pub input_operands: Vec<u32>,
-    pub output_operand: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_operand: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub output_operands: Vec<u32>,
     #[serde(default)]
     pub attributes: serde_json::Value,
     #[serde(default)]
     pub label: Option<String>,
+}
+
+impl Operation {
+    /// Get all output operand IDs (handles both single and multi-output operations)
+    pub fn get_output_operands(&self) -> Vec<u32> {
+        if !self.output_operands.is_empty() {
+            self.output_operands.clone()
+        } else if let Some(id) = self.output_operand {
+            vec![id]
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 impl Operation {

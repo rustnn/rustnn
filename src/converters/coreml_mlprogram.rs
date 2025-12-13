@@ -517,12 +517,106 @@ impl CoremlMlProgramConverter {
         }
     }
 
+    /// Create an argument referencing a named value
+    fn create_name_argument(name: String) -> Argument {
+        use crate::protos::coreml::mil_spec::argument::binding::Binding;
+
+        Argument {
+            arguments: vec![crate::protos::coreml::mil_spec::argument::Binding {
+                binding: Some(Binding::Name(name)),
+            }],
+        }
+    }
+
+    /// Create an immediate int argument
+    fn create_int_argument(value: i32) -> Argument {
+        use crate::protos::coreml::mil_spec::{
+            DataType as MilDataType, TensorType, TensorValue, Value, ValueType, tensor_value,
+            value, value_type,
+        };
+
+        let tensor_value = TensorValue {
+            value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                values: vec![value],
+            })),
+        };
+
+        let val = Value {
+            doc_string: String::new(),
+            r#type: Some(ValueType {
+                r#type: Some(value_type::Type::TensorType(TensorType {
+                    data_type: MilDataType::Int32 as i32,
+                    rank: 0, // Scalar
+                    dimensions: vec![],
+                    attributes: HashMap::new(),
+                })),
+            }),
+            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+            })),
+        };
+
+        Argument {
+            arguments: vec![crate::protos::coreml::mil_spec::argument::Binding {
+                binding: Some(Binding::Value(val)),
+            }],
+        }
+    }
+
+    /// Create an immediate int array argument
+    fn create_int_array_argument(values: Vec<i32>) -> Argument {
+        use crate::protos::coreml::mil_spec::{
+            DataType as MilDataType, TensorType, TensorValue, Value, ValueType, tensor_value,
+            value, value_type,
+        };
+
+        let values_len = values.len();
+
+        let tensor_value = TensorValue {
+            value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                values,
+            })),
+        };
+
+        let val = Value {
+            doc_string: String::new(),
+            r#type: Some(ValueType {
+                r#type: Some(value_type::Type::TensorType(TensorType {
+                    data_type: MilDataType::Int32 as i32,
+                    rank: 1, // 1D array
+                    dimensions: vec![Dimension {
+                        dimension: Some(dimension::Dimension::Constant(
+                            dimension::ConstantDimension {
+                                size: values_len as u64,
+                            },
+                        )),
+                    }],
+                    attributes: HashMap::new(),
+                })),
+            }),
+            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+            })),
+        };
+
+        Argument {
+            arguments: vec![crate::protos::coreml::mil_spec::argument::Binding {
+                binding: Some(Binding::Value(val)),
+            }],
+        }
+    }
+
     /// Map WebNN operation to MIL operation
     fn convert_operation(
         &self,
         graph: &GraphInfo,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
+        // Handle multi-output operations separately
+        if op.op_type == "split" {
+            return self.convert_split_operation(graph, op);
+        }
+
         let mil_op_type = self.get_mil_op_type(&op.op_type)?;
 
         // Get input operand names
@@ -532,8 +626,11 @@ impl CoremlMlProgramConverter {
             .map(|&id| Self::operand_name(graph, id))
             .collect();
 
-        // Get output operand info
-        let (_output_name, output_type) = Self::create_value(graph, op.output_operand)?;
+        // Get output operand info (single-output operations only)
+        let output_id = op
+            .output_operand
+            .expect("CoreML converter only supports single-output operations");
+        let (_output_name, output_type) = Self::create_value(graph, output_id)?;
 
         // Create inputs map based on operation type
         let inputs = self.create_operation_inputs(graph, op, &input_names)?;
@@ -542,6 +639,60 @@ impl CoremlMlProgramConverter {
         let outputs = vec![output_type];
 
         Ok(Self::create_mil_operation(mil_op_type, inputs, outputs))
+    }
+
+    /// Convert split operation (multi-output)
+    fn convert_split_operation(
+        &self,
+        graph: &GraphInfo,
+        op: &Operation,
+    ) -> Result<MilOperation, GraphError> {
+        // Get input operand name
+        let input_name = Self::operand_name(graph, op.input_operands[0]);
+
+        // Get output types
+        let outputs: Vec<NamedValueType> = op
+            .output_operands
+            .iter()
+            .map(|&id| {
+                let (_name, value_type) = Self::create_value(graph, id)?;
+                Ok(value_type)
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        // Create inputs
+        let mut inputs: HashMap<String, Argument> = HashMap::new();
+
+        // Add main input (x)
+        inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+
+        // Add num_splits or split_sizes
+        if let Some(splits_val) = op.attributes.get("splits") {
+            if let Some(count) = splits_val.as_u64() {
+                // Equal splits - use num_splits
+                inputs.insert(
+                    "num_splits".to_string(),
+                    Self::create_int_argument(count as i32),
+                );
+            } else if let Some(sizes) = splits_val.as_array() {
+                // Explicit split sizes - use split_sizes
+                let split_sizes: Vec<i32> = sizes
+                    .iter()
+                    .filter_map(|v| v.as_u64().map(|n| n as i32))
+                    .collect();
+                inputs.insert(
+                    "split_sizes".to_string(),
+                    Self::create_int_array_argument(split_sizes),
+                );
+            }
+        }
+
+        // Add axis
+        if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_i64()) {
+            inputs.insert("axis".to_string(), Self::create_int_argument(axis as i32));
+        }
+
+        Ok(Self::create_mil_operation("split", inputs, outputs))
     }
 
     /// Get MIL operation type for WebNN operation

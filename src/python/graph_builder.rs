@@ -180,7 +180,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "matmul".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -273,7 +274,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "gemm".to_string(),
             input_operands,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -403,7 +405,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "conv2d".to_string(),
             input_operands,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: attributes_map,
             label: None,
         };
@@ -523,7 +526,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "convTranspose2d".to_string(),
             input_operands: vec![input.id, filter.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -619,7 +623,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "averagePool2d".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -715,7 +720,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "maxPool2d".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -791,7 +797,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "globalAveragePool".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -867,7 +874,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "globalMaxPool".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -936,7 +944,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "batchNormalization".to_string(),
             input_operands,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -1001,7 +1010,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "instanceNormalization".to_string(),
             input_operands,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -1069,7 +1079,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "layerNormalization".to_string(),
             input_operands,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -1257,7 +1268,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "equal".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1296,7 +1308,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "greater".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1335,7 +1348,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "greaterOrEqual".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1374,7 +1388,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "lesser".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1413,7 +1428,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "lesserOrEqual".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1452,7 +1468,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "logicalNot".to_string(),
             input_operands: vec![x.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1491,7 +1508,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "logicalAnd".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1530,7 +1548,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "logicalOr".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1569,7 +1588,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "logicalXor".to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1616,7 +1636,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "dequantizeLinear".to_string(),
             input_operands: vec![input.id, scale.id, zero_point.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1663,7 +1684,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "quantizeLinear".to_string(),
             input_operands: vec![input.id, scale.id, zero_point.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -1701,7 +1723,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "reshape".to_string(),
             input_operands: vec![x.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({
                 "newShape": new_shape
             }),
@@ -1978,7 +2001,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "transpose".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2046,7 +2070,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "concat".to_string(),
             input_operands: input_ids,
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2074,14 +2099,17 @@ impl PyMLGraphBuilder {
     ///     input: Input operand
     ///     starts: Starting indices for each dimension
     ///     sizes: Size of the slice for each dimension
+    ///     strides: Optional stride values for each dimension (defaults to 1)
     ///
     /// Returns:
     ///     MLOperand: The sliced output operand
+    #[pyo3(signature = (input, starts, sizes, strides=None))]
     fn slice(
         &mut self,
         input: &PyMLOperand,
         starts: Vec<u32>,
         sizes: Vec<u32>,
+        strides: Option<Vec<i32>>,
     ) -> PyResult<PyMLOperand> {
         use crate::shape_inference::infer_slice_shape;
 
@@ -2098,15 +2126,23 @@ impl PyMLGraphBuilder {
         let output_id = self.next_operand_id;
         self.next_operand_id += 1;
 
-        let attributes = serde_json::json!({
+        let mut attributes = serde_json::json!({
             "starts": starts,
             "sizes": sizes,
         });
 
+        // Add strides if provided
+        if let Some(strides_val) = strides {
+            attributes["strides"] = serde_json::json!(strides_val);
+        }
+
+        let attributes = attributes;
+
         let operation = Operation {
             op_type: "slice".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2159,7 +2195,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "expand".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2220,7 +2257,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "gather".to_string(),
             input_operands: vec![input.id, indices.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2278,7 +2316,7 @@ impl PyMLGraphBuilder {
 
         // Create output operands
         let mut py_operands = Vec::new();
-        let first_output_id = self.next_operand_id;
+        let mut output_ids = Vec::new();
 
         for output_shape in &output_shapes {
             let output_descriptor = OperandDescriptor {
@@ -2301,10 +2339,10 @@ impl PyMLGraphBuilder {
                 PyMLOperand::new(output_id, output_descriptor, OperandKind::Output, None);
             self.operand_map.insert(output_id, py_operand.clone());
             py_operands.push(py_operand);
+            output_ids.push(output_id);
         }
 
         // Create operation with multiple outputs
-        // For split, we use the first output ID as the primary output
         let attributes = match split_spec {
             SplitSpec::Count(count) => serde_json::json!({
                 "axis": axis,
@@ -2319,7 +2357,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "split".to_string(),
             input_operands: vec![input.id],
-            output_operand: first_output_id,
+            output_operand: None,
+            output_operands: output_ids,
             attributes,
             label: None,
         };
@@ -2369,7 +2408,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "where".to_string(),
             input_operands: vec![condition.id, true_value.id, false_value.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -2445,7 +2485,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "pad".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2489,7 +2530,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "gelu".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -2541,7 +2583,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "squeeze".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2591,7 +2634,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "unsqueeze".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2666,7 +2710,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "argMax".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2741,7 +2786,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "argMin".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2807,7 +2853,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "cast".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2914,7 +2961,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "scatterElements".to_string(),
             input_operands: vec![input.id, indices.id, updates.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -2974,7 +3022,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "scatterND".to_string(),
             input_operands: vec![input.id, indices.id, updates.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3026,7 +3075,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "tile".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3085,7 +3135,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "triangular".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3145,7 +3196,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "hardSigmoid".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3200,7 +3252,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "hardSwish".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3250,7 +3303,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "softplus".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3300,7 +3354,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "softsign".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3372,7 +3427,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "clamp".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3427,7 +3483,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "elu".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3482,7 +3539,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "leakyRelu".to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3534,7 +3592,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: "prelu".to_string(),
             input_operands: vec![input.id, slope.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };
@@ -3591,7 +3650,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: op_type.to_string(),
             input_operands: vec![a.id, b.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -3621,7 +3681,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: op_type.to_string(),
             input_operands: vec![x.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes: serde_json::json!({}),
             label: None,
         };
@@ -3679,7 +3740,8 @@ impl PyMLGraphBuilder {
         let operation = Operation {
             op_type: op_type.to_string(),
             input_operands: vec![input.id],
-            output_operand: output_id,
+            output_operand: Some(output_id),
+            output_operands: Vec::new(),
             attributes,
             label: None,
         };

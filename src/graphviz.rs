@@ -71,11 +71,19 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
                 operand_id, node_id, input_idx
             );
         }
-        let _ = writeln!(
-            dot,
-            "  {} -> operand_{} [label=\"out\"];",
-            node_id, operation.output_operand
-        );
+        // Handle both single and multi-output operations
+        for (idx, output_id) in operation.get_output_operands().iter().enumerate() {
+            let label = if operation.get_output_operands().len() > 1 {
+                format!("out{}", idx)
+            } else {
+                "out".to_string()
+            };
+            let _ = writeln!(
+                dot,
+                "  {} -> operand_{} [label=\"{}\"];",
+                node_id, output_id, label
+            );
+        }
     }
 
     dot.push_str("}\n");

@@ -203,22 +203,24 @@ impl<'a> GraphValidator<'a> {
                     .push(op_name.clone());
             }
 
-            let output_id = operation.output_operand;
-            self.graph
-                .operand(output_id)
-                .ok_or_else(|| GraphError::InvalidOperandReference {
-                    operation: op_name.clone(),
-                    operand: output_id,
+            // Handle both single and multi-output operations
+            for output_id in operation.get_output_operands() {
+                self.graph.operand(output_id).ok_or_else(|| {
+                    GraphError::InvalidOperandReference {
+                        operation: op_name.clone(),
+                        operand: output_id,
+                    }
                 })?;
-            if self.operand_to_producer.contains_key(&output_id) {
-                return Err(GraphError::OperandProducedTwice {
-                    operation: op_name,
-                    operand: output_id,
-                });
+                if self.operand_to_producer.contains_key(&output_id) {
+                    return Err(GraphError::OperandProducedTwice {
+                        operation: op_name.clone(),
+                        operand: output_id,
+                    });
+                }
+                self.operand_to_producer
+                    .insert(output_id, operation.op_type.clone());
+                self.processed_operands.insert(output_id);
             }
-            self.operand_to_producer
-                .insert(output_id, operation.op_type.clone());
-            self.processed_operands.insert(output_id);
         }
         Ok(())
     }

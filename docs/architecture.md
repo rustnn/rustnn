@@ -69,6 +69,99 @@ Following the [W3C WebNN MLTensor Explainer](https://github.com/webmachinelearni
 - Rust library usable independently without Python
 - Design principle: "Rust is the implementation, Python is the interface"
 
+## Shape Inference
+
+**Shape inference** is the process of automatically computing output tensor shapes of neural network operations based on their input shapes and operation parameters, without executing the operation.
+
+### Why Shape Inference Matters
+
+Shape inference enables:
+
+1. **Early validation** - Catch shape mismatches at build time, not runtime
+2. **Memory allocation** - Backend runtimes know output buffer sizes before execution
+3. **Graph optimization** - Enables static analysis and optimization passes
+4. **Self-describing graphs** - Graphs are fully annotated and backend-agnostic
+
+### How It Works
+
+Each WebNN operation has a shape inference function in `src/shape_inference.rs` that computes output shapes. Shape inference happens during **graph building**, before any backend selection or execution.
+
+**Binary Operations (add, mul, div, etc.):**
+- Use NumPy-style broadcasting rules
+- Two dimensions are compatible if equal or one is 1
+- Output dimension is the maximum of the two
+```rust
+// broadcast_shapes([3, 1, 5], [3, 4, 5]) → [3, 4, 5]
+// The dimension 1 broadcasts to 4
+```
+
+**Matrix Multiplication:**
+```rust
+// Simple 2D: [M, K] @ [K, N] → [M, N]
+infer_matmul_shape([2, 3], [3, 4]) → [2, 4]
+
+// Batched: [batch, M, K] @ [batch, K, N] → [batch, M, N]
+infer_matmul_shape([5, 2, 3], [5, 3, 4]) → [5, 2, 4]
+
+// Validates inner dimensions match (K must equal)
+infer_matmul_shape([2, 3], [4, 5]) → Error: 3 != 4
+```
+
+**Convolution (conv2d):**
+- Takes input shape, filter shape, strides, padding, dilations
+- Computes spatial output dimensions:
+  ```
+  output_h = floor((input_h + pad_top + pad_bottom - dilation_h * (kernel_h - 1) - 1) / stride_h + 1)
+  output_w = floor((input_w + pad_left + pad_right - dilation_w * (kernel_w - 1) - 1) / stride_w + 1)
+  ```
+- Validates channel compatibility and group constraints
+- Handles multiple layouts: NCHW, NHWC (inputs) and OIHW, HWIO, OHWI, IHWO (filters)
+
+**Reshape:**
+```rust
+// Validates element count is preserved
+validate_reshape([2, 3, 4], [6, 4]) → OK (24 elements in both)
+validate_reshape([2, 3, 4], [5, 5]) → Error (24 != 25 elements)
+```
+
+**Pooling Operations:**
+- Similar to convolution but without filters
+- Computes output spatial dimensions based on window size, strides, padding
+- Handles both average and max pooling
+- Global pooling reduces spatial dimensions to 1x1
+
+### Integration with Graph Builder
+
+Shape inference is called automatically during graph construction:
+
+```python
+# Python API example
+x = builder.input("x", [2, 3], "float32")    # Shape: [2, 3]
+y = builder.input("y", [3, 4], "float32")    # Shape: [3, 4]
+z = builder.matmul(x, y)                     # Shape: [2, 4] (inferred)
+output = builder.relu(z)                     # Shape: [2, 4] (preserved)
+```
+
+When you call `builder.matmul(x, y)`, the implementation:
+1. Calls `infer_matmul_shape([2, 3], [3, 4])` from `src/shape_inference.rs`
+2. Gets result `[2, 4]`
+3. Creates operand descriptor with inferred shape
+4. Stores operation in graph with validated inputs/outputs
+
+This creates a fully-annotated, backend-agnostic graph that can be:
+- Validated for correctness
+- Visualized with Graphviz
+- Converted to ONNX, CoreML, or other formats
+- Executed on different backends without re-inference
+
+### Implementation Status
+
+All 85 WebNN operations have shape inference implemented (100% coverage). Each operation includes:
+- Shape inference function in `src/shape_inference.rs`
+- Comprehensive validation (dimension compatibility, parameter constraints)
+- Unit tests covering typical cases and edge cases
+- Error messages with context for debugging
+
 ## File Organization
 
 ```

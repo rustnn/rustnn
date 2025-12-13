@@ -909,7 +909,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 nodes.push(Self::create_cast_node(
                     &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
-                    Self::operand_name(graph, op.output_operand),
+                    Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    ),
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
@@ -936,7 +939,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 nodes.push(Self::create_cast_node(
                     &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
-                    Self::operand_name(graph, op.output_operand),
+                    Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    ),
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
@@ -985,7 +991,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: vec![Self::operand_name(graph, op.output_operand)],
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
                     name: Some(op_name),
                     op_type: Some(Self::onnx_op_type(&op.op_type)),
                     attribute: vec![], // No attributes for Clip in opset 11+
@@ -1021,7 +1030,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: vec![Self::operand_name(graph, op.output_operand)],
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
                     name: Some(op_name),
                     op_type: Some(Self::onnx_op_type(&op.op_type)),
                     attribute: vec![], // No attributes for Reshape
@@ -1067,10 +1079,267 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: vec![Self::operand_name(graph, op.output_operand)],
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
                     name: Some(op_name),
                     op_type: Some(Self::onnx_op_type(&op.op_type)),
                     attribute: vec![], // No attributes for Expand
+                    ..Default::default()
+                });
+            } else if op.op_type == "slice" {
+                // Slice operation - ONNX requires starts, ends, axes, steps as input tensors
+                let mut inputs: Vec<String> = op
+                    .input_operands
+                    .iter()
+                    .map(|id| Self::operand_name(graph, *id))
+                    .collect();
+
+                // Extract starts, sizes, axes, and steps from attributes
+                let starts = op
+                    .attributes
+                    .get("starts")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
+                    .unwrap_or_default();
+
+                let sizes = op
+                    .attributes
+                    .get("sizes")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
+                    .unwrap_or_default();
+
+                let axes = op
+                    .attributes
+                    .get("axes")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>());
+
+                let steps = op
+                    .attributes
+                    .get("strides")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>());
+
+                // Convert sizes to ends: ends[i] = starts[i] + sizes[i]
+                let ends: Vec<i64> = starts
+                    .iter()
+                    .zip(sizes.iter())
+                    .map(|(start, size)| start + size)
+                    .collect();
+
+                // Add starts as initializer
+                let starts_name = format!("{}_starts", op_name);
+                inputs.push(starts_name.clone());
+                initializers.push(TensorProto {
+                    name: Some(starts_name),
+                    data_type: Some(ProtoDataType::Int64 as i32),
+                    dims: vec![starts.len() as i64],
+                    int64_data: starts,
+                    ..Default::default()
+                });
+
+                // Add ends as initializer
+                let ends_name = format!("{}_ends", op_name);
+                inputs.push(ends_name.clone());
+                initializers.push(TensorProto {
+                    name: Some(ends_name),
+                    data_type: Some(ProtoDataType::Int64 as i32),
+                    dims: vec![ends.len() as i64],
+                    int64_data: ends,
+                    ..Default::default()
+                });
+
+                // Add axes as initializer
+                // If axes not provided, default to [0, 1, ..., len(starts)-1]
+                let axes_data = axes.unwrap_or_else(|| (0..starts.len() as i64).collect());
+
+                let axes_name = format!("{}_axes", op_name);
+                inputs.push(axes_name.clone());
+                initializers.push(TensorProto {
+                    name: Some(axes_name),
+                    data_type: Some(ProtoDataType::Int64 as i32),
+                    dims: vec![axes_data.len() as i64],
+                    int64_data: axes_data,
+                    ..Default::default()
+                });
+
+                // Add steps as initializer (if provided)
+                if let Some(steps_data) = steps {
+                    let steps_name = format!("{}_steps", op_name);
+                    inputs.push(steps_name.clone());
+                    initializers.push(TensorProto {
+                        name: Some(steps_name),
+                        data_type: Some(ProtoDataType::Int64 as i32),
+                        dims: vec![steps_data.len() as i64],
+                        int64_data: steps_data,
+                        ..Default::default()
+                    });
+                }
+
+                nodes.push(NodeProto {
+                    input: inputs,
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
+                    name: Some(op_name),
+                    op_type: Some(Self::onnx_op_type(&op.op_type)),
+                    attribute: vec![], // No attributes for Slice in opset 13+
+                    ..Default::default()
+                });
+            } else if op.op_type == "split" {
+                // Split operation - multi-output operation
+                let outputs: Vec<String> = op
+                    .output_operands
+                    .iter()
+                    .map(|id| Self::operand_name(graph, *id))
+                    .collect();
+
+                // Get axis attribute
+                let mut attributes = Vec::new();
+                if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_u64()) {
+                    attributes.push(AttributeProto {
+                        name: Some("axis".to_string()),
+                        r#type: Some(AttributeType::Int as i32),
+                        i: Some(axis as i64),
+                        ..Default::default()
+                    });
+                }
+
+                // Collect inputs
+                let mut inputs: Vec<String> = op
+                    .input_operands
+                    .iter()
+                    .map(|id| Self::operand_name(graph, *id))
+                    .collect();
+
+                // Handle splits parameter - either count or sizes
+                // ONNX Split opset 13+ takes split sizes as an optional input tensor
+                if let Some(splits_val) = op.attributes.get("splits") {
+                    if let Some(_count) = splits_val.as_u64() {
+                        // Equal splits - ONNX Split without split input divides evenly
+                        // based on the number of outputs. No input needed.
+                    } else if let Some(sizes) = splits_val.as_array() {
+                        // Explicit split sizes - create initializer
+                        let split_sizes: Vec<i64> = sizes
+                            .iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as i64))
+                            .collect();
+
+                        let splits_name = format!("{}_splits", op_name);
+
+                        // Create initializer for split sizes
+                        let splits_tensor = TensorProto {
+                            name: Some(splits_name.clone()),
+                            data_type: Some(ProtoDataType::Int64 as i32),
+                            dims: vec![split_sizes.len() as i64],
+                            int64_data: split_sizes,
+                            ..Default::default()
+                        };
+                        initializers.push(splits_tensor);
+
+                        // Add splits as second input
+                        inputs.push(splits_name);
+                    }
+                }
+
+                nodes.push(NodeProto {
+                    input: inputs,
+                    output: outputs,
+                    name: Some(op_name),
+                    op_type: Some("Split".to_string()),
+                    attribute: attributes,
+                    ..Default::default()
+                });
+            } else if op.op_type == "conv2d" || op.op_type == "convTranspose2d" {
+                // Conv2d/ConvTranspose2d operations - handle layout transformations
+                let mut conv_inputs: Vec<String> = Vec::new();
+
+                // Handle input layout (NHWC → NCHW if needed)
+                let input_name = Self::operand_name(graph, op.input_operands[0]);
+                let input_layout = op
+                    .attributes
+                    .get("inputLayout")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("nchw");
+
+                let transposed_input = if input_layout == "nhwc" {
+                    // Insert Transpose node: NHWC → NCHW
+                    let transpose_output = format!("{}_input_transposed", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![transpose_output.clone()],
+                        name: Some(format!("{}_transpose_input", op_name)),
+                        op_type: Some("Transpose".to_string()),
+                        attribute: vec![AttributeProto {
+                            name: Some("perm".to_string()),
+                            r#type: Some(AttributeType::Ints as i32),
+                            ints: vec![0, 3, 1, 2], // NHWC → NCHW
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    transpose_output
+                } else {
+                    input_name
+                };
+                conv_inputs.push(transposed_input);
+
+                // Handle filter layout (HWIO/OHWI/IHWO → OIHW if needed)
+                let filter_name = Self::operand_name(graph, op.input_operands[1]);
+                let filter_layout = op
+                    .attributes
+                    .get("filterLayout")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("oihw");
+
+                let transposed_filter = if filter_layout != "oihw" {
+                    let perm = match filter_layout {
+                        "hwio" => vec![3, 2, 0, 1], // HWIO (H,W,I,O) → OIHW (O,I,H,W)
+                        "ohwi" => vec![0, 3, 1, 2], // OHWI (O,H,W,I) → OIHW (O,I,H,W)
+                        "ihwo" => vec![3, 0, 1, 2], // IHWO (I,H,W,O) → OIHW (O,I,H,W)
+                        _ => vec![0, 1, 2, 3],      // Default: no transpose
+                    };
+
+                    let transpose_output = format!("{}_filter_transposed", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![filter_name],
+                        output: vec![transpose_output.clone()],
+                        name: Some(format!("{}_transpose_filter", op_name)),
+                        op_type: Some("Transpose".to_string()),
+                        attribute: vec![AttributeProto {
+                            name: Some("perm".to_string()),
+                            r#type: Some(AttributeType::Ints as i32),
+                            ints: perm,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    transpose_output
+                } else {
+                    filter_name
+                };
+                conv_inputs.push(transposed_filter);
+
+                // Add bias if present (third input)
+                if op.input_operands.len() > 2 {
+                    conv_inputs.push(Self::operand_name(graph, op.input_operands[2]));
+                }
+
+                // Create Conv/ConvTranspose node
+                let attributes = Self::create_operation_attributes(op);
+                nodes.push(NodeProto {
+                    input: conv_inputs,
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
+                    name: Some(op_name),
+                    op_type: Some(Self::onnx_op_type(&op.op_type)),
+                    attribute: attributes,
                     ..Default::default()
                 });
             } else {
@@ -1083,7 +1352,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .iter()
                         .map(|id| Self::operand_name(graph, *id))
                         .collect(),
-                    output: vec![Self::operand_name(graph, op.output_operand)],
+                    output: vec![Self::operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
                     name: Some(op_name),
                     op_type: Some(Self::onnx_op_type(&op.op_type)),
                     attribute: attributes,

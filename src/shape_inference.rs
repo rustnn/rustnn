@@ -1747,6 +1747,90 @@ pub fn infer_gemm_shape(
     Ok(vec![m, n])
 }
 
+/// Infer output shapes for split operation
+/// Splits input along given axis into multiple outputs
+///
+/// Arguments:
+/// - input_shape: Shape of the input tensor
+/// - splits: Either number of splits (even) or array of split sizes
+/// - axis: Axis to split along (must be valid index)
+///
+/// Returns: Vec of output shapes (one per split)
+pub fn infer_split_shape(
+    input_shape: &[u32],
+    splits: &serde_json::Value,
+    axis: u32,
+) -> Result<Vec<Vec<u32>>, GraphError> {
+    let axis = axis as usize;
+
+    if axis >= input_shape.len() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Split axis {} out of bounds for input shape {:?} (rank {})",
+                axis,
+                input_shape,
+                input_shape.len()
+            ),
+        });
+    }
+
+    let axis_size = input_shape[axis];
+
+    // Parse splits - either number or array
+    let split_sizes: Vec<u32> = if let Some(num_splits) = splits.as_u64() {
+        // Even split: divide axis_size by num_splits
+        let num_splits = num_splits as u32;
+        if axis_size % num_splits != 0 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Split axis size {} not evenly divisible by {} splits",
+                    axis_size, num_splits
+                ),
+            });
+        }
+        let split_size = axis_size / num_splits;
+        vec![split_size; num_splits as usize]
+    } else if let Some(sizes_array) = splits.as_array() {
+        // Explicit split sizes
+        let sizes: Result<Vec<u32>, _> = sizes_array
+            .iter()
+            .map(|v| {
+                v.as_u64()
+                    .ok_or_else(|| GraphError::ShapeInferenceFailed {
+                        reason: format!("Split sizes must be integers, got {:?}", v),
+                    })
+                    .map(|n| n as u32)
+            })
+            .collect();
+        sizes?
+    } else {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Splits must be number or array, got {:?}", splits),
+        });
+    };
+
+    // Validate total size
+    let total: u32 = split_sizes.iter().sum();
+    if total != axis_size {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Split sizes {:?} sum to {}, but axis size is {}",
+                split_sizes, total, axis_size
+            ),
+        });
+    }
+
+    // Create output shapes
+    let mut output_shapes = Vec::with_capacity(split_sizes.len());
+    for &size in &split_sizes {
+        let mut output_shape = input_shape.to_vec();
+        output_shape[axis] = size;
+        output_shapes.push(output_shape);
+    }
+
+    Ok(output_shapes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3085,5 +3169,88 @@ mod tests {
         // Non-2D inputs
         assert!(infer_gemm_shape(&[3], &[3, 4], false, false).is_err());
         assert!(infer_gemm_shape(&[3, 4], &[4], false, false).is_err());
+    }
+
+    // Split tests
+    #[test]
+    fn test_split_even() {
+        // Split [24] into 3 parts along axis 0
+        let splits = serde_json::json!(3);
+        let outputs = infer_split_shape(&[24], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![8]);
+        assert_eq!(outputs[1], vec![8]);
+        assert_eq!(outputs[2], vec![8]);
+
+        // Split [12, 1, 1, 2] into 3 parts along axis 0
+        let outputs = infer_split_shape(&[12, 1, 1, 2], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![4, 1, 1, 2]);
+        assert_eq!(outputs[1], vec![4, 1, 1, 2]);
+        assert_eq!(outputs[2], vec![4, 1, 1, 2]);
+    }
+
+    #[test]
+    fn test_split_array() {
+        // Split [24] with explicit sizes [8, 8, 8]
+        let splits = serde_json::json!([8, 8, 8]);
+        let outputs = infer_split_shape(&[24], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![8]);
+        assert_eq!(outputs[1], vec![8]);
+        assert_eq!(outputs[2], vec![8]);
+
+        // Split [12, 1, 1, 2] with sizes [3, 3, 3, 3]
+        let splits = serde_json::json!([3, 3, 3, 3]);
+        let outputs = infer_split_shape(&[12, 1, 1, 2], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 4);
+        assert_eq!(outputs[0], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[1], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[2], vec![3, 1, 1, 2]);
+        assert_eq!(outputs[3], vec![3, 1, 1, 2]);
+    }
+
+    #[test]
+    fn test_split_different_axis() {
+        // Split [2, 3, 12, 4] along axis 2
+        let splits = serde_json::json!(3);
+        let outputs = infer_split_shape(&[2, 3, 12, 4], &splits, 2).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![2, 3, 4, 4]);
+        assert_eq!(outputs[1], vec![2, 3, 4, 4]);
+        assert_eq!(outputs[2], vec![2, 3, 4, 4]);
+    }
+
+    #[test]
+    fn test_split_uneven_sizes() {
+        // Split [10] with sizes [2, 3, 5]
+        let splits = serde_json::json!([2, 3, 5]);
+        let outputs = infer_split_shape(&[10], &splits, 0).unwrap();
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], vec![2]);
+        assert_eq!(outputs[1], vec![3]);
+        assert_eq!(outputs[2], vec![5]);
+    }
+
+    #[test]
+    fn test_split_invalid_even() {
+        // Cannot split 24 evenly into 5 parts
+        let splits = serde_json::json!(5);
+        assert!(infer_split_shape(&[24], &splits, 0).is_err());
+    }
+
+    #[test]
+    fn test_split_invalid_sum() {
+        // Sizes don't sum to axis size
+        let splits = serde_json::json!([8, 8, 9]); // sum is 25, not 24
+        assert!(infer_split_shape(&[24], &splits, 0).is_err());
+    }
+
+    #[test]
+    fn test_split_invalid_axis() {
+        // Axis out of bounds
+        let splits = serde_json::json!(3);
+        assert!(infer_split_shape(&[24], &splits, 1).is_err());
+        assert!(infer_split_shape(&[12, 1, 1, 2], &splits, 5).is_err());
     }
 }
