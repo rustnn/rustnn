@@ -1394,24 +1394,118 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
             } else {
-                // Regular operation - no Cast nodes needed
-                let attributes = Self::create_operation_attributes(op);
+                // Check if operation requires float types (ONNX limitation)
+                let requires_float = matches!(
+                    op.op_type.as_str(),
+                    "relu"
+                        | "sigmoid"
+                        | "tanh"
+                        | "softmax"
+                        | "elu"
+                        | "leakyRelu"
+                        | "prelu"
+                        | "hardSigmoid"
+                        | "hardSwish"
+                        | "softplus"
+                        | "softsign"
+                        | "sub"
+                        | "div"
+                        | "pow"
+                );
 
-                nodes.push(NodeProto {
-                    input: op
-                        .input_operands
-                        .iter()
-                        .map(|id| Self::operand_name(graph, *id))
-                        .collect(),
-                    output: vec![Self::operand_name(
+                // Check if any inputs have integer types
+                let has_integer_inputs = op.input_operands.iter().any(|&input_id| {
+                    if let Some(operand) = graph.operand(input_id) {
+                        matches!(
+                            operand.descriptor.data_type,
+                            DataType::Int8 | DataType::Uint8 | DataType::Int32
+                        )
+                    } else {
+                        false
+                    }
+                });
+
+                if requires_float && has_integer_inputs {
+                    // Cast inputs to float32, execute operation, cast output back
+                    let mut cast_inputs = Vec::new();
+                    let mut original_types = Vec::new();
+
+                    for &input_id in &op.input_operands {
+                        let input_name = Self::operand_name(graph, input_id);
+                        let input_operand = graph.operand(input_id).ok_or_else(|| {
+                            GraphError::InvalidConversionOperand { operand: input_id }
+                        })?;
+
+                        original_types.push(input_operand.descriptor.data_type);
+
+                        if matches!(
+                            input_operand.descriptor.data_type,
+                            DataType::Int8 | DataType::Uint8 | DataType::Int32
+                        ) {
+                            // Cast to float32
+                            let cast_output_name =
+                                format!("{}_input_{}_float32", op_name, cast_counter);
+                            cast_counter += 1;
+
+                            nodes.push(Self::create_cast_node(
+                                &format!("cast_to_float32_{}", cast_counter - 1),
+                                input_name,
+                                cast_output_name.clone(),
+                                ProtoDataType::Float,
+                            ));
+
+                            cast_inputs.push(cast_output_name);
+                        } else {
+                            cast_inputs.push(input_name);
+                        }
+                    }
+
+                    // Create the operation node (outputs float32)
+                    let float_output_name = format!("{}_float32_output", op_name);
+                    let attributes = Self::create_operation_attributes(op);
+
+                    nodes.push(NodeProto {
+                        input: cast_inputs,
+                        output: vec![float_output_name.clone()],
+                        name: Some(op_name.clone()),
+                        op_type: Some(Self::onnx_op_type(&op.op_type)),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+
+                    // Cast output back to original type (use first input's type as reference)
+                    let output_type = original_types[0];
+                    let final_output_name = Self::operand_name(
                         graph,
                         op.output_operand.expect("Single-output operation expected"),
-                    )],
-                    name: Some(op_name),
-                    op_type: Some(Self::onnx_op_type(&op.op_type)),
-                    attribute: attributes,
-                    ..Default::default()
-                });
+                    );
+
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_output", op_name),
+                        float_output_name,
+                        final_output_name,
+                        Self::data_type_code(output_type),
+                    ));
+                } else {
+                    // Regular operation - no Cast nodes needed
+                    let attributes = Self::create_operation_attributes(op);
+
+                    nodes.push(NodeProto {
+                        input: op
+                            .input_operands
+                            .iter()
+                            .map(|id| Self::operand_name(graph, *id))
+                            .collect(),
+                        output: vec![Self::operand_name(
+                            graph,
+                            op.output_operand.expect("Single-output operation expected"),
+                        )],
+                        name: Some(op_name),
+                        op_type: Some(Self::onnx_op_type(&op.op_type)),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+                }
             }
         }
 
