@@ -51,20 +51,20 @@ OPERATION_TO_WPT_FILE = {
     "hard_swish": "hard_swish",
 
     # Reduction operations
-    "reduce_sum": "reduce",
-    "reduce_mean": "reduce",
-    "reduce_max": "reduce",
-    "reduce_min": "reduce",
-    "reduce_product": "reduce",
-    "reduce_l1": "reduce",
-    "reduce_l2": "reduce",
-    "reduce_log_sum": "reduce",
-    "reduce_log_sum_exp": "reduce",
-    "reduce_sum_square": "reduce",
+    "reduce_sum": "reduce_sum",
+    "reduce_mean": "reduce_mean",
+    "reduce_max": "reduce_max",
+    "reduce_min": "reduce_min",
+    "reduce_product": "reduce_product",
+    "reduce_l1": "reduce_l1",
+    "reduce_l2": "reduce_l2",
+    "reduce_log_sum": "reduce_log_sum",
+    "reduce_log_sum_exp": "reduce_log_sum_exp",
+    "reduce_sum_square": "reduce_sum_square",
 
     # Pooling operations
-    "average_pool2d": "pool2d",
-    "max_pool2d": "pool2d",
+    "average_pool2d": "average_pool2d",
+    "max_pool2d": "max_pool2d",
     "global_average_pool": "global_average_pool",
     "global_max_pool": "global_max_pool",
 
