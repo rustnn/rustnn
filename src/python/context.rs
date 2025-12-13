@@ -555,29 +555,23 @@ impl PyMLContext {
         graph: &PyMLGraph,
         _inputs: &Bound<'_, PyDict>,
     ) -> PyResult<Py<PyDict>> {
-        // Convert graph to CoreML
+        // Convert graph to CoreML to validate it can be converted
         let converter = crate::converters::CoremlMlProgramConverter::default();
-        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+        let _converted = converter.convert(&graph.graph_info).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML conversion failed: {}", e))
         })?;
 
-        // Build input descriptors map
-        use std::collections::HashMap;
-        let mut input_descriptors = HashMap::new();
-        for &input_id in &graph.graph_info.input_operands {
-            if let Some(operand) = graph.graph_info.operand(input_id) {
-                let name = operand
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("input_{}", input_id));
-                input_descriptors.insert(name, operand.descriptor.clone());
-            }
-        }
-
-        // Execute with CoreML (currently returns zeros)
-        run_coreml_zeroed_cached(&converted.data, &input_descriptors, None).map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!("CoreML execution failed: {}", e))
-        })?;
+        // NOTE: CoreML execution is currently disabled because:
+        // 1. The executor tries 4 different compute units, which is very slow for large models (26+ seconds)
+        // 2. The executor doesn't return actual inference results, only metadata
+        // 3. We end up returning zeros anyway via compute_fallback
+        //
+        // To enable full CoreML support, the executor needs to:
+        // - Return actual MLMultiArray data, not just metadata
+        // - Try only one compute unit (preferably Neural Engine)
+        // - Cache compiled models to avoid recompilation
+        //
+        // For now, return fallback results (zeros) immediately without expensive execution.
 
         // Return zeros for now (CoreML integration needs full implementation)
         self.compute_fallback(py, graph)
