@@ -79,7 +79,7 @@ validate-all-env: build test onnx-validate coreml-validate
 # ==============================================================================
 
 python-dev: onnxruntime-download
-	@echo "Installing Python package in development mode..."
+	@echo "Installing Python package in development mode with all backends..."
 	@if [ ! -d .venv-webnn ]; then \
 		python3.12 -m venv .venv-webnn; \
 		.venv-webnn/bin/pip install --upgrade pip; \
@@ -91,16 +91,16 @@ python-dev: onnxruntime-download
 	ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) \
 	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) \
 	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
-	.venv-webnn/bin/maturin develop --features python,onnx-runtime
+	.venv-webnn/bin/maturin develop --features python,onnx-runtime,coreml-runtime
 
 python-build: onnxruntime-download
-	@echo "Building Python wheel..."
+	@echo "Building Python wheel with all backends..."
 	pip install maturin
 	ORT_STRATEGY=system \
 	ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) \
 	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) \
 	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
-	maturin build --features python,onnx-runtime --release
+	maturin build --features python,onnx-runtime,coreml-runtime --release
 
 python-test: python-dev
 	@echo "Running Python tests (includes WPT conformance tests)..."
