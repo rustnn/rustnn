@@ -87,8 +87,16 @@ def execute_wpt_test_case(context, test_case: Dict[str, Any]) -> Dict[str, np.nd
     operators = graph_desc.get("operators", [])
     for op_spec in operators:
         op_name = op_spec["name"]
-        op_args = op_spec.get("arguments", {})
-        op_output = op_spec.get("output", "output")
+        op_args_raw = op_spec.get("arguments", {})
+        op_output = op_spec.get("outputs", op_spec.get("output", "output"))
+
+        # Convert arguments from list of dicts to single dict if needed
+        if isinstance(op_args_raw, list):
+            op_args = {}
+            for arg_dict in op_args_raw:
+                op_args.update(arg_dict)
+        else:
+            op_args = op_args_raw
 
         # Resolve operand references in arguments
         resolved_args = {}

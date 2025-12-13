@@ -357,14 +357,22 @@ def numpy_array_from_test_data(test_data: Dict[str, Any]) -> np.ndarray:
     Create NumPy array from WPT test data specification.
 
     Args:
-        test_data: Dict with "data", "shape", and "dataType" keys
+        test_data: Dict with "data" and either "shape"/"dataType" at root
+                   or nested in "descriptor" key
 
     Returns:
         NumPy array with specified shape and dtype
     """
     data = test_data["data"]
-    shape = test_data["shape"]
-    dtype_str = test_data.get("dataType", "float32")
+
+    # Check if shape/dataType are in descriptor or at root level
+    if "descriptor" in test_data:
+        descriptor = test_data["descriptor"]
+        shape = descriptor["shape"]
+        dtype_str = descriptor.get("dataType", "float32")
+    else:
+        shape = test_data["shape"]
+        dtype_str = test_data.get("dataType", "float32")
 
     # Map WebNN data types to NumPy dtypes
     DTYPE_MAP = {
