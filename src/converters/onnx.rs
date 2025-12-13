@@ -31,6 +31,48 @@ impl OnnxConverter {
         }
     }
 
+    fn create_scalar_initializer(name: String, dtype: ProtoDataType, value: f32) -> TensorProto {
+        let mut tensor = TensorProto {
+            name: Some(name),
+            data_type: Some(dtype as i32),
+            dims: vec![], // Scalar
+            ..Default::default()
+        };
+
+        // Set data based on type
+        match dtype {
+            ProtoDataType::Float => {
+                tensor.float_data = vec![value];
+            }
+            ProtoDataType::Float16 => {
+                // Convert f32 to f16 using half crate's from_f32
+                let f16_value = half::f16::from_f32(value);
+                // Store as raw bytes
+                tensor.raw_data = Some(prost::bytes::Bytes::from(f16_value.to_le_bytes().to_vec()));
+            }
+            ProtoDataType::Int8 => {
+                tensor.int32_data = vec![value as i32];
+            }
+            ProtoDataType::Uint8 => {
+                tensor.int32_data = vec![value as i32];
+            }
+            ProtoDataType::Int32 => {
+                tensor.int32_data = vec![value as i32];
+            }
+            ProtoDataType::Uint32 => {
+                tensor.uint64_data = vec![value as u64];
+            }
+            ProtoDataType::Int64 => {
+                tensor.int64_data = vec![value as i64];
+            }
+            _ => {
+                tensor.float_data = vec![value];
+            }
+        }
+
+        tensor
+    }
+
     fn onnx_op_type(op_type: &str) -> String {
         // Handle special cases
         if op_type.eq_ignore_ascii_case("matmul") {
@@ -906,19 +948,26 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|id| Self::operand_name(graph, *id))
                     .collect();
 
+                // Get input operand data type - min/max must match this type
+                let input_operand = graph.operand(op.input_operands[0]).ok_or_else(|| {
+                    GraphError::InvalidConversionOperand {
+                        operand: op.input_operands[0],
+                    }
+                })?;
+                let input_dtype = input_operand.descriptor.data_type;
+                let onnx_dtype = Self::data_type_code(input_dtype);
+
                 // Add min value as second input (optional in ONNX Clip)
                 if let Some(min_value) = op.attributes.get("min_value").and_then(|v| v.as_f64()) {
                     let min_name = format!("{}_min", op_name);
                     inputs.push(min_name.clone());
 
-                    // Add min initializer
-                    initializers.push(TensorProto {
-                        name: Some(min_name),
-                        data_type: Some(ProtoDataType::Float as i32),
-                        dims: vec![], // Scalar
-                        float_data: vec![min_value as f32],
-                        ..Default::default()
-                    });
+                    // Add min initializer with matching data type
+                    initializers.push(Self::create_scalar_initializer(
+                        min_name,
+                        onnx_dtype,
+                        min_value as f32,
+                    ));
                 }
 
                 // Add max value as third input (optional in ONNX Clip)
@@ -926,14 +975,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let max_name = format!("{}_max", op_name);
                     inputs.push(max_name.clone());
 
-                    // Add max initializer
-                    initializers.push(TensorProto {
-                        name: Some(max_name),
-                        data_type: Some(ProtoDataType::Float as i32),
-                        dims: vec![], // Scalar
-                        float_data: vec![max_value as f32],
-                        ..Default::default()
-                    });
+                    // Add max initializer with matching data type
+                    initializers.push(Self::create_scalar_initializer(
+                        max_name,
+                        onnx_dtype,
+                        max_value as f32,
+                    ));
                 }
 
                 nodes.push(NodeProto {
