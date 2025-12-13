@@ -160,37 +160,55 @@ def find_wpt_test_files(wpt_repo: Path, operation: str) -> List[Path]:
     return sorted(test_files)
 
 
-def parse_js_array_simple(js_content: str) -> Optional[List[Dict[str, Any]]]:
+def parse_js_array_with_node(test_file: Path) -> Optional[List[Dict[str, Any]]]:
     """
-    Simple parser for JavaScript test arrays.
+    Parse JavaScript test arrays using Node.js.
 
-    This is a basic parser that extracts test case objects from JavaScript
-    arrays. It uses regex patterns to find test cases and JSON-like structures.
-
-    Note: This is not a full JavaScript parser. It works for the structured
-    format used in WPT tests but may not handle all JavaScript syntax.
+    This uses a Node.js script to properly parse JavaScript test files
+    and extract test case data as JSON.
 
     Args:
-        js_content: JavaScript file content
+        test_file: Path to JavaScript test file
 
     Returns:
         List of test case dictionaries, or None if parsing fails
     """
-    # Try to find test array declarations
-    # Pattern: const xxxTests = [ ... ];
-    array_pattern = r'const\s+(\w+Tests)\s*=\s*(\[[\s\S]*?\]);'
+    # Find the Node.js extraction script
+    script_dir = Path(__file__).parent
+    extract_script = script_dir / "extract_wpt_tests.js"
 
-    matches = re.findall(array_pattern, js_content, re.MULTILINE)
-
-    if not matches:
+    if not extract_script.exists():
+        print(f"  Error: Node.js extraction script not found at {extract_script}")
         return None
 
-    # For now, return empty list to indicate we found test structure
-    # Full parsing would require a JavaScript AST parser
-    # This is a placeholder for the actual implementation
-    print(f"  Found {len(matches)} test arrays")
-    print(f"  Note: Full JavaScript parsing requires manual conversion or JS parser")
-    return []
+    # Check if Node.js is available
+    try:
+        subprocess.run(["node", "--version"], capture_output=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("  Error: Node.js not found. Please install Node.js to parse test files.")
+        print("  Install from: https://nodejs.org/")
+        return None
+
+    try:
+        # Run the Node.js extraction script
+        result = subprocess.run(
+            ["node", str(extract_script), str(test_file)],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+
+        # Parse the JSON output
+        test_cases = json.loads(result.stdout)
+        print(f"  Successfully extracted {len(test_cases)} test cases")
+        return test_cases
+
+    except subprocess.CalledProcessError as e:
+        print(f"  Error running Node.js extraction: {e.stderr}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"  Error parsing JSON output: {e}")
+        return None
 
 
 def convert_operation_tests(
@@ -235,15 +253,13 @@ def convert_operation_tests(
 
     # Read the first matching file
     test_file = category_files[0]
-    with open(test_file, 'r', encoding='utf-8') as f:
-        js_content = f.read()
 
     # Get git metadata
     wpt_commit = get_git_commit(wpt_repo)
     wpt_version = datetime.now().strftime("%Y-%m-%d")
 
-    # Parse test cases
-    test_cases = parse_js_array_simple(js_content)
+    # Parse test cases using Node.js
+    test_cases = parse_js_array_with_node(test_file)
 
     # Create output structure
     output_data = {
