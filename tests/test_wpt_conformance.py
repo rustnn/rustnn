@@ -98,6 +98,11 @@ def execute_wpt_test_case(context, test_case: Dict[str, Any]) -> Dict[str, np.nd
         else:
             op_args = op_args_raw
 
+        # Flatten 'options' dict if present (used by conv2d, conv_transpose2d, etc.)
+        if "options" in op_args and isinstance(op_args["options"], dict):
+            options = op_args.pop("options")
+            op_args.update(options)
+
         # Resolve operand references in arguments
         resolved_args = {}
         for arg_name, arg_value in op_args.items():
@@ -157,11 +162,30 @@ def call_builder_method(builder, op_name: str, args: Dict[str, Any]) -> Any:
     Returns:
         Resulting MLOperand
     """
+    # Map WPT parameter names to Python API parameter names (camelCase to snake_case)
+    param_name_map = {
+        # General
+        "newShape": "shape",
+        # Conv2d/ConvTranspose2d
+        "padding": "pads",
+        "inputLayout": "input_layout",
+        "filterLayout": "filter_layout",
+        "outputSizes": "output_sizes",
+        "outputPadding": "output_padding",
+    }
+
+    # Remap parameter names
+    mapped_args = {}
+    for key, value in args.items():
+        mapped_key = param_name_map.get(key, key)
+        mapped_args[mapped_key] = value
+    args = mapped_args
+
     # Special handling for operations that use positional arguments
     if op_name == "reshape":
         # reshape(input, new_shape)
         input_op = args.get("input", args.get("a"))
-        new_shape = args.get("newShape", args.get("shape"))
+        new_shape = args.get("shape")
         method = getattr(builder, "reshape")
         return method(input_op, new_shape)
 
