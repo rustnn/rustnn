@@ -1780,9 +1780,31 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     || op.op_type == "instanceNormalization"
                 {
                     // For batch/instance norm, scale/bias shape is [channels]
-                    // Channels is typically dimension 1 for NCHW layout
-                    let channels = if input_operand.descriptor.shape.len() > 1 {
-                        input_operand.descriptor.shape[1] as i64
+                    // Channel dimension depends on layout: NCHW=1, NHWC=last
+                    let layout = op
+                        .attributes
+                        .get("layout")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("nchw");
+
+                    // TODO: ONNX InstanceNormalization ALWAYS requires NCHW layout
+                    // When layout='nhwc', we need to add transpose nodes:
+                    // 1. Input: NHWC → NCHW (before operation)
+                    // 2. Output: NCHW → NHWC (after operation)
+                    // Currently failing 4 tests: instanceNormalization with layout='nhwc'
+                    // See: https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/ort/graph_builder_ort.cc
+                    // Chromium comment: "ONNX InstanceNormalization expects NCHW layout, channel is at index 1"
+
+                    let channel_dim = if layout == "nhwc" {
+                        // NHWC: channels at last dimension
+                        input_operand.descriptor.shape.len().saturating_sub(1)
+                    } else {
+                        // NCHW: channels at dimension 1 (default)
+                        1
+                    };
+
+                    let channels = if input_operand.descriptor.shape.len() > channel_dim {
+                        input_operand.descriptor.shape[channel_dim] as i64
                     } else {
                         1
                     };
