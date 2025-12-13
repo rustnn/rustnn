@@ -812,6 +812,67 @@ impl OnnxConverter {
         attributes
     }
 
+    /// Create ONNX attributes for layerNormalization operation
+    fn create_layernorm_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        // Add epsilon attribute
+        let epsilon = op
+            .attributes
+            .get("epsilon")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1e-5);
+        attributes.push(AttributeProto {
+            name: Some("epsilon".to_string()),
+            r#type: Some(AttributeType::Float as i32),
+            f: Some(epsilon as f32),
+            ..Default::default()
+        });
+
+        // Add axis attribute
+        // ONNX LayerNormalization normalizes from axis to the end (consecutive dimensions)
+        // WebNN allows arbitrary axes, so we need to check compatibility
+        let axes = op
+            .attributes
+            .get("axes")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
+            .unwrap_or_else(|| vec![-1]);
+
+        // For now, use the first axis (or -1 for last dimension)
+        // TODO: Validate that axes are consecutive and end at last dimension
+        // If not, we should emulate using primitive operations (like Chromium does)
+        let axis = axes.first().copied().unwrap_or(-1);
+        attributes.push(AttributeProto {
+            name: Some("axis".to_string()),
+            r#type: Some(AttributeType::Int as i32),
+            i: Some(axis),
+            ..Default::default()
+        });
+
+        attributes
+    }
+
+    /// Create ONNX attributes for batchNormalization or instanceNormalization
+    fn create_normalization_attributes(op: &Operation) -> Vec<AttributeProto> {
+        let mut attributes = Vec::new();
+
+        // Add epsilon attribute
+        let epsilon = op
+            .attributes
+            .get("epsilon")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1e-5);
+        attributes.push(AttributeProto {
+            name: Some("epsilon".to_string()),
+            r#type: Some(AttributeType::Float as i32),
+            f: Some(epsilon as f32),
+            ..Default::default()
+        });
+
+        attributes
+    }
+
     fn create_operation_attributes(op: &Operation) -> Vec<AttributeProto> {
         if op.op_type == "conv2d" {
             Self::create_conv2d_attributes(op)
@@ -845,6 +906,10 @@ impl OnnxConverter {
             Self::create_leakyrelu_attributes(op)
         } else if op.op_type == "gemm" {
             Self::create_gemm_attributes(op)
+        } else if op.op_type == "layerNormalization" {
+            Self::create_layernorm_attributes(op)
+        } else if op.op_type == "batchNormalization" || op.op_type == "instanceNormalization" {
+            Self::create_normalization_attributes(op)
         } else if op.op_type == "clamp" {
             // Clamp (Clip in ONNX opset 11+) uses inputs for min/max, not attributes
             Vec::new()
@@ -1755,7 +1820,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Determine scale/bias shape based on normalization type
                 let scale_bias_shape = if op.op_type == "layerNormalization" {
-                    // For layer norm, scale/bias shape depends on normalized axes
+                    // For layer norm, ONNX LayerNormalization expects scale/bias shape to match
+                    // X.shape[axis:], i.e., all dimensions from axis to the end
                     let axes = op
                         .attributes
                         .get("axes")
@@ -1763,17 +1829,19 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
                         .unwrap_or_else(|| vec![-1]);
 
-                    // Calculate size of normalized dimensions
+                    // Get the first axis (ONNX only supports a single axis parameter)
+                    let first_axis = axes.first().copied().unwrap_or(-1);
+                    let actual_axis = if first_axis < 0 {
+                        ((input_operand.descriptor.shape.len() as i64 + first_axis) as usize)
+                            .min(input_operand.descriptor.shape.len())
+                    } else {
+                        (first_axis as usize).min(input_operand.descriptor.shape.len())
+                    };
+
+                    // Calculate product of all dimensions from axis to end
                     let mut size = 1i64;
-                    for &axis in &axes {
-                        let actual_axis = if axis < 0 {
-                            (input_operand.descriptor.shape.len() as i64 + axis) as usize
-                        } else {
-                            axis as usize
-                        };
-                        if actual_axis < input_operand.descriptor.shape.len() {
-                            size *= input_operand.descriptor.shape[actual_axis] as i64;
-                        }
+                    for i in actual_axis..input_operand.descriptor.shape.len() {
+                        size *= input_operand.descriptor.shape[i] as i64;
                     }
                     vec![size]
                 } else if op.op_type == "batchNormalization"
