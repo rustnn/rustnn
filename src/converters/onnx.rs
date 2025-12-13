@@ -1143,11 +1143,46 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // But we're using opset 13, so only ReduceSum gets axes as input
                 let supports_axes_as_input = matches!(op.op_type.as_str(), "reduceSum");
 
-                let mut inputs: Vec<String> = op
-                    .input_operands
-                    .iter()
-                    .map(|id| Self::operand_name(graph, *id))
-                    .collect();
+                // Check if input needs casting (uint32 not supported by ONNX Runtime for some reductions)
+                let input_id = op.input_operands[0];
+                let input_operand = graph
+                    .operand(input_id)
+                    .ok_or_else(|| GraphError::InvalidConversionOperand { operand: input_id })?;
+
+                let input_name = Self::operand_name(graph, input_id);
+                let needs_cast = matches!(
+                    input_operand.descriptor.data_type,
+                    DataType::Uint32 | DataType::Uint8
+                );
+
+                let actual_input_name = if needs_cast {
+                    // Cast uint32/uint8 to float32 for reduction operations
+                    let cast_output = format!("{}_cast_to_float", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![cast_output.clone()],
+                        name: Some(format!("{}_pre_cast", op_name)),
+                        op_type: Some("Cast".to_string()),
+                        attribute: vec![AttributeProto {
+                            name: Some("to".to_string()),
+                            r#type: Some(AttributeType::Int as i32),
+                            i: Some(ProtoDataType::Float as i32 as i64),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    cast_output
+                } else {
+                    input_name
+                };
+
+                let mut inputs: Vec<String> = vec![actual_input_name];
+                // Add any additional inputs (though reductions typically have only one input)
+                inputs.extend(
+                    op.input_operands[1..]
+                        .iter()
+                        .map(|id| Self::operand_name(graph, *id)),
+                );
 
                 let mut attributes = Vec::new();
 
@@ -1197,17 +1232,44 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
 
+                let final_output_name = Self::operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+
+                let reduce_output_name = if needs_cast {
+                    // Output to temporary name, will cast back after
+                    format!("{}_float_output", op_name)
+                } else {
+                    final_output_name.clone()
+                };
+
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: vec![Self::operand_name(
-                        graph,
-                        op.output_operand.expect("Single-output operation expected"),
-                    )],
-                    name: Some(op_name),
+                    output: vec![reduce_output_name.clone()],
+                    name: Some(op_name.clone()),
                     op_type: Some(Self::onnx_op_type(&op.op_type)),
                     attribute: attributes,
                     ..Default::default()
                 });
+
+                // Cast back to original type if needed
+                if needs_cast {
+                    let original_type = Self::data_type_code(input_operand.descriptor.data_type);
+                    nodes.push(NodeProto {
+                        input: vec![reduce_output_name],
+                        output: vec![final_output_name],
+                        name: Some(format!("{}_post_cast", op_name)),
+                        op_type: Some("Cast".to_string()),
+                        attribute: vec![AttributeProto {
+                            name: Some("to".to_string()),
+                            r#type: Some(AttributeType::Int as i32),
+                            i: Some(original_type as i32 as i64),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
             } else if op.op_type == "slice" {
                 // Slice operation - ONNX requires starts, ends, axes, steps as input tensors
                 // Special case: ONNX Runtime doesn't support slicing 0D tensors
