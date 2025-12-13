@@ -73,6 +73,55 @@ impl OnnxConverter {
         tensor
     }
 
+    /// Create a vector initializer with proper data type handling
+    fn create_vector_initializer(
+        name: String,
+        dtype: ProtoDataType,
+        shape: Vec<i64>,
+        value: f32,
+    ) -> TensorProto {
+        let size = shape.iter().product::<i64>() as usize;
+        let mut tensor = TensorProto {
+            name: Some(name),
+            data_type: Some(dtype as i32),
+            dims: shape,
+            ..Default::default()
+        };
+
+        // Set data based on type
+        match dtype {
+            ProtoDataType::Float => {
+                tensor.float_data = vec![value; size];
+            }
+            ProtoDataType::Float16 => {
+                // Convert f32 to f16 and store as raw bytes
+                let f16_value = half::f16::from_f32(value);
+                let bytes: Vec<u8> = (0..size).flat_map(|_| f16_value.to_le_bytes()).collect();
+                tensor.raw_data = Some(prost::bytes::Bytes::from(bytes));
+            }
+            ProtoDataType::Int8 => {
+                tensor.int32_data = vec![value as i32; size];
+            }
+            ProtoDataType::Uint8 => {
+                tensor.int32_data = vec![value as i32; size];
+            }
+            ProtoDataType::Int32 => {
+                tensor.int32_data = vec![value as i32; size];
+            }
+            ProtoDataType::Uint32 => {
+                tensor.uint64_data = vec![value as u64; size];
+            }
+            ProtoDataType::Int64 => {
+                tensor.int64_data = vec![value as i64; size];
+            }
+            _ => {
+                tensor.float_data = vec![value; size];
+            }
+        }
+
+        tensor
+    }
+
     fn onnx_op_type(op_type: &str) -> String {
         // Handle special cases
         if op_type.eq_ignore_ascii_case("matmul") {
@@ -1632,18 +1681,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if has_scale && op.input_operands.len() > 1 {
                     inputs.push(Self::operand_name(graph, op.input_operands[1]));
                 } else {
-                    // Create default scale initializer (all 1.0)
+                    // Create default scale initializer (all 1.0) with proper dtype
                     let scale_name = format!("{}_scale_default", op_name);
-                    let scale_data: Vec<f32> =
-                        vec![1.0; scale_bias_shape.iter().product::<i64>() as usize];
-
-                    initializers.push(TensorProto {
-                        name: Some(scale_name.clone()),
-                        data_type: Some(input_data_type as i32),
-                        dims: scale_bias_shape.clone(),
-                        float_data: scale_data,
-                        ..Default::default()
-                    });
+                    initializers.push(Self::create_vector_initializer(
+                        scale_name.clone(),
+                        input_data_type,
+                        scale_bias_shape.clone(),
+                        1.0,
+                    ));
                     inputs.push(scale_name);
                 }
 
@@ -1653,16 +1698,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 } else if op.op_type != "layerNormalization" || has_bias {
                     // Batch/instance norm always need bias; layer norm only if explicitly requested
                     let bias_name = format!("{}_bias_default", op_name);
-                    let bias_data: Vec<f32> =
-                        vec![0.0; scale_bias_shape.iter().product::<i64>() as usize];
-
-                    initializers.push(TensorProto {
-                        name: Some(bias_name.clone()),
-                        data_type: Some(input_data_type as i32),
-                        dims: scale_bias_shape.clone(),
-                        float_data: bias_data,
-                        ..Default::default()
-                    });
+                    initializers.push(Self::create_vector_initializer(
+                        bias_name.clone(),
+                        input_data_type,
+                        scale_bias_shape.clone(),
+                        0.0,
+                    ));
                     inputs.push(bias_name);
                 }
 
