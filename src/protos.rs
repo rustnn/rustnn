@@ -1,3 +1,5 @@
+// Allow clippy warnings in generated protobuf code
+#[allow(clippy::all)]
 pub mod coreml {
     pub mod core_ml_models {
         include!(concat!(
@@ -23,6 +25,8 @@ pub mod coreml {
     pub use specification::StringVector;
 }
 
+// Allow clippy warnings in generated protobuf code
+#[allow(clippy::all)]
 pub mod onnx {
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }

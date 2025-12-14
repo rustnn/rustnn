@@ -29,10 +29,10 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
             },
             idx
         )];
-        if let Some(name) = &operand.name {
-            if !name.is_empty() {
-                label_lines.push(format!("name: {}", name));
-            }
+        if let Some(name) = &operand.name
+            && !name.is_empty()
+        {
+            label_lines.push(format!("name: {}", name));
         }
         label_lines.push(format!("{:?}", operand.descriptor.data_type));
         label_lines.push(format_shape(&operand.descriptor.shape));
@@ -52,10 +52,11 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
     for (idx, operation) in graph.operations.iter().enumerate() {
         let node_id = format!("op_{}", idx);
         let mut label_lines = vec![format!("{} (#{})", operation.display_name(), idx)];
-        if let Some(label) = &operation.label {
-            if !label.is_empty() && label != &operation.op_type {
-                label_lines.push(label.clone());
-            }
+        if let Some(label) = &operation.label
+            && !label.is_empty()
+            && label != &operation.op_type
+        {
+            label_lines.push(label.clone());
         }
         let label = escape_label(&label_lines.join("\n"));
         let _ = writeln!(

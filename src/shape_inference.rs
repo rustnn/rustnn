@@ -790,7 +790,7 @@ pub fn infer_reduce_shape(
 
 /// Infer the output shape for element-wise unary operations
 /// All element-wise unary operations preserve the input shape
-
+///
 pub fn infer_abs_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
@@ -1236,7 +1236,7 @@ pub fn infer_split_shapes(
                 });
             }
 
-            if axis_size % count != 0 {
+            if !axis_size.is_multiple_of(*count) {
                 return Err(GraphError::ShapeInferenceFailed {
                     reason: format!(
                         "Split count {} does not evenly divide axis size {}, input shape: {:?}",
@@ -1780,7 +1780,7 @@ pub fn infer_split_shape(
     let split_sizes: Vec<u32> = if let Some(num_splits) = splits.as_u64() {
         // Even split: divide axis_size by num_splits
         let num_splits = num_splits as u32;
-        if axis_size % num_splits != 0 {
+        if !axis_size.is_multiple_of(num_splits) {
             return Err(GraphError::ShapeInferenceFailed {
                 reason: format!(
                     "Split axis size {} not evenly divisible by {} splits",

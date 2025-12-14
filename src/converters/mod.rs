@@ -45,8 +45,8 @@ impl ConverterRegistry {
         let mut registry = Self {
             converters: HashMap::new(),
         };
-        registry.register(Box::new(OnnxConverter::default()));
-        registry.register(Box::new(CoremlMlProgramConverter::default()));
+        registry.register(Box::new(OnnxConverter));
+        registry.register(Box::new(CoremlMlProgramConverter));
         registry
     }
 

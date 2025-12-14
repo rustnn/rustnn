@@ -1245,17 +1245,16 @@ impl CoremlMlProgramConverter {
                 } else {
                     // Default: reverse all dimensions
                     // Get input operand to determine rank
-                    if !op.input_operands.is_empty() {
-                        if let Some(input_operand) = _graph.operand(op.input_operands[0]) {
-                            let rank = input_operand.descriptor.shape.len();
-                            let default_perm: Vec<u32> =
-                                (0..rank).rev().map(|i| i as u32).collect();
-                            // Always add perm parameter, even if empty (for 0D scalars)
-                            inputs.insert(
-                                "perm".to_string(),
-                                Self::create_immediate_int_array(&default_perm),
-                            );
-                        }
+                    if !op.input_operands.is_empty()
+                        && let Some(input_operand) = _graph.operand(op.input_operands[0])
+                    {
+                        let rank = input_operand.descriptor.shape.len();
+                        let default_perm: Vec<u32> = (0..rank).rev().map(|i| i as u32).collect();
+                        // Always add perm parameter, even if empty (for 0D scalars)
+                        inputs.insert(
+                            "perm".to_string(),
+                            Self::create_immediate_int_array(&default_perm),
+                        );
                     }
                 }
             }
@@ -1524,13 +1523,13 @@ impl CoremlMlProgramConverter {
                 // Following Chromium: TODO(crbug.com/338529226) - these params must be constant
                 if input_names.len() >= 2 && op.input_operands.len() >= 2 {
                     let scale_operand_id = op.input_operands[1];
-                    if let Some(scale_operand) = _graph.operand(scale_operand_id) {
-                        if scale_operand.kind != crate::graph::OperandKind::Constant {
-                            return Err(GraphError::ConversionFailed {
+                    if let Some(scale_operand) = _graph.operand(scale_operand_id)
+                        && scale_operand.kind != crate::graph::OperandKind::Constant
+                    {
+                        return Err(GraphError::ConversionFailed {
                                 format: "coreml_mlprogram".to_string(),
                                 reason: "CoreML layer_norm requires scale (gamma) parameter to be a constant tensor, not a graph input".to_string(),
                             });
-                        }
                     }
                     inputs.insert("gamma".to_string(), Self::create_argument(&input_names[1]));
                 }
@@ -1538,13 +1537,13 @@ impl CoremlMlProgramConverter {
                 // Bias (beta) is optional (3rd input)
                 if input_names.len() >= 3 && op.input_operands.len() >= 3 {
                     let bias_operand_id = op.input_operands[2];
-                    if let Some(bias_operand) = _graph.operand(bias_operand_id) {
-                        if bias_operand.kind != crate::graph::OperandKind::Constant {
-                            return Err(GraphError::ConversionFailed {
+                    if let Some(bias_operand) = _graph.operand(bias_operand_id)
+                        && bias_operand.kind != crate::graph::OperandKind::Constant
+                    {
+                        return Err(GraphError::ConversionFailed {
                                 format: "coreml_mlprogram".to_string(),
                                 reason: "CoreML layer_norm requires bias (beta) parameter to be a constant tensor, not a graph input".to_string(),
                             });
-                        }
                     }
                     inputs.insert("beta".to_string(), Self::create_argument(&input_names[2]));
                 }
@@ -1576,16 +1575,16 @@ impl CoremlMlProgramConverter {
                 // Mean parameter (2nd input) - must be constant
                 if input_names.len() >= 2 && op.input_operands.len() >= 2 {
                     let mean_operand_id = op.input_operands[1];
-                    if let Some(mean_operand) = _graph.operand(mean_operand_id) {
-                        if mean_operand.kind != crate::graph::OperandKind::Constant {
-                            return Err(GraphError::ConversionFailed {
-                                format: "coreml_mlprogram".to_string(),
-                                reason: format!(
-                                    "CoreML {} requires mean parameter to be a constant tensor, not a graph input",
-                                    op.op_type
-                                ),
-                            });
-                        }
+                    if let Some(mean_operand) = _graph.operand(mean_operand_id)
+                        && mean_operand.kind != crate::graph::OperandKind::Constant
+                    {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!(
+                                "CoreML {} requires mean parameter to be a constant tensor, not a graph input",
+                                op.op_type
+                            ),
+                        });
                     }
                     inputs.insert("mean".to_string(), Self::create_argument(&input_names[1]));
                 }
@@ -1593,16 +1592,16 @@ impl CoremlMlProgramConverter {
                 // Variance parameter (3rd input) - must be constant
                 if input_names.len() >= 3 && op.input_operands.len() >= 3 {
                     let variance_operand_id = op.input_operands[2];
-                    if let Some(variance_operand) = _graph.operand(variance_operand_id) {
-                        if variance_operand.kind != crate::graph::OperandKind::Constant {
-                            return Err(GraphError::ConversionFailed {
-                                format: "coreml_mlprogram".to_string(),
-                                reason: format!(
-                                    "CoreML {} requires variance parameter to be a constant tensor, not a graph input",
-                                    op.op_type
-                                ),
-                            });
-                        }
+                    if let Some(variance_operand) = _graph.operand(variance_operand_id)
+                        && variance_operand.kind != crate::graph::OperandKind::Constant
+                    {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!(
+                                "CoreML {} requires variance parameter to be a constant tensor, not a graph input",
+                                op.op_type
+                            ),
+                        });
                     }
                     inputs.insert(
                         "variance".to_string(),
@@ -1634,7 +1633,7 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert(
                         "values".to_string(),
-                        Self::create_argument_tuple(&input_names),
+                        Self::create_argument_tuple(input_names),
                     );
                 }
 
@@ -1694,53 +1693,48 @@ impl CoremlMlProgramConverter {
                         .collect();
 
                     // Get input operand shape
-                    if !op.input_operands.is_empty() {
-                        if let Some(input_operand) = _graph.operand(op.input_operands[0]) {
-                            let input_shape = &input_operand.descriptor.shape;
-                            let input_rank = input_shape.len();
-                            let output_rank = new_shape_u32.len();
+                    if !op.input_operands.is_empty()
+                        && let Some(input_operand) = _graph.operand(op.input_operands[0])
+                    {
+                        let input_shape = &input_operand.descriptor.shape;
+                        let input_rank = input_shape.len();
+                        let output_rank = new_shape_u32.len();
 
-                            // Determine input name for tile operation
-                            let tile_input_name = if input_rank < output_rank {
-                                // A reshape was added, use the reshaped output name
-                                // The reshape output name is: {input_name}_expand_reshaped
-                                format!("{}_expand_reshaped", input_names[0])
-                            } else {
-                                // No reshape, use original input
-                                input_names[0].clone()
-                            };
+                        // Determine input name for tile operation
+                        let tile_input_name = if input_rank < output_rank {
+                            // A reshape was added, use the reshaped output name
+                            // The reshape output name is: {input_name}_expand_reshaped
+                            format!("{}_expand_reshaped", input_names[0])
+                        } else {
+                            // No reshape, use original input
+                            input_names[0].clone()
+                        };
 
-                            inputs.insert(
-                                "x".to_string(),
-                                Self::create_name_argument(tile_input_name),
-                            );
+                        inputs.insert("x".to_string(), Self::create_name_argument(tile_input_name));
 
-                            // Create reshaped dimensions (right-aligned, padded with 1s on left)
-                            let mut reshaped_dims = vec![1u32; output_rank];
-                            for i in 0..input_rank {
-                                reshaped_dims[output_rank - i - 1] =
-                                    input_shape[input_rank - i - 1];
-                            }
-
-                            // Calculate reps: reps[i] = output_shape[i] / reshaped_input_shape[i]
-                            let reps: Vec<i32> = new_shape_u32
-                                .iter()
-                                .zip(reshaped_dims.iter())
-                                .map(|(&output_dim, &reshaped_dim)| {
-                                    if reshaped_dim == output_dim {
-                                        1
-                                    } else if reshaped_dim == 1 {
-                                        output_dim as i32
-                                    } else {
-                                        // Should not happen - dimensions must match or input must be 1
-                                        1
-                                    }
-                                })
-                                .collect();
-
-                            inputs
-                                .insert("reps".to_string(), Self::create_int_array_argument(reps));
+                        // Create reshaped dimensions (right-aligned, padded with 1s on left)
+                        let mut reshaped_dims = vec![1u32; output_rank];
+                        for i in 0..input_rank {
+                            reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
                         }
+
+                        // Calculate reps: reps[i] = output_shape[i] / reshaped_input_shape[i]
+                        let reps: Vec<i32> = new_shape_u32
+                            .iter()
+                            .zip(reshaped_dims.iter())
+                            .map(|(&output_dim, &reshaped_dim)| {
+                                if reshaped_dim == output_dim {
+                                    1
+                                } else if reshaped_dim == 1 {
+                                    output_dim as i32
+                                } else {
+                                    // Should not happen - dimensions must match or input must be 1
+                                    1
+                                }
+                            })
+                            .collect();
+
+                        inputs.insert("reps".to_string(), Self::create_int_array_argument(reps));
                     }
                 }
             }
@@ -1952,7 +1946,7 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            "scatterElements" => {
+            "scatterelements" => {
                 // scatter: data, indices, updates, axis
                 if input_names.len() >= 3 {
                     inputs.insert("data".to_string(), Self::create_argument(&input_names[0]));
@@ -1972,7 +1966,7 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            "scatterND" => {
+            "scatternd" => {
                 // scatter_nd: data, indices, updates
                 if input_names.len() >= 3 {
                     inputs.insert("data".to_string(), Self::create_argument(&input_names[0]));
@@ -2302,79 +2296,77 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 // Also check for nhwc input layout that needs transposition
                 if let Some(input_layout) =
                     op.attributes.get("inputLayout").and_then(|v| v.as_str())
+                    && input_layout == "nhwc"
+                    && !op.input_operands.is_empty()
                 {
-                    if input_layout == "nhwc" && op.input_operands.len() >= 1 {
-                        let input_operand_id = op.input_operands[0];
+                    let input_operand_id = op.input_operands[0];
 
-                        // Only transpose if not already transposed
-                        if !operand_name_overrides.contains_key(&input_operand_id) {
-                            if let Some(input_operand) = graph_info.operand(input_operand_id) {
-                                // NHWC -> NCHW transposition: [0, 3, 1, 2]
-                                let perm = vec![0, 3, 1, 2];
+                    // Only transpose if not already transposed
+                    if !operand_name_overrides.contains_key(&input_operand_id)
+                        && let Some(input_operand) = graph_info.operand(input_operand_id)
+                    {
+                        // NHWC -> NCHW transposition: [0, 3, 1, 2]
+                        let perm = [0, 3, 1, 2];
 
-                                // Create transpose operation for input
-                                let input_name = operand_name(graph_info, input_operand_id);
-                                let transposed_input_name = format!("{}_nchw", input_name);
+                        // Create transpose operation for input
+                        let input_name = operand_name(graph_info, input_operand_id);
+                        let transposed_input_name = format!("{}_nchw", input_name);
 
-                                // Store the override mapping
-                                operand_name_overrides
-                                    .insert(input_operand_id, transposed_input_name.clone());
+                        // Store the override mapping
+                        operand_name_overrides
+                            .insert(input_operand_id, transposed_input_name.clone());
 
-                                let mut transpose_inputs: HashMap<String, Argument> =
-                                    HashMap::new();
-                                transpose_inputs.insert(
-                                    "x".to_string(),
-                                    Self::create_name_argument(input_name),
-                                );
-                                transpose_inputs.insert(
-                                    "perm".to_string(),
-                                    Self::create_immediate_int_array(
-                                        &perm.iter().map(|&v| v as u32).collect::<Vec<_>>(),
-                                    ),
-                                );
+                        let mut transpose_inputs: HashMap<String, Argument> = HashMap::new();
+                        transpose_inputs
+                            .insert("x".to_string(), Self::create_name_argument(input_name));
+                        transpose_inputs.insert(
+                            "perm".to_string(),
+                            Self::create_immediate_int_array(
+                                &perm.iter().map(|&v| v as u32).collect::<Vec<_>>(),
+                            ),
+                        );
 
-                                // Calculate transposed shape
-                                let original_shape = &input_operand.descriptor.shape;
-                                let transposed_shape: Vec<u32> =
-                                    perm.iter().map(|&i| original_shape[i as usize]).collect();
+                        // Calculate transposed shape
+                        let original_shape = &input_operand.descriptor.shape;
+                        let transposed_shape: Vec<u32> =
+                            perm.iter().map(|&i| original_shape[i as usize]).collect();
 
-                                // Create tensor type for transposed input
-                                let dtype =
-                                    Self::mil_data_type(&input_operand.descriptor.data_type)?;
-                                let dimensions: Vec<Dimension> = transposed_shape
-                                    .iter()
-                                    .map(|&d| Dimension {
-                                        dimension: Some(dimension::Dimension::Constant(
-                                            dimension::ConstantDimension { size: d as u64 },
-                                        )),
-                                    })
-                                    .collect();
+                        // Create tensor type for transposed input
+                        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                        let dimensions: Vec<Dimension> = transposed_shape
+                            .iter()
+                            .map(|&d| Dimension {
+                                dimension: Some(dimension::Dimension::Constant(
+                                    dimension::ConstantDimension { size: d as u64 },
+                                )),
+                            })
+                            .collect();
 
-                                let value_type = ValueType {
-                                    r#type: Some(
-                                        crate::protos::coreml::mil_spec::value_type::Type::TensorType(TensorType {
-                                            rank: dimensions.len() as i64,
-                                            data_type: dtype,
-                                            dimensions,
-                                            attributes: HashMap::new(),
-                                        }),
-                                    ),
-                                };
+                        let value_type = ValueType {
+                            r#type: Some(
+                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                    TensorType {
+                                        rank: dimensions.len() as i64,
+                                        data_type: dtype,
+                                        dimensions,
+                                        attributes: HashMap::new(),
+                                    },
+                                ),
+                            ),
+                        };
 
-                                let transpose_output_type = NamedValueType {
-                                    name: transposed_input_name.clone(),
-                                    r#type: Some(value_type),
-                                };
+                        let transpose_output_type = NamedValueType {
+                            name: transposed_input_name.clone(),
+                            r#type: Some(value_type),
+                        };
 
-                                let transpose_op = Self::create_mil_operation(
-                                    "transpose",
-                                    transpose_inputs,
-                                    vec![transpose_output_type],
-                                );
+                        let transpose_op = Self::create_mil_operation(
+                            "transpose",
+                            transpose_inputs,
+                            vec![transpose_output_type],
+                        );
 
-                                main_block.operations.push(transpose_op);
-                            }
-                        }
+                        main_block.operations.push(transpose_op);
                     }
                 }
             }
@@ -2385,77 +2377,74 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // Special handling for expand operation (may need reshape first)
             if op.op_type.to_lowercase() == "expand" {
                 // Check if rank-increasing expand (add reshape operation first)
-                if !op.input_operands.is_empty() {
-                    if let Some(input_operand) = graph_info.operand(op.input_operands[0]) {
-                        if let Some(new_shape) =
-                            op.attributes.get("newShape").and_then(|v| v.as_array())
-                        {
-                            let input_rank = input_operand.descriptor.shape.len();
-                            let output_rank = new_shape.len();
+                if !op.input_operands.is_empty()
+                    && let Some(input_operand) = graph_info.operand(op.input_operands[0])
+                    && let Some(new_shape) =
+                        op.attributes.get("newShape").and_then(|v| v.as_array())
+                {
+                    let input_rank = input_operand.descriptor.shape.len();
+                    let output_rank = new_shape.len();
 
-                            if input_rank < output_rank {
-                                // Need to add reshape operation first
-                                // Create reshaped dimensions (right-aligned, padded with 1s on left)
-                                let mut reshaped_dims = vec![1u32; output_rank];
-                                for i in 0..input_rank {
-                                    reshaped_dims[output_rank - i - 1] =
-                                        input_operand.descriptor.shape[input_rank - i - 1];
-                                }
-
-                                //Create reshape operation
-                                let input_name = operand_name(graph_info, op.input_operands[0]);
-                                // Use input name to create unique intermediate name (don't rely on output_operands)
-                                let reshape_output_name = format!("{}_expand_reshaped", input_name);
-
-                                let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
-                                reshape_inputs.insert(
-                                    "x".to_string(),
-                                    Self::create_name_argument(input_name),
-                                );
-                                reshape_inputs.insert(
-                                    "shape".to_string(),
-                                    Self::create_int_array_argument(
-                                        reshaped_dims.iter().map(|&v| v as i32).collect(),
-                                    ),
-                                );
-
-                                // Create tensor type for reshape output
-                                let dtype =
-                                    Self::mil_data_type(&input_operand.descriptor.data_type)?;
-                                let dimensions: Vec<Dimension> = reshaped_dims
-                                    .iter()
-                                    .map(|&d| Dimension {
-                                        dimension: Some(dimension::Dimension::Constant(
-                                            dimension::ConstantDimension { size: d as u64 },
-                                        )),
-                                    })
-                                    .collect();
-
-                                let value_type = ValueType {
-                                    r#type: Some(
-                                        crate::protos::coreml::mil_spec::value_type::Type::TensorType(TensorType {
-                                            rank: dimensions.len() as i64,
-                                            data_type: dtype,
-                                            dimensions,
-                                            attributes: HashMap::new(),
-                                        }),
-                                    ),
-                                };
-
-                                let reshape_output_type = NamedValueType {
-                                    name: reshape_output_name.clone(),
-                                    r#type: Some(value_type),
-                                };
-
-                                let reshape_mil_op = Self::create_mil_operation(
-                                    "reshape",
-                                    reshape_inputs,
-                                    vec![reshape_output_type],
-                                );
-
-                                main_block.operations.push(reshape_mil_op);
-                            }
+                    if input_rank < output_rank {
+                        // Need to add reshape operation first
+                        // Create reshaped dimensions (right-aligned, padded with 1s on left)
+                        let mut reshaped_dims = vec![1u32; output_rank];
+                        for i in 0..input_rank {
+                            reshaped_dims[output_rank - i - 1] =
+                                input_operand.descriptor.shape[input_rank - i - 1];
                         }
+
+                        //Create reshape operation
+                        let input_name = operand_name(graph_info, op.input_operands[0]);
+                        // Use input name to create unique intermediate name (don't rely on output_operands)
+                        let reshape_output_name = format!("{}_expand_reshaped", input_name);
+
+                        let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
+                        reshape_inputs
+                            .insert("x".to_string(), Self::create_name_argument(input_name));
+                        reshape_inputs.insert(
+                            "shape".to_string(),
+                            Self::create_int_array_argument(
+                                reshaped_dims.iter().map(|&v| v as i32).collect(),
+                            ),
+                        );
+
+                        // Create tensor type for reshape output
+                        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                        let dimensions: Vec<Dimension> = reshaped_dims
+                            .iter()
+                            .map(|&d| Dimension {
+                                dimension: Some(dimension::Dimension::Constant(
+                                    dimension::ConstantDimension { size: d as u64 },
+                                )),
+                            })
+                            .collect();
+
+                        let value_type = ValueType {
+                            r#type: Some(
+                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                    TensorType {
+                                        rank: dimensions.len() as i64,
+                                        data_type: dtype,
+                                        dimensions,
+                                        attributes: HashMap::new(),
+                                    },
+                                ),
+                            ),
+                        };
+
+                        let reshape_output_type = NamedValueType {
+                            name: reshape_output_name.clone(),
+                            r#type: Some(value_type),
+                        };
+
+                        let reshape_mil_op = Self::create_mil_operation(
+                            "reshape",
+                            reshape_inputs,
+                            vec![reshape_output_type],
+                        );
+
+                        main_block.operations.push(reshape_mil_op);
                     }
                 }
             }

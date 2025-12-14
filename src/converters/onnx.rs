@@ -605,7 +605,7 @@ impl OnnxConverter {
 
     /// Clamp operation doesn't use attributes - min/max are inputs in opset 11+
     /// Handled in convert() method as special case
-
+    ///
     /// Create ONNX attributes for gemm operation
     fn create_gemm_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
@@ -769,14 +769,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
         for &id in &graph.input_operands {
             let operand = graph
                 .operand(id)
-                .ok_or_else(|| GraphError::InvalidConversionOperand { operand: id })?;
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })?;
             inputs_val.push(value_info(&operand_name(graph, id), &operand.descriptor));
         }
 
         for &id in &graph.output_operands {
             let operand = graph
                 .operand(id)
-                .ok_or_else(|| GraphError::InvalidConversionOperand { operand: id })?;
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })?;
 
             // Logic operations output uint8 in WebNN (matching Chromium)
             // ONNX models will correctly use uint8 for logical operation outputs
@@ -787,7 +787,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
         for (id, data) in &graph.constant_operand_ids_to_handles {
             let operand = graph
                 .operand(*id)
-                .ok_or_else(|| GraphError::InvalidConversionOperand { operand: *id })?;
+                .ok_or(GraphError::InvalidConversionOperand { operand: *id })?;
             initializers.push(TensorProto {
                 name: Some(operand_name(graph, *id)),
                 data_type: Some(Self::data_type_code(operand.descriptor.data_type) as i32),
@@ -1043,7 +1043,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_id = op.input_operands[0];
                 let input_operand = graph
                     .operand(input_id)
-                    .ok_or_else(|| GraphError::InvalidConversionOperand { operand: input_id })?;
+                    .ok_or(GraphError::InvalidConversionOperand { operand: input_id })?;
 
                 let input_name = operand_name(graph, input_id);
                 let needs_cast = matches!(
@@ -1172,7 +1172,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Check if input is 0D (scalar)
                 let input_operand_id = op.input_operands[0];
-                let input_operand = graph.operand(input_operand_id).ok_or_else(|| {
+                let input_operand = graph.operand(input_operand_id).ok_or({
                     GraphError::InvalidConversionOperand {
                         operand: input_operand_id,
                     }
@@ -1379,7 +1379,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .unwrap_or(0) as usize;
 
                 // Get input shape and dimension size at axis
-                let data_operand = graph.operand(data_operand_id).ok_or_else(|| {
+                let data_operand = graph.operand(data_operand_id).ok_or({
                     GraphError::InvalidConversionOperand {
                         operand: data_operand_id,
                     }
@@ -1389,7 +1389,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // Second input: indices tensor - may need casting and clamping
                 let indices_id = op.input_operands[1];
                 let indices_name = operand_name(graph, indices_id);
-                let indices_operand = graph.operand(indices_id).ok_or_else(|| {
+                let indices_operand = graph.operand(indices_id).ok_or({
                     GraphError::InvalidConversionOperand {
                         operand: indices_id,
                     }
@@ -1580,7 +1580,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_id = op.input_operands[0];
                 let input_operand = graph
                     .operand(input_id)
-                    .ok_or_else(|| GraphError::InvalidConversionOperand { operand: input_id })?;
+                    .ok_or(GraphError::InvalidConversionOperand { operand: input_id })?;
                 let input_data_type = Self::data_type_code(input_operand.descriptor.data_type);
 
                 let mut inputs: Vec<String> = vec![operand_name(graph, input_id)];
@@ -1605,7 +1605,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .get("axes")
                         .and_then(|v| v.as_array())
                         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
-                        .unwrap_or_else(|| vec![]);
+                        .unwrap_or_else(std::vec::Vec::new);
 
                     // Handle empty axes or 0D tensor with axes=[-1] case
                     // When axes are empty or when input is 0D scalar, no normalization occurs
@@ -1942,7 +1942,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     for &input_id in &op.input_operands {
                         let input_name = operand_name(graph, input_id);
-                        let input_operand = graph.operand(input_id).ok_or_else(|| {
+                        let input_operand = graph.operand(input_id).ok_or({
                             GraphError::InvalidConversionOperand { operand: input_id }
                         })?;
 
@@ -2037,7 +2037,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
             opset_import: vec![OperatorSetIdProto {
                 version: Some(13),
                 domain: Some("".to_string()), // Empty string = default ONNX domain
-                ..Default::default()
             }],
             ..Default::default()
         };
@@ -2070,11 +2069,10 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
                                         *d as i64,
                                     ),
                                 ),
-                                ..Default::default()
+                                denotation: None,
                             })
                             .collect(),
                     }),
-                    ..Default::default()
                 },
             )),
             ..Default::default()
