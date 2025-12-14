@@ -497,6 +497,27 @@ def test_wpt_conformance(context, backend_name, wpt_test_case, operation):
             if len(shape) == 0 or (len(shape) == 1 and shape[0] == 1 and "0D" in test_name):
                 pytest.skip("CoreML limitation: tile operation doesn't support scalar (0D) inputs")
 
+    # Skip CoreML unsupported data types
+    # CoreML feature descriptions only support: DOUBLE, FLOAT32, FLOAT16, INT32
+    # Int8, Uint8, Uint32, Int64 are not supported (even though Int8 exists in protobuf)
+    if backend_name == "coreml":
+        graph_desc = wpt_test_case.get("graph", {})
+
+        # Check inputs for unsupported types
+        inputs_data = graph_desc.get("inputs", {})
+        for input_name, input_spec in inputs_data.items():
+            descriptor = input_spec.get("descriptor", input_spec)
+            data_type = descriptor.get("dataType", "").lower()
+            if data_type in ["int8", "uint8", "uint32", "int64"]:
+                pytest.skip(f"CoreML limitation: {data_type} not supported in feature descriptions (only DOUBLE, FLOAT32, FLOAT16, INT32)")
+
+        # Check expected outputs for unsupported types
+        expected_outputs = wpt_test_case.get("expectedOutputs", {})
+        for output_name, output_spec in expected_outputs.items():
+            data_type = output_spec.get("dataType", "").lower()
+            if data_type in ["int8", "uint8", "uint32", "int64"]:
+                pytest.skip(f"CoreML limitation: {data_type} not supported in feature descriptions (only DOUBLE, FLOAT32, FLOAT16, INT32)")
+
     # Skip known architectural limitations (validated against Chromium reference implementation)
     # See: docs/implementation-status.md - Chromium Reference Implementation Comparison
 
@@ -523,8 +544,9 @@ def test_wpt_conformance(context, backend_name, wpt_test_case, operation):
         results = execute_wpt_test_case(context, wpt_test_case)
     except NotImplementedError as e:
         pytest.skip(f"Not implemented: {e}")
-    except ValueError as e:
-        if "Unsupported data type" in str(e):
+    except (ValueError, RuntimeError) as e:
+        error_str = str(e)
+        if "Unsupported data type" in error_str or "Unsupported feature data type" in error_str:
             pytest.skip(f"Unsupported data type: {e}")
         raise
 

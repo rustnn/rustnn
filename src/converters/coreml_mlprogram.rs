@@ -1872,6 +1872,8 @@ impl CoremlMlProgramConverter {
         use crate::protos::coreml::specification::{ArrayFeatureType, FeatureType, feature_type};
 
         // Map WebNN data type to CoreML array data type
+        // CoreML feature descriptions (I/O) ONLY support: DOUBLE, FLOAT32, FLOAT16, INT32
+        // Even though Int8 exists in protobuf enum, CoreML runtime rejects it
         let array_data_type = match descriptor.data_type {
             DataType::Float32 => {
                 crate::protos::coreml::specification::array_feature_type::ArrayDataType::Float32
@@ -1881,6 +1883,17 @@ impl CoremlMlProgramConverter {
             }
             DataType::Int32 => {
                 crate::protos::coreml::specification::array_feature_type::ArrayDataType::Int32
+            }
+            // Unsupported types - CoreML feature descriptions only support DOUBLE, FLOAT32, FLOAT16, INT32
+            // These must be skipped in tests
+            DataType::Int8 | DataType::Uint8 | DataType::Uint32 | DataType::Int64 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml_mlprogram".to_string(),
+                    reason: format!(
+                        "Unsupported feature data type: {:?}. CoreML feature descriptions only support DOUBLE, FLOAT32, FLOAT16, INT32.",
+                        descriptor.data_type
+                    ),
+                });
             }
             _ => {
                 return Err(GraphError::ConversionFailed {
