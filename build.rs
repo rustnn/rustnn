@@ -22,7 +22,7 @@ fn recurse(dir: &Path, files: &mut Vec<String>) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
-    config.bytes(&["."]);
+    config.bytes(["."]); // Fix clippy::needless_borrows_for_generic_args
 
     let coreml_dir = "protos/coreml";
     let onnx_dir = "protos/onnx";
