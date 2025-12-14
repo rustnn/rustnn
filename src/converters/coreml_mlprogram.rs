@@ -1563,19 +1563,51 @@ impl CoremlMlProgramConverter {
             // Batch/instance normalization (have mean, variance inputs)
             "batchnormalization" | "instancenormalization" => {
                 // Add input operands (input, mean, variance, optional scale, optional bias)
+                // CoreML requires mean and variance to be constant tensors (not graph inputs)
+                // Following Chromium pattern (though they don't validate this yet)
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                if input_names.len() >= 2 {
+
+                // Mean parameter (2nd input) - must be constant
+                if input_names.len() >= 2 && op.input_operands.len() >= 2 {
+                    let mean_operand_id = op.input_operands[1];
+                    if let Some(mean_operand) = _graph.operand(mean_operand_id) {
+                        if mean_operand.kind != crate::graph::OperandKind::Constant {
+                            return Err(GraphError::ConversionFailed {
+                                format: "coreml_mlprogram".to_string(),
+                                reason: format!(
+                                    "CoreML {} requires mean parameter to be a constant tensor, not a graph input",
+                                    op.op_type
+                                ),
+                            });
+                        }
+                    }
                     inputs.insert("mean".to_string(), Self::create_argument(&input_names[1]));
                 }
-                if input_names.len() >= 3 {
+
+                // Variance parameter (3rd input) - must be constant
+                if input_names.len() >= 3 && op.input_operands.len() >= 3 {
+                    let variance_operand_id = op.input_operands[2];
+                    if let Some(variance_operand) = _graph.operand(variance_operand_id) {
+                        if variance_operand.kind != crate::graph::OperandKind::Constant {
+                            return Err(GraphError::ConversionFailed {
+                                format: "coreml_mlprogram".to_string(),
+                                reason: format!(
+                                    "CoreML {} requires variance parameter to be a constant tensor, not a graph input",
+                                    op.op_type
+                                ),
+                            });
+                        }
+                    }
                     inputs.insert(
                         "variance".to_string(),
                         Self::create_argument(&input_names[2]),
                     );
                 }
+
                 // Scale and bias are optional (4th and 5th inputs)
+                // These can be either constants or graph inputs in CoreML
                 if input_names.len() >= 4 {
                     inputs.insert("gamma".to_string(), Self::create_argument(&input_names[3]));
                 }
