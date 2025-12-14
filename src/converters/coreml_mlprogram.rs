@@ -1786,8 +1786,8 @@ impl CoremlMlProgramConverter {
             }
 
             // Reduction operations: reduceSum, reduceMean, reduceMax, etc.
-            "reducesum" | "reducemean" | "reducemax" | "reducemin" | "reduceprod" | "reducel1"
-            | "reducel2" | "reducelogsum" | "reducelogsumexp" | "reducesumsquare" => {
+            "reducesum" | "reducemean" | "reducemax" | "reducemin" | "reduceproduct"
+            | "reducel1" | "reducel2" | "reducelogsum" | "reducelogsumexp" | "reducesumsquare" => {
                 // All reduce operations: x, axes, keep_dims
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
