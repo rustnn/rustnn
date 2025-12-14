@@ -1414,21 +1414,13 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Handle outputSizes (explicit output spatial dimensions [H, W])
-                // CoreML expects this as 'output_shape' parameter
-                if let Some(output_sizes) =
-                    op.attributes.get("outputSizes").and_then(|v| v.as_array())
-                {
-                    let output_sizes_u32: Vec<u32> = output_sizes
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !output_sizes_u32.is_empty() {
-                        inputs.insert(
-                            "output_shape".to_string(),
-                            Self::create_immediate_int_array(&output_sizes_u32),
-                        );
-                    }
-                }
+                // Following Chromium: For conv_transpose, CoreML requires output_shape
+                // to be the full output tensor dimensions [N, C, H, W] (from output operand),
+                // NOT just the spatial dimensions from outputSizes attribute.
+                // See: graph_builder_coreml.cc lines 2328-2334
+                // When explicit outputSizes is provided, we need to compute full output shape.
+                // For now, skip adding output_shape when using padding (custom pad_type).
+                // TODO: Compute full output shape from outputSizes + input shape + channels
 
                 if let Some(groups) = op.attributes.get("groups").and_then(|v| v.as_u64()) {
                     inputs.insert(
