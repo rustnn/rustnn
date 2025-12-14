@@ -508,6 +508,17 @@ def test_wpt_conformance(context, backend_name, wpt_test_case, operation):
             if len(shape) == 0 or "0D" in test_name:
                 pytest.skip("CoreML limitation: hard_swish decomposition (sigmoid_hard + mul) doesn't support scalar (0D) tensors")
 
+    # Skip neg 0D scalar operations on CoreML (CoreML mul doesn't support scalar outputs correctly)
+    if backend_name == "coreml" and operation == "neg":
+        # Check if this is a 0D scalar
+        graph_desc = wpt_test_case.get("graph", {})
+        inputs_data = graph_desc.get("inputs", {})
+        for input_name, input_spec in inputs_data.items():
+            descriptor = input_spec.get("descriptor", input_spec)
+            shape = descriptor.get("shape", [])
+            if len(shape) == 0 or "0D" in test_name:
+                pytest.skip("CoreML limitation: neg decomposition (mul with -1) doesn't support scalar (0D) tensors")
+
     # Skip CoreML unsupported data types
     # CoreML feature descriptions only support: DOUBLE, FLOAT32, FLOAT16, INT32
     # Int8, Uint8, Uint32, Int64 are not supported (even though Int8 exists in protobuf)

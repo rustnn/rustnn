@@ -2346,6 +2346,127 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 continue;
             }
 
+            // Special handling for neg (decompose into mul(x, -1) with typed constant)
+            // Following Chromium: neg = mul(x, -1) with constant matching input dtype
+            if op_type_lower == "neg" {
+                // Validate inputs/outputs exist
+                if op.input_operands.is_empty() || op.output_operand.is_none() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: "neg requires input and output operand".to_string(),
+                    });
+                }
+
+                let input_operand = graph_info.operand(op.input_operands[0]).ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Input operand {} not found", op.input_operands[0]),
+                    }
+                })?;
+
+                let input_name = Self::operand_name(graph_info, op.input_operands[0]);
+
+                // Create typed -1 constant matching input dtype
+                let neg_one_immediate = match input_operand.descriptor.data_type {
+                    DataType::Float32 => Self::create_immediate_float(-1.0f32),
+                    DataType::Float16 => Self::create_immediate_float16(-1.0f32),
+                    DataType::Int32 => {
+                        // create_immediate_int accepts u32 but converts to i32 internally
+                        // We need to reimplement for -1 value
+                        use crate::protos::coreml::mil_spec::{
+                            DataType as MilDataType, TensorType, TensorValue, Value, ValueType,
+                            argument, tensor_value, value, value_type,
+                        };
+
+                        let tensor_value = TensorValue {
+                            value: Some(tensor_value::Value::Ints(tensor_value::RepeatedInts {
+                                values: vec![-1i32],
+                            })),
+                        };
+
+                        let val = Value {
+                            doc_string: String::new(),
+                            r#type: Some(ValueType {
+                                r#type: Some(value_type::Type::TensorType(TensorType {
+                                    data_type: MilDataType::Int32 as i32,
+                                    rank: 0, // Scalar
+                                    dimensions: vec![],
+                                    attributes: HashMap::new(),
+                                })),
+                            }),
+                            value: Some(value::Value::ImmediateValue(value::ImmediateValue {
+                                value: Some(value::immediate_value::Value::Tensor(tensor_value)),
+                            })),
+                        };
+
+                        Argument {
+                            arguments: vec![argument::Binding {
+                                binding: Some(argument::binding::Binding::Value(val)),
+                            }],
+                        }
+                    }
+                    _ => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!(
+                                "Unsupported data type for neg: {:?}",
+                                input_operand.descriptor.data_type
+                            ),
+                        });
+                    }
+                };
+
+                // Create mul operation: x * (-1)
+                let mut mul_inputs: HashMap<String, Argument> = HashMap::new();
+                mul_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+                mul_inputs.insert("y".to_string(), neg_one_immediate);
+
+                // Get output name
+                let output_operand_id = op.output_operand.unwrap();
+                let output_name = Self::operand_name(graph_info, output_operand_id);
+                let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Output operand {} not found", output_operand_id),
+                    }
+                })?;
+
+                let output_dtype = Self::mil_data_type(&output_operand.descriptor.data_type)?;
+                let output_dimensions: Vec<Dimension> = output_operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|&d| Dimension {
+                        dimension: Some(dimension::Dimension::Constant(
+                            dimension::ConstantDimension { size: d as u64 },
+                        )),
+                    })
+                    .collect();
+
+                let output_value_type = ValueType {
+                    r#type: Some(
+                        crate::protos::coreml::mil_spec::value_type::Type::TensorType(TensorType {
+                            rank: output_dimensions.len() as i64,
+                            data_type: output_dtype,
+                            dimensions: output_dimensions,
+                            attributes: HashMap::new(),
+                        }),
+                    ),
+                };
+
+                let mul_output_type = NamedValueType {
+                    name: output_name,
+                    r#type: Some(output_value_type),
+                };
+
+                let mul_op = Self::create_mil_operation("mul", mul_inputs, vec![mul_output_type]);
+
+                main_block.operations.push(mul_op);
+
+                // Skip normal operation conversion for neg
+                continue;
+            }
+
             let mil_op = self.convert_operation(graph_info, op)?;
             main_block.operations.push(mil_op);
         }
