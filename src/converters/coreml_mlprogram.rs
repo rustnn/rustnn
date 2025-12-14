@@ -392,6 +392,19 @@ impl CoremlMlProgramConverter {
         }
     }
 
+    /// Create an Argument from multiple operand names (tuple/list of references)
+    /// Used for variadic parameters like concat's 'values'
+    fn create_argument_tuple(operand_names: &[String]) -> Argument {
+        Argument {
+            arguments: operand_names
+                .iter()
+                .map(|name| crate::protos::coreml::mil_spec::argument::Binding {
+                    binding: Some(Binding::Name(name.clone())),
+                })
+                .collect(),
+        }
+    }
+
     /// Create an Argument from an immediate integer array value (int32)
     fn create_immediate_int_array(values: &[u32]) -> Argument {
         use crate::protos::coreml::mil_spec::{
@@ -1102,20 +1115,21 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // Add min_value parameter from attributes (CoreML uses "alpha" for min in clip)
-                if let Some(min_value) = op.attributes.get("min_value").and_then(|v| v.as_f64()) {
-                    inputs.insert(
-                        "alpha".to_string(),
-                        Self::create_immediate_float(min_value as f32),
-                    );
-                }
-                // Add max_value parameter from attributes (CoreML uses "beta" for max in clip)
-                if let Some(max_value) = op.attributes.get("max_value").and_then(|v| v.as_f64()) {
-                    inputs.insert(
-                        "beta".to_string(),
-                        Self::create_immediate_float(max_value as f32),
-                    );
-                }
+                // CoreML clip operation requires BOTH alpha and beta parameters
+                // WebNN clamp defaults: minValue=-Infinity, maxValue=+Infinity
+                let min_value = op
+                    .attributes
+                    .get("minValue")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(f64::NEG_INFINITY) as f32;
+                let max_value = op
+                    .attributes
+                    .get("maxValue")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(f64::INFINITY) as f32;
+
+                inputs.insert("alpha".to_string(), Self::create_immediate_float(min_value));
+                inputs.insert("beta".to_string(), Self::create_immediate_float(max_value));
             }
 
             // Transpose operation: x, permutation
@@ -1420,16 +1434,22 @@ impl CoremlMlProgramConverter {
             }
 
             "concat" => {
-                // concat: values (list of tensors), axis
-                // In CoreML, all inputs are listed as separate named inputs
-                for (idx, input_name) in input_names.iter().enumerate() {
-                    inputs.insert(format!("values_{}", idx), Self::create_argument(input_name));
+                // concat: values (variadic list of tensors), axis
+                // CoreML expects a single 'values' parameter containing a tuple of all inputs
+                if !input_names.is_empty() {
+                    inputs.insert(
+                        "values".to_string(),
+                        Self::create_argument_tuple(&input_names),
+                    );
                 }
 
                 // Add axis parameter
                 if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_u64()) {
                     inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
                 }
+
+                // Add interleave parameter (defaults to false)
+                inputs.insert("interleave".to_string(), Self::create_immediate_bool(false));
             }
 
             "slice" => {
