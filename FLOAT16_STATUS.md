@@ -87,10 +87,12 @@ Successfully implemented Float16 constant support for CoreML backend using exter
 - Float16 input tests with small arrays might pass
 - Float16 input tests with large arrays will still crash (CoreML limitation)
 
-**Actual WPT Run Result**:
-- Test suite crashed at ~27% (800/2958 tests)
-- Hit a Float16 input test with large array
-- Cannot complete full suite due to CoreML crashes
+**Actual WPT Run Result (After Float16 Skip Logic)**:
+- Float16 skip logic implemented (commits: 4c1ee100, 866b1c72)
+- Skips Float16 inputs/constants/outputs with >4 elements
+- Test suite no longer crashes, can complete full run
+- CoreML backend: 233 passed / 1479 tests (15.8%)
+- Many other CoreML converter issues discovered during investigation
 
 ## Recommended Actions
 
@@ -156,8 +158,79 @@ Chromium's format includes sentinel (0xDEADBEEF) and element count for validatio
 **Crash Location** (Float16 inputs >4 elements):
 - `src/executors/coreml.rs:356` - predictionFromFeatures() call crashes inside CoreML
 
+## Additional CoreML Backend Fixes
+
+### Expand Operation - PARTIALLY FIXED
+
+**Problem**: Expand operation was crashing even on Float32 tests. Discovered during Float16 investigation.
+
+**Root Cause**: Incorrectly passing WebNN `newShape` parameter directly to CoreML `tile` as `reps` parameter.
+- WebNN expand: `newShape` = desired output shape (e.g., `[2, 3]`)
+- CoreML tile: `reps` = repetition factors (e.g., `[1, 3]`)
+- Correct conversion: `reps[i] = newShape[i] / inputShape[i]`
+
+**What We Fixed** (commit: 2e4dcb72):
+- Implemented proper reps calculation in `src/converters/coreml_mlprogram.rs:1423-1476`
+- Added skip logic for 0D scalar expansions (CoreML tile doesn't support scalar inputs)
+- Same-rank expansions now working: 2D→2D, 3D→3D, 4D→4D tests PASSING
+
+**Known Limitation**:
+- Rank-increasing expansions still failing (e.g., 1D→2D, 2D→3D)
+- CoreML tile requires input rank to match reps rank
+- Error: "Variadic dimension at [0, -1] of tensor parameter x[0] have unexpected length 1; expected 2"
+- Would need `expand_dims` operation first to add missing dimensions
+- To be addressed in future work
+
+**Test Results**:
+- 0D scalar expansions: SKIPPED (5 tests)
+- Same-rank expansions: PASSING (e.g., `expand_float32_2D_tensor_to_2D_(1st_dimension)`)
+- Rank-increasing expansions: FAILING (19 tests)
+
+### Other CoreML Converter Issues Discovered
+
+While investigating expand operation failures, discovered many other CoreML converter bugs:
+- **reduce_sum / reduce_sum_square**: Missing `keep_dims` parameter (100+ tests failing)
+- **transpose**: Missing `perm` parameter for default options (7+ tests failing)
+- **reshape**: Missing `shape` parameter and 6D+ limitation (3+ tests failing)
+- **slice**: Missing `size` parameter (1+ test failing)
+- **relu / sub**: Unsupported data types (int8, uint8, uint32, int32 for some ops)
+
+These issues are independent of Float16 work and represent pre-existing CoreML converter bugs.
+
 ## Conclusion
 
-The Float16 constant implementation is complete and working correctly. The Float16 input limitation is a CoreML runtime issue beyond our control. The weight file system provides a solid foundation and improves WPT conformance for Float16 constant tests.
+### Achievements
 
-**Recommendation**: Skip Float16 input tests with large arrays in WPT suite to allow other tests to complete and measure actual improvement from Float16 constant fix.
+1. **Float16 Constants**: Complete and working with external weight file system
+2. **Float16 Skip Logic**: Implemented to prevent crashes, test suite can now complete
+3. **Expand Operation**: Fixed same-rank expansions (partial fix)
+4. **CoreML Backend Issues**: Identified and documented many converter bugs for future work
+
+### Remaining Limitations
+
+1. **Float16 Inputs >4 elements**: CoreML runtime issue, cannot fix in our code
+2. **Expand Rank-Increasing**: CoreML tile limitation, needs expand_dims workaround
+3. **Various CoreML Operations**: Missing required parameters (reduce_sum, transpose, reshape, slice)
+4. **Data Type Support**: Some operations don't support int8, uint8, uint32
+
+### Impact on WPT Conformance
+
+**CoreML Backend Current Status**: 233 passed / 1479 tests (15.8%)
+- This represents CoreML backend only (half of total 2958 tests)
+- ONNX backend likely has much higher conformance
+- Many failures are due to pre-existing CoreML converter bugs (independent of Float16 work)
+- Float16 skip logic prevents crashes and allows test suite completion
+
+### Recommendations
+
+**Immediate Next Steps**:
+1. Fix critical CoreML converter bugs: reduce_sum, transpose, reshape parameter handling
+2. Investigate expand_dims approach for rank-increasing expansions
+3. Run full WPT suite (both ONNX and CoreML) to get combined conformance numbers
+4. Document operator support matrix for CoreML vs ONNX backends
+
+**Long Term**:
+1. File Apple bug report for Float16 input limitation
+2. Monitor Chromium's CoreML backend for workarounds and fixes
+3. Consider hybrid approach: use ONNX Runtime for operations CoreML doesn't support well
+4. Track macOS/Xcode updates for CoreML improvements
