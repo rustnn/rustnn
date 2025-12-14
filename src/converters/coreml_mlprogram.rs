@@ -1047,12 +1047,21 @@ impl CoremlMlProgramConverter {
 
             // Unary operations: x
             "relu" | "sigmoid" | "tanh" | "abs" | "ceil" | "floor" | "round" | "sign"
-            | "identity" | "exp" | "log" | "sqrt" | "reciprocal" | "sin" | "cos" | "tan"
-            | "asin" | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh" | "atanh" | "erf"
+            | "identity" | "exp" | "sqrt" | "reciprocal" | "sin" | "cos" | "tan" | "asin"
+            | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh" | "atanh" | "erf"
             | "logicalnot" | "softplus" | "softsign" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
+            }
+
+            // Log operation requires epsilon parameter
+            "log" => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                // CoreML log requires epsilon parameter (default to 1e-45 for numerical stability)
+                inputs.insert("epsilon".to_string(), Self::create_immediate_float(1e-45));
             }
 
             // Quantization operations: input, scale, zero_point
@@ -1089,8 +1098,15 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            // Specialized activations with alpha and beta parameters: hardSigmoid, hardSwish
-            "hardsigmoid" | "hardswish" => {
+            // HardSwish: x only (CoreML hardswish doesn't take alpha/beta)
+            "hardswish" => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+            }
+
+            // HardSigmoid: x, alpha, beta parameters
+            "hardsigmoid" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
