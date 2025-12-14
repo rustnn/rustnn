@@ -93,8 +93,8 @@ def build_simple_graph(context: "webnn.MLContext") -> "webnn.MLGraph":
     return graph
 
 
-def test_conversions(context: "webnn.MLContext", graph: "webnn.MLGraph") -> tuple[bool, bool]:
-    """Test both CoreML and ONNX conversion for comparison.
+def verify_conversions(context: "webnn.MLContext", graph: "webnn.MLGraph") -> tuple[bool, bool]:
+    """Verify both CoreML and ONNX conversion for comparison.
 
     Args:
         context: MLContext for conversion
@@ -185,7 +185,7 @@ def main() -> int:
         return 1
 
     # Test conversions
-    coreml_success, onnx_success = test_conversions(context, graph)
+    coreml_success, onnx_success = verify_conversions(context, graph)
 
     # Summary
     print_section("Test Results")

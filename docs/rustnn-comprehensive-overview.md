@@ -1810,7 +1810,7 @@ make text-gen-trained
 4. **Documentation** - Tutorials, examples, API guides
 5. **Backend integration** - TensorFlow Lite, OpenVINO, other runtimes
 
-**See [TODO.txt](TODO.txt) and [AGENTS.md](AGENTS.md) for detailed task list.**
+**See TODO.txt and AGENTS.md in the project root for detailed task list.**
 
 ---
 
