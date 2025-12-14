@@ -36,37 +36,26 @@ def _has_onnx_runtime():
 
 def _has_coreml_runtime():
     """Check if CoreML runtime is available (macOS only)"""
-    # TODO: Re-enable CoreML testing once executor bugs are fixed
-    # Current issues preventing CoreML testing:
-    # 1. Panics on multi-output operations (coreml_mlprogram.rs:632)
-    # 2. Data type mismatches causing crashes
-    # 3. Missing proper error handling (uses .expect() which panics)
-    #
-    # To re-enable:
-    # 1. Remove panic at coreml_mlprogram.rs:632 and handle multi-output ops
-    # 2. Fix data type conversion issues
-    # 3. Add proper error handling instead of panicking
-    # 4. Uncomment the code below
-    return False
-
-    # if not WEBNN_AVAILABLE:
-    #     return False
-    # try:
-    #     import platform
-    #     if platform.system() != "Darwin":
-    #         return False
-    #     ml = webnn.ML()
-    #     # Explicitly force CoreML backend with device_type="npu"
-    #     ctx = ml.create_context(power_preference="default", accelerated=True, device_type="npu")
-    #     builder = ctx.create_graph_builder()
-    #     x = builder.input("x", [1, 1], "float32")
-    #     y = builder.relu(x)
-    #     graph = builder.build({"output": y})
-    #     result = ctx.compute(graph, {"x": np.array([[1.0]], dtype=np.float32)})
-    #     # If CoreML runtime is available, result should be non-zero
-    #     return np.any(result["output"] != 0)
-    # except:
-    #     return False
+    if not WEBNN_AVAILABLE:
+        return False
+    try:
+        import platform
+        if platform.system() != "Darwin":
+            return False
+        ml = webnn.ML()
+        # Explicitly force CoreML backend with device_type="npu"
+        ctx = ml.create_context(power_preference="default", accelerated=True, device_type="npu")
+        builder = ctx.create_graph_builder()
+        x = builder.input("x", [1, 1], "float32")
+        y = builder.relu(x)
+        graph = builder.build({"output": y})
+        result = ctx.compute(graph, {"x": np.array([[1.0]], dtype=np.float32)})
+        # If CoreML runtime is available, result should be non-zero
+        return np.any(result["output"] != 0)
+    except Exception as e:
+        # Log the error for debugging but don't fail
+        print(f"CoreML runtime check failed: {e}")
+        return False
 
 
 ONNX_RUNTIME_AVAILABLE = _has_onnx_runtime()

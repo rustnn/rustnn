@@ -626,10 +626,29 @@ impl CoremlMlProgramConverter {
             .map(|&id| Self::operand_name(graph, id))
             .collect();
 
-        // Get output operand info (single-output operations only)
-        let output_id = op
-            .output_operand
-            .expect("CoreML converter only supports single-output operations");
+        // Get output operand info
+        // Check if this is a single-output or multi-output operation
+        let output_id = if let Some(id) = op.output_operand {
+            // Single-output operation
+            id
+        } else if !op.output_operands.is_empty() {
+            // Multi-output operation not handled yet
+            return Err(GraphError::ConversionFailed {
+                format: "CoreML MLProgram".to_string(),
+                reason: format!(
+                    "operation '{}' has multiple outputs but is not implemented as multi-output. \
+                     Only 'split' is currently supported as multi-output.",
+                    op.op_type
+                ),
+            });
+        } else {
+            // No outputs at all - this shouldn't happen but handle gracefully
+            return Err(GraphError::ConversionFailed {
+                format: "CoreML MLProgram".to_string(),
+                reason: format!("operation '{}' has no output operands", op.op_type),
+            });
+        };
+
         let (_output_name, output_type) = Self::create_value(graph, output_id)?;
 
         // Create inputs map based on operation type
