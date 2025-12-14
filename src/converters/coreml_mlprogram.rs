@@ -1638,10 +1638,13 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                // Add axis parameter (defaults to 0)
-                if let Some(axis) = op.attributes.get("axis").and_then(|v| v.as_u64()) {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
-                }
+                // Add axis parameter (REQUIRED by CoreML, defaults to 0)
+                let axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                inputs.insert("axis".to_string(), Self::create_immediate_int(axis));
 
                 // Add validate_indices parameter (required by CoreML, defaults to true)
                 inputs.insert(
