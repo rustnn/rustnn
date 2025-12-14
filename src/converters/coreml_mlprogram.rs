@@ -1422,21 +1422,47 @@ impl CoremlMlProgramConverter {
 
             "expand" => {
                 // tile: x, reps (repetitions)
+                // WebNN expand(input, newShape) broadcasts to newShape
+                // CoreML tile(x, reps) repeats input by reps factors
+                // Conversion: reps[i] = newShape[i] / inputShape[i]
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add newShape parameter as reps
+                // Calculate reps from newShape and input shape
                 if let Some(new_shape) = op.attributes.get("newShape").and_then(|v| v.as_array()) {
                     let new_shape_u32: Vec<u32> = new_shape
                         .iter()
                         .filter_map(|v| v.as_u64().map(|u| u as u32))
                         .collect();
-                    if !new_shape_u32.is_empty() {
-                        inputs.insert(
-                            "reps".to_string(),
-                            Self::create_immediate_int_array(&new_shape_u32),
-                        );
+
+                    // Get input operand shape
+                    if !op.input_operands.is_empty() {
+                        if let Some(input_operand) = _graph.operand(op.input_operands[0]) {
+                            let input_shape = &input_operand.descriptor.shape;
+
+                            // Calculate repetition factors: reps[i] = newShape[i] / inputShape[i]
+                            let mut reps: Vec<u32> = Vec::new();
+                            for (i, &new_dim) in new_shape_u32.iter().enumerate() {
+                                if i < input_shape.len() {
+                                    let input_dim = input_shape[i];
+                                    if input_dim > 0 {
+                                        reps.push(new_dim / input_dim);
+                                    } else {
+                                        reps.push(1);
+                                    }
+                                } else {
+                                    reps.push(1);
+                                }
+                            }
+
+                            if !reps.is_empty() {
+                                inputs.insert(
+                                    "reps".to_string(),
+                                    Self::create_immediate_int_array(&reps),
+                                );
+                            }
+                        }
                     }
                 }
             }
