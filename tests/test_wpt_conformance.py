@@ -602,6 +602,14 @@ def test_wpt_conformance(context, backend_name, wpt_test_case, operation):
         error_str = str(e)
         if "Unsupported data type" in error_str or "Unsupported feature data type" in error_str:
             pytest.skip(f"Unsupported data type: {e}")
+        # Skip CoreML normalization tests with non-constant parameters
+        # These are expected validation failures with clear error messages
+        if backend_name == "coreml":
+            if ("requires mean parameter to be a constant" in error_str or
+                "requires variance parameter to be a constant" in error_str or
+                "requires scale (gamma) parameter to be a constant" in error_str or
+                "requires bias (beta) parameter to be a constant" in error_str):
+                pytest.skip(f"CoreML limitation: normalization parameters must be constants - {e}")
         raise
 
     # Validate results against expected outputs
