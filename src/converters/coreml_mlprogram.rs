@@ -1510,12 +1510,32 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Scale (gamma) is optional (2nd input)
-                if input_names.len() >= 2 {
+                // CoreML requires scale/bias to be constant tensors (not graph inputs)
+                // Following Chromium: TODO(crbug.com/338529226) - these params must be constant
+                if input_names.len() >= 2 && op.input_operands.len() >= 2 {
+                    let scale_operand_id = op.input_operands[1];
+                    if let Some(scale_operand) = _graph.operand(scale_operand_id) {
+                        if scale_operand.kind != crate::graph::OperandKind::Constant {
+                            return Err(GraphError::ConversionFailed {
+                                format: "coreml_mlprogram".to_string(),
+                                reason: "CoreML layer_norm requires scale (gamma) parameter to be a constant tensor, not a graph input".to_string(),
+                            });
+                        }
+                    }
                     inputs.insert("gamma".to_string(), Self::create_argument(&input_names[1]));
                 }
 
                 // Bias (beta) is optional (3rd input)
-                if input_names.len() >= 3 {
+                if input_names.len() >= 3 && op.input_operands.len() >= 3 {
+                    let bias_operand_id = op.input_operands[2];
+                    if let Some(bias_operand) = _graph.operand(bias_operand_id) {
+                        if bias_operand.kind != crate::graph::OperandKind::Constant {
+                            return Err(GraphError::ConversionFailed {
+                                format: "coreml_mlprogram".to_string(),
+                                reason: "CoreML layer_norm requires bias (beta) parameter to be a constant tensor, not a graph input".to_string(),
+                            });
+                        }
+                    }
                     inputs.insert("beta".to_string(), Self::create_argument(&input_names[2]));
                 }
 
