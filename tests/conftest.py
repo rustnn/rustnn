@@ -88,15 +88,19 @@ def ml():
     pytest.param("onnx", id="onnx") if ONNX_RUNTIME_AVAILABLE else pytest.param(None, id="no_onnx", marks=pytest.mark.skip),
     pytest.param("coreml", id="coreml") if COREML_RUNTIME_AVAILABLE else pytest.param(None, id="no_coreml", marks=pytest.mark.skip),
 ])
-def context(request, ml):
+def backend_name(request):
+    """Return the backend name for the current test."""
+    return request.param
+
+
+@pytest.fixture
+def context(backend_name, ml):
     """Create ML context for the specified backend.
 
     Uses explicit device_type to force backend selection:
     - "onnx" -> device_type="gpu" (ONNX GPU backend)
     - "coreml" -> device_type="npu" (CoreML backend on macOS)
     """
-    backend_name = request.param
-
     if backend_name is None:
         pytest.skip("Backend not available")
 
