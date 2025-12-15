@@ -559,4 +559,4 @@ python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu
 python examples/text_generation_gpt.py --prompt "Hello" --tokens 30
 ```
 
-For more information on running examples, see the [Development Guide](development.md).
+For more information on running examples, see the [Development Guide](../development/setup.md).

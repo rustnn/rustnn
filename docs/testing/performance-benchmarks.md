@@ -138,9 +138,9 @@ Potential areas for performance improvement:
 
 ## Related Documentation
 
-- [Development Guide](development.md) - Build and test instructions
-- [API Reference](api-reference.md) - Complete API documentation
-- [Operator Status](operator-status.md) - Supported operations per backend
+- [Development Guide](../development/setup.md) - Build and test instructions
+- [API Reference](../user-guide/api-reference.md) - Complete API documentation
+- [Operator Status](../development/implementation-status.md) - Supported operations per backend
 
 ---
 

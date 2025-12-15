@@ -371,15 +371,15 @@ Note: First-run times include engine building overhead (10-60 seconds).
 Once TensorRT is working:
 
 1. Explore examples in `examples/` directory
-2. Read the [API Reference](api-reference.md) for detailed usage
-3. Check [Implementation Status](implementation-status.md) for supported operations
-4. See [Development Guide](development.md) for contributing
+2. Read the [API Reference](../user-guide/api-reference.md) for detailed usage
+3. Check [Implementation Status](../development/implementation-status.md) for supported operations
+4. See [Development Guide](../development/setup.md) for contributing
 
 ## Additional Resources
 
 - [TensorRT Documentation](https://docs.nvidia.com/deeplearning/tensorrt/)
 - [CUDA Programming Guide](https://docs.nvidia.com/cuda/)
-- [rustnn Python API Reference](api-reference.md)
+- [rustnn Python API Reference](../user-guide/api-reference.md)
 - [trtx-rs GitHub](https://github.com/tarekziade/trtx-rs)
 
 ## Support
