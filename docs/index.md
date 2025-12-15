@@ -83,10 +83,10 @@ pip install pywebnn
 
 ## Documentation Structure
 
-- **[Getting Started](getting-started.md)** - Installation and first steps
-- **[API Reference](api-reference.md)** - Complete API documentation
-- **[Examples](examples.md)** - Code examples and tutorials
-- **[Advanced Topics](advanced.md)** - Advanced usage patterns
+- **[Getting Started](user-guide/getting-started.md)** - Installation and first steps
+- **[API Reference](user-guide/api-reference.md)** - Complete API documentation
+- **[Examples](user-guide/examples.md)** - Code examples and tutorials
+- **[Advanced Topics](user-guide/advanced.md)** - Advanced usage patterns
 
 ## Support
 

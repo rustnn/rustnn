@@ -674,18 +674,41 @@ git commit -m "Update context implementation"
 High priority: Reduction operations (reduceSum, reduceMean, etc.), element-wise ops (abs, exp, log, etc.)
 See TODO.txt for complete list.
 
-## Resources
+## Documentation
 
-- **README.md**: Complete documentation including Python API, Rust CLI, and architecture
-- **docs/api-reference.md**: Complete Python API reference with examples
-- **docs/implementation-status.md**: **Comprehensive implementation status and testing strategy** covering operator status across all backends (Shape Inference, Python API, ONNX, CoreML MLProgram), WPT test integration status, and prioritized next steps
-- **docs/webnn-spec-reference.md**: Local copy of W3C WebNN spec reference for offline use and easy parsing
+**User Documentation:**
+- **[Getting Started](docs/user-guide/getting-started.md)** - Installation and first steps
+- **[API Reference](docs/user-guide/api-reference.md)** - Complete Python API documentation
+- **[Examples](docs/user-guide/examples.md)** - Working code samples
+- **[Advanced Topics](docs/user-guide/advanced.md)** - Advanced usage patterns
+
+**Architecture & Design:**
+- **[Architecture Overview](docs/architecture/overview.md)** - Core design principles and components
+- **[Chromium Comparison](docs/architecture/chromium-comparison.md)** - How we compare to Chromium's WebNN
+
+**Development:**
+- **[Development Setup](docs/development/setup.md)** - Build and test environment
+- **[Implementation Status](docs/development/implementation-status.md)** - Comprehensive status across all backends with WPT test integration
+
+**Testing:**
+- **[WPT Test Guide](docs/testing/wpt-test-guide.md)** - W3C WebNN conformance testing
+- **[Performance Benchmarks](docs/testing/performance-benchmarks.md)** - Performance tracking
+
+**Integration Guides:**
+- **[TensorRT Integration](docs/integration/tensorrt.md)** - NVIDIA GPU backend (Linux/Windows)
+- **[Windows TensorRT Setup](docs/integration/windows-tensorrt-setup.md)** - Windows-specific TensorRT setup
+- **[GGML Integration](docs/integration/ggml.md)** - GGML backend (future)
+
+**Reference:**
+- **[WebNN Spec Reference](docs/reference/webnn-spec.md)** - W3C spec excerpts for offline use
+- **[IPC Design](docs/reference/ipc-design.md)** - Inter-process communication design
+
+**Other Resources:**
+- **README.md**: Crisp project overview and quickstart
 - **examples/**: Sample WebNN graph JSON files and Python examples
-- **tests/test_python_api.py**: Python API test suite (146 tests passing)
+- **tests/test_python_api.py**: Python API test suite (320+ tests passing)
 - **TODO.txt**: Implementation roadmap and completed features
 - **Makefile**: Common build and validation targets
-- **pyproject.toml**: Python package configuration
-- **LICENSE**: Apache 2.0 license
 
 ---
 

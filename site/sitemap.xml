@@ -2,86 +2,78 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://your-org.github.io/rustnn/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/advanced/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/architecture/chromium-comparison/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/api-reference/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/architecture/overview/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/architecture/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/development/implementation-status/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/chromium-comparison/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/development/setup/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/coreml-fixes-session-2025-12-14/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/integration/ggml/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/coreml-weight-files-implementation/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/integration/tensorrt/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/development/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/integration/windows-tensorrt-setup/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/examples/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/investigations/coreml-fixes-session-2025-12-14/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/float16-investigation/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/investigations/coreml-weight-files/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/getting-started/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/investigations/float16-investigation/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/ggml-integration-guide/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/reference/ipc-design/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/implementation-status/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/reference/webnn-spec/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/operator-status/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/testing/performance-benchmarks/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/performance-benchmarks/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/testing/wpt-test-guide/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/rustnn-comprehensive-overview/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/user-guide/advanced/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/tensorrt-integration-guide/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/user-guide/api-reference/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/webnn-spec-reference/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/user-guide/examples/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/windows-tensorrt-setup/</loc>
-         <lastmod>2025-12-14</lastmod>
-    </url>
-    <url>
-         <loc>https://your-org.github.io/rustnn/wpt-integration-plan/</loc>
-         <lastmod>2025-12-14</lastmod>
-    </url>
-    <url>
-         <loc>https://your-org.github.io/rustnn/wpt-test-guide/</loc>
-         <lastmod>2025-12-14</lastmod>
+         <loc>https://your-org.github.io/rustnn/user-guide/getting-started/</loc>
+         <lastmod>2025-12-15</lastmod>
     </url>
 </urlset>

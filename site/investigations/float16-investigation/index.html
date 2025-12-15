@@ -12,25 +12,27 @@
         <meta name="author" content="Your Organization">
       
       
+        <link rel="canonical" href="https://your-org.github.io/rustnn/investigations/float16-investigation/">
+      
       
       
       
         
       
       
-      <link rel="icon" href="/rustnn/logo/rustnn.png">
+      <link rel="icon" href="../../logo/rustnn.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.0">
     
     
       
-        <title>WebNN Python API</title>
+        <title>Float16 Investigation - CoreML Backend - WebNN Python API</title>
       
     
     
-      <link rel="stylesheet" href="/rustnn/assets/stylesheets/main.618322db.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.618322db.min.css">
       
         
-        <link rel="stylesheet" href="/rustnn/assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -49,9 +51,9 @@
       
     
     
-      <link rel="stylesheet" href="/rustnn/assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("/rustnn/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -75,6 +77,11 @@
     <label class="md-overlay" for="__drawer"></label>
     <div data-md-component="skip">
       
+        
+        <a href="#float16-investigation-coreml-backend" class="md-skip">
+          Skip to content
+        </a>
+      
     </div>
     <div data-md-component="announce">
       
@@ -89,9 +96,9 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="/rustnn/." title="WebNN Python API" class="md-header__button md-logo" aria-label="WebNN Python API" data-md-component="logo">
+    <a href="../.." title="WebNN Python API" class="md-header__button md-logo" aria-label="WebNN Python API" data-md-component="logo">
       
-  <img src="/rustnn/logo/rustnn.png" alt="logo">
+  <img src="../../logo/rustnn.png" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -108,7 +115,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              
+              Float16 Investigation - CoreML Backend
             
           </span>
         </div>
@@ -221,7 +228,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="/rustnn/." class="md-tabs__link">
+      <a href="../.." class="md-tabs__link">
         
   
   
@@ -242,7 +249,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/user-guide/getting-started/" class="md-tabs__link">
+        <a href="../../user-guide/getting-started/" class="md-tabs__link">
           
   
   
@@ -262,7 +269,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/architecture/overview/" class="md-tabs__link">
+        <a href="../../architecture/overview/" class="md-tabs__link">
           
   
   
@@ -282,7 +289,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/development/setup/" class="md-tabs__link">
+        <a href="../../development/setup/" class="md-tabs__link">
           
   
   
@@ -302,7 +309,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/testing/wpt-test-guide/" class="md-tabs__link">
+        <a href="../../testing/wpt-test-guide/" class="md-tabs__link">
           
   
   
@@ -322,7 +329,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/integration/tensorrt/" class="md-tabs__link">
+        <a href="../../integration/tensorrt/" class="md-tabs__link">
           
   
   
@@ -342,7 +349,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="/rustnn/reference/webnn-spec/" class="md-tabs__link">
+        <a href="../../reference/webnn-spec/" class="md-tabs__link">
           
   
   
@@ -376,9 +383,9 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="/rustnn/." title="WebNN Python API" class="md-nav__button md-logo" aria-label="WebNN Python API" data-md-component="logo">
+    <a href="../.." title="WebNN Python API" class="md-nav__button md-logo" aria-label="WebNN Python API" data-md-component="logo">
       
-  <img src="/rustnn/logo/rustnn.png" alt="logo">
+  <img src="../../logo/rustnn.png" alt="logo">
 
     </a>
     WebNN Python API
@@ -405,7 +412,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/." class="md-nav__link">
+      <a href="../.." class="md-nav__link">
         
   
   
@@ -486,7 +493,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/user-guide/getting-started/" class="md-nav__link">
+      <a href="../../user-guide/getting-started/" class="md-nav__link">
         
   
   
@@ -514,7 +521,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/user-guide/api-reference/" class="md-nav__link">
+      <a href="../../user-guide/api-reference/" class="md-nav__link">
         
   
   
@@ -542,7 +549,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/user-guide/examples/" class="md-nav__link">
+      <a href="../../user-guide/examples/" class="md-nav__link">
         
   
   
@@ -570,7 +577,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/user-guide/advanced/" class="md-nav__link">
+      <a href="../../user-guide/advanced/" class="md-nav__link">
         
   
   
@@ -659,7 +666,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/architecture/overview/" class="md-nav__link">
+      <a href="../../architecture/overview/" class="md-nav__link">
         
   
   
@@ -687,7 +694,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/architecture/chromium-comparison/" class="md-nav__link">
+      <a href="../../architecture/chromium-comparison/" class="md-nav__link">
         
   
   
@@ -776,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/development/setup/" class="md-nav__link">
+      <a href="../../development/setup/" class="md-nav__link">
         
   
   
@@ -804,7 +811,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/development/implementation-status/" class="md-nav__link">
+      <a href="../../development/implementation-status/" class="md-nav__link">
         
   
   
@@ -893,7 +900,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/testing/wpt-test-guide/" class="md-nav__link">
+      <a href="../../testing/wpt-test-guide/" class="md-nav__link">
         
   
   
@@ -921,7 +928,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/testing/performance-benchmarks/" class="md-nav__link">
+      <a href="../../testing/performance-benchmarks/" class="md-nav__link">
         
   
   
@@ -1010,7 +1017,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/integration/tensorrt/" class="md-nav__link">
+      <a href="../../integration/tensorrt/" class="md-nav__link">
         
   
   
@@ -1038,7 +1045,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/integration/windows-tensorrt-setup/" class="md-nav__link">
+      <a href="../../integration/windows-tensorrt-setup/" class="md-nav__link">
         
   
   
@@ -1066,7 +1073,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/integration/ggml/" class="md-nav__link">
+      <a href="../../integration/ggml/" class="md-nav__link">
         
   
   
@@ -1155,7 +1162,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/reference/webnn-spec/" class="md-nav__link">
+      <a href="../../reference/webnn-spec/" class="md-nav__link">
         
   
   
@@ -1183,7 +1190,7 @@
   
   
     <li class="md-nav__item">
-      <a href="/rustnn/reference/ipc-design/" class="md-nav__link">
+      <a href="../../reference/ipc-design/" class="md-nav__link">
         
   
   
@@ -1228,6 +1235,221 @@
   
   
   
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem Summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-causes-identified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root Causes Identified
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Root Causes Identified">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-float16-constants-fixed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Float16 Constants (FIXED)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-float16-inputs-partial-limitation-found" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Float16 Inputs (PARTIAL LIMITATION FOUND)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Architecture Details
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture Details">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#weight-file-format-following-chromium" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Weight File Format (Following Chromium)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#code-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Code Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workaround-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workaround Strategy
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Workaround Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#option-1-skip-float16-input-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option 1: Skip Float16 Input Tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-2-convert-float16-inputs-to-float32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option 2: Convert Float16 Inputs to Float32
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#option-3-wait-for-coreml-fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Option 3: Wait for CoreML Fix
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#chromium-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Chromium Comparison
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#wpt-conformance-impact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        WPT Conformance Impact
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#next-steps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Next Steps
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files Modified
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#commits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Commits
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#references" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        References
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
   
 </nav>
                   </div>
@@ -1240,8 +1462,174 @@
               
               <article class="md-content__inner md-typeset">
                 
-  <h1>404 - Not found</h1>
+                  
 
+
+  
+  
+
+
+<h1 id="float16-investigation-coreml-backend">Float16 Investigation - CoreML Backend<a class="headerlink" href="#float16-investigation-coreml-backend" title="Permanent link">&para;</a></h1>
+<h2 id="problem-summary">Problem Summary<a class="headerlink" href="#problem-summary" title="Permanent link">&para;</a></h2>
+<p>CoreML backend had 122 WPT test failures (4% of suite) related to Float16 tensors, causing SIGABRT crashes during graph execution.</p>
+<h2 id="root-causes-identified">Root Causes Identified<a class="headerlink" href="#root-causes-identified" title="Permanent link">&para;</a></h2>
+<h3 id="1-float16-constants-fixed">1. Float16 Constants (FIXED)<a class="headerlink" href="#1-float16-constants-fixed" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Non-scalar Float16 constants caused CoreML compilation/execution to crash.</p>
+<p><strong>Root Cause</strong>: CoreML MLProgram (MIL) format requires non-scalar Float16 constants to be stored in external weight files (weights.bin), not as immediate values in the protobuf.</p>
+<p><strong>Solution Implemented</strong>:
+- Created weight file builder infrastructure (<code>src/converters/weight_file_builder.rs</code>)
+- Implements 64-byte alignment and sentinel+count metadata format
+- Modified CoreML converter to detect non-scalar Float16 constants and route them to weight files
+- Updated executor to generate .mlpackage directory structure with weights/weights.bin
+- Scalar Float16 constants continue to use immediate values</p>
+<p><strong>Status</strong>: ✅ FIXED - Float16 constants now work correctly</p>
+<p><strong>Test Results</strong>:
+- <code>test_float16_debug.py</code> - Float16 constant [3] + relu: PASSED
+- <code>test_float16_both.py</code> - Float16 constant [5] + leakyRelu: PASSED</p>
+<h3 id="2-float16-inputs-partial-limitation-found">2. Float16 Inputs (PARTIAL LIMITATION FOUND)<a class="headerlink" href="#2-float16-inputs-partial-limitation-found" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: Float16 input tensors cause SIGSEGV (exit code 139) crash during CoreML prediction.</p>
+<p><strong>Root Cause</strong>: CoreML runtime limitation/bug with Float16 input arrays above a size threshold.</p>
+<p><strong>Findings</strong>:
+- Float16 inputs work correctly for small sizes (≤4 elements, ≤8 bytes)
+- Float16 inputs crash with larger sizes (≥8 elements, ≥16 bytes)
+- Issue is NOT in our Rust code - crash occurs inside CoreML's predictionFromFeatures call
+- Model generation is correct - Float16 inputs properly declared with ArrayDataType::Float16
+- Data conversion is correct - f32 → f16 conversion working properly</p>
+<p><strong>Test Results</strong>:
+| Size | Bytes | Status |
+|------|-------|--------|
+| [2] | 4 | ✅ PASSED |
+| [3] | 6 | ✅ PASSED |
+| [4] | 8 | ✅ PASSED |
+| [8] | 16 | ❌ CRASH (SIGSEGV) |
+| [12] | 24 | ❌ CRASH (SIGSEGV) |
+| [16] | 32 | ❌ CRASH (SIGSEGV) |
+| [24] | 48 | ❌ CRASH (SIGSEGV) |</p>
+<p><strong>Code Locations</strong>:
+- Model input declaration: <code>src/converters/coreml_mlprogram.rs:1752-1754</code> (correct)
+- Input data conversion: <code>src/executors/coreml.rs:753-758</code> (correct f32→f16 conversion)
+- Crash location: <code>src/executors/coreml.rs:356</code> (inside CoreML prediction call)</p>
+<h2 id="architecture-details">Architecture Details<a class="headerlink" href="#architecture-details" title="Permanent link">&para;</a></h2>
+<h3 id="weight-file-format-following-chromium">Weight File Format (Following Chromium)<a class="headerlink" href="#weight-file-format-following-chromium" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>.mlpackage/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── Data/
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│   └── com.apple.CoreML/
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│       ├── model.mlmodel (protobuf with BlobFileValue references)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│       └── weights/
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│           └── weights.bin (Float16 constant data)
+</span></code></pre></div>
+<p><strong>weights.bin Structure</strong>:
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>[Entry 1]
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  Sentinel: 0xDEADBEEF (4 bytes, little-endian)
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  Count: N elements (8 bytes, little-endian)
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>  Data: Float16 bytes (2 bytes per element)
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>  Padding: Zero bytes to next 64-byte boundary
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>[Entry 2]
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  ... (64-byte aligned)
+</span></code></pre></div></p>
+<p><strong>BlobFileValue in Protobuf</strong>:
+<div class="language-protobuf highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">value</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="n">type</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">tensorType</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">dataType</span><span class="o">:</span><span class="w"> </span><span class="n">FLOAT16</span><span class="p">,</span><span class="w"> </span><span class="n">rank</span><span class="o">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="n">dimensions</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mi">3</span><span class="p">]</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="n">blobFileValue</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="n">fileName</span><span class="o">:</span><span class="w"> </span><span class="s">&quot;@model_path/weights/weights.bin&quot;</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="n">offset</span><span class="o">:</span><span class="w"> </span><span class="mi">0</span><span class="w">  </span><span class="err">#</span><span class="w"> </span><span class="n">Byte</span><span class="w"> </span><span class="n">offset</span><span class="w"> </span><span class="n">into</span><span class="w"> </span><span class="n">weights.bin</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<h3 id="code-flow">Code Flow<a class="headerlink" href="#code-flow" title="Permanent link">&para;</a></h3>
+<p><strong>Constant Handling</strong>:
+1. <code>CoremlMlProgramConverter::create_const_operation()</code> detects Float16 + non-scalar
+2. Calls <code>WeightFileBuilder::add_weight()</code> to add to weights.bin
+3. Creates BlobFileValue with offset in protobuf
+4. <code>WeightFileBuilder::finalize()</code> pads to 64-byte alignment
+5. Executor creates .mlpackage with weights directory</p>
+<p><strong>Input Handling</strong>:
+1. Model declares Float16 input type in FeatureDescription
+2. Python passes np.float16 array to <code>compute()</code>
+3. <code>PyMLContext::compute_coreml()</code> converts to CoreML inputs
+4. Executor creates MLMultiArray with dataType=16 (Float16)
+5. <code>fill_data_with_type_conversion()</code> converts f32 data → f16 bits
+6. CoreML's <code>predictionFromFeatures</code> executes (crashes on large arrays)</p>
+<h2 id="workaround-strategy">Workaround Strategy<a class="headerlink" href="#workaround-strategy" title="Permanent link">&para;</a></h2>
+<h3 id="option-1-skip-float16-input-tests">Option 1: Skip Float16 Input Tests<a class="headerlink" href="#option-1-skip-float16-input-tests" title="Permanent link">&para;</a></h3>
+<p>Mark Float16 input tests as skipped with clear reason:
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">mark</span><span class="o">.</span><span class="n">skip</span><span class="p">(</span><span class="n">reason</span><span class="o">=</span><span class="s2">&quot;CoreML runtime crashes with Float16 inputs &gt;4 elements&quot;</span><span class="p">)</span>
+</span></code></pre></div></p>
+<h3 id="option-2-convert-float16-inputs-to-float32">Option 2: Convert Float16 Inputs to Float32<a class="headerlink" href="#option-2-convert-float16-inputs-to-float32" title="Permanent link">&para;</a></h3>
+<p>Add converter logic to upcast Float16 → Float32 for inputs:
+- Pro: Tests would pass
+- Con: Loses precision benefits, not spec-compliant</p>
+<h3 id="option-3-wait-for-coreml-fix">Option 3: Wait for CoreML Fix<a class="headerlink" href="#option-3-wait-for-coreml-fix" title="Permanent link">&para;</a></h3>
+<p>Document limitation and wait for Apple to fix in future macOS/Xcode updates.</p>
+<h2 id="chromium-comparison">Chromium Comparison<a class="headerlink" href="#chromium-comparison" title="Permanent link">&para;</a></h2>
+<p>Chromium's CoreML WebNN backend:
+- Also uses external weight files for Float16 constants (same approach we implemented)
+- Not clear if they have the same Float16 input limitation
+- May skip Float16 tests or have platform version checks</p>
+<h2 id="wpt-conformance-impact">WPT Conformance Impact<a class="headerlink" href="#wpt-conformance-impact" title="Permanent link">&para;</a></h2>
+<p><strong>Before Weight File Fix</strong>:
+- 91.3% conformance (2700/2958 passing)
+- 122 tests crashing (Float16 constants)
+- 136 tests failing for other reasons</p>
+<p><strong>After Weight File Fix</strong>:
+- Float16 constant tests: ✅ FIXED
+- Float16 input tests with small arrays (≤4 elements): ✅ WORKING
+- Float16 input tests with large arrays (&gt;4 elements): ❌ CoreML limitation</p>
+<p><strong>Expected Impact</strong>:
+- Most Float16 constant tests should now pass
+- Some Float16 input tests will continue to crash due to CoreML limitation
+- Estimated improvement: +80-100 tests passing (targeting ~94% conformance)</p>
+<h2 id="next-steps">Next Steps<a class="headerlink" href="#next-steps" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Run full WPT suite to measure actual improvement</li>
+<li>Identify which remaining Float16 tests are affected by input size limitation</li>
+<li>Document CoreML limitation in test skip conditions</li>
+<li>File bug report with Apple Feedback Assistant if appropriate</li>
+<li>Consider fallback to ONNX Runtime for Float16 operations if available</li>
+</ol>
+<h2 id="files-modified">Files Modified<a class="headerlink" href="#files-modified" title="Permanent link">&para;</a></h2>
+<p><strong>Phase 1-4 (Weight Files)</strong>:
+- NEW: <code>src/converters/weight_file_builder.rs</code> - Weight file infrastructure
+- MODIFIED: <code>src/converters/mod.rs</code> - Added weights_data field
+- MODIFIED: <code>src/converters/coreml_mlprogram.rs</code> - Float16 constant routing
+- MODIFIED: <code>src/executors/coreml.rs</code> - MLPackage generation
+- MODIFIED: <code>src/python/context.rs</code> - Pass weights_data to executor
+- NEW: <code>docs/coreml-weight-files-implementation.md</code> - Implementation plan</p>
+<p><strong>Investigation</strong>:
+- NEW: <code>test_float16_debug.py</code> - Float16 constant test
+- NEW: <code>test_float16_input_compute.py</code> - Float16 input test (small)
+- NEW: <code>test_float16_input_leaky.py</code> - Float16 input + leakyRelu test
+- NEW: <code>test_float16_wpt_size.py</code> - Float16 input test (WPT size)
+- NEW: <code>test_float16_sizes.py</code> - Size threshold test
+- NEW: <code>test_leaky_debug.py</code> - WPT leakyRelu replication</p>
+<h2 id="commits">Commits<a class="headerlink" href="#commits" title="Permanent link">&para;</a></h2>
+<ol>
+<li><code>213ecc1f</code> - Phase 1: Weight file builder infrastructure</li>
+<li><code>a36095cd</code> - Phase 2: CoreML converter integration</li>
+<li><code>cba495ee</code> - Phase 2: Integration tests</li>
+<li><code>185517b9</code> - Phase 3: MLPackage file generation</li>
+</ol>
+<h2 id="references">References<a class="headerlink" href="#references" title="Permanent link">&para;</a></h2>
+<ul>
+<li>W3C WebNN Spec: https://www.w3.org/TR/webnn/</li>
+<li>CoreML MLProgram Format: Apple CoreML documentation</li>
+<li>Chromium WebNN CoreML: chromium/src/services/webnn/coreml/</li>
+<li>WPT WebNN Tests: https://github.com/web-platform-tests/wpt/tree/master/webnn/</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
               </article>
             </div>
           
@@ -1317,10 +1705,10 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "/rustnn/", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "/rustnn/assets/javascripts/workers/search.7a47a382.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "search.suggest", "search.highlight", "content.tabs.link", "content.code.annotation", "content.code.copy"], "search": "../../assets/javascripts/workers/search.7a47a382.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="/rustnn/assets/javascripts/bundle.e71a0d61.min.js"></script>
+      <script src="../../assets/javascripts/bundle.e71a0d61.min.js"></script>
       
     
   </body>

@@ -75,13 +75,27 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - API Reference: api-reference.md
-  - Examples: examples.md
-  - Architecture: architecture.md
-  - Chromium Comparison: chromium-comparison.md
-  - Development: development.md
-  - Advanced Topics: advanced.md
+  - User Guide:
+      - Getting Started: user-guide/getting-started.md
+      - API Reference: user-guide/api-reference.md
+      - Examples: user-guide/examples.md
+      - Advanced Topics: user-guide/advanced.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Chromium Comparison: architecture/chromium-comparison.md
+  - Development:
+      - Setup: development/setup.md
+      - Implementation Status: development/implementation-status.md
+  - Testing:
+      - WPT Test Guide: testing/wpt-test-guide.md
+      - Performance Benchmarks: testing/performance-benchmarks.md
+  - Integration:
+      - TensorRT: integration/tensorrt.md
+      - Windows TensorRT: integration/windows-tensorrt-setup.md
+      - GGML: integration/ggml.md
+  - Reference:
+      - WebNN Spec: reference/webnn-spec.md
+      - IPC Design: reference/ipc-design.md
 
 extra:
   social:
