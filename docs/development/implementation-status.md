@@ -344,8 +344,9 @@ To re-enable CoreML testing:
    - Check for missing pytest markers (e.g., `pytest.mark.asyncio` warning)
 
 2. **Fix runtime dependencies**
-   - Ensure ONNX Runtime properly installed: `pip install onnxruntime`
-   - Verify `webnn` Python module built: `maturin develop --features python`
+   - PyPI package (v0.4.0+): ONNX Runtime bundled automatically, no separate installation needed
+   - Building from source: Use `make python-dev` to install with ONNX Runtime support
+   - Verify `webnn` Python module built: `maturin develop --features python,onnx-runtime`
    - Check for feature flags or environment variables required
 
 3. **Run tests and document results**

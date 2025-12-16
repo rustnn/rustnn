@@ -6,17 +6,15 @@ This guide will help you get started with the WebNN Python API.
 
 ### From PyPI (Quick Start)
 
-For validation and conversion only:
+Install PyWebNN with bundled ONNX Runtime (v0.4.0+):
 
 ```bash
 pip install pywebnn
 ```
 
-For full execution support, add ONNX Runtime:
+Version 0.4.0+ includes bundled ONNX Runtime for immediate execution support. No additional dependencies needed!
 
-```bash
-pip install pywebnn onnxruntime
-```
+**Note:** Earlier versions (0.3.0 and below) required separate `onnxruntime` installation and had no execution backends.
 
 ### Building from Source (Recommended for Full Features)
 
