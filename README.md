@@ -27,26 +27,25 @@ rustnn provides:
 
 ### Python Package (PyWebNN)
 
-**Quick Start:**
+**PyPI Package (v0.4.0+):**
 ```bash
-# Validation and conversion only
+# Install with bundled ONNX Runtime - no additional dependencies needed
 pip install pywebnn
 
-# With ONNX Runtime for CPU execution
-pip install pywebnn onnxruntime
-
-# With GPU support (requires CUDA)
-pip install pywebnn onnxruntime-gpu
+# Works immediately with actual execution (no zeros)
 ```
 
-**From Source (Full Features):**
+**Build from Source (For Development):**
 ```bash
 git clone https://github.com/tarekziade/rustnn.git
 cd rustnn
-make python-dev  # Sets up venv and builds with ONNX Runtime
+make python-dev  # Sets up venv and builds with ONNX Runtime + CoreML
+source .venv-webnn/bin/activate
 ```
 
-**Requirements:** Python 3.11+, NumPy 1.20+, ONNX Runtime 1.23+ (for execution)
+**Requirements:** Python 3.11+, NumPy 1.20+
+
+**Note:** Version 0.4.0+ includes bundled ONNX Runtime. Earlier versions (0.3.0 and below) had no backends and returned zeros.
 
 ### Rust Library
 

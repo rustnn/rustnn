@@ -32,7 +32,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features python -i python3.12
+          args: --release --out dist --features python,onnx-runtime -i python3.12
           sccache: 'true'
           manylinux: '2_28'
           before-script-linux: |
@@ -88,7 +88,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features python
+          args: --release --out dist --features python,onnx-runtime,coreml-runtime
           sccache: 'true'
 
       - name: Upload wheels
@@ -121,7 +121,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --features python
+          args: --release --out dist --features python,onnx-runtime
           sccache: 'true'
 
       - name: Upload wheels
