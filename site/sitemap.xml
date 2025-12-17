@@ -1,79 +1,75 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://your-org.github.io/rustnn/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/architecture/chromium-comparison/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/architecture/overview/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/architecture/overview/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/development/implementation-status/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/development/implementation-status/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/development/setup/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/development/setup/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/integration/ggml/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/integration/ggml/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/integration/tensorrt/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/integration/tensorrt/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/integration/windows-tensorrt-setup/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/integration/windows-tensorrt-setup/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/investigations/coreml-fixes-session-2025-12-14/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/investigations/coreml-fixes-session-2025-12-14/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/investigations/coreml-weight-files/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/investigations/coreml-weight-files/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/investigations/float16-investigation/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/investigations/float16-investigation/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/reference/ipc-design/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/reference/ipc-design/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/reference/webnn-spec/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/reference/webnn-spec/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/testing/performance-benchmarks/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/testing/performance-benchmarks/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/testing/wpt-test-guide/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/testing/wpt-test-guide/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/user-guide/advanced/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/user-guide/advanced/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/user-guide/api-reference/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/user-guide/api-reference/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/user-guide/examples/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
     <url>
-         <loc>https://your-org.github.io/rustnn/user-guide/examples/</loc>
-         <lastmod>2025-12-15</lastmod>
-    </url>
-    <url>
-         <loc>https://your-org.github.io/rustnn/user-guide/getting-started/</loc>
-         <lastmod>2025-12-15</lastmod>
+         <loc>https://tarekziade.github.io/rustnn/user-guide/getting-started/</loc>
+         <lastmod>2025-12-17</lastmod>
     </url>
 </urlset>
