@@ -377,6 +377,10 @@ pub fn run_onnx_with_inputs(
             let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
             let data_vec: Vec<f32> = data.iter().map(|&x| x as f32).collect();
             (shape_vec, data_vec)
+        } else if let Ok((shape, data)) = value.try_extract_tensor::<u64>() {
+            let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
+            let data_vec: Vec<f32> = data.iter().map(|&x| x as f32).collect();
+            (shape_vec, data_vec)
         } else {
             return Err(GraphError::OnnxRuntimeFailed {
                 reason: "failed to extract output tensor: unsupported data type".to_string(),
