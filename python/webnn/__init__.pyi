@@ -82,6 +82,40 @@ class MLContext:
         """
         ...
 
+    def op_support_limits(self) -> Dict[str, any]:
+        """
+        Get operation support limits for this context
+
+        Returns a dictionary describing what operations and parameter types
+        are supported by the backend implementation. This allows applications
+        to query feature support and adapt their models accordingly.
+
+        The returned dictionary has the following structure:
+        - preferredInputLayout: str - Preferred input layout ("nchw" or "nhwc")
+        - maxTensorByteLength: int - Maximum tensor size in bytes
+        - input: Dict - Tensor limits for input operands
+        - constant: Dict - Tensor limits for constant operands
+        - output: Dict - Tensor limits for output operands
+        - <operation_name>: Dict - Per-operation support limits
+
+        Each tensor limits dict contains:
+        - dataTypes: List[str] - Supported data types
+        - rankRange: Dict - min/max supported ranks
+
+        Returns:
+            Dictionary with support limits for each operation
+
+        Example:
+            >>> limits = context.op_support_limits()
+            >>> print(limits['preferredInputLayout'])
+            'nchw'
+            >>> print(limits['input']['dataTypes'])
+            ['float32', 'float16', 'int32', 'uint32', 'int8', 'uint8', 'int64', 'uint64']
+            >>> print(limits['relu']['input']['dataTypes'])
+            ['float32', 'float16']
+        """
+        ...
+
 class MLOperand:
     """Represents an operand in the computational graph"""
 

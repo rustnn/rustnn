@@ -3499,3 +3499,164 @@ def test_gemm_invalid_shapes(context):
 
     with pytest.raises(Exception):
         builder.gemm(a, b)
+
+
+# Op Support Limits Tests
+def test_op_support_limits_structure(context):
+    """Test that op_support_limits returns expected structure"""
+    limits = context.op_support_limits()
+
+    # Check top-level properties
+    assert "preferredInputLayout" in limits
+    assert limits["preferredInputLayout"] in ["nchw", "nhwc"]
+
+    assert "maxTensorByteLength" in limits
+    assert isinstance(limits["maxTensorByteLength"], int)
+    assert limits["maxTensorByteLength"] > 0
+
+    # Check input/constant/output limits
+    for key in ["input", "constant", "output"]:
+        assert key in limits
+        assert "dataTypes" in limits[key]
+        assert isinstance(limits[key]["dataTypes"], list)
+        assert len(limits[key]["dataTypes"]) > 0
+        assert "rankRange" in limits[key]
+        assert "min" in limits[key]["rankRange"]
+        assert "max" in limits[key]["rankRange"]
+
+
+def test_op_support_limits_binary_operations(context):
+    """Test op_support_limits for binary operations"""
+    limits = context.op_support_limits()
+
+    # Check binary operations
+    binary_ops = ["add", "sub", "mul", "div", "pow", "matmul"]
+    for op in binary_ops:
+        assert op in limits, f"Binary operation '{op}' not in limits"
+        assert "a" in limits[op]
+        assert "b" in limits[op]
+        assert "output" in limits[op]
+
+        # Check each has dataTypes and rankRange
+        for operand in ["a", "b", "output"]:
+            assert "dataTypes" in limits[op][operand]
+            assert "rankRange" in limits[op][operand]
+
+
+def test_op_support_limits_unary_operations(context):
+    """Test op_support_limits for unary operations"""
+    limits = context.op_support_limits()
+
+    # Check unary operations
+    unary_ops = [
+        "relu", "sigmoid", "tanh", "softmax", "gelu",
+        "abs", "ceil", "floor", "exp", "log", "sqrt",
+        "sin", "cos", "tan", "sinh", "cosh"
+    ]
+
+    for op in unary_ops:
+        assert op in limits, f"Unary operation '{op}' not in limits"
+        assert "input" in limits[op]
+        assert "output" in limits[op]
+
+        # Check each has dataTypes and rankRange
+        for operand in ["input", "output"]:
+            assert "dataTypes" in limits[op][operand]
+            assert "rankRange" in limits[op][operand]
+
+
+def test_op_support_limits_conv_operations(context):
+    """Test op_support_limits for convolution operations"""
+    limits = context.op_support_limits()
+
+    # Check conv2d
+    assert "conv2d" in limits
+    assert "input" in limits["conv2d"]
+    assert "filter" in limits["conv2d"]
+    assert "bias" in limits["conv2d"]
+    assert "output" in limits["conv2d"]
+
+    # Check convTranspose2d
+    assert "convTranspose2d" in limits
+    assert "input" in limits["convTranspose2d"]
+    assert "filter" in limits["convTranspose2d"]
+    assert "output" in limits["convTranspose2d"]
+
+
+def test_op_support_limits_pooling_operations(context):
+    """Test op_support_limits for pooling operations"""
+    limits = context.op_support_limits()
+
+    # Check pooling operations
+    pooling_ops = ["averagePool2d", "maxPool2d"]
+    for op in pooling_ops:
+        assert op in limits
+        assert "input" in limits[op]
+        assert "output" in limits[op]
+
+
+def test_op_support_limits_normalization_operations(context):
+    """Test op_support_limits for normalization operations"""
+    limits = context.op_support_limits()
+
+    # Check batchNormalization
+    assert "batchNormalization" in limits
+    assert "input" in limits["batchNormalization"]
+    assert "mean" in limits["batchNormalization"]
+    assert "variance" in limits["batchNormalization"]
+    assert "output" in limits["batchNormalization"]
+
+    # Check other normalization
+    for op in ["instanceNormalization", "layerNormalization"]:
+        assert op in limits
+        assert "input" in limits[op]
+        assert "output" in limits[op]
+
+
+def test_op_support_limits_reduction_operations(context):
+    """Test op_support_limits for reduction operations"""
+    limits = context.op_support_limits()
+
+    # Check reduction operations
+    reduction_ops = [
+        "reduceSum", "reduceMean", "reduceMax", "reduceMin",
+        "reduceProduct", "reduceL1", "reduceL2"
+    ]
+
+    for op in reduction_ops:
+        assert op in limits
+        assert "input" in limits[op]
+        assert "output" in limits[op]
+
+
+def test_op_support_limits_data_types(context):
+    """Test that data types are correctly reported"""
+    limits = context.op_support_limits()
+
+    # Check that input/constant/output support all types
+    all_types = ["float32", "float16", "int32", "uint32", "int8", "uint8", "int64", "uint64"]
+    for key in ["input", "constant", "output"]:
+        data_types = limits[key]["dataTypes"]
+        for dtype in all_types:
+            assert dtype in data_types, f"Data type '{dtype}' not in {key} limits"
+
+    # Check that float operations support float types
+    float_types = ["float32", "float16"]
+    float_ops = ["relu", "sigmoid", "tanh", "conv2d", "matmul"]
+    for op in float_ops:
+        if op in limits:
+            data_types = limits[op].get("input", limits[op].get("a", {})).get("dataTypes", [])
+            for dtype in float_types:
+                assert dtype in data_types, f"Float type '{dtype}' not in {op} limits"
+
+
+def test_op_support_limits_rank_ranges(context):
+    """Test that rank ranges are correctly reported"""
+    limits = context.op_support_limits()
+
+    # Check rank ranges
+    for key in ["input", "constant", "output"]:
+        rank_range = limits[key]["rankRange"]
+        assert rank_range["min"] >= 0
+        assert rank_range["max"] >= rank_range["min"]
+        assert rank_range["max"] <= 8  # Reasonable upper bound

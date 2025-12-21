@@ -406,6 +406,288 @@ impl PyMLContext {
         self.accelerated_available
     }
 
+    /// Get operation support limits for this context
+    ///
+    /// Returns a dictionary describing what operations and parameter types
+    /// are supported by the backend implementation. This allows applications
+    /// to query feature support and adapt their models accordingly.
+    ///
+    /// Returns:
+    ///     dict: Dictionary with support limits for each operation
+    ///
+    /// Example:
+    ///     >>> limits = context.op_support_limits()
+    ///     >>> print(limits['preferredInputLayout'])
+    ///     'nchw'
+    ///     >>> print(limits['input']['dataTypes'])
+    ///     ['float32', 'float16', 'int32', ...]
+    fn op_support_limits(&self, py: Python) -> PyResult<Py<PyDict>> {
+        let result = PyDict::new_bound(py);
+
+        // Helper function to create data type lists
+        let create_float_types = || -> Vec<&str> { vec!["float32", "float16"] };
+
+        let create_all_types = || -> Vec<&str> {
+            vec![
+                "float32", "float16", "int32", "uint32", "int8", "uint8", "int64", "uint64",
+            ]
+        };
+
+        // Helper function to create rank range
+        let create_rank_range = |py: Python| -> PyResult<Py<PyDict>> {
+            let rank = PyDict::new_bound(py);
+            rank.set_item("min", 0)?;
+            rank.set_item("max", 4)?; // Support up to 4D tensors
+            Ok(rank.into())
+        };
+
+        // Helper function to create tensor limits
+        let create_tensor_limits = |py: Python, float_only: bool| -> PyResult<Py<PyDict>> {
+            let limits = PyDict::new_bound(py);
+            let types = if float_only {
+                create_float_types()
+            } else {
+                create_all_types()
+            };
+            limits.set_item("dataTypes", types)?;
+            limits.set_item("rankRange", create_rank_range(py)?)?;
+            Ok(limits.into())
+        };
+
+        // Helper function to create single input limits
+        let create_single_input_limits = |py: Python| -> PyResult<Py<PyDict>> {
+            let limits = PyDict::new_bound(py);
+            limits.set_item("input", create_tensor_limits(py, true)?)?;
+            limits.set_item("output", create_tensor_limits(py, true)?)?;
+            Ok(limits.into())
+        };
+
+        // Helper function to create binary limits
+        let create_binary_limits = |py: Python| -> PyResult<Py<PyDict>> {
+            let limits = PyDict::new_bound(py);
+            limits.set_item("a", create_tensor_limits(py, true)?)?;
+            limits.set_item("b", create_tensor_limits(py, true)?)?;
+            limits.set_item("output", create_tensor_limits(py, true)?)?;
+            Ok(limits.into())
+        };
+
+        // Top-level properties
+        result.set_item("preferredInputLayout", "nchw")?;
+        result.set_item("maxTensorByteLength", 4294967295u64)?; // 4GB max
+
+        // Input, constant, output limits
+        result.set_item("input", create_tensor_limits(py, false)?)?;
+        result.set_item("constant", create_tensor_limits(py, false)?)?;
+        result.set_item("output", create_tensor_limits(py, false)?)?;
+
+        // Binary operations
+        result.set_item("add", create_binary_limits(py)?)?;
+        result.set_item("sub", create_binary_limits(py)?)?;
+        result.set_item("mul", create_binary_limits(py)?)?;
+        result.set_item("div", create_binary_limits(py)?)?;
+        result.set_item("pow", create_binary_limits(py)?)?;
+        result.set_item("matmul", create_binary_limits(py)?)?;
+
+        // Comparison operations
+        result.set_item("equal", create_binary_limits(py)?)?;
+        result.set_item("greater", create_binary_limits(py)?)?;
+        result.set_item("greaterOrEqual", create_binary_limits(py)?)?;
+        result.set_item("lesser", create_binary_limits(py)?)?;
+        result.set_item("lesserOrEqual", create_binary_limits(py)?)?;
+
+        // Logical operations
+        result.set_item("logicalAnd", create_binary_limits(py)?)?;
+        result.set_item("logicalOr", create_binary_limits(py)?)?;
+        result.set_item("logicalXor", create_binary_limits(py)?)?;
+        result.set_item("logicalNot", create_single_input_limits(py)?)?;
+
+        // Unary/activation operations
+        result.set_item("relu", create_single_input_limits(py)?)?;
+        result.set_item("sigmoid", create_single_input_limits(py)?)?;
+        result.set_item("tanh", create_single_input_limits(py)?)?;
+        result.set_item("softmax", create_single_input_limits(py)?)?;
+        result.set_item("gelu", create_single_input_limits(py)?)?;
+        result.set_item("elu", create_single_input_limits(py)?)?;
+        result.set_item("leakyRelu", create_single_input_limits(py)?)?;
+        result.set_item("hardSwish", create_single_input_limits(py)?)?;
+        result.set_item("hardSigmoid", create_single_input_limits(py)?)?;
+        result.set_item("clamp", create_single_input_limits(py)?)?;
+        result.set_item("prelu", create_binary_limits(py)?)?;
+        result.set_item("softplus", create_single_input_limits(py)?)?;
+        result.set_item("softsign", create_single_input_limits(py)?)?;
+        result.set_item("identity", create_single_input_limits(py)?)?;
+
+        // Element-wise unary operations
+        result.set_item("abs", create_single_input_limits(py)?)?;
+        result.set_item("ceil", create_single_input_limits(py)?)?;
+        result.set_item("floor", create_single_input_limits(py)?)?;
+        result.set_item("round", create_single_input_limits(py)?)?;
+        result.set_item("neg", create_single_input_limits(py)?)?;
+        result.set_item("sign", create_single_input_limits(py)?)?;
+        result.set_item("reciprocal", create_single_input_limits(py)?)?;
+        result.set_item("exp", create_single_input_limits(py)?)?;
+        result.set_item("log", create_single_input_limits(py)?)?;
+        result.set_item("sqrt", create_single_input_limits(py)?)?;
+        result.set_item("erf", create_single_input_limits(py)?)?;
+
+        // Trigonometric operations
+        result.set_item("sin", create_single_input_limits(py)?)?;
+        result.set_item("cos", create_single_input_limits(py)?)?;
+        result.set_item("tan", create_single_input_limits(py)?)?;
+        result.set_item("asin", create_single_input_limits(py)?)?;
+        result.set_item("acos", create_single_input_limits(py)?)?;
+        result.set_item("atan", create_single_input_limits(py)?)?;
+
+        // Hyperbolic operations
+        result.set_item("sinh", create_single_input_limits(py)?)?;
+        result.set_item("cosh", create_single_input_limits(py)?)?;
+        result.set_item("tanh", create_single_input_limits(py)?)?;
+        result.set_item("asinh", create_single_input_limits(py)?)?;
+        result.set_item("acosh", create_single_input_limits(py)?)?;
+        result.set_item("atanh", create_single_input_limits(py)?)?;
+
+        // Type conversion
+        let cast_limits = PyDict::new_bound(py);
+        cast_limits.set_item("input", create_tensor_limits(py, false)?)?;
+        cast_limits.set_item("output", create_tensor_limits(py, false)?)?;
+        result.set_item("cast", cast_limits)?;
+
+        // Shape operations
+        result.set_item("reshape", create_single_input_limits(py)?)?;
+        result.set_item("transpose", create_single_input_limits(py)?)?;
+        result.set_item("squeeze", create_single_input_limits(py)?)?;
+        result.set_item("unsqueeze", create_single_input_limits(py)?)?;
+        result.set_item("expand", create_single_input_limits(py)?)?;
+        result.set_item("slice", create_single_input_limits(py)?)?;
+        result.set_item("tile", create_single_input_limits(py)?)?;
+
+        // Concat
+        let concat_limits = PyDict::new_bound(py);
+        concat_limits.set_item("inputs", create_tensor_limits(py, true)?)?;
+        concat_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("concat", concat_limits)?;
+
+        // Split
+        let split_limits = PyDict::new_bound(py);
+        split_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        split_limits.set_item("outputs", create_tensor_limits(py, true)?)?;
+        result.set_item("split", split_limits)?;
+
+        // Convolution
+        let conv2d_limits = PyDict::new_bound(py);
+        conv2d_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        conv2d_limits.set_item("filter", create_tensor_limits(py, true)?)?;
+        conv2d_limits.set_item("bias", create_tensor_limits(py, true)?)?;
+        conv2d_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("conv2d", conv2d_limits)?;
+
+        let conv_transpose_limits = PyDict::new_bound(py);
+        conv_transpose_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        conv_transpose_limits.set_item("filter", create_tensor_limits(py, true)?)?;
+        conv_transpose_limits.set_item("bias", create_tensor_limits(py, true)?)?;
+        conv_transpose_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("convTranspose2d", conv_transpose_limits)?;
+
+        // Pooling
+        let pool2d_limits = PyDict::new_bound(py);
+        pool2d_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        pool2d_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("averagePool2d", pool2d_limits.clone())?;
+        result.set_item("maxPool2d", pool2d_limits)?;
+
+        // Normalization
+        let batch_norm_limits = PyDict::new_bound(py);
+        batch_norm_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        batch_norm_limits.set_item("mean", create_tensor_limits(py, true)?)?;
+        batch_norm_limits.set_item("variance", create_tensor_limits(py, true)?)?;
+        batch_norm_limits.set_item("scale", create_tensor_limits(py, true)?)?;
+        batch_norm_limits.set_item("bias", create_tensor_limits(py, true)?)?;
+        batch_norm_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("batchNormalization", batch_norm_limits)?;
+
+        let norm_limits = PyDict::new_bound(py);
+        norm_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        norm_limits.set_item("scale", create_tensor_limits(py, true)?)?;
+        norm_limits.set_item("bias", create_tensor_limits(py, true)?)?;
+        norm_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("instanceNormalization", norm_limits.clone())?;
+        result.set_item("layerNormalization", norm_limits)?;
+
+        // Reduction operations
+        result.set_item("reduceSum", create_single_input_limits(py)?)?;
+        result.set_item("reduceMean", create_single_input_limits(py)?)?;
+        result.set_item("reduceMax", create_single_input_limits(py)?)?;
+        result.set_item("reduceMin", create_single_input_limits(py)?)?;
+        result.set_item("reduceProduct", create_single_input_limits(py)?)?;
+        result.set_item("reduceL1", create_single_input_limits(py)?)?;
+        result.set_item("reduceL2", create_single_input_limits(py)?)?;
+        result.set_item("reduceLogSum", create_single_input_limits(py)?)?;
+        result.set_item("reduceLogSumExp", create_single_input_limits(py)?)?;
+        result.set_item("reduceSumSquare", create_single_input_limits(py)?)?;
+
+        // GEMM
+        let gemm_limits = PyDict::new_bound(py);
+        gemm_limits.set_item("a", create_tensor_limits(py, true)?)?;
+        gemm_limits.set_item("b", create_tensor_limits(py, true)?)?;
+        gemm_limits.set_item("c", create_tensor_limits(py, true)?)?;
+        gemm_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("gemm", gemm_limits)?;
+
+        // ArgMax/ArgMin
+        let arg_limits = PyDict::new_bound(py);
+        arg_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        arg_limits.set_item("output", create_tensor_limits(py, false)?)?; // Outputs int64/uint64
+        result.set_item("argMax", arg_limits.clone())?;
+        result.set_item("argMin", arg_limits)?;
+
+        // Gather operations
+        let gather_limits = PyDict::new_bound(py);
+        gather_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        gather_limits.set_item("indices", create_tensor_limits(py, false)?)?;
+        gather_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("gather", gather_limits)?;
+
+        // Scatter operations
+        let scatter_limits = PyDict::new_bound(py);
+        scatter_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        scatter_limits.set_item("indices", create_tensor_limits(py, false)?)?;
+        scatter_limits.set_item("updates", create_tensor_limits(py, true)?)?;
+        scatter_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("scatterElements", scatter_limits.clone())?;
+        result.set_item("scatterND", scatter_limits)?;
+
+        // Where
+        let where_limits = PyDict::new_bound(py);
+        where_limits.set_item("condition", create_tensor_limits(py, false)?)?;
+        where_limits.set_item("trueValue", create_tensor_limits(py, true)?)?;
+        where_limits.set_item("falseValue", create_tensor_limits(py, true)?)?;
+        where_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("where", where_limits)?;
+
+        // Pad
+        result.set_item("pad", create_single_input_limits(py)?)?;
+
+        // Quantization
+        let quant_limits = PyDict::new_bound(py);
+        quant_limits.set_item("input", create_tensor_limits(py, true)?)?;
+        quant_limits.set_item("scale", create_tensor_limits(py, true)?)?;
+        quant_limits.set_item("zeroPoint", create_tensor_limits(py, false)?)?;
+        quant_limits.set_item("output", create_tensor_limits(py, false)?)?;
+        result.set_item("quantizeLinear", quant_limits.clone())?;
+
+        let dequant_limits = PyDict::new_bound(py);
+        dequant_limits.set_item("input", create_tensor_limits(py, false)?)?;
+        dequant_limits.set_item("scale", create_tensor_limits(py, true)?)?;
+        dequant_limits.set_item("zeroPoint", create_tensor_limits(py, false)?)?;
+        dequant_limits.set_item("output", create_tensor_limits(py, true)?)?;
+        result.set_item("dequantizeLinear", dequant_limits)?;
+
+        // Triangular
+        result.set_item("triangular", create_single_input_limits(py)?)?;
+
+        Ok(result.into())
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "MLContext(accelerated={}, power='{}')",
