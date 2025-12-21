@@ -220,6 +220,75 @@ Loader    Validator    Context    Backend
    - Pass dependencies via function parameters
    - Clear data flow through the system
 
+### WebNN Specification Reference
+
+The project uses the `search-bikeshed` tool for efficient browsing and searching of the W3C WebNN specification:
+
+**Installation:**
+```bash
+# Install search-bikeshed (if not already installed)
+pip install search-bikeshed
+```
+
+**Initial Setup:**
+```bash
+# Index the WebNN specification (run once per session or when spec updates)
+search-bs index https://github.com/webmachinelearning/webnn/blob/main/index.bs --name webnn
+```
+
+**Common Usage:**
+
+1. **Basic keyword search:**
+   ```bash
+   search-bs search --name webnn "MLTensor"
+   ```
+
+2. **Phrase search:**
+   ```bash
+   search-bs search --name webnn "graph builder"
+   ```
+
+3. **Search with context lines:**
+   ```bash
+   # Show 3 lines before and after each match
+   search-bs search --name webnn "MLContext" --around 3
+   ```
+
+4. **JSON output for scripting:**
+   ```bash
+   search-bs search --name webnn "MLContext" --json
+   ```
+
+5. **Show URLs in results:**
+   ```bash
+   search-bs search --name webnn "operator" --show-url --max-results 10
+   ```
+
+6. **Get specific line ranges:**
+   ```bash
+   # Get 40 lines starting from line 1234
+   search-bs get --name webnn --line 1234 --count 40
+   ```
+
+7. **JSON output for line ranges:**
+   ```bash
+   search-bs get --name webnn --line 1234 --count 40 --json
+   ```
+
+**When to Use:**
+- Verifying WebNN API signatures and behavior
+- Understanding operation semantics and constraints
+- Checking data type support for operations
+- Finding spec language for documentation
+- Resolving ambiguities in implementation
+
+**Advantages over web browsing:**
+- Fast local search without network latency
+- Context-aware results with surrounding lines
+- Scriptable output formats (JSON)
+- Works offline after initial indexing
+- Integrated into development workflow
+
 ### File Organization
 
 ```
@@ -568,6 +637,11 @@ The following operations have been approved for Claude Code to execute without r
 
 ### Documentation
 - `mkdocs build` - Build documentation site
+
+### Specification Tools
+- `search-bs *` - All search-bikeshed commands (index, search, get)
+  - Used for browsing and searching W3C WebNN specification
+  - Provides fast local access to spec content without web browsing
 
 ### File Operations
 - `find` - Search for files
