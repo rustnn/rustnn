@@ -16,6 +16,7 @@ ORT_LIB_LOCATION ?= $(ORT_LIB_DIR)
 	python-dev python-build python-test python-test-fast python-test-wpt python-test-wpt-onnx python-test-wpt-coreml \
 	python-perf python-perf-full python-clean python-example \
 	mobilenet-demo mobilenet-serialize mobilenet-serialize-text mobilenet-convert-to-text mobilenet-demo-webnn mobilenet-demo-hub \
+	minilm-demo-hub \
 	text-gen-demo text-gen-train text-gen-trained text-gen-enhanced text-gen-train-simple \
 	docs-serve docs-build docs-clean ci-docs \
 	help clean-all
@@ -366,6 +367,29 @@ mobilenet-demo-hub: python-dev
 	@echo "Demo completed successfully!"
 	@echo "========================================================================"
 
+minilm-demo-hub: python-dev
+	@echo "Installing demo dependencies..."
+	@if [ -f .venv-webnn/bin/python ]; then \
+		.venv-webnn/bin/pip install -q transformers torch --index-url https://download.pytorch.org/whl/cpu; \
+	else \
+		pip install -q transformers torch --index-url https://download.pytorch.org/whl/cpu; \
+	fi
+	@echo "========================================================================"
+	@echo "Running all-MiniLM-L6-v2 demo (Hugging Face Hub)"
+	@echo "========================================================================"
+	@echo ""
+	@echo "Downloading model from Hugging Face Hub: tarekziade/all-MiniLM-L6-v2-webnn"
+	@echo "------------------------------------------------------------------------"
+	@if [ -f .venv-webnn/bin/python ]; then \
+		MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) .venv-webnn/bin/python examples/minilm_embeddings.py; \
+	else \
+		MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) python examples/minilm_embeddings.py; \
+	fi
+	@echo ""
+	@echo "========================================================================"
+	@echo "Demo completed successfully!"
+	@echo "========================================================================"
+
 text-gen-demo: python-dev
 	@echo "========================================================================"
 	@echo "Running Text Generation Demo on All Backends"
@@ -549,6 +573,7 @@ help:
 	@echo "  mobilenet-convert-to-text - Convert JSON to text format (194MB -> 13MB)"
 	@echo "  mobilenet-demo-webnn - Run MobileNetV2 (loads from webnn-graph)"
 	@echo "  mobilenet-demo-hub - Run MobileNetV2 (downloads from Hugging Face Hub)"
+	@echo "  minilm-demo-hub    - Run all-MiniLM-L6-v2 (downloads from Hugging Face Hub)"
 	@echo "  text-gen-demo      - Run basic text generation with attention"
 	@echo "  text-gen-train     - Train text generation model on sample data"
 	@echo "  text-gen-trained   - Generate text using trained model weights"

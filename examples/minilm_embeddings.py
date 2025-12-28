@@ -19,6 +19,7 @@ from pathlib import Path
 
 # Local model cache to avoid network access when running the demo.
 LOCAL_MODEL_DIR = Path("/Users/tarekziade/Dev/all-MiniLM-L6-v2-webnn")
+MODEL_ID = os.environ.get("MINILM_MODEL_ID", str(LOCAL_MODEL_DIR))
 # WebNN graph uses static [1, 128] inputs; keep tokenizer config aligned.
 MAX_LEN = 128
 
@@ -468,6 +469,20 @@ def compare_embeddings(
 
 def main():
     """Demo: Generate embeddings and compare implementations"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="all-MiniLM-L6-v2 text embeddings demo"
+    )
+    parser.add_argument(
+        "--model-id",
+        default=MODEL_ID,
+        help=(
+            "Local model directory or Hugging Face Hub model id "
+            f"(default: {MODEL_ID})"
+        ),
+    )
+    args = parser.parse_args()
 
     print("=" * 70)
     print("all-MiniLM-L6-v2 Text Embeddings Demo")
@@ -538,9 +553,7 @@ def main():
     print("-" * 70)
     try:
         # Use local compliant model
-        webnn_embedder = WebNNEmbedder(
-            model_id=str(LOCAL_MODEL_DIR), device_type="cpu"
-        )
+        webnn_embedder = WebNNEmbedder(model_id=args.model_id, device_type="cpu")
 
         # Generate embeddings with WebNN
         print("\n" + "-" * 70)
