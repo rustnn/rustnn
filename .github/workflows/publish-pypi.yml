@@ -35,19 +35,31 @@ jobs:
 
       - name: Build wheels (manylinux container via make)
         run: |
-          PLATFORM=${{ matrix.target == 'x86_64' && 'x86_64' || 'aarch64' }}
+          if [ "${{ matrix.target }}" = "x86_64" ]; then
+            PLATFORM="x86_64"
+            ORT_ARCH="x64"
+            RUST_TARGET="x86_64-unknown-linux-gnu"
+            MATURIN_TARGET=""
+          else
+            PLATFORM="aarch64"
+            ORT_ARCH="aarch64"
+            RUST_TARGET="aarch64-unknown-linux-gnu"
+            MATURIN_TARGET=" --target aarch64-unknown-linux-gnu"
+          fi
+
           IMAGE="quay.io/pypa/manylinux_2_28_${PLATFORM}"
           PYBIN="/opt/python/cp312-cp312/bin/python"
-          docker run --rm -v $PWD:/work -w /work \
-            -e PYTHON=$PYBIN \
-            -e ORT_TARBALL=onnxruntime-linux-${PLATFORM == 'x86_64' && 'x64' || 'aarch64'}-${{ env.ORT_VERSION || '1.23.2' }}.tgz \
-            -e ORT_BASE=https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION || '1.23.2' }} \
-            -e PYO3_CROSS_PYTHON=$PYBIN \
-            -e MATURIN_ARGS="--out dist --compatibility manylinux_2_28${PLATFORM == 'aarch64' && ' --target aarch64-unknown-linux-gnu' || ''}" \
-            $IMAGE bash -c "\
-              yum install -y unzip &&
-              $PYBIN -m pip install --upgrade pip maturin &&
-              rustup target add ${PLATFORM == 'aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu'} &&
+
+          docker run --rm -v "$PWD:/work" -w /work \
+            -e PYTHON="$PYBIN" \
+            -e ORT_TARBALL="onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+            -e ORT_BASE="https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}" \
+            -e PYO3_CROSS_PYTHON="$PYBIN" \
+            -e MATURIN_ARGS="--out dist --compatibility manylinux_2_28${MATURIN_TARGET}" \
+            "$IMAGE" bash -lc "\
+              yum install -y unzip && \
+              $PYBIN -m pip install --upgrade pip maturin && \
+              rustup target add ${RUST_TARGET} && \
               make python-build"
 
       - name: Upload wheels
