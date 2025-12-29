@@ -33,7 +33,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler unzip
+          sudo apt-get install -y protobuf-compiler unzip gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          rustup target add ${{ matrix.target == 'aarch64' && 'aarch64-unknown-linux-gnu' || 'x86_64-unknown-linux-gnu' }}
           protoc --version
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install maturin
@@ -44,6 +45,9 @@ jobs:
           ORT_TARBALL: onnxruntime-linux-${{ matrix.target == 'x86_64' && 'x64' || 'aarch64' }}-${{ env.ORT_VERSION || '1.23.2' }}.tgz
           ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION || '1.23.2' }}
           PYO3_CROSS_PYTHON: python3.12
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.target == 'aarch64' && 'aarch64-linux-gnu-gcc' || '' }}
+          CC_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64' && 'aarch64-linux-gnu-gcc' || '' }}
+          AR_aarch64_unknown_linux_gnu: ${{ matrix.target == 'aarch64' && 'aarch64-linux-gnu-gcc-ar' || '' }}
           MATURIN_ARGS: --out dist --compatibility manylinux_2_28 -i python3.12${{ matrix.target == 'aarch64' && ' --target aarch64-unknown-linux-gnu' || '' }}
         run: make python-build
 
