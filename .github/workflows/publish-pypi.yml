@@ -41,9 +41,9 @@ jobs:
       - name: Build wheels (make)
         env:
           PYTHON: python3.12
-          ORT_TARBALL: onnxruntime-linux-${{ matrix.target == 'x86_64' && 'x64' || matrix.target }}-${{ env.ORT_VERSION || '1.23.2' }}.tgz
+          ORT_TARBALL: onnxruntime-linux-${{ matrix.target == 'x86_64' && 'x64' || 'aarch64' }}-${{ env.ORT_VERSION || '1.23.2' }}.tgz
           ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION || '1.23.2' }}
-          MATURIN_ARGS: --out dist --compatibility manylinux_2_28${{ matrix.target == 'aarch64' && ' --target aarch64-unknown-linux-gnu' || '' }}
+          MATURIN_ARGS: --out dist --compatibility manylinux_2_28 -i python3.12${{ matrix.target == 'aarch64' && ' --target aarch64-unknown-linux-gnu' || '' }}
         run: make python-build
 
       - name: Upload wheels
@@ -81,9 +81,9 @@ jobs:
       - name: Build wheels (make)
         env:
           PYTHON: python3.12
-          ORT_TARBALL: onnxruntime-osx-${{ matrix.target == 'x86_64' && 'x64' || 'arm64' }}-${{ env.ORT_VERSION }}.tgz
+          ORT_TARBALL: onnxruntime-osx-${{ matrix.target == 'x86_64' && 'x86_64' || 'arm64' }}-${{ env.ORT_VERSION }}.tgz
           ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}
-          MATURIN_ARGS: --out dist
+          MATURIN_ARGS: --out dist -i python3.12
         run: make python-build
 
       - name: Upload wheels
@@ -125,7 +125,7 @@ jobs:
           PYTHON: py -3.12
           ORT_TARBALL: onnxruntime-win-${{ matrix.target }}-${{ env.ORT_VERSION }}.zip
           ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}
-          MATURIN_ARGS: --out dist
+          MATURIN_ARGS: --out dist -i \"py -3.12\"
         run: make python-build
 
       - name: Upload wheels
