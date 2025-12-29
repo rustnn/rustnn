@@ -92,13 +92,11 @@ jobs:
           python3.12 -m pip install --upgrade pip
           python3.12 -m pip install maturin
 
-      - name: Build wheels (make)
-        env:
-          PYTHON: python3.12
-          ORT_TARBALL: onnxruntime-osx-${{ matrix.target == 'x86_64' && 'x86_64' || 'arm64' }}-${{ env.ORT_VERSION }}.tgz
-          ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}
-          MATURIN_ARGS: --out dist -i python3.12
-        run: make python-build
+      - name: Build wheels
+        run: |
+          python3.12 -m pip install --upgrade pip
+          python3.12 -m pip install maturin
+          python3.12 -m maturin build --out dist -i python3.12 --features python,onnx-runtime,coreml-runtime --release
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -132,14 +130,11 @@ jobs:
           py -3.12 -m pip install --upgrade pip
           py -3.12 -m pip install maturin
 
-      - name: Build wheels (make)
-        shell: bash
-        env:
-          PYTHON: py -3.12
-          ORT_TARBALL: onnxruntime-win-${{ matrix.target }}-${{ env.ORT_VERSION }}.zip
-          ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}
-          MATURIN_ARGS: --out dist
-        run: make python-build
+      - name: Build wheels
+        run: |
+          py -3.12 -m pip install --upgrade pip
+          py -3.12 -m pip install maturin
+          py -3.12 -m maturin build --out dist --features python,onnx-runtime --release
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4

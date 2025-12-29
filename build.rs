@@ -34,30 +34,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.compile_protos(&coreml_files, &[coreml_dir])?;
     config.compile_protos(&onnx_files, &[onnx_dir])?;
 
-    // Force-link against ONNX Runtime when the feature is enabled so symbols like OrtGetApiBase
-    // are resolved at load time. The build bots stage the ORT shared libs at ORT_LIB_LOCATION.
-    #[cfg(feature = "onnx-runtime")]
-    {
-        if let Ok(lib_dir) = std::env::var("ORT_LIB_LOCATION") {
-            println!("cargo:rustc-link-search=native={lib_dir}");
-            println!("cargo:rustc-link-lib=dylib=onnxruntime");
-        }
-    }
-
-    // Ensure bundled runtime libs are located relative to the extension.
-    // We stage libonnxruntime* into python/webnn/ before building wheels; set rpath
-    // so the extension resolves the packaged library without env vars.
-    #[cfg(all(feature = "onnx-runtime", target_os = "macos"))]
-    {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path/.");
-    }
-    #[cfg(all(feature = "onnx-runtime", target_os = "linux"))]
-    {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN/.");
-    }
-
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=OUT_DIR");

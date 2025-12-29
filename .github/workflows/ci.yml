@@ -134,16 +134,13 @@ jobs:
 
       - name: Build and install package
         run: |
-          ORT_STRATEGY=system \
-          ORT_LIB_LOCATION=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
-          LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
-          RUSTFLAGS="-L $PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib" \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
           maturin build --features python,onnx-runtime --out dist
           pip install dist/*.whl
 
       - name: Run Python tests
         run: |
-          LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
           pytest tests/ -v
 
   # Documentation build test
