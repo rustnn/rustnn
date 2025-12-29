@@ -35,7 +35,6 @@ jobs:
       - name: Build wheels (manylinux)
         uses: PyO3/maturin-action@v1
         env:
-          # Your Makefile now supports skipping ORT staging, which avoids manylinux GLIBC violations.
           SKIP_ORT_STAGE: "1"
         with:
           command: build
@@ -46,14 +45,15 @@ jobs:
             --manylinux 2_28
             --features python,onnx-runtime,coreml-runtime
           target: ${{ matrix.rust_target }}
-          before-script: |
+          before-script-linux: |
             yum install -y protobuf-compiler
-            protoc --python-version
-            - name: Upload wheels
-              uses: actions/upload-artifact@v4
-              with:
-                name: wheels-linux-${{ matrix.target }}
-                path: dist
+            protoc --version
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
 
   # Build wheels for macOS (Intel and Apple Silicon)
   macos:
