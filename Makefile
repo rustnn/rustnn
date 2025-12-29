@@ -116,19 +116,24 @@ python-dev: onnxruntime-download
 	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
 	.venv-webnn/bin/maturin develop --features python,onnx-runtime,coreml-runtime
 
-python-build: onnxruntime-download
+python-build: python-stage-ort
 	@echo "Building Python wheel with all backends..."
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install maturin
-	@echo "Staging ONNX Runtime dylibs into python package..."
-	@mkdir -p python/webnn
-	cp $(ORT_SHARED_GLOB) python/webnn/
 	ORT_STRATEGY=system \
 	ORT_LIB_LOCATION=$(ORT_LIB_LOCATION) \
 	DYLD_LIBRARY_PATH=$(ORT_LIB_DIR) \
 	RUSTFLAGS="-L $(ORT_LIB_DIR)" \
 	$(PYTHON) -m maturin build $(MATURIN_ARGS) --features python,onnx-runtime,coreml-runtime --release
-	@echo "Cleaning staged ONNX Runtime dylibs..."
+	$(MAKE) python-unstage-ort
+
+python-stage-ort: onnxruntime-download
+	@echo "Staging ONNX Runtime shared libs into python package..."
+	@mkdir -p python/webnn
+	cp $(ORT_SHARED_GLOB) python/webnn/
+
+python-unstage-ort:
+	@echo "Cleaning staged ONNX Runtime shared libs..."
 	rm -f python/webnn/libonnxruntime*.dylib python/webnn/libonnxruntime*.so* python/webnn/onnxruntime.dll
 
 python-test: python-dev

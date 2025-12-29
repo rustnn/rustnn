@@ -34,28 +34,47 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Runs inside the manylinux container managed by maturin-action.
-      # We deliberately call `make python-build` so your ORT download + staging logic happens.
-      - name: Build wheels (manylinux via maturin-action + make)
-        uses: PyO3/maturin-action@v1
+      # Use maturin-action for the actual wheel build, but keep your Makefile logic
+      # for downloading/staging ONNX Runtime shared libs.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install system deps (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Download + stage ONNX Runtime shared libs
+        run: |
+          make onnxruntime-download
+          make python-stage-ort
         env:
           ORT_TARBALL: onnxruntime-linux-${{ matrix.ort_arch }}-${{ env.ORT_VERSION }}.tgz
           ORT_BASE: https://github.com/microsoft/onnxruntime/releases/download/v${{ env.ORT_VERSION }}
-          # Makefile defaults ORT_VERSION too; keep them consistent
           ORT_VERSION: ${{ env.ORT_VERSION }}
-          # Ensure the Makefile uses the manylinux python
-          PYTHON: /opt/python/cp312-cp312/bin/python
-          # manylinux ships with unzip, but your download can be .zip on Windows/mac;
-          # for Linux tarball is .tgz so unzip shouldn't be required. Keep as-is.
-          MATURIN_ARGS: >-
-            --out dist
-            --compatibility manylinux_2_28
+
+      - name: Build wheels (manylinux)
+        uses: PyO3/maturin-action@v1
+        env:
+          ORT_STRATEGY: system
+          ORT_LIB_LOCATION: target/onnxruntime/onnxruntime-linux-${{ matrix.ort_arch }}-${{ env.ORT_VERSION }}/lib
+          RUSTFLAGS: -L target/onnxruntime/onnxruntime-linux-${{ matrix.ort_arch }}-${{ env.ORT_VERSION }}/lib
         with:
-          manylinux: 2_28
-          command: bash
-          args: -lc "make python-build"
-          # Ensure the Rust target is available in the container
+          command: build
+          args: >-
+            --release
+            --out dist
+            --interpreter python3.12
+            --manylinux 2_28
+            --features python,onnx-runtime,coreml-runtime
           target: ${{ matrix.rust_target }}
+
+      - name: Unstage ONNX Runtime shared libs
+        if: always()
+        run: make python-unstage-ort
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
