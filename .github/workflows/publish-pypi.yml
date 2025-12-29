@@ -46,7 +46,7 @@ jobs:
             --features python,onnx-runtime,coreml-runtime
           target: ${{ matrix.rust_target }}
           before-script-linux: |
-            yum install -y protobuf-compiler
+            sudo apt-get install -y protobuf-compiler
             protoc --version
 
       - name: Upload wheels
