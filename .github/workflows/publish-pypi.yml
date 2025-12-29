@@ -17,36 +17,48 @@ env:
   ORT_VERSION: 1.23.2
 
 jobs:
-  # Build wheels for Linux using manylinux
   linux:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - target: x86_64
-            runs_on: ubuntu-latest
-            rust_target: x86_64-unknown-linux-gnu
-          - target: aarch64
-            runs_on: [self-hosted, Linux, ARM64]
-            rust_target: aarch64-unknown-linux-gnu
-    runs-on: ${{ matrix.runs_on }}
+        target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build wheels (manylinux)
-        uses: PyO3/maturin-action@v1
-        env:
-          SKIP_ORT_STAGE: "1"
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          command: build
-          args: >-
-            --release
-            --out dist
-            --interpreter python3.12
-            --manylinux 2_28
-            --features python,onnx-runtime,coreml-runtime
-          target: ${{ matrix.rust_target }}
+          python-version: "3.12"
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --features python,onnx-runtime -i python3.12
+          sccache: "true"
+          manylinux: "2_28"
           before-script-linux: |
-            sudo apt-get install -y protobuf-compiler
+            # Install dependencies (rust-cross containers use apt, standard use yum)
+            if command -v yum &> /dev/null; then
+              yum install -y wget unzip openssl openssl-devel pkg-config
+            elif command -v apt-get &> /dev/null; then
+              # rust-cross containers need Python installed
+              apt-get update && apt-get install -y wget unzip openssl libssl-dev pkg-config python3.12 python3.12-dev python3-pip
+              # Ensure python3.12 is the default python3 and create symlinks
+              update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+              ln -sf /usr/bin/python3.12 /usr/bin/python
+              python3 --version
+              which python3
+              ls -la /usr/bin/python*
+            fi
+            # Install protobuf compiler
+            PROTOC_VERSION=21.12
+            # Always use x86_64 protoc because the container runs on x86_64 host
+            # even when cross-compiling for aarch64
+            PROTOC_ARCH=x86_64
+            wget https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip
+            unzip protoc-${PROTOC_VERSION}-linux-${PROTOC_ARCH}.zip -d /usr/local
+            chmod +x /usr/local/bin/protoc
             protoc --version
 
       - name: Upload wheels
