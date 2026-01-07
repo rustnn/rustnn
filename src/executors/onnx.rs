@@ -18,14 +18,14 @@ static INIT: Once = Once::new();
 fn ensure_ort_initialized() -> Result<(), GraphError> {
     let mut result = Ok(());
     INIT.call_once(|| {
-        let init_result = ort::init()
+        let success = ort::init()
             .with_name("rustnn")
             .with_execution_providers([
                 ort::execution_providers::CPUExecutionProvider::default().build()
             ])
             .commit();
 
-        if let Err(e) = init_result {
+        if !success {
             // Check if ORT_DYLIB_PATH is set and provide helpful error message
             let dylib_path_hint = if std::env::var("ORT_DYLIB_PATH").is_err() {
                 "\n\nHint: Set ORT_DYLIB_PATH environment variable to the directory containing \
@@ -36,7 +36,7 @@ fn ensure_ort_initialized() -> Result<(), GraphError> {
             };
 
             result = Err(GraphError::OnnxRuntimeFailed {
-                reason: format!("ort init failed: {e}{dylib_path_hint}"),
+                reason: format!("ort init failed{dylib_path_hint}"),
             });
         }
     });
@@ -98,9 +98,9 @@ pub fn run_onnx_zeroed(
 
     // Build zero-filled inputs
     let mut input_values = Vec::new();
-    for input_info in session.inputs.iter() {
+    for input_info in session.inputs().iter() {
         // Get shape from input type
-        let shape: Vec<usize> = match &input_info.input_type {
+        let shape: Vec<usize> = match input_info.dtype() {
             ort::value::ValueType::Tensor {
                 ty: _,
                 shape,
@@ -108,7 +108,7 @@ pub fn run_onnx_zeroed(
             } => shape.iter().map(|&d| d.max(1) as usize).collect(),
             _ => {
                 return Err(GraphError::OnnxRuntimeFailed {
-                    reason: format!("input '{}' is not a tensor", input_info.name),
+                    reason: format!("input '{}' is not a tensor", input_info.name()),
                 });
             }
         };
@@ -121,7 +121,10 @@ pub fn run_onnx_zeroed(
 
         let tensor = Value::from_array((shape_i64.as_slice(), zeros)).map_err(|e| {
             GraphError::OnnxRuntimeFailed {
-                reason: format!("failed to create input tensor for {}: {e}", input_info.name),
+                reason: format!(
+                    "failed to create input tensor for {}: {e}",
+                    input_info.name()
+                ),
             }
         })?;
         input_values.push(tensor.into_dyn());
@@ -181,7 +184,11 @@ pub fn run_onnx_with_inputs(
         })?;
 
     // Extract output names for later use
-    let output_names: Vec<String> = session.outputs.iter().map(|o| o.name.clone()).collect();
+    let output_names: Vec<String> = session
+        .outputs()
+        .iter()
+        .map(|o| o.name().to_string())
+        .collect();
 
     // Build input tensors from provided inputs
     let mut input_session_values: Vec<SessionInputValue> = Vec::new();
