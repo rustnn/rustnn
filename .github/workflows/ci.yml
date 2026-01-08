@@ -137,19 +137,19 @@ jobs:
 
       - name: Build and install package
         run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
           maturin build --features python,onnx-runtime --out dist
           pip install dist/*.whl
 
       - name: Debug ORT initialization
         run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
           LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
           python debug_ort_init.py
 
       - name: Run Python tests
         run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
           LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
           pytest tests/ -v
 
@@ -158,7 +158,7 @@ jobs:
 
       - name: Run MiniLM demo
         run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
           LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
           MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn \
           python examples/minilm_embeddings.py
