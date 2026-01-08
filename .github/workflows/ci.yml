@@ -138,6 +138,12 @@ jobs:
           maturin build --features python,onnx-runtime --out dist
           pip install dist/*.whl
 
+      - name: Debug ORT initialization
+        run: |
+          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
+          LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
+          python debug_ort_init.py
+
       - name: Run Python tests
         run: |
           ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib \
