@@ -2108,7 +2108,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // ONNX Gather handles indices shape correctly, no reshape needed
                 // The output shape is automatically: data.shape[0:axis] + indices.shape + data.shape[axis+1:]
-                let mut final_indices = clamped_indices_name;
+                let final_indices = clamped_indices_name;
 
                 inputs.push(final_indices);
 

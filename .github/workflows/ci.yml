@@ -124,13 +124,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build and install package
-        run: make python-dev ORT_TARBALL=onnxruntime-linux-x64-1.23.2.tgz
+        run: make python-dev
+        env:
+          ORT_TARBALL: onnxruntime-linux-x64-1.23.2.tgz
+          ORT_DIR_NAME: onnxruntime-linux-x64-1.23.2
 
       - name: Run Python tests
         run: make python-test
+        env:
+          ORT_DIR_NAME: onnxruntime-linux-x64-1.23.2
 
       - name: Run MiniLM demo
         run: make minilm-demo-hub
+        env:
+          ORT_DIR_NAME: onnxruntime-linux-x64-1.23.2
 
   # Documentation build test
   docs-test:
