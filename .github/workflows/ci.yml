@@ -123,36 +123,14 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Download ONNX Runtime
-        run: |
-          mkdir -p target/onnxruntime
-          curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz -o target/onnxruntime/onnxruntime-linux-x64-1.23.2.tgz
-          tar -xzf target/onnxruntime/onnxruntime-linux-x64-1.23.2.tgz -C target/onnxruntime
-
-      - name: Install maturin and test dependencies
-        run: pip install maturin pytest pytest-asyncio numpy
-
       - name: Build and install package
-        run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
-          maturin build --features python,onnx-runtime --out dist
-          pip install dist/*.whl
+        run: make python-dev ORT_TARBALL=onnxruntime-linux-x64-1.23.2.tgz
 
       - name: Run Python tests
-        run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
-          LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
-          pytest tests/ -v
-
-      - name: Install demo dependencies
-        run: pip install transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
+        run: make python-test
 
       - name: Run MiniLM demo
-        run: |
-          ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/libonnxruntime.so.1.23.2 \
-          LD_LIBRARY_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib:$LD_LIBRARY_PATH \
-          MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn \
-          python examples/minilm_embeddings.py
+        run: make minilm-demo-hub
 
   # Documentation build test
   docs-test:

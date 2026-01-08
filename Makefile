@@ -21,12 +21,15 @@ UNAME_S := $(shell uname)
 ifeq ($(UNAME_S),Darwin)
 	ORT_SHARED_GLOB ?= $(ORT_LIB_DIR)/libonnxruntime*.dylib
 	ORT_DYLIB_FILE ?= $(ORT_LIB_DIR)/libonnxruntime.$(ORT_VERSION).dylib
+	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 else ifeq ($(OS),Windows_NT)
 	ORT_SHARED_GLOB ?= $(ORT_LIB_DIR)/onnxruntime.dll
 	ORT_DYLIB_FILE ?= $(ORT_LIB_DIR)/onnxruntime.dll
+	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 else
 	ORT_SHARED_GLOB ?= $(ORT_LIB_DIR)/libonnxruntime*.so*
 	ORT_DYLIB_FILE ?= $(ORT_LIB_DIR)/libonnxruntime.so.$(ORT_VERSION)
+	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) LD_LIBRARY_PATH=$(ORT_LIB_DIR):$$LD_LIBRARY_PATH
 endif
 .PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
 	python-dev python-build python-test python-test-fast python-test-wpt python-test-wpt-onnx python-test-wpt-coreml \
@@ -80,11 +83,11 @@ onnxruntime-download:
 	fi
 
 onnx: onnxruntime-download
-	ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH)
+	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH)
 	@echo "ONNX graph written to $(ONNX_PATH)"
 
 onnx-validate: onnx
-	ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
+	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
 
 coreml:
 	$(CARGO) run -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
@@ -113,20 +116,20 @@ python-dev: onnxruntime-download
 	fi
 	VIRTUAL_ENV=$(PWD)/.venv-webnn \
 	PATH=$(PWD)/.venv-webnn/bin:$$PATH \
-	ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) \
+	$(ORT_ENV_VARS) \
 	.venv-webnn/bin/maturin develop --features python,onnx-runtime,coreml-runtime
 
 python-build: onnxruntime-download
 	@echo "Building Python wheel with all backends..."
 	$(PYTHON) -m pip install --upgrade pip
 	$(PYTHON) -m pip install maturin
-	ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) \
+	$(ORT_ENV_VARS) \
 	$(PYTHON) -m maturin build $(MATURIN_ARGS) --features python,onnx-runtime,coreml-runtime --release
 
 python-test: python-dev
 	@echo "Running Python tests (includes WPT conformance tests)..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/ -v; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/ -v; \
 		EXIT_CODE=$$?; \
 		if [ $$EXIT_CODE -eq 134 ] || [ $$EXIT_CODE -eq 139 ]; then \
 			echo "[WARNING]  Note: Python crashed during cleanup"; \
@@ -136,7 +139,7 @@ python-test: python-dev
 			exit $$EXIT_CODE; \
 		fi; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/ -v; \
+		$(ORT_ENV_VARS) python -m pytest tests/ -v; \
 		EXIT_CODE=$$?; \
 		if [ $$EXIT_CODE -eq 134 ] || [ $$EXIT_CODE -eq 139 ]; then \
 			echo "[WARNING]  Note: Python crashed during cleanup"; \
@@ -150,7 +153,7 @@ python-test: python-dev
 python-test-fast: python-dev
 	@echo "Running Python tests (excluding slow tests with large inputs)..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/ -v -m "not slow"; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/ -v -m "not slow"; \
 		EXIT_CODE=$$?; \
 		if [ $$EXIT_CODE -eq 134 ] || [ $$EXIT_CODE -eq 139 ]; then \
 			echo "[WARNING]  Note: Python crashed during cleanup"; \
@@ -160,7 +163,7 @@ python-test-fast: python-dev
 			exit $$EXIT_CODE; \
 		fi; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/ -v -m "not slow"; \
+		$(ORT_ENV_VARS) python -m pytest tests/ -v -m "not slow"; \
 		EXIT_CODE=$$?; \
 		if [ $$EXIT_CODE -eq 134 ] || [ $$EXIT_CODE -eq 139 ]; then \
 			echo "[WARNING]  Note: Python crashed during cleanup"; \
@@ -174,41 +177,41 @@ python-test-fast: python-dev
 python-test-wpt: python-dev
 	@echo "Running WPT conformance tests only..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -v; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -v; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/test_wpt_conformance.py -v; \
+		$(ORT_ENV_VARS) python -m pytest tests/test_wpt_conformance.py -v; \
 	fi
 
 python-test-wpt-onnx: python-dev
 	@echo "Running WPT conformance tests - ONNX backend only..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -k "onnx" -v; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -k "onnx" -v; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/test_wpt_conformance.py -k "onnx" -v; \
+		$(ORT_ENV_VARS) python -m pytest tests/test_wpt_conformance.py -k "onnx" -v; \
 	fi
 
 python-test-wpt-coreml: python-dev
 	@echo "Running WPT conformance tests - CoreML backend only..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -k "coreml" -v; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/test_wpt_conformance.py -k "coreml" -v; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/test_wpt_conformance.py -k "coreml" -v; \
+		$(ORT_ENV_VARS) python -m pytest tests/test_wpt_conformance.py -k "coreml" -v; \
 	fi
 
 python-perf: python-dev
 	@echo "Running performance benchmarks (quick)..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
+		$(ORT_ENV_VARS) python -m pytest tests/test_performance.py -m "benchmark and not slow" -v -s; \
 	fi
 
 python-perf-full: python-dev
 	@echo "Running full performance benchmark suite..."
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
+		$(ORT_ENV_VARS) python -m pytest tests/test_performance.py -m "benchmark" -v -s; \
 	fi
 
 python-example: python-dev
@@ -271,9 +274,9 @@ mobilenet-serialize: python-dev
 	@echo "Serializing MobileNetV2 to WebNN Graph Format (JSON)"
 	@echo "========================================================================"
 	@if [ -f .venv-webnn/bin/python ]; then \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) .venv-webnn/bin/python scripts/serialize_mobilenet_to_webnn.py; \
+		$(ORT_ENV_VARS) .venv-webnn/bin/python scripts/serialize_mobilenet_to_webnn.py; \
 	else \
-		ORT_DYLIB_PATH=$(ORT_DYLIB_FILE) python scripts/serialize_mobilenet_to_webnn.py; \
+		$(ORT_ENV_VARS) python scripts/serialize_mobilenet_to_webnn.py; \
 	fi
 
 mobilenet-serialize-text: python-dev
@@ -396,9 +399,9 @@ minilm-demo-hub: python-dev
 	@echo "Downloading model from Hugging Face Hub: tarekziade/all-MiniLM-L6-v2-webnn"
 	@echo "------------------------------------------------------------------------"
 	@if [ -f .venv-webnn/bin/python ]; then \
-		MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn .venv-webnn/bin/python examples/minilm_embeddings.py; \
+		$(ORT_ENV_VARS) MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn .venv-webnn/bin/python examples/minilm_embeddings.py; \
 	else \
-		MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn python examples/minilm_embeddings.py; \
+		$(ORT_ENV_VARS) MINILM_MODEL_ID=tarekziade/all-MiniLM-L6-v2-webnn python examples/minilm_embeddings.py; \
 	fi
 	@echo ""
 	@echo "========================================================================"
