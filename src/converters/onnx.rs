@@ -2106,44 +2106,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                // Optionally reshape indices to match the expected rank derived from the
-                // output shape override (if provided). This keeps ONNX shape inference in
-                // sync with WebNN metadata when the upstream graph collapses to scalars.
+                // ONNX Gather handles indices shape correctly, no reshape needed
+                // The output shape is automatically: data.shape[0:axis] + indices.shape + data.shape[axis+1:]
                 let mut final_indices = clamped_indices_name;
-                if let Some(output_id) = op.output_operand {
-                    let out_operand = graph.operand(output_id).ok_or_else(|| {
-                        Self::invalid_operand("gather output lookup", output_id, Some((op, idx)))
-                    })?;
-                    let out_shape = &out_operand.descriptor.shape;
-                    let tail_len = data_operand.descriptor.shape.len().saturating_sub(axis + 1);
-                    if !out_shape.is_empty() && out_shape.len() >= tail_len {
-                        let target_indices_shape = out_shape[..out_shape.len() - tail_len].to_vec();
-                        if !target_indices_shape.is_empty()
-                            && target_indices_shape.iter().all(|d| *d > 0)
-                        {
-                            let shape_const_name = format!("{}_indices_shape", op_name);
-                            initializers.push(TensorProto {
-                                name: shape_const_name.clone(),
-                                data_type: ProtoDataType::Int64 as i32,
-                                dims: vec![target_indices_shape.len() as i64],
-                                int64_data: target_indices_shape
-                                    .iter()
-                                    .map(|d| *d as i64)
-                                    .collect(),
-                                ..Default::default()
-                            });
-                            let reshaped_name = format!("{}_indices_reshaped", op_name);
-                            nodes.push(NodeProto {
-                                input: vec![final_indices.clone(), shape_const_name],
-                                output: vec![reshaped_name.clone()],
-                                name: format!("{}_reshape_indices", op_name),
-                                op_type: "Reshape".to_string(),
-                                ..Default::default()
-                            });
-                            final_indices = reshaped_name;
-                        }
-                    }
-                }
 
                 inputs.push(final_indices);
 
