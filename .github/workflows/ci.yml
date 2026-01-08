@@ -128,6 +128,7 @@ jobs:
           mkdir -p target/onnxruntime
           curl -L https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz -o target/onnxruntime/onnxruntime-linux-x64-1.23.2.tgz
           tar -xzf target/onnxruntime/onnxruntime-linux-x64-1.23.2.tgz -C target/onnxruntime
+          ls -la target/onnxruntime/onnxruntime-linux-x64-1.23.2/lib/
 
       - name: Install maturin and test dependencies
         run: pip install maturin pytest pytest-asyncio numpy
