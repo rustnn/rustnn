@@ -469,11 +469,7 @@ impl PyMLContext {
     ///     context.write_tensor(tensor, np.array([[1, 2, 3], [4, 5, 6]]))
     ///     data = context.read_tensor(tensor)
     #[pyo3(signature = (shape, data_type))]
-    fn create_host_tensor(
-        &self,
-        shape: Vec<u32>,
-        data_type: &str,
-    ) -> PyResult<PyMLTensor> {
+    fn create_host_tensor(&self, shape: Vec<u32>, data_type: &str) -> PyResult<PyMLTensor> {
         // Just call create_tensor with explicit host flags
         self.create_tensor(shape, data_type, true, true, false)
     }
