@@ -222,6 +222,16 @@ impl PyMLDeviceTensor {
         }
         Ok(())
     }
+
+    /// Public method to read tensor data (callable from Rust)
+    pub fn read_data(&self, py: Python) -> PyResult<PyObject> {
+        self.read(py)
+    }
+
+    /// Public method to write tensor data (callable from Rust)
+    pub fn write_data(&mut self, py: Python, data: PyObject) -> PyResult<()> {
+        self.write(py, data)
+    }
 }
 
 #[pymethods]

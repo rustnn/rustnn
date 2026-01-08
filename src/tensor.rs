@@ -108,6 +108,9 @@ pub trait DeviceTensorBackend: Send + Sync + std::fmt::Debug {
     /// This performs a host-to-device memory transfer.
     /// Accepts data as &[f32] (will expand to support other types later).
     fn write_from_host(&mut self, data: &[f32]) -> Result<(), GraphError>;
+
+    /// Get a reference to self as Any for downcasting
+    fn as_any(&self) -> &dyn std::any::Any;
 }
 
 /// Device kind where a tensor resides

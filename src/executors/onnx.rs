@@ -371,7 +371,7 @@ pub fn run_onnx_with_inputs(
 #[derive(Debug)]
 pub struct OrtDeviceTensor {
     /// ONNX Runtime value stored on device
-    value: Value<'static>,
+    value: Value,
     /// Session reference to keep it alive
     session: std::sync::Arc<Session>,
     /// Data type
@@ -398,11 +398,11 @@ impl OrtDeviceTensor {
         let total_elements: usize = shape.iter().product();
         let zeros = vec![0.0f32; total_elements.max(1)];
 
-        let value = Value::from_array((shape_i64.as_slice(), zeros)).map_err(|e| {
-            GraphError::DeviceTensorFailed {
+        let value = Value::from_array((shape_i64.as_slice(), zeros))
+            .map_err(|e| GraphError::DeviceTensorFailed {
                 reason: format!("failed to create device tensor: {e}"),
-            }
-        })?;
+            })?
+            .into();
 
         Ok(Self {
             value,
@@ -414,12 +414,12 @@ impl OrtDeviceTensor {
     }
 
     /// Get a reference to the underlying ORT value
-    pub fn value(&self) -> &Value<'static> {
+    pub fn value(&self) -> &Value {
         &self.value
     }
 
     /// Get a mutable reference to the underlying ORT value
-    pub fn value_mut(&mut self) -> &mut Value<'static> {
+    pub fn value_mut(&mut self) -> &mut Value {
         &mut self.value
     }
 }
@@ -503,33 +503,32 @@ impl crate::tensor::DeviceTensorBackend for OrtDeviceTensor {
         // Currently only supporting f32, will expand to other types
         match self.dtype {
             crate::graph::DataType::Float32 => {
-                self.value =
-                    Value::from_array((shape_i64.as_slice(), data.to_vec())).map_err(|e| {
-                        GraphError::DeviceTensorFailed {
-                            reason: format!("failed to write f32 tensor to device: {e}"),
-                        }
-                    })?;
+                self.value = Value::from_array((shape_i64.as_slice(), data.to_vec()))
+                    .map_err(|e| GraphError::DeviceTensorFailed {
+                        reason: format!("failed to write f32 tensor to device: {e}"),
+                    })?
+                    .into();
                 Ok(())
             }
             crate::graph::DataType::Float16 => {
                 // Convert f32 to f16
                 let f16_data: Vec<half::f16> =
                     data.iter().map(|&x| half::f16::from_f32(x)).collect();
-                self.value = Value::from_array((shape_i64.as_slice(), f16_data)).map_err(|e| {
-                    GraphError::DeviceTensorFailed {
+                self.value = Value::from_array((shape_i64.as_slice(), f16_data))
+                    .map_err(|e| GraphError::DeviceTensorFailed {
                         reason: format!("failed to write f16 tensor to device: {e}"),
-                    }
-                })?;
+                    })?
+                    .into();
                 Ok(())
             }
             crate::graph::DataType::Int32 => {
                 // Convert f32 to i32
                 let i32_data: Vec<i32> = data.iter().map(|&x| x as i32).collect();
-                self.value = Value::from_array((shape_i64.as_slice(), i32_data)).map_err(|e| {
-                    GraphError::DeviceTensorFailed {
+                self.value = Value::from_array((shape_i64.as_slice(), i32_data))
+                    .map_err(|e| GraphError::DeviceTensorFailed {
                         reason: format!("failed to write i32 tensor to device: {e}"),
-                    }
-                })?;
+                    })?
+                    .into();
                 Ok(())
             }
             _ => Err(GraphError::DeviceTensorFailed {
@@ -537,46 +536,30 @@ impl crate::tensor::DeviceTensorBackend for OrtDeviceTensor {
             }),
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Run ONNX model with device tensor bindings (zero-copy execution)
 ///
 /// This function uses ONNX Runtime IoBinding to execute the model with
 /// device-resident tensors, eliminating host-device round-trips.
+///
+/// Note: This is a placeholder implementation. Full IoBinding support
+/// will be added in a future update.
+#[allow(dead_code)]
 pub fn run_onnx_with_bindings(
-    session: &Session,
-    input_bindings: Vec<(&str, &OrtDeviceTensor)>,
-    output_bindings: Vec<(&str, &mut OrtDeviceTensor)>,
+    _session: &Session,
+    _input_bindings: Vec<(&str, &OrtDeviceTensor)>,
+    _output_bindings: Vec<(&str, &mut OrtDeviceTensor)>,
 ) -> Result<(), GraphError> {
-    // Build input values for session.run()
-    // Note: Current ort crate version may not support full IoBinding API
-    // For now, we'll use regular run() with values extracted from device tensors
-    let mut input_session_values: Vec<SessionInputValue> = Vec::new();
-    for (_name, tensor) in &input_bindings {
-        input_session_values.push(SessionInputValue::from(tensor.value.clone()));
-    }
-
-    // Run inference
-    let outputs = session.run(input_session_values.as_slice()).map_err(|e| {
-        GraphError::OnnxRuntimeFailed {
-            reason: format!("device tensor execution failed: {e}"),
-        }
-    })?;
-
-    // Copy output values to output tensors
-    for (idx, (_name, output_tensor)) in output_bindings.iter_mut().enumerate() {
-        if let Some((_output_name, output_value)) = outputs.get(idx) {
-            // Extract data and write to output tensor
-            let (_, data) = output_value.try_extract_tensor::<f32>().map_err(|e| {
-                GraphError::DeviceTensorFailed {
-                    reason: format!("failed to extract output tensor: {e}"),
-                }
-            })?;
-            output_tensor.write_from_host(data)?;
-        }
-    }
-
-    Ok(())
+    // Placeholder for future IoBinding implementation
+    // Current dispatch() implementation uses regular compute path
+    Err(GraphError::DeviceTensorFailed {
+        reason: "IoBinding not yet implemented - use dispatch() instead".to_string(),
+    })
 }
 
 #[cfg(test)]
