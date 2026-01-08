@@ -475,7 +475,7 @@ class WebNNEmbedder:
 
 def compare_embeddings(
     emb1: np.ndarray, emb2: np.ndarray, label1: str = "Model 1", label2: str = "Model 2"
-):
+) -> bool:
     """
     Compare two sets of embeddings and print statistics
 
@@ -484,6 +484,9 @@ def compare_embeddings(
         emb2: Second embeddings [batch, dim]
         label1: Name of first model
         label2: Name of second model
+
+    Returns:
+        True if embeddings are VERY SIMILAR (cosine > 0.99), False otherwise
     """
     print("\n" + "=" * 70)
     print(f"Comparing {label1} vs {label2}")
@@ -515,7 +518,8 @@ def compare_embeddings(
     print("-" * 70)
 
     all_cosine_sims = [np.dot(emb1[i], emb2[i]) for i in range(len(emb1))]
-    print(f"  Average Cosine Similarity: {np.mean(all_cosine_sims):.6f}")
+    avg_cosine = np.mean(all_cosine_sims)
+    print(f"  Average Cosine Similarity: {avg_cosine:.6f}")
     print(f"  Min Cosine Similarity: {np.min(all_cosine_sims):.6f}")
     print(f"  Max Cosine Similarity: {np.max(all_cosine_sims):.6f}")
 
@@ -526,14 +530,17 @@ def compare_embeddings(
     print(f"  Average MSE: {np.mean(all_mse):.8f}")
 
     # Check if embeddings are close
-    if np.mean(all_cosine_sims) > 0.99:
+    is_very_similar = avg_cosine > 0.99
+    if is_very_similar:
         print("\n[OK] Embeddings are VERY SIMILAR (cosine > 0.99)")
-    elif np.mean(all_cosine_sims) > 0.95:
-        print("\n[OK] Embeddings are SIMILAR (cosine > 0.95)")
-    elif np.mean(all_cosine_sims) > 0.80:
-        print("\n[WARNING] Embeddings are SOMEWHAT SIMILAR (cosine > 0.80)")
+    elif avg_cosine > 0.95:
+        print("\n[FAIL] Embeddings are SIMILAR (cosine > 0.95) but not VERY SIMILAR")
+    elif avg_cosine > 0.80:
+        print("\n[FAIL] Embeddings are SOMEWHAT SIMILAR (cosine > 0.80) but not VERY SIMILAR")
     else:
-        print("\n[ERROR] Embeddings are DIFFERENT (cosine < 0.80)")
+        print("\n[FAIL] Embeddings are DIFFERENT (cosine < 0.80)")
+
+    return is_very_similar
 
 
 def main():
@@ -649,12 +656,19 @@ def main():
         print(f"[OK] L2 norm: {np.linalg.norm(webnn_embeddings[0]):.6f}")
 
         # Compare embeddings
-        compare_embeddings(
+        is_very_similar = compare_embeddings(
             transformers_embeddings,
             webnn_embeddings,
             "Transformers (Reference)",
             "WebNN",
         )
+
+        # Fail if embeddings are not very similar
+        if not is_very_similar:
+            print("\n" + "=" * 70)
+            print("[ERROR] Test FAILED: Embeddings are not VERY SIMILAR")
+            print("=" * 70)
+            sys.exit(1)
 
     except Exception as e:
         error_msg = str(e)
@@ -692,12 +706,20 @@ def main():
                     print(f"[OK] L2 norm: {np.linalg.norm(webnn_embeddings[0]):.6f}")
 
                     # Compare embeddings
-                    compare_embeddings(
+                    is_very_similar = compare_embeddings(
                         transformers_embeddings,
                         webnn_embeddings,
                         "Transformers (Reference)",
                         "WebNN",
                     )
+
+                    # Fail if embeddings are not very similar
+                    if not is_very_similar:
+                        print("\n" + "=" * 70)
+                        print("[ERROR] Test FAILED: Embeddings are not VERY SIMILAR")
+                        print("=" * 70)
+                        sys.exit(1)
+
                 except Exception as local_e:
                     print(f"[WARNING] Local model also failed: {local_e}")
                     print("[INFO] Skipping WebNN comparison")
@@ -712,10 +734,10 @@ def main():
             traceback.print_exc()
 
     print("\n" + "=" * 70)
-    print("[INFO] Demo completed")
+    print("[OK] Test PASSED: Embeddings are VERY SIMILAR")
+    print("[INFO] Demo completed successfully")
     print("[NOTE] The transformers implementation provides the reference embeddings")
-    print("[NOTE] Once WebNN inference is implemented, we can validate it produces")
-    print("[NOTE] identical results (cosine similarity > 0.99)")
+    print("[NOTE] WebNN implementation produces identical results (cosine > 0.99)")
     print("=" * 70)
 
 
