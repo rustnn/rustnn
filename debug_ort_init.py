@@ -32,8 +32,7 @@ print("Attempting to create CPU context...")
 try:
     context = ml.create_context(device_type="cpu")
     print(f"SUCCESS: CPU context created")
-    print(f"  Backend: {context.backend}")
-    print(f"  Accelerated: {context.accelerated}")
+    print(f"  Context type: {type(context)}")
 except Exception as e:
     print(f"FAILED to create context: {e}")
     import traceback
