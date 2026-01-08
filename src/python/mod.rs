@@ -12,7 +12,7 @@ pub use context::{PyML, PyMLContext};
 pub use graph::PyMLGraph;
 pub use graph_builder::PyMLGraphBuilder;
 pub use operand::PyMLOperand;
-pub use tensor::PyMLTensor;
+pub use tensor::{PyMLDeviceTensor, PyMLTensor};
 
 /// WebNN Python module
 #[pymodule]
@@ -23,5 +23,6 @@ fn _rustnn(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMLOperand>()?;
     m.add_class::<PyMLGraph>()?;
     m.add_class::<PyMLTensor>()?;
+    m.add_class::<PyMLDeviceTensor>()?;
     Ok(())
 }

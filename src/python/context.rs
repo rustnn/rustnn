@@ -86,6 +86,11 @@ pub struct PyMLContext {
     _accelerated_requested: bool,
     accelerated_available: bool,
     backend: Backend,
+
+    /// Cached ONNX Runtime session for device tensor reuse
+    /// This enables zero-copy execution by keeping the session alive across operations
+    #[cfg(feature = "onnx-runtime")]
+    onnx_session: std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<ort::session::Session>>>>,
 }
 
 #[pymethods]
@@ -313,6 +318,100 @@ impl PyMLContext {
         };
 
         Ok(PyMLTensor::new(tensor_descriptor))
+    }
+
+    /// Create a device-resident tensor for zero-copy execution
+    ///
+    /// Device tensors reside in GPU/NPU memory and enable persistent storage
+    /// across inference steps without host round-trips. This is critical for
+    /// iterative GenAI workloads like KV cache in transformers.
+    ///
+    /// Args:
+    ///     graph: The MLGraph to associate with this tensor (needed for session management)
+    ///     shape: Shape of the tensor
+    ///     data_type: Data type string (e.g., "float32")
+    ///     device: Device to allocate on (optional, defaults to context's backend device)
+    ///
+    /// Returns:
+    ///     MLDeviceTensor: A new device-resident tensor
+    ///
+    /// Note:
+    ///     Currently only supported with ONNX Runtime backend
+    #[cfg(feature = "onnx-runtime")]
+    #[pyo3(signature = (graph, shape, data_type, device=None))]
+    fn create_device_tensor(
+        &self,
+        graph: &PyMLGraph,
+        shape: Vec<usize>,
+        data_type: &str,
+        device: Option<&str>,
+    ) -> PyResult<super::tensor::PyMLDeviceTensor> {
+        use super::tensor::PyMLDeviceTensor;
+        use crate::executors::onnx::OrtDeviceTensor;
+        use crate::tensor::{DeviceKind, DeviceTensorHandle};
+
+        // Parse data type
+        let dtype = parse_data_type(data_type)?;
+
+        // Determine device from backend or parameter
+        let device_kind = if let Some(dev) = device {
+            match dev {
+                "cpu" => DeviceKind::Cpu,
+                "cuda" => DeviceKind::Cuda,
+                "directml" => DeviceKind::DirectML,
+                "coreml" => DeviceKind::CoreML,
+                _ => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                        "Unsupported device: {}. Use 'cpu', 'cuda', 'directml', or 'coreml'",
+                        dev
+                    )));
+                }
+            }
+        } else {
+            // Infer from backend
+            match self.backend {
+                Backend::OnnxCpu => DeviceKind::Cpu,
+                Backend::OnnxGpu => DeviceKind::Cuda,
+                Backend::CoreML => DeviceKind::CoreML,
+                Backend::TensorRT => DeviceKind::Cuda,
+                Backend::None => {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "No backend available for device tensor creation",
+                    ));
+                }
+            }
+        };
+
+        // Get or create ONNX session
+        let session = self.get_onnx_session(graph)?;
+
+        // Create ONNX device tensor
+        let ort_tensor = OrtDeviceTensor::new(session, shape, dtype, device_kind).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "Failed to create device tensor: {}",
+                e
+            ))
+        })?;
+
+        // Wrap in DeviceTensorHandle
+        let handle = DeviceTensorHandle::new(Box::new(ort_tensor));
+
+        Ok(PyMLDeviceTensor::new(handle))
+    }
+
+    /// Stub for when ONNX Runtime is not available
+    #[cfg(not(feature = "onnx-runtime"))]
+    #[pyo3(signature = (_graph, _shape, _data_type, _device=None))]
+    fn create_device_tensor(
+        &self,
+        _graph: &PyMLGraph,
+        _shape: Vec<usize>,
+        _data_type: &str,
+        _device: Option<&str>,
+    ) -> PyResult<super::tensor::PyMLDeviceTensor> {
+        Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Device tensors require ONNX Runtime (compile with onnx-runtime feature)",
+        ))
     }
 
     /// Read data from a tensor into a numpy array
@@ -797,7 +896,50 @@ impl PyMLContext {
             _accelerated_requested: accelerated_requested,
             accelerated_available,
             backend,
+
+            #[cfg(feature = "onnx-runtime")]
+            onnx_session: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Get or create cached ONNX Runtime session for the given graph
+    ///
+    /// This enables device tensor reuse by keeping the session alive across operations.
+    /// The session is created on first access and cached for subsequent use.
+    #[cfg(feature = "onnx-runtime")]
+    fn get_onnx_session(
+        &self,
+        graph: &PyMLGraph,
+    ) -> Result<std::sync::Arc<ort::session::Session>, pyo3::PyErr> {
+        let mut session_guard = self.onnx_session.lock().unwrap();
+
+        if let Some(session) = session_guard.as_ref() {
+            return Ok(std::sync::Arc::clone(session));
+        }
+
+        // Create new session
+        let converter = crate::converters::OnnxConverter;
+        let converted = converter.convert(&graph.graph_info).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("ONNX conversion failed: {}", e))
+        })?;
+
+        let session = ort::session::Session::builder()
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Session builder failed: {}", e))
+            })?
+            .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level1)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Set opt level failed: {}", e))
+            })?
+            .commit_from_memory(&converted.data)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("Load model failed: {}", e))
+            })?;
+
+        let session_arc = std::sync::Arc::new(session);
+        *session_guard = Some(std::sync::Arc::clone(&session_arc));
+
+        Ok(session_arc)
     }
 
     /// Execute graph using ONNX Runtime backend

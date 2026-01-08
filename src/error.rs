@@ -94,6 +94,14 @@ pub enum GraphError {
     TrtxRuntimeFailed { reason: String },
     #[error("shape inference failed: {reason}")]
     ShapeInferenceFailed { reason: String },
+    #[error("device tensor operation failed: {reason}")]
+    DeviceTensorFailed { reason: String },
+    #[error("device tensor has been destroyed")]
+    DeviceTensorDestroyed,
+    #[error("device tensor is not readable")]
+    DeviceTensorNotReadable,
+    #[error("device tensor is not writable")]
+    DeviceTensorNotWritable,
 }
 
 impl GraphError {
