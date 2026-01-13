@@ -1,6 +1,9 @@
 CARGO := cargo
 PYTHON ?= python3.12
 DOT ?= dot
+TY ?= .venv-webnn/bin/ty
+PYTHON_DEV_STAMP := .venv-webnn/.stamp-python-dev
+PYTHON_DEV_DEPS := Makefile pyproject.toml
 GRAPH_FILE ?= examples/sample_graph.json
 DOT_PATH ?= target/graph.dot
 PNG_PATH ?= target/graph.png
@@ -33,7 +36,7 @@ else
 endif
 .PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
 	python-dev python-build python-test python-test-fast python-test-wpt python-test-wpt-onnx python-test-wpt-coreml \
-	python-perf python-perf-full python-clean python-example \
+	python-ty-check python-perf python-perf-full python-clean python-example \
 	mobilenet-demo mobilenet-serialize mobilenet-serialize-text mobilenet-convert-to-text mobilenet-demo-webnn mobilenet-demo-hub \
 	minilm-demo-hub run-all-demos \
 	text-gen-demo text-gen-train text-gen-trained text-gen-enhanced text-gen-train-simple \
@@ -107,17 +110,29 @@ validate-all-env: build test onnx-validate coreml-validate
 # Python Targets
 # ==============================================================================
 
-python-dev: onnxruntime-download
+python-dev: $(PYTHON_DEV_STAMP)
+	@echo "[OK] Python development environment ready (see $(PYTHON_DEV_STAMP))"
+
+$(PYTHON_DEV_STAMP): $(PYTHON_DEV_DEPS) onnxruntime-download
 	@echo "Installing Python package in development mode with all backends..."
 	@if [ ! -d .venv-webnn ]; then \
 		$(PYTHON) -m venv .venv-webnn; \
 	fi
 	.venv-webnn/bin/pip install --upgrade pip
-	.venv-webnn/bin/pip install pytest pytest-asyncio pytest-xdist numpy maturin
+	.venv-webnn/bin/pip install pytest pytest-asyncio pytest-xdist numpy maturin ty onnxruntime==$(ORT_VERSION)
 	VIRTUAL_ENV=$(PWD)/.venv-webnn \
 	PATH=$(PWD)/.venv-webnn/bin:$$PATH \
 	$(ORT_ENV_VARS) \
 	.venv-webnn/bin/maturin develop --features python,onnx-runtime,coreml-runtime
+	@touch $(PYTHON_DEV_STAMP)
+
+# ------------------------------------------------------------------------------
+# QA Tools
+# ------------------------------------------------------------------------------
+
+python-ty-check: python-dev
+	@echo "Running ty type checker on pywebnn..."
+	$(ORT_ENV_VARS) $(TY) check --python .venv-webnn/bin/python python/webnn
 
 python-build: onnxruntime-download
 	@echo "Building Python wheel with all backends..."
@@ -536,6 +551,7 @@ python-clean:
 	rm -rf python/webnn/__pycache__
 	rm -rf tests/__pycache__
 	rm -rf examples/__pycache__
+	rm -f $(PYTHON_DEV_STAMP)
 	find . -name "*.pyc" -delete
 	find . -name "*.so" -delete
 	find . -name "*.pyd" -delete
@@ -607,6 +623,7 @@ help:
 	@echo "  python-test        - Run all Python tests (includes WPT)"
 	@echo "  python-test-fast   - Run Python tests (excluding slow tests)"
 	@echo "  python-test-wpt    - Run WPT conformance tests only"
+	@echo "  python-ty-check    - Run ty type checker against pywebnn (QA tool)"
 	@echo "  python-perf        - Run quick performance benchmarks"
 	@echo "  python-perf-full   - Run full performance benchmark suite"
 	@echo "  python-example     - Run Python examples"

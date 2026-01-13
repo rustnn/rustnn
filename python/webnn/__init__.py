@@ -25,6 +25,7 @@ import sys
 import asyncio
 from typing import Dict, Optional
 import numpy as np
+import numpy.typing as npt
 
 # Set up ONNX Runtime dynamic library path if not already set
 # Users can override by setting ORT_DYLIB_PATH environment variable before importing webnn
@@ -35,32 +36,36 @@ if "ORT_DYLIB_PATH" not in os.environ:
         import glob
 
         # Get the onnxruntime package directory
-        ort_package_dir = os.path.dirname(os.path.abspath(onnxruntime.__file__))
+        ort_file = getattr(onnxruntime, "__file__", None)
+        ort_package_dir = (
+            os.path.dirname(os.path.abspath(str(ort_file))) if ort_file else ""
+        )
 
-        # ONNX Runtime libraries are typically in the capi subdirectory
-        ort_capi_dir = os.path.join(ort_package_dir, "capi")
+        if ort_package_dir:
+            # ONNX Runtime libraries are typically in the capi subdirectory
+            ort_capi_dir = os.path.join(ort_package_dir, "capi")
 
-        # Check for platform-specific library files
-        if sys.platform == "darwin":
-            lib_pattern = "libonnxruntime*.dylib"
-        elif sys.platform == "win32":
-            lib_pattern = "onnxruntime*.dll"
-        else:  # Linux and other Unix-like
-            lib_pattern = "libonnxruntime*.so*"
+            # Check for platform-specific library files
+            if sys.platform == "darwin":
+                lib_pattern = "libonnxruntime*.dylib"
+            elif sys.platform == "win32":
+                lib_pattern = "onnxruntime*.dll"
+            else:  # Linux and other Unix-like
+                lib_pattern = "libonnxruntime*.so*"
 
-        # Look for the library in the capi directory
-        if os.path.exists(ort_capi_dir):
-            ort_libs = glob.glob(os.path.join(ort_capi_dir, lib_pattern))
-            if ort_libs:
-                # Set ORT_DYLIB_PATH to the full path of the first library found
-                os.environ["ORT_DYLIB_PATH"] = ort_libs[0]
+            # Look for the library in the capi directory
+            if os.path.exists(ort_capi_dir):
+                ort_libs = glob.glob(os.path.join(ort_capi_dir, lib_pattern))
+                if ort_libs:
+                    # Set ORT_DYLIB_PATH to the full path of the first library found
+                    os.environ["ORT_DYLIB_PATH"] = ort_libs[0]
 
-        # Fallback: check the main package directory
-        if "ORT_DYLIB_PATH" not in os.environ:
-            ort_libs = glob.glob(os.path.join(ort_package_dir, lib_pattern))
-            if ort_libs:
-                # Set ORT_DYLIB_PATH to the full path of the first library found
-                os.environ["ORT_DYLIB_PATH"] = ort_libs[0]
+            # Fallback: check the main package directory
+            if "ORT_DYLIB_PATH" not in os.environ:
+                ort_libs = glob.glob(os.path.join(ort_package_dir, lib_pattern))
+                if ort_libs:
+                    # Set ORT_DYLIB_PATH to the full path of the first library found
+                    os.environ["ORT_DYLIB_PATH"] = ort_libs[0]
 
     except ImportError:
         # onnxruntime package not installed - user must set ORT_DYLIB_PATH manually
@@ -175,7 +180,12 @@ class AsyncMLContext:
             shape, data_type, readable, writable, exportable_to_gpu
         )
 
-    def compute(self, graph: MLGraph, inputs: Dict[str, np.ndarray], outputs=None):
+    def compute(
+        self,
+        graph: MLGraph,
+        inputs: Dict[str, npt.ArrayLike],
+        outputs: Optional[Dict[str, npt.ArrayLike]] = None,
+    ):
         """Compute (synchronous) - prefer dispatch() for async execution."""
         return self._context.compute(graph, inputs, outputs)
 

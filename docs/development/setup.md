@@ -322,7 +322,8 @@ git push origin main
 
 The project uses pre-commit hooks to ensure code quality:
 
-- `cargo fmt --check` - Ensures Rust code is formatted
+- `cargo fmt --check` and `cargo clippy` automatically run when Rust files change
+- `make python-ty-check` runs Ty against pywebnn when Python files change
 - Tests run automatically in CI
 
 ## CI/CD

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pre-commit hook to ensure Rust code is formatted
+# Pre-commit hook to ensure Rust and Python quality checks run only when needed
 #
 # To install this hook, run:
 #   cp scripts/git-hooks/pre-commit .git/hooks/pre-commit
@@ -8,15 +8,38 @@
 # Or use the installation script:
 #   ./scripts/install-git-hooks.sh
 
-echo "Running cargo fmt check..."
-cargo fmt --all -- --check
+set -e
 
-if [ $? -ne 0 ]; then
-    echo ""
-    echo "❌ Code formatting check failed!"
-    echo "Please run 'cargo fmt' to format your code before committing."
-    exit 1
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+STAGED_FILES="$(git diff --cached --name-only)"
+
+has_rust_changes() {
+    echo "$STAGED_FILES" | grep -E '\.rs$|Cargo\.toml|build\.rs' >/dev/null
+}
+
+has_python_changes() {
+    echo "$STAGED_FILES" | grep -E '\.py$|\.pyi$' >/dev/null
+}
+
+if [ -z "$STAGED_FILES" ]; then
+    echo "No staged files; skipping checks."
+    exit 0
 fi
 
-echo "✅ Code formatting check passed!"
+if has_rust_changes; then
+    echo "Running cargo fmt check..."
+    cargo fmt --all -- --check
+
+    echo "Running cargo clippy..."
+    cargo clippy --all-targets --all-features -- -D warnings
+fi
+
+if has_python_changes; then
+    echo "Running ty type check (python-ty-check)..."
+    make python-ty-check
+fi
+
+echo "✅ Pre-commit checks passed (skipped sections if no relevant changes)."
 exit 0

@@ -1,6 +1,6 @@
 """Type stubs for webnn package"""
 
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import numpy.typing as npt
 
@@ -176,7 +176,7 @@ class MLContext:
         """
         ...
 
-    def op_support_limits(self) -> Dict[str, any]:
+    def op_support_limits(self) -> Dict[str, Any]:
         """
         Get operation support limits for this context
 
