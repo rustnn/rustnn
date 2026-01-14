@@ -117,6 +117,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
         };
 
         let converted = registry.convert("dummy", &graph).unwrap();

@@ -24,6 +24,8 @@ impl PyMLOperand {
     #[getter]
     fn data_type(&self) -> String {
         match self.descriptor.data_type {
+            DataType::Int4 => "int4".to_string(),
+            DataType::Uint4 => "uint4".to_string(),
             DataType::Float32 => "float32".to_string(),
             DataType::Float16 => "float16".to_string(),
             DataType::Int32 => "int32".to_string(),
@@ -77,6 +79,8 @@ impl PyMLOperand {
 /// Parse data type string to DataType enum
 pub fn parse_data_type(dtype: &str) -> PyResult<DataType> {
     match dtype {
+        "int4" => Ok(DataType::Int4),
+        "uint4" => Ok(DataType::Uint4),
         "float32" => Ok(DataType::Float32),
         "float16" => Ok(DataType::Float16),
         "int32" => Ok(DataType::Int32),

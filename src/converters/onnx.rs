@@ -45,6 +45,7 @@ impl OnnxConverter {
     fn data_type_code(data_type: DataType) -> ProtoDataType {
         // Convert rust-webnn-graph DataType to webnn_onnx_utils DataType first
         let utils_dtype = match data_type {
+            DataType::Int4 | DataType::Uint4 => utils_data_types::DataType::Int8,
             DataType::Float32 => utils_data_types::DataType::Float32,
             DataType::Float16 => utils_data_types::DataType::Float16,
             DataType::Int32 => utils_data_types::DataType::Int32,
@@ -84,6 +85,35 @@ impl OnnxConverter {
             utils_dtype,
             shape,
         )
+    }
+
+    /// Create a Reshape node and accompanying shape initializer. Returns output name.
+    fn create_reshape_node(
+        prefix: &str,
+        input: String,
+        target_shape: Vec<i64>,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let shape_const_name = format!("{}_shape", prefix);
+        initializers.push(TensorProto {
+            name: shape_const_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![target_shape.len() as i64],
+            int64_data: target_shape.clone(),
+            ..Default::default()
+        });
+
+        let output_name = format!("{}_reshaped", prefix);
+        nodes.push(NodeProto {
+            input: vec![input, shape_const_name],
+            output: vec![output_name.clone()],
+            name: format!("{}_reshape", prefix),
+            op_type: "Reshape".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+        output_name
     }
 
     fn onnx_op_type(op_type: &str) -> String {
@@ -316,6 +346,7 @@ impl OnnxConverter {
                 "int8" => ProtoDataType::Int8 as i64,
                 "uint8" => ProtoDataType::Uint8 as i64,
                 "int64" => ProtoDataType::Int64 as i64,
+                "int4" | "uint4" => ProtoDataType::Undefined as i64,
                 _ => ProtoDataType::Undefined as i64,
             };
 
@@ -1224,6 +1255,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     _ => {
                         // For other types, create zero-filled raw_data
                         let bytes_per_element = match operand.descriptor.data_type {
+                            DataType::Int4 | DataType::Uint4 => 1,
                             DataType::Float16 => 2,
                             DataType::Int8 | DataType::Uint8 => 1,
                             DataType::Uint32 => 4,
@@ -1490,6 +1522,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     "uint64" => DataType::Uint64,
                     "int8" => DataType::Int8,
                     "uint8" => DataType::Uint8,
+                    "int4" => DataType::Int4,
+                    "uint4" => DataType::Uint4,
                     other => {
                         return Err(GraphError::ConversionFailed {
                             format: "onnx".to_string(),
@@ -1524,6 +1558,149 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 .label
                 .clone()
                 .unwrap_or_else(|| format!("{}_{}", op.op_type, idx));
+
+            // QuantizeLinear / DequantizeLinear: propagate axis/block_size where applicable
+            if op.op_type.eq_ignore_ascii_case("quantizeLinear")
+                || op.op_type.eq_ignore_ascii_case("dequantizeLinear")
+            {
+                let input_id = op.input_operands[0];
+                let scale_id = op.input_operands[1];
+                let zero_point_id = op.input_operands[2];
+
+                let input_shape = operand_shapes.get(&input_id).cloned().unwrap_or_else(|| {
+                    graph
+                        .operand(input_id)
+                        .map(|o| o.descriptor.shape.clone())
+                        .unwrap_or_default()
+                });
+                let scale_shape = operand_shapes.get(&scale_id).cloned().unwrap_or_else(|| {
+                    graph
+                        .operand(scale_id)
+                        .map(|o| o.descriptor.shape.clone())
+                        .unwrap_or_default()
+                });
+                let zero_point_shape =
+                    operand_shapes
+                        .get(&zero_point_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            graph
+                                .operand(zero_point_id)
+                                .map(|o| o.descriptor.shape.clone())
+                                .unwrap_or_default()
+                        });
+
+                let mut attributes = Vec::new();
+                let mut non_one_dims = Vec::new();
+                for (i, &dim) in scale_shape.iter().enumerate() {
+                    if dim != 1 {
+                        non_one_dims.push(i);
+                    }
+                }
+
+                if non_one_dims.len() == 1
+                    && scale_shape
+                        .get(non_one_dims[0])
+                        .zip(input_shape.get(non_one_dims[0]))
+                        .map(|(s, i)| s == i)
+                        .unwrap_or(false)
+                {
+                    attributes.push(AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: non_one_dims[0] as i64,
+                        ..Default::default()
+                    });
+                }
+
+                // Prepare inputs, inserting reshapes when needed.
+                let input_name = operand_name(graph, input_id);
+                let mut scale_name = operand_name(graph, scale_id);
+                let mut zero_point_name = operand_name(graph, zero_point_id);
+
+                // Per-tensor: scale/zero-point are all ones but rank > 0 -> reshape to scalar
+                let scale_all_ones = scale_shape.iter().all(|&d| d == 1);
+                if scale_all_ones && !scale_shape.is_empty() {
+                    let reshape_prefix = format!("{}_per_tensor_scale", op_name);
+                    scale_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        scale_name,
+                        vec![],
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                    let zp_prefix = format!("{}_per_tensor_zp", op_name);
+                    zero_point_name = Self::create_reshape_node(
+                        &zp_prefix,
+                        zero_point_name,
+                        vec![],
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                // Per-axis: reshape scale/zero-point to 1D of axis size if not already
+                if non_one_dims.len() == 1
+                    && scale_shape
+                        .get(non_one_dims[0])
+                        .zip(input_shape.get(non_one_dims[0]))
+                        .map(|(s, i)| s == i)
+                        .unwrap_or(false)
+                    && scale_shape.len() != 1
+                {
+                    let target = vec![*input_shape.get(non_one_dims[0]).unwrap_or(&1) as i64];
+                    let reshape_prefix = format!("{}_per_axis_scale", op_name);
+                    scale_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        scale_name,
+                        target.clone(),
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                    let zp_prefix = format!("{}_per_axis_zp", op_name);
+                    zero_point_name = Self::create_reshape_node(
+                        &zp_prefix,
+                        zero_point_name,
+                        target,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                } else if !zero_point_shape.is_empty() && zero_point_shape != scale_shape {
+                    // Align zero-point shape to scale shape when mismatched (defensive)
+                    let reshape_prefix = format!("{}_align_zp", op_name);
+                    let target: Vec<i64> = scale_shape.iter().map(|&d| d as i64).collect();
+                    zero_point_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        zero_point_name,
+                        target,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                let inputs = vec![input_name, scale_name, zero_point_name];
+
+                let output = op.output_operand.ok_or_else(|| {
+                    GraphError::InvalidConversionOperand {
+                        operand: 0, // validated earlier in traversal
+                    }
+                })?;
+
+                nodes.push(NodeProto {
+                    input: inputs,
+                    output: vec![operand_name(graph, output)],
+                    name: op_name,
+                    op_type: if op.op_type.eq_ignore_ascii_case("quantizeLinear") {
+                        "QuantizeLinear".to_string()
+                    } else {
+                        "DequantizeLinear".to_string()
+                    },
+                    attribute: attributes,
+                    ..Default::default()
+                });
+
+                continue;
+            }
 
             // Special-case concat: expand scalar inputs to 1D so ONNX axis validation passes
             if op.op_type.eq_ignore_ascii_case("concat") {

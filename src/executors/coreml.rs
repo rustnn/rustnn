@@ -616,6 +616,12 @@ fn element_count(shape: &[i64]) -> Option<usize> {
 fn map_dtype(data_type: DataType) -> Result<i32, GraphError> {
     // `MLMultiArrayDataType` enum values from Apple docs.
     let code = match data_type {
+        DataType::Int4 | DataType::Uint4 => {
+            return Err(GraphError::ConversionFailed {
+                format: "coreml".to_string(),
+                reason: "int4/uint4 tensors are not supported by CoreML runtime".to_string(),
+            });
+        }
         DataType::Float32 => 32, // MLMultiArrayDataTypeFloat32
         DataType::Float16 => 16, // MLMultiArrayDataTypeFloat16
         DataType::Int32 => 3,    // MLMultiArrayDataTypeInt32
@@ -695,6 +701,11 @@ unsafe fn fill_zero(
     };
     let ptr: *mut c_void = msg_send![array, dataPointer];
     match data_type {
+        DataType::Int4 | DataType::Uint4 => {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: "int4/uint4 tensors are not supported by CoreML runtime".to_string(),
+            });
+        }
         DataType::Float32 => {
             let slice = unsafe { std::slice::from_raw_parts_mut(ptr as *mut f32, count) };
             for v in slice.iter_mut() {

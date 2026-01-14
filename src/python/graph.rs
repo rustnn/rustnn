@@ -328,12 +328,14 @@ impl PyMLGraph {
     ///
     /// Args:
     ///     path: File path to save the graph (e.g., "model.webnn")
+    ///     quantized: When True, mark the serialized graph as quantized in the header
     ///
     /// Example:
     ///     graph.save("my_model.webnn")
-    fn save(&self, path: &str) -> PyResult<()> {
+    #[pyo3(signature = (path, quantized=false))]
+    fn save(&self, path: &str, quantized: bool) -> PyResult<()> {
         // Convert GraphInfo to GraphJson
-        let graph_json = webnn_json::to_graph_json(&self.graph_info)
+        let graph_json = webnn_json::to_graph_json(&self.graph_info, quantized)
             .map_err(|e| PyIOError::new_err(format!("Failed to convert graph: {}", e)))?;
 
         // Serialize to JSON

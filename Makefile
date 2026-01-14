@@ -423,30 +423,41 @@ minilm-demo-hub: python-dev
 	@echo "Demo completed successfully!"
 	@echo "========================================================================"
 
+RUN_ALL_DEMOS_LEVELS ?= none
+
 run-all-demos: python-dev
 	@echo "========================================================================"
-	@echo "Running All Demos"
+	@echo "Running All Demos (quantization=$(RUN_ALL_DEMOS_LEVELS))"
 	@echo "========================================================================"
 	@echo ""
 	@echo "Demo 1/3: MiniLM Embeddings (Hugging Face Hub)"
 	@echo "------------------------------------------------------------------------"
-	@$(MAKE) minilm-demo-hub
+	@RUN_ALL_DEMOS_LEVELS='$(RUN_ALL_DEMOS_LEVELS)' $(MAKE) minilm-demo-hub
 	@echo ""
 	@echo "Demo 2/3: MobileNetV2 Image Classification (Hugging Face Hub)"
 	@echo "------------------------------------------------------------------------"
-	@$(MAKE) mobilenet-demo-hub
+	@RUN_ALL_DEMOS_LEVELS='$(RUN_ALL_DEMOS_LEVELS)' $(MAKE) mobilenet-demo-hub
 	@echo ""
 	@echo "Demo 3/3: KV Cache with Device Tensors"
 	@echo "------------------------------------------------------------------------"
 	@if [ -f .venv-webnn/bin/python ]; then \
-		$(ORT_ENV_VARS) .venv-webnn/bin/python examples/kv_cache_device_tensors.py; \
+		$(ORT_ENV_VARS) RUN_ALL_DEMOS_LEVELS='$(RUN_ALL_DEMOS_LEVELS)' .venv-webnn/bin/python examples/kv_cache_device_tensors.py; \
 	else \
-		$(ORT_ENV_VARS) python examples/kv_cache_device_tensors.py; \
+		$(ORT_ENV_VARS) RUN_ALL_DEMOS_LEVELS='$(RUN_ALL_DEMOS_LEVELS)' python examples/kv_cache_device_tensors.py; \
 	fi
 	@echo ""
 	@echo "========================================================================"
 	@echo "All demos completed successfully!"
 	@echo "========================================================================"
+
+# Run all demos for each quantization level (int4, int8, fp16, plus baseline none)
+run-all-demos-matrix: python-dev
+	@for level in int4 int8 fp16 none; do \
+		echo "========================================================================"; \
+		echo "Running demos with quantization level: $$level"; \
+		echo "========================================================================"; \
+		RUN_ALL_DEMOS_LEVELS="$$level" $(MAKE) run-all-demos; \
+	done
 
 text-gen-demo: python-dev
 	@echo "========================================================================"

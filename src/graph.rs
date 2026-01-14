@@ -6,6 +6,8 @@ use serde_with::{base64::Base64, serde_as};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataType {
+    Int4,
+    Uint4,
     Float16,
     Float32,
     Int32,
@@ -19,6 +21,9 @@ pub enum DataType {
 impl DataType {
     pub fn bytes_per_element(self) -> usize {
         match self {
+            // Int4/Uint4 are stored densely as one nibble; we currently treat them as one byte per element
+            // to keep tensor sizing simple. If packed storage is introduced later, this should be revisited.
+            DataType::Int4 | DataType::Uint4 => 1,
             DataType::Float16 => 2,
             DataType::Float32 => 4,
             DataType::Int32 => 4,
@@ -134,6 +139,8 @@ pub struct GraphInfo {
     pub constant_operand_ids_to_handles: HashMap<u32, ConstantData>,
     #[serde(default)]
     pub id_to_constant_tensor_operand_map: HashMap<u32, String>,
+    #[serde(default)]
+    pub quantized: bool,
 }
 
 impl GraphInfo {

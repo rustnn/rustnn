@@ -204,7 +204,7 @@ class MLContext:
             >>> print(limits['preferredInputLayout'])
             'nchw'
             >>> print(limits['input']['dataTypes'])
-            ['float32', 'float16', 'int32', 'uint32', 'int8', 'uint8', 'int64', 'uint64']
+            ['float32', 'float16', 'int32', 'uint32', 'int8', 'uint8', 'int64', 'uint64', 'int4', 'uint4']
             >>> print(limits['relu']['input']['dataTypes'])
             ['float32', 'float16']
         """
@@ -346,12 +346,13 @@ class MLGraph:
         """Get list of output names"""
         ...
 
-    def save(self, path: str) -> None:
+    def save(self, path: str, *, quantized: bool = False) -> None:
         """
         Save the graph to a .webnn JSON file
 
         Args:
             path: File path to save the graph (e.g., "model.webnn")
+            quantized: Mark the serialized graph as quantized
 
         Example:
             >>> graph.save("my_model.webnn")

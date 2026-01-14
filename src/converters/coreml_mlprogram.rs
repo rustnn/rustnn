@@ -214,6 +214,13 @@ impl CoremlMlProgramConverter {
         use crate::protos::coreml::mil_spec::DataType as MilDataType;
 
         Ok(match data_type {
+            DataType::Int4 | DataType::Uint4 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".to_string(),
+                    reason: "int4/uint4 tensors are not supported in CoreML conversion yet"
+                        .to_string(),
+                });
+            }
             DataType::Float32 => MilDataType::Float32 as i32,
             DataType::Float16 => MilDataType::Float16 as i32,
             DataType::Int32 => MilDataType::Int32 as i32,
@@ -2108,7 +2115,9 @@ impl CoremlMlProgramConverter {
             }
             // Unsupported types - CoreML feature descriptions only support DOUBLE, FLOAT32, FLOAT16, INT32
             // These must be skipped in tests
-            DataType::Int8
+            DataType::Int4
+            | DataType::Uint4
+            | DataType::Int8
             | DataType::Uint8
             | DataType::Uint32
             | DataType::Int64
@@ -2820,6 +2829,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Operand 0: Float16 constant
@@ -2988,6 +2998,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Operand 0: First Float16 constant [2]
@@ -3090,6 +3101,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Float32 constant
