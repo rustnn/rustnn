@@ -2917,6 +2917,7 @@ impl PyMLGraphBuilder {
             operations: self.operations.clone(),
             constant_operand_ids_to_handles: self.constant_data_map.clone(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Validate the graph

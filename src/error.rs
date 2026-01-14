@@ -63,6 +63,8 @@ pub enum GraphError {
     OperandNeverUsed { operand: u32 },
     #[error("graph contains unused constant data entries")]
     UnusedConstantHandles,
+    #[error("quantization validation failed for `{operation}`: {reason}")]
+    QuantizationValidation { operation: String, reason: String },
     #[error("graph converter `{requested}` is not available. Supported: {available:?}")]
     UnknownConverter {
         requested: String,

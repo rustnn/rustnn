@@ -214,6 +214,13 @@ impl CoremlMlProgramConverter {
         use crate::protos::coreml::mil_spec::DataType as MilDataType;
 
         Ok(match data_type {
+            DataType::Int4 | DataType::Uint4 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".to_string(),
+                    reason: "int4/uint4 tensors are not supported in CoreML conversion yet"
+                        .to_string(),
+                });
+            }
             DataType::Float32 => MilDataType::Float32 as i32,
             DataType::Float16 => MilDataType::Float16 as i32,
             DataType::Int32 => MilDataType::Int32 as i32,
@@ -2108,7 +2115,9 @@ impl CoremlMlProgramConverter {
             }
             // Unsupported types - CoreML feature descriptions only support DOUBLE, FLOAT32, FLOAT16, INT32
             // These must be skipped in tests
-            DataType::Int8
+            DataType::Int4
+            | DataType::Uint4
+            | DataType::Int8
             | DataType::Uint8
             | DataType::Uint32
             | DataType::Int64
@@ -2820,6 +2829,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Operand 0: Float16 constant
@@ -2988,6 +2998,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Operand 0: First Float16 constant [2]
@@ -3090,6 +3101,7 @@ mod tests {
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
         // Float32 constant
@@ -3137,5 +3149,227 @@ mod tests {
             result.weights_data.is_none(),
             "Float32 constants should not use weight file"
         );
+    }
+
+    #[test]
+    fn test_int4_data_type_rejected() {
+        let mut graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        // Int4 input
+        graph.operands.push(Operand {
+            name: Some("input".to_string()),
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int4,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Output
+        graph.operands.push(Operand {
+            name: Some("output".to_string()),
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int4,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Add relu operation
+        graph.operations.push(Operation {
+            op_type: "relu".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::Value::Null,
+            label: None,
+        });
+
+        // Convert should fail with Int4
+        let converter = CoremlMlProgramConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            crate::error::GraphError::ConversionFailed { format, reason } => {
+                assert_eq!(format, "coreml");
+                assert!(reason.contains("int4/uint4"));
+                assert!(reason.contains("not supported"));
+            }
+            _ => panic!("Expected ConversionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_uint4_data_type_rejected() {
+        let mut graph = GraphInfo {
+            input_operands: vec![],
+            output_operands: vec![1],
+            operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        // Uint4 constant
+        let data = vec![0x12, 0x34, 0x56, 0x78];
+        graph.operands.push(Operand {
+            name: Some("constant".to_string()),
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Uint4,
+                shape: vec![8],
+                pending_permutation: vec![],
+            },
+        });
+        graph
+            .constant_operand_ids_to_handles
+            .insert(0, ConstantData { data, label: None });
+
+        // Output
+        graph.operands.push(Operand {
+            name: Some("output".to_string()),
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Uint4,
+                shape: vec![8],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Add relu operation
+        graph.operations.push(Operation {
+            op_type: "relu".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::Value::Null,
+            label: None,
+        });
+
+        // Convert should fail with Uint4
+        let converter = CoremlMlProgramConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            crate::error::GraphError::ConversionFailed { format, reason } => {
+                assert_eq!(format, "coreml");
+                assert!(reason.contains("int4/uint4"));
+                assert!(reason.contains("not supported"));
+            }
+            _ => panic!("Expected ConversionFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_int4_output_rejected() {
+        let mut graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        // Float32 input
+        graph.operands.push(Operand {
+            name: Some("input".to_string()),
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Int4 output (this should be rejected when building value info)
+        graph.operands.push(Operand {
+            name: Some("output".to_string()),
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int4,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Add relu operation
+        graph.operations.push(Operation {
+            op_type: "relu".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::Value::Null,
+            label: None,
+        });
+
+        // Convert should fail
+        let converter = CoremlMlProgramConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_uint4_input_rejected() {
+        let mut graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        // Uint4 input
+        graph.operands.push(Operand {
+            name: Some("input".to_string()),
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Uint4,
+                shape: vec![1, 3, 224, 224],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Float32 output
+        graph.operands.push(Operand {
+            name: Some("output".to_string()),
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 3, 224, 224],
+                pending_permutation: vec![],
+            },
+        });
+
+        // Add relu operation
+        graph.operations.push(Operation {
+            op_type: "relu".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::Value::Null,
+            label: None,
+        });
+
+        // Convert should fail
+        let converter = CoremlMlProgramConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_err());
     }
 }

@@ -1155,6 +1155,8 @@ impl PyMLContext {
 
             // Convert array to the correct type based on descriptor
             let dtype_str = match data_type {
+                crate::graph::DataType::Int4 => "int8",
+                crate::graph::DataType::Uint4 => "uint8",
                 crate::graph::DataType::Float32 => "float32",
                 crate::graph::DataType::Float16 => "float16",
                 crate::graph::DataType::Int8 => "int8",
@@ -1203,6 +1205,14 @@ impl PyMLContext {
                 crate::graph::DataType::Uint32 => {
                     let data: Vec<u32> = flat.call_method0("tolist")?.extract()?;
                     crate::executors::onnx::TensorData::Uint32(data)
+                }
+                crate::graph::DataType::Int4 => {
+                    let data: Vec<i8> = flat.call_method0("tolist")?.extract()?;
+                    crate::executors::onnx::TensorData::Int8(data)
+                }
+                crate::graph::DataType::Uint4 => {
+                    let data: Vec<u8> = flat.call_method0("tolist")?.extract()?;
+                    crate::executors::onnx::TensorData::Uint8(data)
                 }
                 crate::graph::DataType::Int64 => {
                     let data: Vec<i64> = flat.call_method0("tolist")?.extract()?;

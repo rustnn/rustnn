@@ -161,6 +161,7 @@ mod tests {
             }],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
         };
 
         let dot = graph_to_dot(&graph);

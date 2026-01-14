@@ -1,5 +1,6 @@
 """Tests for the Python WebNN API"""
 
+import json
 import sys
 import pytest
 import numpy as np
@@ -2056,8 +2057,8 @@ def test_dequantize_linear(context):
     # Create quantized input (int8)
     x = builder.input("x", [1, 3, 224, 224], "int8")
     # Scale and zero_point for dequantization
-    scale = builder.input("scale", [1], "float32")
-    zero_point = builder.input("zero_point", [1], "int8")
+    scale = builder.input("scale", [1, 1, 1, 1], "float32")
+    zero_point = builder.input("zero_point", [1, 1, 1, 1], "int8")
     # Dequantize: output = (x - zero_point) * scale
     output = builder.dequantize_linear(x, scale, zero_point)
     # Output should be float32 with same shape as input
@@ -2072,8 +2073,8 @@ def test_quantize_linear(context):
     # Create float input
     x = builder.input("x", [1, 3, 224, 224], "float32")
     # Scale and zero_point for quantization
-    scale = builder.input("scale", [1], "float32")
-    zero_point = builder.input("zero_point", [1], "int8")
+    scale = builder.input("scale", [1, 1, 1, 1], "float32")
+    zero_point = builder.input("zero_point", [1, 1, 1, 1], "int8")
     # Quantize: output = x / scale + zero_point
     output = builder.quantize_linear(x, scale, zero_point)
     # Output should be int8 with same shape as input
@@ -2086,8 +2087,8 @@ def test_quantize_linear_uint8(context):
     """Test quantizeLinear operation with uint8 output"""
     builder = context.create_graph_builder()
     x = builder.input("x", [8, 128], "float32")
-    scale = builder.input("scale", [1], "float32")
-    zero_point = builder.input("zero_point", [1], "uint8")
+    scale = builder.input("scale", [1, 1], "float32")
+    zero_point = builder.input("zero_point", [1, 1], "uint8")
     output = builder.quantize_linear(x, scale, zero_point)
     # Output data type matches zero_point
     assert output.shape == [8, 128]
@@ -2099,8 +2100,8 @@ def test_dequantize_linear_uint8(context):
     """Test dequantizeLinear operation with uint8 input"""
     builder = context.create_graph_builder()
     x = builder.input("x", [8, 128], "uint8")
-    scale = builder.input("scale", [1], "float32")
-    zero_point = builder.input("zero_point", [1], "uint8")
+    scale = builder.input("scale", [1, 1], "float32")
+    zero_point = builder.input("zero_point", [1, 1], "uint8")
     output = builder.dequantize_linear(x, scale, zero_point)
     assert output.shape == [8, 128]
     assert output.data_type == "float32"
@@ -2112,8 +2113,8 @@ def test_quantization_roundtrip(context):
     builder = context.create_graph_builder()
     # Original float input
     x = builder.input("x", [10, 20], "float32")
-    scale = builder.input("scale", [1], "float32")
-    zero_point = builder.input("zero_point", [1], "int8")
+    scale = builder.input("scale", [1, 1], "float32")
+    zero_point = builder.input("zero_point", [1, 1], "int8")
     # Quantize then dequantize
     quantized = builder.quantize_linear(x, scale, zero_point)
     dequantized = builder.dequantize_linear(quantized, scale, zero_point)
@@ -2121,6 +2122,69 @@ def test_quantization_roundtrip(context):
     assert dequantized.shape == [10, 20]
     assert dequantized.data_type == "float32"
     graph = builder.build({"output": dequantized})
+
+
+def test_quantize_linear_int4_per_tensor(context):
+    """QuantizeLinear per-tensor (int8 proxy for int4 zero-point)"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2], "float32")
+    scale = builder.constant(np.array([[0.5, 0.5]], dtype=np.float32))
+    zero_point = builder.constant(np.array([[0, 0]], dtype=np.int8))
+    q = builder.quantize_linear(x, scale, zero_point)
+    assert q.data_type == "int8"
+    graph = builder.build({"q": q})
+
+
+def test_quantize_linear_uint4_per_axis(context):
+    """QuantizeLinear per-axis uint4 (represented via uint8 zero-point)"""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [1, 2, 2], "float32")
+    # Shape matches input rank; non-one dim at axis 1
+    scale = builder.constant(np.array([[[1.0, 0.5]]], dtype=np.float32))  # shape [1,1,2]
+    zero_point = builder.constant(np.array([[[0, 1]]], dtype=np.uint8))
+    q = builder.quantize_linear(x, scale, zero_point)
+    assert q.data_type == "uint8"
+    graph = builder.build({"q": q})
+
+
+def test_dequantize_linear_int4_blockwise(context):
+    """DequantizeLinear blockwise int4"""
+    builder = context.create_graph_builder()
+    qx = builder.input("qx", [2, 2], "int4")
+    scale = builder.constant(np.array([[0.5, 2.0]], dtype=np.float32))
+    zero_point = builder.constant(np.array([[0, -1]], dtype=np.int8))
+    y = builder.dequantize_linear(qx, scale, zero_point)
+    assert y.data_type == "float32"
+    graph = builder.build({"y": y})
+
+
+def test_quantized_roundtrip_save_and_load(tmp_path, context):
+    """End-to-end quantized graph round-trip: build, run, save with quantized flag, reload, rerun."""
+    builder = context.create_graph_builder()
+    x = builder.input("x", [2, 2], "float32")
+    # Per-tensor quantization: scalar scale/zero-point avoid backend-specific axis rules
+    scale = builder.constant(np.array(0.5, dtype=np.float32))
+    zero_point = builder.constant(np.array(0, dtype=np.int8))
+
+    q = builder.quantize_linear(x, scale, zero_point)
+    y = builder.dequantize_linear(q, scale, zero_point)
+    graph = builder.build({"y": y})
+
+    # Compute once before serialization
+    input_data = {"x": np.array([[1.0, -2.0], [3.5, -0.5]], dtype=np.float32)}
+    result_before = context.compute(graph, input_data)["y"]
+
+    # Save with quantized marker and reload
+    out_path = tmp_path / "quantized_demo.webnn"
+    graph.save(str(out_path), quantized=True)
+    with out_path.open("r", encoding="utf-8") as f:
+        saved = json.load(f)
+    assert saved.get("quantized") is True
+
+    reloaded = webnn.MLGraph.load(str(out_path))
+    result_after = context.compute(reloaded, input_data)["y"]
+
+    assert np.allclose(result_before, result_after, atol=1e-5)
 
 
 # ========================================

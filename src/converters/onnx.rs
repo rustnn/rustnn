@@ -45,6 +45,7 @@ impl OnnxConverter {
     fn data_type_code(data_type: DataType) -> ProtoDataType {
         // Convert rust-webnn-graph DataType to webnn_onnx_utils DataType first
         let utils_dtype = match data_type {
+            DataType::Int4 | DataType::Uint4 => utils_data_types::DataType::Int8,
             DataType::Float32 => utils_data_types::DataType::Float32,
             DataType::Float16 => utils_data_types::DataType::Float16,
             DataType::Int32 => utils_data_types::DataType::Int32,
@@ -84,6 +85,35 @@ impl OnnxConverter {
             utils_dtype,
             shape,
         )
+    }
+
+    /// Create a Reshape node and accompanying shape initializer. Returns output name.
+    fn create_reshape_node(
+        prefix: &str,
+        input: String,
+        target_shape: Vec<i64>,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let shape_const_name = format!("{}_shape", prefix);
+        initializers.push(TensorProto {
+            name: shape_const_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![target_shape.len() as i64],
+            int64_data: target_shape.clone(),
+            ..Default::default()
+        });
+
+        let output_name = format!("{}_reshaped", prefix);
+        nodes.push(NodeProto {
+            input: vec![input, shape_const_name],
+            output: vec![output_name.clone()],
+            name: format!("{}_reshape", prefix),
+            op_type: "Reshape".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+        output_name
     }
 
     fn onnx_op_type(op_type: &str) -> String {
@@ -316,6 +346,7 @@ impl OnnxConverter {
                 "int8" => ProtoDataType::Int8 as i64,
                 "uint8" => ProtoDataType::Uint8 as i64,
                 "int64" => ProtoDataType::Int64 as i64,
+                "int4" | "uint4" => ProtoDataType::Undefined as i64,
                 _ => ProtoDataType::Undefined as i64,
             };
 
@@ -1224,6 +1255,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     _ => {
                         // For other types, create zero-filled raw_data
                         let bytes_per_element = match operand.descriptor.data_type {
+                            DataType::Int4 | DataType::Uint4 => 1,
                             DataType::Float16 => 2,
                             DataType::Int8 | DataType::Uint8 => 1,
                             DataType::Uint32 => 4,
@@ -1490,6 +1522,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     "uint64" => DataType::Uint64,
                     "int8" => DataType::Int8,
                     "uint8" => DataType::Uint8,
+                    "int4" => DataType::Int4,
+                    "uint4" => DataType::Uint4,
                     other => {
                         return Err(GraphError::ConversionFailed {
                             format: "onnx".to_string(),
@@ -1524,6 +1558,149 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 .label
                 .clone()
                 .unwrap_or_else(|| format!("{}_{}", op.op_type, idx));
+
+            // QuantizeLinear / DequantizeLinear: propagate axis/block_size where applicable
+            if op.op_type.eq_ignore_ascii_case("quantizeLinear")
+                || op.op_type.eq_ignore_ascii_case("dequantizeLinear")
+            {
+                let input_id = op.input_operands[0];
+                let scale_id = op.input_operands[1];
+                let zero_point_id = op.input_operands[2];
+
+                let input_shape = operand_shapes.get(&input_id).cloned().unwrap_or_else(|| {
+                    graph
+                        .operand(input_id)
+                        .map(|o| o.descriptor.shape.clone())
+                        .unwrap_or_default()
+                });
+                let scale_shape = operand_shapes.get(&scale_id).cloned().unwrap_or_else(|| {
+                    graph
+                        .operand(scale_id)
+                        .map(|o| o.descriptor.shape.clone())
+                        .unwrap_or_default()
+                });
+                let zero_point_shape =
+                    operand_shapes
+                        .get(&zero_point_id)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            graph
+                                .operand(zero_point_id)
+                                .map(|o| o.descriptor.shape.clone())
+                                .unwrap_or_default()
+                        });
+
+                let mut attributes = Vec::new();
+                let mut non_one_dims = Vec::new();
+                for (i, &dim) in scale_shape.iter().enumerate() {
+                    if dim != 1 {
+                        non_one_dims.push(i);
+                    }
+                }
+
+                if non_one_dims.len() == 1
+                    && scale_shape
+                        .get(non_one_dims[0])
+                        .zip(input_shape.get(non_one_dims[0]))
+                        .map(|(s, i)| s == i)
+                        .unwrap_or(false)
+                {
+                    attributes.push(AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: non_one_dims[0] as i64,
+                        ..Default::default()
+                    });
+                }
+
+                // Prepare inputs, inserting reshapes when needed.
+                let input_name = operand_name(graph, input_id);
+                let mut scale_name = operand_name(graph, scale_id);
+                let mut zero_point_name = operand_name(graph, zero_point_id);
+
+                // Per-tensor: scale/zero-point are all ones but rank > 0 -> reshape to scalar
+                let scale_all_ones = scale_shape.iter().all(|&d| d == 1);
+                if scale_all_ones && !scale_shape.is_empty() {
+                    let reshape_prefix = format!("{}_per_tensor_scale", op_name);
+                    scale_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        scale_name,
+                        vec![],
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                    let zp_prefix = format!("{}_per_tensor_zp", op_name);
+                    zero_point_name = Self::create_reshape_node(
+                        &zp_prefix,
+                        zero_point_name,
+                        vec![],
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                // Per-axis: reshape scale/zero-point to 1D of axis size if not already
+                if non_one_dims.len() == 1
+                    && scale_shape
+                        .get(non_one_dims[0])
+                        .zip(input_shape.get(non_one_dims[0]))
+                        .map(|(s, i)| s == i)
+                        .unwrap_or(false)
+                    && scale_shape.len() != 1
+                {
+                    let target = vec![*input_shape.get(non_one_dims[0]).unwrap_or(&1) as i64];
+                    let reshape_prefix = format!("{}_per_axis_scale", op_name);
+                    scale_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        scale_name,
+                        target.clone(),
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                    let zp_prefix = format!("{}_per_axis_zp", op_name);
+                    zero_point_name = Self::create_reshape_node(
+                        &zp_prefix,
+                        zero_point_name,
+                        target,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                } else if !zero_point_shape.is_empty() && zero_point_shape != scale_shape {
+                    // Align zero-point shape to scale shape when mismatched (defensive)
+                    let reshape_prefix = format!("{}_align_zp", op_name);
+                    let target: Vec<i64> = scale_shape.iter().map(|&d| d as i64).collect();
+                    zero_point_name = Self::create_reshape_node(
+                        &reshape_prefix,
+                        zero_point_name,
+                        target,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                let inputs = vec![input_name, scale_name, zero_point_name];
+
+                let output = op
+                    .output_operand
+                    .ok_or(GraphError::InvalidConversionOperand {
+                        operand: 0, // validated earlier in traversal
+                    })?;
+
+                nodes.push(NodeProto {
+                    input: inputs,
+                    output: vec![operand_name(graph, output)],
+                    name: op_name,
+                    op_type: if op.op_type.eq_ignore_ascii_case("quantizeLinear") {
+                        "QuantizeLinear".to_string()
+                    } else {
+                        "DequantizeLinear".to_string()
+                    },
+                    attribute: attributes,
+                    ..Default::default()
+                });
+
+                continue;
+            }
 
             // Special-case concat: expand scalar inputs to 1D so ONNX axis validation passes
             if op.op_type.eq_ignore_ascii_case("concat") {
@@ -3476,5 +3653,435 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::converters::GraphConverter;
+    use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+    use crate::protos::onnx::tensor_proto::DataType as ProtoDataType;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_data_type_code_int4() {
+        let code = OnnxConverter::data_type_code(DataType::Int4);
+        assert_eq!(code, ProtoDataType::Int8);
+    }
+
+    #[test]
+    fn test_data_type_code_uint4() {
+        let code = OnnxConverter::data_type_code(DataType::Uint4);
+        assert_eq!(code, ProtoDataType::Int8);
+    }
+
+    #[test]
+    fn test_data_type_code_float32() {
+        let code = OnnxConverter::data_type_code(DataType::Float32);
+        assert_eq!(code, ProtoDataType::Float);
+    }
+
+    #[test]
+    fn test_data_type_code_float16() {
+        let code = OnnxConverter::data_type_code(DataType::Float16);
+        assert_eq!(code, ProtoDataType::Float16);
+    }
+
+    #[test]
+    fn test_create_reshape_node() {
+        let mut nodes = Vec::new();
+        let mut initializers = Vec::new();
+
+        let output_name = OnnxConverter::create_reshape_node(
+            "test",
+            "input".to_string(),
+            vec![2, 3, 4],
+            &mut nodes,
+            &mut initializers,
+        );
+
+        assert_eq!(output_name, "test_reshaped");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].op_type, "Reshape");
+        assert_eq!(nodes[0].input.len(), 2);
+        assert_eq!(nodes[0].input[0], "input");
+        assert_eq!(nodes[0].input[1], "test_shape");
+        assert_eq!(nodes[0].output.len(), 1);
+        assert_eq!(nodes[0].output[0], "test_reshaped");
+
+        assert_eq!(initializers.len(), 1);
+        assert_eq!(initializers[0].name, "test_shape");
+        assert_eq!(initializers[0].data_type, ProtoDataType::Int64 as i32);
+        assert_eq!(initializers[0].int64_data, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_create_reshape_node_to_scalar() {
+        let mut nodes = Vec::new();
+        let mut initializers = Vec::new();
+
+        let output_name = OnnxConverter::create_reshape_node(
+            "scalar",
+            "input".to_string(),
+            vec![],
+            &mut nodes,
+            &mut initializers,
+        );
+
+        assert_eq!(output_name, "scalar_reshaped");
+        assert_eq!(initializers[0].dims, vec![0]);
+        assert_eq!(initializers[0].int64_data, Vec::<i64>::new());
+    }
+
+    #[test]
+    fn test_quantize_linear_conversion_per_tensor() {
+        let mut operands = Vec::new();
+        let mut operations = Vec::new();
+
+        operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 3, 224, 224],
+                pending_permutation: vec![],
+            },
+            name: Some("input".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![],
+                pending_permutation: vec![],
+            },
+            name: Some("scale".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![],
+                pending_permutation: vec![],
+            },
+            name: Some("zero_point".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![1, 3, 224, 224],
+                pending_permutation: vec![],
+            },
+            name: Some("output".to_string()),
+        });
+
+        operations.push(Operation {
+            op_type: "quantizeLinear".to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        });
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
+
+        let converted = result.unwrap();
+        assert_eq!(converted.format, "onnx");
+
+        let model = ModelProto::decode(converted.data.as_slice()).unwrap();
+        let graph_proto = model.graph.unwrap();
+
+        let quant_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "QuantizeLinear");
+        assert!(quant_node.is_some());
+        let node = quant_node.unwrap();
+        assert_eq!(node.input.len(), 3);
+    }
+
+    #[test]
+    fn test_dequantize_linear_conversion() {
+        let mut operands = Vec::new();
+        let mut operations = Vec::new();
+
+        operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![1, 64],
+                pending_permutation: vec![],
+            },
+            name: Some("quantized_input".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![],
+                pending_permutation: vec![],
+            },
+            name: Some("scale".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![],
+                pending_permutation: vec![],
+            },
+            name: Some("zero_point".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 64],
+                pending_permutation: vec![],
+            },
+            name: Some("output".to_string()),
+        });
+
+        operations.push(Operation {
+            op_type: "dequantizeLinear".to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        });
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
+
+        let converted = result.unwrap();
+        let model = ModelProto::decode(converted.data.as_slice()).unwrap();
+        let graph_proto = model.graph.unwrap();
+
+        let dequant_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "DequantizeLinear");
+        assert!(dequant_node.is_some());
+    }
+
+    #[test]
+    fn test_quantize_linear_per_axis() {
+        let mut operands = Vec::new();
+        let mut operations = Vec::new();
+
+        operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 64, 128],
+                pending_permutation: vec![],
+            },
+            name: Some("input".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 64, 1],
+                pending_permutation: vec![],
+            },
+            name: Some("scale".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![1, 64, 1],
+                pending_permutation: vec![],
+            },
+            name: Some("zero_point".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int8,
+                shape: vec![1, 64, 128],
+                pending_permutation: vec![],
+            },
+            name: Some("output".to_string()),
+        });
+
+        operations.push(Operation {
+            op_type: "quantizeLinear".to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        });
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
+
+        let converted = result.unwrap();
+        let model = ModelProto::decode(converted.data.as_slice()).unwrap();
+        let graph_proto = model.graph.unwrap();
+
+        let quant_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "QuantizeLinear");
+        assert!(quant_node.is_some());
+
+        let node = quant_node.unwrap();
+        let axis_attr = node.attribute.iter().find(|a| a.name == "axis");
+        assert!(axis_attr.is_some());
+        assert_eq!(axis_attr.unwrap().i, 1);
+    }
+
+    #[test]
+    fn test_int4_constant_byte_length() {
+        let operands = vec![Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int4,
+                shape: vec![16, 16],
+                pending_permutation: vec![],
+            },
+            name: Some("weight".to_string()),
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_uint4_constant_byte_length() {
+        let operands = vec![Operand {
+            kind: OperandKind::Constant,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Uint4,
+                shape: vec![32, 32],
+                pending_permutation: vec![],
+            },
+            name: Some("weight".to_string()),
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cast_operation_with_int4_target() {
+        let mut operands = Vec::new();
+        let mut operations = Vec::new();
+
+        operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+            name: Some("input".to_string()),
+        });
+
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Int4,
+                shape: vec![10, 10],
+                pending_permutation: vec![],
+            },
+            name: Some("output".to_string()),
+        });
+
+        operations.push(Operation {
+            op_type: "cast".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "to": "int4"
+            }),
+            label: None,
+        });
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converter = OnnxConverter;
+        let result = converter.convert(&graph);
+        assert!(result.is_ok());
     }
 }

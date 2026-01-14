@@ -12,6 +12,8 @@ pub struct ContextProperties {
 impl Default for ContextProperties {
     fn default() -> Self {
         let allowed_io_data_types = [
+            DataType::Int4,
+            DataType::Uint4,
             DataType::Float32,
             DataType::Float16,
             DataType::Int32,
@@ -225,6 +227,13 @@ impl<'a> GraphValidator<'a> {
                     .insert(output_id, operation.op_type.clone());
                 self.processed_operands.insert(output_id);
             }
+
+            // Operation-specific validation
+            match operation.op_type.as_str() {
+                "quantizeLinear" => self.validate_quantize_like(operation, true)?,
+                "dequantizeLinear" => self.validate_quantize_like(operation, false)?,
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -255,5 +264,349 @@ impl<'a> GraphValidator<'a> {
             }
         }
         Ok(())
+    }
+
+    fn validate_quantize_like(
+        &self,
+        operation: &crate::graph::Operation,
+        is_quantize: bool,
+    ) -> Result<(), GraphError> {
+        let op_name = operation.display_name();
+        let invalid = |reason: String| GraphError::QuantizationValidation {
+            operation: op_name.clone(),
+            reason,
+        };
+
+        if operation.input_operands.len() != 3 {
+            return Err(invalid(format!(
+                "expected 3 inputs (input, scale, zeroPoint), got {}",
+                operation.input_operands.len()
+            )));
+        }
+        let output_id = operation
+            .output_operand
+            .ok_or_else(|| invalid("missing output operand".to_string()))?;
+
+        let input_desc = self
+            .graph
+            .operand(operation.input_operands[0])
+            .map(|o| &o.descriptor)
+            .ok_or_else(|| GraphError::InvalidOperandReference {
+                operation: op_name.clone(),
+                operand: operation.input_operands[0],
+            })?;
+        let scale_desc = self
+            .graph
+            .operand(operation.input_operands[1])
+            .map(|o| &o.descriptor)
+            .ok_or_else(|| GraphError::InvalidOperandReference {
+                operation: op_name.clone(),
+                operand: operation.input_operands[1],
+            })?;
+        let zero_point_desc = self
+            .graph
+            .operand(operation.input_operands[2])
+            .map(|o| &o.descriptor)
+            .ok_or_else(|| GraphError::InvalidOperandReference {
+                operation: op_name.clone(),
+                operand: operation.input_operands[2],
+            })?;
+        let output_desc = self
+            .graph
+            .operand(output_id)
+            .map(|o| &o.descriptor)
+            .ok_or_else(|| GraphError::InvalidOperandReference {
+                operation: op_name.clone(),
+                operand: output_id,
+            })?;
+
+        // Dtype constraints
+        let scale_ok = matches!(scale_desc.data_type, DataType::Float16 | DataType::Float32);
+        if !scale_ok {
+            return Err(invalid(format!(
+                "scale must be float16 or float32 (got {:?})",
+                scale_desc.data_type
+            )));
+        }
+        let zero_point_ok = matches!(
+            zero_point_desc.data_type,
+            DataType::Int4 | DataType::Uint4 | DataType::Int8 | DataType::Uint8 | DataType::Int32
+        );
+        if !zero_point_ok {
+            return Err(invalid(format!(
+                "zeroPoint must be int4/uint4/int8/uint8/int32 (got {:?})",
+                zero_point_desc.data_type
+            )));
+        }
+
+        if is_quantize {
+            let input_ok = matches!(
+                input_desc.data_type,
+                DataType::Float16 | DataType::Float32 | DataType::Int32
+            );
+            if !input_ok {
+                return Err(invalid(format!(
+                    "quantize input must be float16/float32/int32 (got {:?})",
+                    input_desc.data_type
+                )));
+            }
+            if output_desc.data_type != zero_point_desc.data_type {
+                return Err(invalid(format!(
+                    "quantize output dtype {:?} must match zeroPoint dtype {:?}",
+                    output_desc.data_type, zero_point_desc.data_type
+                )));
+            }
+        } else {
+            let input_ok = matches!(
+                input_desc.data_type,
+                DataType::Int4
+                    | DataType::Uint4
+                    | DataType::Int8
+                    | DataType::Uint8
+                    | DataType::Int32
+            );
+            if !input_ok {
+                return Err(invalid(format!(
+                    "dequantize input must be int4/uint4/int8/uint8/int32 (got {:?})",
+                    input_desc.data_type
+                )));
+            }
+            if !matches!(output_desc.data_type, DataType::Float32) {
+                return Err(invalid(format!(
+                    "dequantize output must be float32 (got {:?})",
+                    output_desc.data_type
+                )));
+            }
+        }
+
+        // Shape constraints
+        let input_shape = &input_desc.shape;
+        let scale_shape = &scale_desc.shape;
+        let zero_point_shape = &zero_point_desc.shape;
+
+        if scale_shape.is_empty() {
+            if !zero_point_shape.is_empty() {
+                return Err(invalid(format!(
+                    "zeroPoint shape {:?} must match scalar scale for per-tensor quantization",
+                    zero_point_shape
+                )));
+            }
+        } else {
+            if scale_shape.len() != input_shape.len() {
+                return Err(invalid(format!(
+                    "scale rank {} must match input rank {}",
+                    scale_shape.len(),
+                    input_shape.len()
+                )));
+            }
+            if zero_point_shape != scale_shape {
+                return Err(invalid(format!(
+                    "zeroPoint shape {:?} must match scale shape {:?}",
+                    zero_point_shape, scale_shape
+                )));
+            }
+        }
+        if output_desc.shape != *input_shape {
+            return Err(invalid(format!(
+                "output shape {:?} must match input shape {:?}",
+                output_desc.shape, input_shape
+            )));
+        }
+
+        let mut non_one_dims = Vec::new();
+        for (idx, &dim) in scale_shape.iter().enumerate() {
+            if dim != 1 {
+                non_one_dims.push(idx);
+            }
+        }
+
+        let is_per_tensor = non_one_dims.is_empty();
+        let is_per_axis = non_one_dims.len() == 1
+            && scale_shape[non_one_dims[0]] == *input_shape.get(non_one_dims[0]).unwrap_or(&0);
+
+        if !(is_per_tensor || is_per_axis) {
+            // Blockwise: allow divisibility along differing dims
+            for (i, (&scale_dim, &input_dim)) in
+                scale_shape.iter().zip(input_shape.iter()).enumerate()
+            {
+                if scale_dim == 1 || scale_dim == input_dim {
+                    continue;
+                }
+                if scale_dim == 0 || input_dim == 0 || input_dim % scale_dim != 0 {
+                    return Err(invalid(format!(
+                        "scale dim {} (value {}) must divide input dim {} (value {}) for blockwise quantization",
+                        i, scale_dim, i, input_dim
+                    )));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{ConstantData, GraphInfo, Operand, Operation};
+
+    fn constant_data_for(descriptor: &OperandDescriptor) -> ConstantData {
+        let len = descriptor.byte_length().expect("valid byte length");
+        ConstantData {
+            data: vec![0u8; len],
+            label: None,
+        }
+    }
+
+    fn build_quantize_graph(
+        op_type: &str,
+        input_dtype: DataType,
+        scale_dtype: DataType,
+        zero_point_dtype: DataType,
+        input_shape: Vec<u32>,
+        scale_shape: Vec<u32>,
+    ) -> GraphInfo {
+        let input_operand = Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: input_dtype,
+                shape: input_shape.clone(),
+                pending_permutation: Vec::new(),
+            },
+            name: Some("input".to_string()),
+        };
+
+        let scale_descriptor = OperandDescriptor {
+            data_type: scale_dtype,
+            shape: scale_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+        let scale_operand = Operand {
+            kind: OperandKind::Constant,
+            descriptor: scale_descriptor.clone(),
+            name: None,
+        };
+
+        let zero_point_descriptor = OperandDescriptor {
+            data_type: zero_point_dtype,
+            shape: scale_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+        let zero_point_operand = Operand {
+            kind: OperandKind::Constant,
+            descriptor: zero_point_descriptor.clone(),
+            name: None,
+        };
+
+        let output_descriptor = OperandDescriptor {
+            data_type: if op_type == "quantizeLinear" {
+                zero_point_dtype
+            } else {
+                DataType::Float32
+            },
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+        let output_operand = Operand {
+            kind: OperandKind::Output,
+            descriptor: output_descriptor.clone(),
+            name: Some("output".to_string()),
+        };
+
+        let operation = Operation {
+            op_type: op_type.to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: Vec::new(),
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        let mut constants = HashMap::new();
+        constants.insert(1, constant_data_for(&scale_descriptor));
+        constants.insert(2, constant_data_for(&zero_point_descriptor));
+
+        GraphInfo {
+            operands: vec![
+                input_operand,
+                scale_operand,
+                zero_point_operand,
+                output_operand,
+            ],
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations: vec![operation],
+            constant_operand_ids_to_handles: constants,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn quantize_per_axis_int8_validates() {
+        let graph = build_quantize_graph(
+            "quantizeLinear",
+            DataType::Float32,
+            DataType::Float32,
+            DataType::Int8,
+            vec![1, 3, 4],
+            vec![1, 3, 1],
+        );
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        assert!(validator.validate().is_ok());
+    }
+
+    #[test]
+    fn quantize_blockwise_int4_validates() {
+        let graph = build_quantize_graph(
+            "quantizeLinear",
+            DataType::Float16,
+            DataType::Float16,
+            DataType::Uint4,
+            vec![4, 4],
+            vec![2, 2],
+        );
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        assert!(validator.validate().is_ok());
+    }
+
+    #[test]
+    fn quantize_rank_mismatch_fails() {
+        let graph = build_quantize_graph(
+            "quantizeLinear",
+            DataType::Float32,
+            DataType::Float32,
+            DataType::Uint8,
+            vec![2, 2],
+            vec![1],
+        );
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        let err = validator.validate().unwrap_err();
+        match err {
+            GraphError::QuantizationValidation { reason, .. } => {
+                assert!(reason.contains("rank"), "unexpected reason: {}", reason);
+            }
+            other => panic!("unexpected error {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dequantize_invalid_scale_type_fails() {
+        let graph = build_quantize_graph(
+            "dequantizeLinear",
+            DataType::Uint8,
+            DataType::Uint8,
+            DataType::Uint8,
+            vec![2, 2],
+            vec![1, 1],
+        );
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        let err = validator.validate().unwrap_err();
+        match err {
+            GraphError::QuantizationValidation { reason, .. } => {
+                assert!(reason.contains("scale"), "unexpected reason: {}", reason);
+            }
+            other => panic!("unexpected error {:?}", other),
+        }
     }
 }

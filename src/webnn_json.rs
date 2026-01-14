@@ -9,6 +9,8 @@ use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
 /// Convert our DataType to webnn-graph DataType
 fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
     match dt {
+        DataType::Int4 => webnn_graph::ast::DataType::Int4,
+        DataType::Uint4 => webnn_graph::ast::DataType::Uint4,
         DataType::Float32 => webnn_graph::ast::DataType::Float32,
         DataType::Float16 => webnn_graph::ast::DataType::Float16,
         DataType::Int32 => webnn_graph::ast::DataType::Int32,
@@ -25,6 +27,8 @@ fn from_webnn_datatype(dt: &webnn_graph::ast::DataType) -> DataType {
     match dt {
         webnn_graph::ast::DataType::Float32 => DataType::Float32,
         webnn_graph::ast::DataType::Float16 => DataType::Float16,
+        webnn_graph::ast::DataType::Int4 => DataType::Int4,
+        webnn_graph::ast::DataType::Uint4 => DataType::Uint4,
         webnn_graph::ast::DataType::Int32 => DataType::Int32,
         webnn_graph::ast::DataType::Uint32 => DataType::Uint32,
         webnn_graph::ast::DataType::Int64 => DataType::Int64,
@@ -35,7 +39,7 @@ fn from_webnn_datatype(dt: &webnn_graph::ast::DataType) -> DataType {
 }
 
 /// Convert GraphInfo to GraphJson
-pub fn to_graph_json(graph: &GraphInfo) -> Result<GraphJson, GraphError> {
+pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, GraphError> {
     let mut inputs = BTreeMap::new();
     let mut consts = BTreeMap::new();
     let mut nodes = Vec::new();
@@ -146,7 +150,8 @@ pub fn to_graph_json(graph: &GraphInfo) -> Result<GraphJson, GraphError> {
     Ok(GraphJson {
         name: Some("graph".to_string()),
         format: "webnn-graph-json".to_string(),
-        version: 1,
+        version: 2,
+        quantized: graph.quantized || quantized,
         inputs,
         consts,
         nodes,
@@ -213,6 +218,13 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
                 let mut bytes = Vec::new();
                 for _ in 0..element_count {
                     match dt {
+                        DataType::Int4 | DataType::Uint4 => {
+                            return Err(GraphError::ConversionFailed {
+                                format: "webnn-graph-json".to_string(),
+                                reason: "int4/uint4 constants not supported in scalar export"
+                                    .to_string(),
+                            });
+                        }
                         DataType::Float32 => bytes.extend_from_slice(&scalar_f32.to_le_bytes()),
                         DataType::Float16 => {
                             let f16_bits = half::f16::from_f32(scalar_f32).to_bits();
@@ -337,6 +349,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
         operations,
         constant_operand_ids_to_handles,
         id_to_constant_tensor_operand_map: HashMap::new(),
+        quantized: graph_json.quantized,
     };
 
     // Run shape inference pass to fill in output shapes
@@ -360,6 +373,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             "uint64" => Some(DataType::Uint64),
             "int8" => Some(DataType::Int8),
             "uint8" => Some(DataType::Uint8),
+            "int4" => Some(DataType::Int4),
+            "uint4" => Some(DataType::Uint4),
             _ => None,
         }
     }
@@ -854,6 +869,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use webnn_graph::serialize::{SerializeOptions, serialize_graph_to_wg_text};
 
     #[test]
     fn test_datatype_conversion() {
@@ -866,6 +882,8 @@ mod tests {
             DataType::Uint64,
             DataType::Int8,
             DataType::Uint8,
+            DataType::Int4,
+            DataType::Uint4,
         ];
 
         for dt in types {
@@ -873,5 +891,63 @@ mod tests {
             let back = from_webnn_datatype(&webnn_dt);
             assert_eq!(dt, back);
         }
+    }
+
+    fn build_quantized_graph_info(dtype: DataType) -> GraphInfo {
+        GraphInfo {
+            operands: vec![Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: dtype,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            }],
+            input_operands: vec![0],
+            output_operands: vec![0],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        }
+    }
+
+    #[test]
+    fn quantized_flag_roundtrips_json() {
+        let graph = build_quantized_graph_info(DataType::Int8);
+        let json = to_graph_json(&graph, false).expect("to_graph_json");
+        assert!(json.quantized);
+
+        let graph_from_json = from_graph_json(&json).expect("from_graph_json");
+        assert!(graph_from_json.quantized);
+        assert_eq!(
+            graph_from_json.operands[0].descriptor.data_type,
+            DataType::Int8
+        );
+        assert_eq!(graph_from_json.output_operands, vec![0]);
+
+        // Passing quantized=true should also set the flag even if the graph info is false.
+        let mut graph_not_marked = graph.clone();
+        graph_not_marked.quantized = false;
+        let json_explicit = to_graph_json(&graph_not_marked, true).expect("to_graph_json");
+        assert!(json_explicit.quantized);
+    }
+
+    #[test]
+    fn quantized_flag_roundtrips_text() {
+        let graph = build_quantized_graph_info(DataType::Uint4);
+        let graph_json = to_graph_json(&graph, true).expect("to_graph_json");
+        let text = serialize_graph_to_wg_text(&graph_json, SerializeOptions { quantized: true })
+            .expect("serialize to text");
+        let parsed = webnn_graph::parser::parse_wg_text(&text).expect("parse text");
+        assert!(
+            parsed.quantized,
+            "text serialization preserves quantized marker"
+        );
+
+        let graph_info = from_graph_json(&parsed).expect("graph from text");
+        assert!(graph_info.quantized);
+        assert_eq!(graph_info.operands[0].descriptor.data_type, DataType::Uint4);
     }
 }

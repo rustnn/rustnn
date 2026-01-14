@@ -119,6 +119,8 @@ impl PyMLTensor {
     #[getter]
     fn data_type(&self) -> String {
         match self.tensor_descriptor.descriptor.data_type {
+            DataType::Int4 => "int4".to_string(),
+            DataType::Uint4 => "uint4".to_string(),
             DataType::Float32 => "float32".to_string(),
             DataType::Float16 => "float16".to_string(),
             DataType::Int32 => "int32".to_string(),
@@ -246,6 +248,8 @@ impl PyMLDeviceTensor {
     #[getter]
     fn data_type(&self) -> String {
         match self.handle.dtype {
+            DataType::Int4 => "int4".to_string(),
+            DataType::Uint4 => "uint4".to_string(),
             DataType::Float32 => "float32".to_string(),
             DataType::Float16 => "float16".to_string(),
             DataType::Int32 => "int32".to_string(),
