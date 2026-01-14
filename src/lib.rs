@@ -11,9 +11,6 @@ pub mod tensor;
 pub mod validator;
 pub mod webnn_json;
 
-#[cfg(feature = "python")]
-pub mod python;
-
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;
 
