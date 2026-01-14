@@ -898,7 +898,7 @@ mod tests {
             operands: vec![Operand {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
-                    data_type: dtype.clone(),
+                    data_type: dtype,
                     shape: vec![2, 3],
                     pending_permutation: vec![],
                 },
