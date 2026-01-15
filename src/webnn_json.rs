@@ -950,4 +950,269 @@ mod tests {
         assert!(graph_info.quantized);
         assert_eq!(graph_info.operands[0].descriptor.data_type, DataType::Uint4);
     }
+
+    #[test]
+    fn test_to_graph_json_with_constants() {
+        // Test conversion with constant operands
+        let constant_data = vec![1u8, 2, 3, 4];
+        let mut constant_map = HashMap::new();
+        constant_map.insert(
+            1u32,
+            ConstantData {
+                data: constant_data.clone(),
+                label: None,
+            },
+        );
+
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Constant,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("weight".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![2],
+            operations: vec![],
+            constant_operand_ids_to_handles: constant_map,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let json = to_graph_json(&graph, false).expect("to_graph_json");
+
+        assert_eq!(json.inputs.len(), 1);
+        assert!(json.inputs.contains_key("input"));
+        assert_eq!(json.consts.len(), 1);
+        assert!(json.consts.contains_key("weight"));
+        assert_eq!(json.outputs.len(), 1);
+        assert!(json.outputs.contains_key("output"));
+    }
+
+    #[test]
+    fn test_to_graph_json_with_operations() {
+        // Test conversion with operations
+        let mut attrs = serde_json::Map::new();
+        attrs.insert("alpha".to_string(), serde_json::json!(0.01));
+
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 3],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("x".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 3],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("y".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation {
+                op_type: "leakyRelu".to_string(),
+                input_operands: vec![0],
+                output_operand: None,
+                output_operands: vec![1],
+                attributes: serde_json::Value::Object(attrs),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let json = to_graph_json(&graph, false).expect("to_graph_json");
+
+        assert_eq!(json.nodes.len(), 1);
+        assert_eq!(json.nodes[0].op, "leakyRelu");
+        assert_eq!(json.nodes[0].inputs, vec!["x"]);
+        assert!(json.nodes[0].options.contains_key("alpha"));
+    }
+
+    #[test]
+    fn test_from_graph_json_creates_operands() {
+        use webnn_graph::ast::{ConstDecl, ConstInit, OperandDesc};
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![1, 2, 3],
+            },
+        );
+
+        let mut consts = BTreeMap::new();
+        consts.insert(
+            "weight".to_string(),
+            ConstDecl {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![3, 3],
+                init: ConstInit::InlineBytes {
+                    bytes: vec![0u8; 36],
+                },
+            },
+        );
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("y".to_string(), "y".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("test".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts,
+            nodes: vec![],
+            outputs,
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
+        // Check we have operands: input and constant
+        // Note: outputs in GraphJson don't create separate operands unless they're
+        // referenced by nodes, they just mark existing operands as outputs
+        assert!(graph_info.operands.len() >= 2);
+        assert_eq!(graph_info.input_operands.len(), 1);
+
+        // Check constant data was stored
+        assert_eq!(graph_info.constant_operand_ids_to_handles.len(), 1);
+    }
+
+    #[test]
+    fn test_from_graph_json_with_scalar_constant() {
+        use webnn_graph::ast::{ConstDecl, ConstInit};
+
+        let mut consts = BTreeMap::new();
+        consts.insert(
+            "scale".to_string(),
+            ConstDecl {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![],
+                init: ConstInit::Scalar {
+                    value: serde_json::json!(1.5),
+                },
+            },
+        );
+
+        let graph_json = GraphJson {
+            name: Some("test".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs: BTreeMap::new(),
+            consts,
+            nodes: vec![],
+            outputs: BTreeMap::new(),
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
+        // Scalar constant should be created
+        assert_eq!(graph_info.operands.len(), 1);
+        assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
+        let empty_shape: Vec<u32> = vec![];
+        assert_eq!(graph_info.operands[0].descriptor.shape, empty_shape);
+    }
+
+    #[test]
+    fn test_operand_name_generation() {
+        // Test that unnamed operands get generated names
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: vec![],
+                    },
+                    name: None, // Unnamed
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: vec![],
+                    },
+                    name: None, // Unnamed
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let json = to_graph_json(&graph, false).expect("to_graph_json");
+
+        // Generated names should be present
+        assert!(json.inputs.contains_key("operand_0"));
+        assert!(json.outputs.contains_key("operand_1"));
+    }
+
+    #[test]
+    fn test_all_data_types_roundtrip() {
+        let types = vec![
+            DataType::Float32,
+            DataType::Float16,
+            DataType::Int32,
+            DataType::Uint32,
+            DataType::Int64,
+            DataType::Uint64,
+            DataType::Int8,
+            DataType::Uint8,
+            DataType::Int4,
+            DataType::Uint4,
+        ];
+
+        for dtype in types {
+            let graph = build_quantized_graph_info(dtype.clone());
+            let json = to_graph_json(&graph, false).expect("to_graph_json");
+            let back = from_graph_json(&json).expect("from_graph_json");
+
+            assert_eq!(
+                back.operands[0].descriptor.data_type, dtype,
+                "Data type {:?} should roundtrip correctly",
+                dtype
+            );
+        }
+    }
 }
