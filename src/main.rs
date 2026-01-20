@@ -91,21 +91,38 @@ fn run() -> Result<(), GraphError> {
                 converted.content_type
             );
         }
-        #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
-        if cli.convert_output.is_none() && cli.run_coreml && converted.format == "coreml" {
-            println!(
-                "Converted graph to `{}` in-memory (skipping stdout because CoreML execution is requested).",
-                converted.format
-            );
-        }
-        #[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
+        // Check if execution is requested (skip stdout write if so)
+        let execution_requested = {
+            let mut exec = false;
+            #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+            {
+                exec = exec || cli.run_coreml;
+            }
+            #[cfg(feature = "onnx-runtime")]
+            {
+                exec = exec || cli.run_onnx;
+            }
+            #[cfg(feature = "trtx-runtime")]
+            {
+                exec = exec || cli.run_trtx;
+            }
+            exec
+        };
+
         if cli.convert_output.is_none() {
-            std::io::stdout()
-                .write_all(&converted.data)
-                .map_err(|err| GraphError::ConversionFailed {
-                    format: converted.format.to_string(),
-                    reason: err.to_string(),
-                })?;
+            if execution_requested {
+                println!(
+                    "Converted graph to `{}` in-memory (skipping stdout because execution is requested).",
+                    converted.format
+                );
+            } else {
+                std::io::stdout()
+                    .write_all(&converted.data)
+                    .map_err(|err| GraphError::ConversionFailed {
+                        format: converted.format.to_string(),
+                        reason: err.to_string(),
+                    })?;
+            }
         }
 
         #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
