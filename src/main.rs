@@ -176,14 +176,20 @@ fn run() -> Result<(), GraphError> {
 
         #[cfg(feature = "trtx-runtime")]
         if cli.run_trtx {
-            if converted.format != "onnx" {
+            // Support both ONNX format (parsed by TensorRT) and native trtx format (pre-built engine)
+            if converted.format != "onnx" && converted.format != "trtx" {
                 return Err(GraphError::UnsupportedRuntimeFormat {
                     format: converted.format.to_string(),
                 });
             }
             let outputs =
                 rustnn::run_trtx_zeroed(&converted.data, &artifacts.input_names_to_descriptors)?;
-            println!("Executed ONNX model with zeroed inputs (TRT-RTX):");
+            let model_type = if converted.format == "trtx" {
+                "TensorRT engine"
+            } else {
+                "ONNX model"
+            };
+            println!("Executed {} with zeroed inputs (TRT-RTX):", model_type);
             for out in outputs {
                 println!(
                     "  - {}: shape={:?} type={}",
