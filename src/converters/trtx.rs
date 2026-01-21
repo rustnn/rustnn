@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, Operation, OperandKind};
+use trtx::network::Layer;
 
 /// TensorRT native converter
 pub struct TrtxConverter;
@@ -110,12 +111,19 @@ impl TrtxConverter {
                     });
                 }
 
-                let tensor = network
-                    .add_constant(&dims, data)
+                let trt_dtype = Self::webnn_to_trt_dtype(operand.descriptor.data_type)?;
+                let layer = network
+                    .add_constant(&dims, data, trt_dtype)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add constant (operand {}): {}", operand_id, e),
                     })?;
+
+                // Extract output tensor from constant layer
+                let tensor = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get constant layer output: {}", e),
+                })?;
 
                 tensor_map.insert(operand_id as u32, tensor);
             }
@@ -217,12 +225,18 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
-        let output = network
+        let layer = network
             .add_elementwise(input0, input1, op_code)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add elementwise operation: {}", e),
             })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
+        })?;
 
         let output_id = operation.output_operands[0];
         tensor_map.insert(output_id, output);
@@ -243,12 +257,18 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        let output = network
+        let layer = network
             .add_activation(input, activation_type)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add activation: {}", e),
             })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
+        })?;
 
         let output_id = operation.output_operands[0];
         tensor_map.insert(output_id, output);
@@ -276,12 +296,18 @@ impl TrtxConverter {
             })?;
 
         // MatrixOperation: 0=NONE, 1=TRANSPOSE, 2=VECTOR
-        let output = network
+        let layer = network
             .add_matrix_multiply(input0, 0, input1, 0) // No transpose
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add matrix multiply: {}", e),
             })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
+        })?;
 
         let output_id = operation.output_operands[0];
         tensor_map.insert(output_id, output);
@@ -317,12 +343,18 @@ impl TrtxConverter {
             window_size[1].as_i64().unwrap_or(2) as i32,
         ];
 
-        let output = network
+        let layer = network
             .add_pooling(input, pool_type, &window)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add pooling: {}", e),
             })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
+        })?;
 
         let output_id = operation.output_operands[0];
         tensor_map.insert(output_id, output);
@@ -345,11 +377,17 @@ impl TrtxConverter {
         // Default to last axis (most common for softmax)
         let axes = 1u32 << 0; // Apply to first axis
 
-        let output = network.add_softmax(input, axes).map_err(|e| {
+        let layer = network.add_softmax(input, axes).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add softmax: {}", e),
             }
+        })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
         })?;
 
         let output_id = operation.output_operands[0];
@@ -376,11 +414,17 @@ impl TrtxConverter {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let output = network.add_concatenation(&inputs).map_err(|e| {
+        let layer = network.add_concatenation(&inputs).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add concatenation: {}", e),
             }
+        })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
         })?;
 
         let output_id = operation.output_operands[0];
@@ -403,11 +447,17 @@ impl TrtxConverter {
             })?;
 
         // For now, just use shuffle layer (transpose details would need more TensorRT API)
-        let output = network.add_shuffle(input).map_err(|e| {
+        let layer = network.add_shuffle(input).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add shuffle (transpose): {}", e),
             }
+        })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
         })?;
 
         let output_id = operation.output_operands[0];
@@ -430,11 +480,17 @@ impl TrtxConverter {
             })?;
 
         // Use shuffle layer for reshape
-        let output = network.add_shuffle(input).map_err(|e| {
+        let layer = network.add_shuffle(input).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add shuffle (reshape): {}", e),
             }
+        })?;
+
+        // Extract output tensor from layer
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get layer output: {}", e),
         })?;
 
         let output_id = operation.output_operands[0];
