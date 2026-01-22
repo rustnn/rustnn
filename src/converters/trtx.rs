@@ -7,8 +7,9 @@ use std::collections::HashMap;
 
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
-use crate::graph::{DataType, GraphInfo, Operation, OperandKind};
+use crate::graph::{DataType, GraphInfo, OperandKind, Operation};
 use trtx::network::Layer;
+use trtx::{ActivationType, ElementWiseOperation, PoolingType, UnaryOperation};
 
 /// TensorRT native converter
 pub struct TrtxConverter;
@@ -63,12 +64,12 @@ impl TrtxConverter {
                 let dims: Vec<i32> = operand.descriptor.shape.iter().map(|&d| d as i32).collect();
                 let name = operand.name.as_deref().unwrap_or("input");
 
-                let mut tensor = network
-                    .add_input(name, dtype, &dims)
-                    .map_err(|e| GraphError::ConversionFailed {
+                let mut tensor = network.add_input(name, dtype, &dims).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add input {}: {}", name, e),
-                    })?;
+                    }
+                })?;
 
                 tensor
                     .set_name(name)
@@ -88,7 +89,12 @@ impl TrtxConverter {
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
                 // Validate that data size matches expected size
-                let expected_size: usize = operand.descriptor.shape.iter().map(|&d| d as usize).product();
+                let expected_size: usize = operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|&d| d as usize)
+                    .product();
                 let data_type_size = operand.descriptor.data_type.bytes_per_element();
                 let expected_bytes = expected_size * data_type_size;
 
@@ -112,18 +118,20 @@ impl TrtxConverter {
                 }
 
                 let trt_dtype = Self::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let layer = network
-                    .add_constant(&dims, data, trt_dtype)
-                    .map_err(|e| GraphError::ConversionFailed {
+                let layer = network.add_constant(&dims, data, trt_dtype).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add constant (operand {}): {}", operand_id, e),
-                    })?;
+                    }
+                })?;
 
                 // Extract output tensor from constant layer
-                let tensor = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get constant layer output: {}", e),
-                })?;
+                let tensor = layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get constant layer output: {}", e),
+                    })?;
 
                 tensor_map.insert(operand_id as u32, tensor);
             }
@@ -137,12 +145,12 @@ impl TrtxConverter {
         // Step 4: Mark outputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Output {
-                let tensor = tensor_map
-                    .get(&(operand_id as u32))
-                    .ok_or_else(|| GraphError::ConversionFailed {
+                let tensor = tensor_map.get(&(operand_id as u32)).ok_or_else(|| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Output operand {} not found in tensor map", operand_id),
-                    })?;
+                    }
+                })?;
 
                 network
                     .mark_output(tensor)
@@ -167,25 +175,190 @@ impl TrtxConverter {
 
         match op_type {
             // Binary element-wise operations
-            "add" => Self::add_elementwise_op(network, tensor_map, operation, 0)?, // kSUM
-            "sub" => Self::add_elementwise_op(network, tensor_map, operation, 1)?, // kSUB
-            "mul" => Self::add_elementwise_op(network, tensor_map, operation, 2)?, // kPROD
-            "div" => Self::add_elementwise_op(network, tensor_map, operation, 3)?, // kDIV
-            "pow" => Self::add_elementwise_op(network, tensor_map, operation, 6)?, // kPOW
+            "add" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kSUM as i32,
+            )?,
+            "sub" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kSUB as i32,
+            )?,
+            "mul" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kPROD as i32,
+            )?,
+            "div" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kDIV as i32,
+            )?,
+            "pow" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kPOW as i32,
+            )?,
 
-            // Unary activation operations
-            "relu" => Self::add_activation_op(network, tensor_map, operation, 0)?,     // kRELU
-            "sigmoid" => Self::add_activation_op(network, tensor_map, operation, 1)?,  // kSIGMOID
-            "tanh" => Self::add_activation_op(network, tensor_map, operation, 2)?,     // kTANH
-            "elu" => Self::add_activation_op(network, tensor_map, operation, 4)?,      // kELU
-            "softsign" => Self::add_activation_op(network, tensor_map, operation, 8)?, // kSOFTSIGN
+            // Unary activation operations (use IActivationLayer)
+            "relu" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kRELU as i32,
+            )?,
+            "sigmoid" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kSIGMOID as i32,
+            )?,
+            "tanh" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kTANH as i32,
+            )?,
+            "elu" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kELU as i32,
+            )?,
+            "softsign" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kSOFTSIGN as i32,
+            )?,
+            "softplus" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kSOFTPLUS as i32,
+            )?,
+            "gelu" => Self::add_activation_op(
+                network,
+                tensor_map,
+                operation,
+                ActivationType::kGELU_ERF as i32,
+            )?,
+
+            // Unary mathematical operations (use IUnaryLayer)
+            // Exponential and logarithmic
+            "exp" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kEXP as i32)?
+            }
+            "log" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kLOG as i32)?
+            }
+
+            // Arithmetic
+            "sqrt" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSQRT as i32)?
+            }
+            "reciprocal" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kRECIP as i32,
+            )?,
+            "abs" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kABS as i32)?
+            }
+            "neg" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kNEG as i32)?
+            }
+
+            // Trigonometric
+            "sin" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSIN as i32)?
+            }
+            "cos" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCOS as i32)?
+            }
+            "tan" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kTAN as i32)?
+            }
+
+            // Hyperbolic
+            "sinh" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSINH as i32)?
+            }
+            "cosh" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCOSH as i32)?
+            }
+
+            // Inverse trigonometric
+            "asin" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kASIN as i32)?
+            }
+            "acos" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kACOS as i32)?
+            }
+            "atan" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kATAN as i32)?
+            }
+
+            // Inverse hyperbolic
+            "asinh" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kASINH as i32,
+            )?,
+            "acosh" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kACOSH as i32,
+            )?,
+            "atanh" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kATANH as i32,
+            )?,
+
+            // Rounding and other
+            "ceil" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCEIL as i32)?
+            }
+            "floor" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kFLOOR as i32,
+            )?,
+            "erf" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kERF as i32)?
+            }
+            "sign" => {
+                Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSIGN as i32)?
+            }
+            "round" => Self::add_unary_op(
+                network,
+                tensor_map,
+                operation,
+                UnaryOperation::kROUND as i32,
+            )?,
 
             // Matrix operations
             "matmul" => Self::add_matmul_op(network, tensor_map, operation)?,
 
             // Pooling operations
-            "averagePool2d" => Self::add_pooling_op(network, tensor_map, operation, 1)?, // kAVERAGE
-            "maxPool2d" => Self::add_pooling_op(network, tensor_map, operation, 0)?,     // kMAX
+            "averagePool2d" => {
+                Self::add_pooling_op(network, tensor_map, operation, PoolingType::kAVERAGE as i32)?
+            }
+            "maxPool2d" => {
+                Self::add_pooling_op(network, tensor_map, operation, PoolingType::kMAX as i32)?
+            }
 
             // Other operations
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
@@ -197,7 +370,7 @@ impl TrtxConverter {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Unsupported operation: {}", op_type),
-                })
+                });
             }
         }
 
@@ -233,12 +406,15 @@ impl TrtxConverter {
             })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -265,12 +441,51 @@ impl TrtxConverter {
             })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add unary operation (element-wise mathematical operations)
+    fn add_unary_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+        unary_op: i32,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let layer =
+            network
+                .add_unary(input, unary_op)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add unary operation: {}", e),
+                })?;
+
+        // Extract output tensor from layer
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -304,12 +519,15 @@ impl TrtxConverter {
             })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -351,12 +569,15 @@ impl TrtxConverter {
             })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -377,20 +598,23 @@ impl TrtxConverter {
         // Default to last axis (most common for softmax)
         let axes = 1u32 << 0; // Apply to first axis
 
-        let layer = network.add_softmax(input, axes).map_err(|e| {
-            GraphError::ConversionFailed {
+        let layer = network
+            .add_softmax(input, axes)
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add softmax: {}", e),
-            }
-        })?;
+            })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -405,27 +629,30 @@ impl TrtxConverter {
             .input_operands
             .iter()
             .map(|&id| {
-                tensor_map.get(&id).ok_or_else(|| {
-                    GraphError::ConversionFailed {
+                tensor_map
+                    .get(&id)
+                    .ok_or_else(|| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Input operand {} not found", id),
-                    }
-                })
+                    })
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let layer = network.add_concatenation(&inputs).map_err(|e| {
-            GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add concatenation: {}", e),
-            }
-        })?;
+        let layer =
+            network
+                .add_concatenation(&inputs)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add concatenation: {}", e),
+                })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
         let output_id = operation.output_operands[0];
         tensor_map.insert(output_id, output);
@@ -447,20 +674,23 @@ impl TrtxConverter {
             })?;
 
         // For now, just use shuffle layer (transpose details would need more TensorRT API)
-        let layer = network.add_shuffle(input).map_err(|e| {
-            GraphError::ConversionFailed {
+        let layer = network
+            .add_shuffle(input)
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add shuffle (transpose): {}", e),
-            }
-        })?;
+            })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -480,20 +710,23 @@ impl TrtxConverter {
             })?;
 
         // Use shuffle layer for reshape
-        let layer = network.add_shuffle(input).map_err(|e| {
-            GraphError::ConversionFailed {
+        let layer = network
+            .add_shuffle(input)
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add shuffle (reshape): {}", e),
-            }
-        })?;
+            })?;
 
         // Extract output tensor from layer
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get layer output: {}", e),
-        })?;
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -527,12 +760,12 @@ impl GraphConverter for TrtxConverter {
         Self::build_network(graph_info, &mut network)?;
 
         // Create builder config
-        let mut config = builder.create_config().map_err(|e| {
-            GraphError::ConversionFailed {
+        let mut config = builder
+            .create_config()
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create builder config: {}", e),
-            }
-        })?;
+            })?;
 
         // Set workspace size (1 GB)
         config
@@ -571,9 +804,21 @@ mod tests {
 
     #[test]
     fn test_webnn_to_trt_dtype() {
-        assert_eq!(TrtxConverter::webnn_to_trt_dtype(DataType::Float32).unwrap(), 0);
-        assert_eq!(TrtxConverter::webnn_to_trt_dtype(DataType::Float16).unwrap(), 1);
-        assert_eq!(TrtxConverter::webnn_to_trt_dtype(DataType::Int8).unwrap(), 2);
-        assert_eq!(TrtxConverter::webnn_to_trt_dtype(DataType::Int32).unwrap(), 3);
+        assert_eq!(
+            TrtxConverter::webnn_to_trt_dtype(DataType::Float32).unwrap(),
+            0
+        );
+        assert_eq!(
+            TrtxConverter::webnn_to_trt_dtype(DataType::Float16).unwrap(),
+            1
+        );
+        assert_eq!(
+            TrtxConverter::webnn_to_trt_dtype(DataType::Int8).unwrap(),
+            2
+        );
+        assert_eq!(
+            TrtxConverter::webnn_to_trt_dtype(DataType::Int32).unwrap(),
+            3
+        );
     }
 }
