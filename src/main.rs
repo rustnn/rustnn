@@ -91,21 +91,38 @@ fn run() -> Result<(), GraphError> {
                 converted.content_type
             );
         }
-        #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
-        if cli.convert_output.is_none() && cli.run_coreml && converted.format == "coreml" {
-            println!(
-                "Converted graph to `{}` in-memory (skipping stdout because CoreML execution is requested).",
-                converted.format
-            );
-        }
-        #[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
+        // Check if execution is requested (skip stdout write if so)
+        let execution_requested = {
+            let mut exec = false;
+            #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+            {
+                exec = exec || cli.run_coreml;
+            }
+            #[cfg(feature = "onnx-runtime")]
+            {
+                exec = exec || cli.run_onnx;
+            }
+            #[cfg(feature = "trtx-runtime")]
+            {
+                exec = exec || cli.run_trtx;
+            }
+            exec
+        };
+
         if cli.convert_output.is_none() {
-            std::io::stdout()
-                .write_all(&converted.data)
-                .map_err(|err| GraphError::ConversionFailed {
-                    format: converted.format.to_string(),
-                    reason: err.to_string(),
-                })?;
+            if execution_requested {
+                println!(
+                    "Converted graph to `{}` in-memory (skipping stdout because execution is requested).",
+                    converted.format
+                );
+            } else {
+                std::io::stdout()
+                    .write_all(&converted.data)
+                    .map_err(|err| GraphError::ConversionFailed {
+                        format: converted.format.to_string(),
+                        reason: err.to_string(),
+                    })?;
+            }
         }
 
         #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
@@ -159,14 +176,20 @@ fn run() -> Result<(), GraphError> {
 
         #[cfg(feature = "trtx-runtime")]
         if cli.run_trtx {
-            if converted.format != "onnx" {
+            // Support both ONNX format (parsed by TensorRT) and native trtx format (pre-built engine)
+            if converted.format != "onnx" && converted.format != "trtx" {
                 return Err(GraphError::UnsupportedRuntimeFormat {
                     format: converted.format.to_string(),
                 });
             }
             let outputs =
                 rustnn::run_trtx_zeroed(&converted.data, &artifacts.input_names_to_descriptors)?;
-            println!("Executed ONNX model with zeroed inputs (TRT-RTX):");
+            let model_type = if converted.format == "trtx" {
+                "TensorRT engine"
+            } else {
+                "ONNX model"
+            };
+            println!("Executed {} with zeroed inputs (TRT-RTX):", model_type);
             for out in outputs {
                 println!(
                     "  - {}: shape={:?} type={}",
