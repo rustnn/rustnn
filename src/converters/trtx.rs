@@ -208,6 +208,18 @@ impl TrtxConverter {
                 operation,
                 ElementWiseOperation::kPOW as i32,
             )?,
+            "max" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kMAX as i32,
+            )?,
+            "min" => Self::add_elementwise_op(
+                network,
+                tensor_map,
+                operation,
+                ElementWiseOperation::kMIN as i32,
+            )?,
 
             // Unary activation operations (use IActivationLayer)
             "relu" => Self::add_activation_op(
@@ -252,6 +264,10 @@ impl TrtxConverter {
                 operation,
                 ActivationType::kGELU_ERF as i32,
             )?,
+            "leakyRelu" => Self::add_leaky_relu_op(network, tensor_map, operation)?,
+            "prelu" => Self::add_prelu_op(network, tensor_map, operation)?,
+            "hardSigmoid" => Self::add_hard_sigmoid_op(network, tensor_map, operation)?,
+            "hardSwish" => Self::add_hard_swish_op(network, tensor_map, operation)?,
 
             // Unary mathematical operations (use IUnaryLayer)
             // Exponential and logarithmic
@@ -351,6 +367,8 @@ impl TrtxConverter {
                 operation,
                 UnaryOperation::kROUND as i32,
             )?,
+            "identity" => Self::add_identity_op(network, tensor_map, operation)?,
+            "cast" => Self::add_identity_op(network, tensor_map, operation)?, // Cast uses identity for now
 
             // Matrix operations
             "matmul" => Self::add_matmul_op(network, tensor_map, operation)?,
@@ -365,6 +383,12 @@ impl TrtxConverter {
             }
             "maxPool2d" => {
                 Self::add_pooling_op(network, tensor_map, operation, PoolingType::kMAX as i32)?
+            }
+            "globalAveragePool" => {
+                Self::add_global_pooling_op(network, tensor_map, operation, PoolingType::kAVERAGE as i32)?
+            }
+            "globalMaxPool" => {
+                Self::add_global_pooling_op(network, tensor_map, operation, PoolingType::kMAX as i32)?
             }
 
             // Other operations
@@ -484,6 +508,310 @@ impl TrtxConverter {
                 })?;
 
         // Extract output tensor from layer
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add leaky ReLU activation
+    /// LeakyReLU(x) = x if x > 0, else alpha * x
+    /// Implemented as: max(0, x) + alpha * min(0, x)
+    fn add_leaky_relu_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Note: TensorRT has kLEAKY_RELU but trtx bindings don't expose setAlpha yet
+        // Using direct activation layer which should have default alpha=0.01
+        let layer = network
+            .add_activation(input, ActivationType::kLEAKY_RELU as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add leaky relu: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add PReLU activation
+    fn add_prelu_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let slope = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Slope operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // PReLU: output = x if x > 0, else slope * x
+        // Implemented as: max(0, x) + slope * min(0, x)
+        
+        // ReLU part: max(0, x)
+        let relu_layer = network
+            .add_activation(input, ActivationType::kRELU as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add relu for prelu: {}", e),
+            })?;
+        let relu_output = relu_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get relu output: {}", e),
+        })?;
+
+        // Negative part: min(0, x)
+        let zero_layer = network
+            .add_activation(input, ActivationType::kRELU as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add second relu: {}", e),
+            })?;
+        let zero_output = zero_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get zero output: {}", e),
+        })?;
+
+        // x - relu(x) = min(0, x)
+        let neg_part_layer = network
+            .add_elementwise(input, &zero_output, ElementWiseOperation::kSUB as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to subtract for prelu: {}", e),
+            })?;
+        let neg_part = neg_part_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get negative part: {}", e),
+        })?;
+
+        // slope * min(0, x)
+        let scaled_neg_layer = network
+            .add_elementwise(&neg_part, slope, ElementWiseOperation::kPROD as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to scale negative part: {}", e),
+            })?;
+        let scaled_neg = scaled_neg_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get scaled negative: {}", e),
+        })?;
+
+        // Final: relu + slope * neg_part
+        let final_layer = network
+            .add_elementwise(&relu_output, &scaled_neg, ElementWiseOperation::kSUM as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add prelu parts: {}", e),
+            })?;
+
+        let output = final_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get prelu output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add hard sigmoid activation
+    /// HardSigmoid(x) = clamp(alpha * x + beta, 0, 1)
+    /// Using TensorRT's built-in kHARD_SIGMOID activation
+    fn add_hard_sigmoid_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Note: TensorRT's kHARD_SIGMOID uses default alpha/beta
+        // trtx bindings don't expose setAlpha/setBeta yet
+        let layer = network
+            .add_activation(input, ActivationType::kHARD_SIGMOID as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add hard sigmoid: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add hard swish activation
+    /// HardSwish(x) = x * hardSigmoid(x) = x * clamp(x/6 + 0.5, 0, 1)
+    /// Implemented using elementwise operations
+    fn add_hard_swish_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // HardSwish(x) = x * HardSigmoid(x)
+        // Use TensorRT's hard sigmoid activation
+        let hard_sigmoid_layer = network
+            .add_activation(input, ActivationType::kHARD_SIGMOID as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add hard sigmoid for hard swish: {}", e),
+            })?;
+
+        let hard_sigmoid_output = hard_sigmoid_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get hard sigmoid output: {}", e),
+            })?;
+
+        // Multiply x * hardSigmoid(x)
+        let mul_layer = network
+            .add_elementwise(input, &hard_sigmoid_output, ElementWiseOperation::kPROD as i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to multiply for hard swish: {}", e),
+            })?;
+
+        let output = mul_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get hard swish output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add identity operation
+    /// Identity just passes through the input unchanged using IIdentityLayer
+    fn add_identity_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_id = operation.input_operands[0];
+        let input = tensor_map
+            .get(&input_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", input_id),
+            })?;
+
+        // Use TensorRT's IIdentityLayer for true identity operation
+        let layer = network
+            .add_identity(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add identity layer: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get identity output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+
+    /// Add global pooling operation
+    fn add_global_pooling_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+        pool_type: i32,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Get input dimensions to determine window size
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get input dimensions: {}", e),
+        })?;
+
+        // For global pooling, window size = spatial dimensions (H, W)
+        // Assuming NCHW format: [batch, channels, height, width]
+        if input_dims.len() < 4 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Global pooling requires 4D input, got {}D", input_dims.len()),
+            });
+        }
+
+        let window: [i32; 2] = [input_dims[2], input_dims[3]];
+
+        let layer = network
+            .add_pooling(input, pool_type, &window)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add global pooling: {}", e),
+            })?;
+
         let output = layer
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {

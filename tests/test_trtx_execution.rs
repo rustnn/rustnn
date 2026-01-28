@@ -54,6 +54,130 @@ mod tests {
         }
     }
 
+    /// Helper to create a simple binary operation graph
+    fn create_binary_graph(op_type: &str, input_shape: Vec<u32>, data_type: DataType) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = input_desc.clone();
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: op_type.to_string(),
+                input_operands: vec![0, 1], // Two inputs
+                output_operand: Some(2),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some(format!("{}_op", op_type)),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc.clone(),
+                    name: Some("input_a".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input_b".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    /// Execute a binary operation graph with TensorRT
+    fn execute_binary_graph(
+        graph: &GraphInfo,
+        input_a: &[f32],
+        input_b: &[f32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Convert graph to TensorRT
+        let converter = TrtxConverter::new();
+        let converted = converter.convert(graph)?;
+
+        // Create TensorRT runtime
+        let logger = Logger::stderr()?;
+        let runtime = Runtime::new(&logger)?;
+        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut context = engine.create_execution_context()?;
+
+        // Get tensor info
+        let num_tensors = engine.get_nb_io_tensors()?;
+        assert_eq!(num_tensors, 3, "Expected 3 tensors (2 inputs + 1 output)");
+
+        let input_a_name = engine.get_tensor_name(0)?;
+        let input_b_name = engine.get_tensor_name(1)?;
+        let output_name = engine.get_tensor_name(2)?;
+
+        // Calculate output size from graph's output operand descriptor
+        let output_operand_id = graph.output_operands[0];
+        let output_operand = &graph.operands[output_operand_id as usize];
+        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+
+        // Allocate device buffers
+        let input_size = input_a.len() * std::mem::size_of::<f32>();
+        let output_size = output_element_count * std::mem::size_of::<f32>();
+
+        let mut input_a_buffer = DeviceBuffer::new(input_size)?;
+        let mut input_b_buffer = DeviceBuffer::new(input_size)?;
+        let output_buffer = DeviceBuffer::new(output_size)?;
+
+        // Copy input data to device
+        let input_a_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_a.as_ptr() as *const u8,
+                input_a.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_a_buffer.copy_from_host(input_a_bytes)?;
+
+        let input_b_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_b.as_ptr() as *const u8,
+                input_b.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_b_buffer.copy_from_host(input_b_bytes)?;
+
+        // Set tensor addresses
+        unsafe {
+            context.set_tensor_address(&input_a_name, input_a_buffer.as_ptr())?;
+            context.set_tensor_address(&input_b_name, input_b_buffer.as_ptr())?;
+            context.set_tensor_address(&output_name, output_buffer.as_ptr())?;
+        }
+
+        // Execute inference
+        unsafe {
+            context.enqueue_v3(trtx::cuda::get_default_stream())?;
+        }
+        trtx::cuda::synchronize()?;
+
+        // Copy output back to host
+        let mut output_data = vec![0.0f32; output_element_count];
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_data.as_mut_ptr() as *mut u8,
+                output_data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        output_buffer.copy_to_host(output_bytes)?;
+
+        Ok(output_data)
+    }
+
     /// Execute a graph with TensorRT and return output
     fn execute_graph(
         graph: &GraphInfo,
@@ -76,9 +200,14 @@ mod tests {
         let input_name = engine.get_tensor_name(0)?;
         let output_name = engine.get_tensor_name(1)?;
 
+        // Calculate output size from graph's output operand descriptor
+        let output_operand_id = graph.output_operands[0];
+        let output_operand = &graph.operands[output_operand_id as usize];
+        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+
         // Allocate device buffers
         let input_size = input_data.len() * std::mem::size_of::<f32>();
-        let output_size = input_size;
+        let output_size = output_element_count * std::mem::size_of::<f32>();
 
         let mut input_buffer = DeviceBuffer::new(input_size)?;
         let output_buffer = DeviceBuffer::new(output_size)?;
@@ -105,7 +234,7 @@ mod tests {
         trtx::cuda::synchronize()?;
 
         // Copy output back to host (convert bytes to f32 slice)
-        let mut output_data = vec![0.0f32; input_data.len()];
+        let mut output_data = vec![0.0f32; output_element_count];
         let output_bytes = unsafe {
             std::slice::from_raw_parts_mut(
                 output_data.as_mut_ptr() as *mut u8,
@@ -1178,6 +1307,288 @@ mod tests {
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let expected = vec![11.0, 12.0, 13.0, 14.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // ============================================================================
+    // New Operations Tests (2026-01-28)
+    // ============================================================================
+
+    // Binary Element-wise Operations
+
+    #[test]
+    fn test_max_execution() {
+        // Test element-wise max: max([-1, 2, -3, 4], [1, -2, 3, -4])
+        let graph = create_binary_graph("max", vec![4], DataType::Float32);
+        let input_a = vec![-1.0, 2.0, -3.0, 4.0];
+        let input_b = vec![1.0, -2.0, 3.0, -4.0];
+        let expected = vec![1.0, 2.0, 3.0, 4.0];
+
+        let output = execute_binary_graph(&graph, &input_a, &input_b).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_min_execution() {
+        // Test element-wise min: min([-1, 2, -3, 4], [1, -2, 3, -4])
+        let graph = create_binary_graph("min", vec![4], DataType::Float32);
+        let input_a = vec![-1.0, 2.0, -3.0, 4.0];
+        let input_b = vec![1.0, -2.0, 3.0, -4.0];
+        let expected = vec![-1.0, -2.0, -3.0, -4.0];
+
+        let output = execute_binary_graph(&graph, &input_a, &input_b).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // Unary Activation Operations
+
+    #[test]
+    fn test_leaky_relu_execution() {
+        // LeakyReLU with default alpha=0.01: x if x > 0, else 0.01*x
+        let graph = create_unary_graph("leakyRelu", vec![4], DataType::Float32);
+        let input = vec![-2.0, -1.0, 1.0, 2.0];
+        let expected = vec![-0.02, -0.01, 1.0, 2.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_prelu_execution() {
+        // PReLU: max(0, x) + slope * min(0, x)
+        // Create graph with slope constant
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![4],
+            pending_permutation: Vec::new(),
+        };
+
+        let slope_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1],
+            pending_permutation: Vec::new(),
+        };
+
+        let slope_data = vec![0.25f32];
+        let slope_bytes: Vec<u8> = slope_data
+            .iter()
+            .flat_map(|&f| f.to_le_bytes())
+            .collect();
+
+        let mut constants = HashMap::new();
+        constants.insert(
+            1,
+            ConstantData {
+                data: slope_bytes,
+                label: None,
+            },
+        );
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "prelu".to_string(),
+                input_operands: vec![0, 1], // input and slope
+                output_operand: Some(2),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("prelu_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc.clone(),
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Constant,
+                    descriptor: slope_desc,
+                    name: Some("slope".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: input_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![2],
+            constant_operand_ids_to_handles: constants,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![-2.0, -1.0, 1.0, 2.0];
+        let expected = vec![-0.5, -0.25, 1.0, 2.0]; // 0.25 * -2, 0.25 * -1, 1, 2
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_hard_sigmoid_execution() {
+        // HardSigmoid: clamp(alpha*x + beta, 0, 1) with default alpha=0.2, beta=0.5
+        let graph = create_unary_graph("hardSigmoid", vec![5], DataType::Float32);
+        let input = vec![-3.0, -1.0, 0.0, 1.0, 3.0];
+        // alpha=0.2, beta=0.5
+        // -3: clamp(-0.6 + 0.5, 0, 1) = clamp(-0.1, 0, 1) = 0
+        // -1: clamp(-0.2 + 0.5, 0, 1) = clamp(0.3, 0, 1) = 0.3
+        //  0: clamp(0 + 0.5, 0, 1) = 0.5
+        //  1: clamp(0.2 + 0.5, 0, 1) = clamp(0.7, 0, 1) = 0.7
+        //  3: clamp(0.6 + 0.5, 0, 1) = clamp(1.1, 0, 1) = 1.0
+        let expected = vec![0.0, 0.3, 0.5, 0.7, 1.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_hard_swish_execution() {
+        // HardSwish: x * hardSigmoid(x)
+        let graph = create_unary_graph("hardSwish", vec![4], DataType::Float32);
+        let input = vec![-3.0, 0.0, 1.0, 3.0];
+        // -3: -3 * 0 = 0
+        //  0:  0 * 0.5 = 0
+        //  1:  1 * 0.7 = 0.7
+        //  3:  3 * 1.0 = 3.0
+        let expected = vec![0.0, 0.0, 0.7, 3.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3); // Slightly higher tolerance for composite op
+    }
+
+    // Unary Mathematical Operations
+
+    #[test]
+    fn test_identity_execution() {
+        // Identity: output = input (no transformation)
+        let graph = create_unary_graph("identity", vec![4], DataType::Float32);
+        let input = vec![-1.5, 0.0, 1.5, 3.14];
+        let expected = input.clone();
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-6);
+    }
+
+    #[test]
+    fn test_cast_execution() {
+        // Cast: type conversion (currently uses identity with implicit conversion)
+        let graph = create_unary_graph("cast", vec![4], DataType::Float32);
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = input.clone();
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // Pooling Operations
+
+    #[test]
+    fn test_global_average_pool_execution() {
+        // GlobalAveragePool: average over spatial dimensions (H, W)
+        // Input: [1, 2, 2, 2] (NCHW format: batch=1, channels=2, height=2, width=2)
+        let input_shape = vec![1, 2, 2, 2];
+        
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 2, 1, 1], // Output: [1, 2, 1, 1]
+            pending_permutation: Vec::new(),
+        };
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "globalAveragePool".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("global_avg_pool_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        // Input: channel 0: [1,2,3,4], channel 1: [5,6,7,8]
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        // Expected: channel 0 avg=(1+2+3+4)/4=2.5, channel 1 avg=(5+6+7+8)/4=6.5
+        let expected = vec![2.5, 6.5];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_global_max_pool_execution() {
+        // GlobalMaxPool: max over spatial dimensions (H, W)
+        // Input: [1, 2, 2, 2] (NCHW format: batch=1, channels=2, height=2, width=2)
+        let input_shape = vec![1, 2, 2, 2];
+        
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 2, 1, 1], // Output: [1, 2, 1, 1]
+            pending_permutation: Vec::new(),
+        };
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "globalMaxPool".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("global_max_pool_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        // Input: channel 0: [1,2,3,4], channel 1: [5,6,7,8]
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        // Expected: channel 0 max=4, channel 1 max=8
+        let expected = vec![4.0, 8.0];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
