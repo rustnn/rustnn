@@ -8,7 +8,9 @@
 #[cfg(feature = "trtx-runtime")]
 mod tests {
     use rustnn::converters::{GraphConverter, TrtxConverter};
-    use rustnn::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+    use rustnn::graph::{
+        ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+    };
     use std::collections::HashMap;
     use trtx::cuda::DeviceBuffer;
     use trtx::{Logger, Runtime};
@@ -546,5 +548,638 @@ mod tests {
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-5);
+    }
+
+    // ============================================================================
+    // Execution Tests - Matrix Operations
+    // ============================================================================
+
+    /// Helper to create a matmul graph
+    fn create_matmul_graph(
+        a_shape: Vec<u32>,
+        b_shape: Vec<u32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let a_desc = OperandDescriptor {
+            data_type,
+            shape: a_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let b_desc = OperandDescriptor {
+            data_type,
+            shape: b_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        // Output shape calculation for matrix multiply
+        let output_shape = if a_shape.len() == 2 && b_shape.len() == 2 {
+            vec![a_shape[0], b_shape[1]]
+        } else {
+            vec![a_shape[0]] // Simplified for tests
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "matmul".to_string(),
+                input_operands: vec![0, 1],
+                output_operand: Some(2),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("matmul_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: a_desc,
+                    name: Some("a".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: b_desc,
+                    name: Some("b".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    /// Helper to execute a graph with two inputs
+    fn execute_graph_two_inputs(
+        graph: &GraphInfo,
+        input_a: &[f32],
+        input_b: &[f32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Convert graph to TensorRT
+        let converter = TrtxConverter::new();
+        let converted = converter.convert(graph)?;
+
+        // Create TensorRT runtime
+        let logger = Logger::stderr()?;
+        let runtime = Runtime::new(&logger)?;
+        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut context = engine.create_execution_context()?;
+
+        // Get tensor info
+        let num_tensors = engine.get_nb_io_tensors()?;
+        assert_eq!(num_tensors, 3, "Expected 3 tensors (2 inputs + 1 output)");
+
+        let input_a_name = engine.get_tensor_name(0)?;
+        let input_b_name = engine.get_tensor_name(1)?;
+        let output_name = engine.get_tensor_name(2)?;
+
+        // Allocate device buffers
+        let input_a_size = input_a.len() * std::mem::size_of::<f32>();
+        let input_b_size = input_b.len() * std::mem::size_of::<f32>();
+
+        // Calculate output size based on operation
+        let output_size = if graph.operations[0].op_type == "matmul" {
+            // For matrix multiply, output size depends on input shapes
+            let a_shape = &graph.operands[0].descriptor.shape;
+            let b_shape = &graph.operands[1].descriptor.shape;
+            if a_shape.len() == 2 && b_shape.len() == 2 {
+                (a_shape[0] * b_shape[1]) as usize * std::mem::size_of::<f32>()
+            } else {
+                input_a_size // Fallback
+            }
+        } else {
+            input_a_size // For element-wise operations
+        };
+
+        let mut input_a_buffer = DeviceBuffer::new(input_a_size)?;
+        let mut input_b_buffer = DeviceBuffer::new(input_b_size)?;
+        let output_buffer = DeviceBuffer::new(output_size)?;
+
+        // Copy input data to device
+        let input_a_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_a.as_ptr() as *const u8,
+                input_a.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_a_buffer.copy_from_host(input_a_bytes)?;
+
+        let input_b_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_b.as_ptr() as *const u8,
+                input_b.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_b_buffer.copy_from_host(input_b_bytes)?;
+
+        // Set tensor addresses
+        unsafe {
+            context.set_tensor_address(&input_a_name, input_a_buffer.as_ptr())?;
+            context.set_tensor_address(&input_b_name, input_b_buffer.as_ptr())?;
+            context.set_tensor_address(&output_name, output_buffer.as_ptr())?;
+        }
+
+        // Execute inference
+        unsafe {
+            context.enqueue_v3(trtx::cuda::get_default_stream())?;
+        }
+        trtx::cuda::synchronize()?;
+
+        // Copy output back to host
+        let output_elem_count = output_size / std::mem::size_of::<f32>();
+        let mut output_data = vec![0.0f32; output_elem_count];
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_data.as_mut_ptr() as *mut u8,
+                output_data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        output_buffer.copy_to_host(output_bytes)?;
+
+        Ok(output_data)
+    }
+
+    #[test]
+    fn test_matmul_2x2_execution() {
+        let graph = create_matmul_graph(vec![2, 2], vec![2, 2], DataType::Float32);
+
+        // A = [[1, 2], [3, 4]]
+        // B = [[5, 6], [7, 8]]
+        // Result = [[19, 22], [43, 50]]
+        let input_a = vec![1.0, 2.0, 3.0, 4.0];
+        let input_b = vec![5.0, 6.0, 7.0, 8.0];
+        let expected = vec![19.0, 22.0, 43.0, 50.0];
+
+        let output =
+            execute_graph_two_inputs(&graph, &input_a, &input_b).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_matmul_3x3_execution() {
+        let graph = create_matmul_graph(vec![3, 3], vec![3, 3], DataType::Float32);
+
+        // A = [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+        // B = [[1, 0, 0], [0, 1, 0], [0, 0, 1]] (identity)
+        // Result = A
+        let input_a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let input_b = vec![1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let expected = input_a.clone();
+
+        let output =
+            execute_graph_two_inputs(&graph, &input_a, &input_b).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_matmul_2x3_3x2_execution() {
+        let graph = create_matmul_graph(vec![2, 3], vec![3, 2], DataType::Float32);
+
+        // A = [[1, 2, 3], [4, 5, 6]]  (2x3)
+        // B = [[1, 2], [3, 4], [5, 6]]  (3x2)
+        // Result = [[22, 28], [49, 64]]  (2x2)
+        let input_a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let input_b = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let expected = vec![22.0, 28.0, 49.0, 64.0];
+
+        let output =
+            execute_graph_two_inputs(&graph, &input_a, &input_b).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // ============================================================================
+    // Execution Tests - GEMM Operations
+    // ============================================================================
+
+    /// Helper to create a GEMM graph (alpha * A * B + beta * C)
+    fn create_gemm_graph(
+        a_shape: Vec<u32>,
+        b_shape: Vec<u32>,
+        c_shape: Vec<u32>,
+        alpha: f32,
+        beta: f32,
+        a_transpose: bool,
+        b_transpose: bool,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let a_desc = OperandDescriptor {
+            data_type,
+            shape: a_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let b_desc = OperandDescriptor {
+            data_type,
+            shape: b_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let c_desc = OperandDescriptor {
+            data_type,
+            shape: c_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = c_desc.clone();
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("alpha".to_string(), serde_json::json!(alpha));
+        attributes.insert("beta".to_string(), serde_json::json!(beta));
+        attributes.insert("aTranspose".to_string(), serde_json::json!(a_transpose));
+        attributes.insert("bTranspose".to_string(), serde_json::json!(b_transpose));
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "gemm".to_string(),
+                input_operands: vec![0, 1, 2],
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("gemm_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: a_desc,
+                    name: Some("a".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: b_desc,
+                    name: Some("b".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: c_desc,
+                    name: Some("c".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    /// Helper to execute a graph with three inputs
+    fn execute_graph_three_inputs(
+        graph: &GraphInfo,
+        input_a: &[f32],
+        input_b: &[f32],
+        input_c: &[f32],
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Convert graph to TensorRT
+        let converter = TrtxConverter::new();
+        let converted = converter.convert(graph)?;
+
+        // Create TensorRT runtime
+        let logger = Logger::stderr()?;
+        let runtime = Runtime::new(&logger)?;
+        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut context = engine.create_execution_context()?;
+
+        // Get tensor info
+        let num_tensors = engine.get_nb_io_tensors()?;
+        assert_eq!(num_tensors, 4, "Expected 4 tensors (3 inputs + 1 output)");
+
+        let input_a_name = engine.get_tensor_name(0)?;
+        let input_b_name = engine.get_tensor_name(1)?;
+        let input_c_name = engine.get_tensor_name(2)?;
+        let output_name = engine.get_tensor_name(3)?;
+
+        // Allocate device buffers
+        let input_a_size = input_a.len() * std::mem::size_of::<f32>();
+        let input_b_size = input_b.len() * std::mem::size_of::<f32>();
+        let input_c_size = input_c.len() * std::mem::size_of::<f32>();
+        let output_size = input_c_size; // Output has same size as C
+
+        let mut input_a_buffer = DeviceBuffer::new(input_a_size)?;
+        let mut input_b_buffer = DeviceBuffer::new(input_b_size)?;
+        let mut input_c_buffer = DeviceBuffer::new(input_c_size)?;
+        let output_buffer = DeviceBuffer::new(output_size)?;
+
+        // Copy input data to device
+        let input_a_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_a.as_ptr() as *const u8,
+                input_a.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_a_buffer.copy_from_host(input_a_bytes)?;
+
+        let input_b_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_b.as_ptr() as *const u8,
+                input_b.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_b_buffer.copy_from_host(input_b_bytes)?;
+
+        let input_c_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_c.as_ptr() as *const u8,
+                input_c.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_c_buffer.copy_from_host(input_c_bytes)?;
+
+        // Set tensor addresses
+        unsafe {
+            context.set_tensor_address(&input_a_name, input_a_buffer.as_ptr())?;
+            context.set_tensor_address(&input_b_name, input_b_buffer.as_ptr())?;
+            context.set_tensor_address(&input_c_name, input_c_buffer.as_ptr())?;
+            context.set_tensor_address(&output_name, output_buffer.as_ptr())?;
+        }
+
+        // Execute inference
+        unsafe {
+            context.enqueue_v3(trtx::cuda::get_default_stream())?;
+        }
+        trtx::cuda::synchronize()?;
+
+        // Copy output back to host
+        let output_elem_count = output_size / std::mem::size_of::<f32>();
+        let mut output_data = vec![0.0f32; output_elem_count];
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_data.as_mut_ptr() as *mut u8,
+                output_data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        output_buffer.copy_to_host(output_bytes)?;
+
+        Ok(output_data)
+    }
+
+    #[test]
+    fn test_gemm_basic_execution() {
+        // C = 1.0 * A * B + 1.0 * C
+        let graph = create_gemm_graph(
+            vec![2, 2],
+            vec![2, 2],
+            vec![2, 2],
+            1.0,
+            1.0,
+            false,
+            false,
+            DataType::Float32,
+        );
+
+        // A = [[1, 2], [3, 4]]
+        // B = [[1, 0], [0, 1]]
+        // C = [[1, 1], [1, 1]]
+        // Result = A * B + C = [[1, 2], [3, 4]] + [[1, 1], [1, 1]] = [[2, 3], [4, 5]]
+        let input_a = vec![1.0, 2.0, 3.0, 4.0];
+        let input_b = vec![1.0, 0.0, 0.0, 1.0];
+        let input_c = vec![1.0, 1.0, 1.0, 1.0];
+        let expected = vec![2.0, 3.0, 4.0, 5.0];
+
+        let output =
+            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+                .expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_gemm_alpha_execution() {
+        // C = 2.0 * A * B + 1.0 * C
+        let graph = create_gemm_graph(
+            vec![2, 2],
+            vec![2, 2],
+            vec![2, 2],
+            2.0,
+            1.0,
+            false,
+            false,
+            DataType::Float32,
+        );
+
+        // A = [[1, 2], [3, 4]]
+        // B = [[1, 0], [0, 1]]
+        // C = [[0, 0], [0, 0]]
+        // Result = 2 * (A * B) + C = 2 * [[1, 2], [3, 4]] = [[2, 4], [6, 8]]
+        let input_a = vec![1.0, 2.0, 3.0, 4.0];
+        let input_b = vec![1.0, 0.0, 0.0, 1.0];
+        let input_c = vec![0.0, 0.0, 0.0, 0.0];
+        let expected = vec![2.0, 4.0, 6.0, 8.0];
+
+        let output =
+            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+                .expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_gemm_beta_execution() {
+        // C = 1.0 * A * B + 2.0 * C
+        let graph = create_gemm_graph(
+            vec![2, 2],
+            vec![2, 2],
+            vec![2, 2],
+            1.0,
+            2.0,
+            false,
+            false,
+            DataType::Float32,
+        );
+
+        // A = [[1, 0], [0, 1]]
+        // B = [[1, 0], [0, 1]]
+        // C = [[1, 2], [3, 4]]
+        // Result = (A * B) + 2 * C = [[1, 0], [0, 1]] + [[2, 4], [6, 8]] = [[3, 4], [6, 9]]
+        let input_a = vec![1.0, 0.0, 0.0, 1.0];
+        let input_b = vec![1.0, 0.0, 0.0, 1.0];
+        let input_c = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![3.0, 4.0, 6.0, 9.0];
+
+        let output =
+            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+                .expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // ============================================================================
+    // Execution Tests - Convolution Operations
+    // ============================================================================
+
+    /// Helper to create a conv2d graph with constant filter
+    fn create_conv2d_graph(
+        input_shape: Vec<u32>,  // [batch, channels, height, width]
+        filter_shape: Vec<u32>, // [out_channels, in_channels, kernel_h, kernel_w]
+        filter_data: Vec<f32>,
+        bias_data: Option<Vec<f32>>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let filter_desc = OperandDescriptor {
+            data_type,
+            shape: filter_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        // Calculate output shape: [batch, out_channels, out_h, out_w]
+        // For simplicity, assuming no padding, stride=1, dilation=1
+        let out_h = input_shape[2] - filter_shape[2] + 1;
+        let out_w = input_shape[3] - filter_shape[3] + 1;
+        let output_shape = vec![input_shape[0], filter_shape[0], out_h, out_w];
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        // Convert filter data to bytes
+        let filter_bytes: Vec<u8> = filter_data
+            .iter()
+            .flat_map(|&f| f.to_le_bytes())
+            .collect();
+
+        let mut constant_map = HashMap::new();
+        constant_map.insert(
+            1,
+            ConstantData {
+                data: filter_bytes,
+                label: Some("filter".to_string()),
+            },
+        );
+
+        let mut input_operands = vec![0, 1]; // input and filter
+        let mut operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: input_desc,
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Constant,
+                descriptor: filter_desc,
+                name: Some("filter".to_string()),
+            },
+        ];
+
+        // Add bias if provided
+        if let Some(bias) = bias_data {
+            let bias_desc = OperandDescriptor {
+                data_type,
+                shape: vec![filter_shape[0]], // bias shape = [out_channels]
+                pending_permutation: Vec::new(),
+            };
+
+            let bias_bytes: Vec<u8> = bias.iter().flat_map(|&f| f.to_le_bytes()).collect();
+
+            constant_map.insert(
+                2,
+                ConstantData {
+                    data: bias_bytes,
+                    label: Some("bias".to_string()),
+                },
+            );
+
+            operands.push(Operand {
+                kind: OperandKind::Constant,
+                descriptor: bias_desc,
+                name: Some("bias".to_string()),
+            });
+
+            input_operands.push(2);
+        }
+
+        // Add output operand
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: output_desc,
+            name: Some("output".to_string()),
+        });
+
+        let output_operand_id = operands.len() as u32 - 1;
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "conv2d".to_string(),
+                input_operands,
+                output_operand: Some(output_operand_id),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("conv2d_op".to_string()),
+            }],
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![output_operand_id],
+            constant_operand_ids_to_handles: constant_map,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_conv2d_simple_execution() {
+        // Simple 1x1 convolution (channel-wise scaling)
+        // Input: [1, 1, 2, 2] (batch=1, channels=1, h=2, w=2)
+        // Filter: [1, 1, 1, 1] (out_channels=1, in_channels=1, kh=1, kw=1)
+        // Filter weights: [[1.0]]
+        // Output: [1, 1, 2, 2]
+
+        let input_shape = vec![1, 1, 2, 2];
+        let filter_shape = vec![1, 1, 1, 1];
+        let filter_data = vec![2.0]; // Scale by 2
+
+        let graph = create_conv2d_graph(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![2.0, 4.0, 6.0, 8.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_conv2d_with_bias_execution() {
+        // 1x1 convolution with bias
+        let input_shape = vec![1, 1, 2, 2];
+        let filter_shape = vec![1, 1, 1, 1];
+        let filter_data = vec![1.0];
+        let bias_data = Some(vec![10.0]);
+
+        let graph = create_conv2d_graph(
+            input_shape,
+            filter_shape,
+            filter_data,
+            bias_data,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![11.0, 12.0, 13.0, 14.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
     }
 }

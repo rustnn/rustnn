@@ -51,11 +51,13 @@ impl TrtxConverter {
     }
 
     /// Build TensorRT network from WebNN graph
+    /// Returns temporary weight storage that must be kept alive until engine is serialized
     fn build_network(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
-    ) -> Result<(), GraphError> {
+    ) -> Result<Vec<Vec<u8>>, GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor> = HashMap::new();
+        let mut temp_weights: Vec<Vec<u8>> = Vec::new(); // Storage for temporary constants
 
         // Step 1: Add inputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
@@ -139,7 +141,7 @@ impl TrtxConverter {
 
         // Step 3: Add operations
         for operation in &graph.operations {
-            Self::add_operation(graph, network, &mut tensor_map, operation)?;
+            Self::add_operation(graph, network, &mut tensor_map, &mut temp_weights, operation)?;
         }
 
         // Step 4: Mark outputs
@@ -161,7 +163,7 @@ impl TrtxConverter {
             }
         }
 
-        Ok(())
+        Ok(temp_weights)
     }
 
     /// Add a single operation to the network
@@ -169,6 +171,7 @@ impl TrtxConverter {
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        temp_weights: &mut Vec<Vec<u8>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let op_type = operation.op_type.as_str();
@@ -351,6 +354,10 @@ impl TrtxConverter {
 
             // Matrix operations
             "matmul" => Self::add_matmul_op(network, tensor_map, operation)?,
+            "gemm" => Self::add_gemm_op(graph, network, tensor_map, temp_weights, operation)?,
+
+            // Convolution operations
+            "conv2d" => Self::add_conv2d_op(graph, network, tensor_map, operation)?,
 
             // Pooling operations
             "averagePool2d" => {
@@ -524,6 +531,287 @@ impl TrtxConverter {
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add GEMM (General Matrix Multiply) operation
+    /// Computes: C = alpha * A * B + beta * C
+    fn add_gemm_op(
+        _graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        temp_weights: &mut Vec<Vec<u8>>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_a = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let input_b = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // Get optional parameters
+        let alpha = operation
+            .attributes
+            .get("alpha")
+            .and_then(|v: &serde_json::Value| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        let beta = operation
+            .attributes
+            .get("beta")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        let a_transpose = operation
+            .attributes
+            .get("aTranspose")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let b_transpose = operation
+            .attributes
+            .get("bTranspose")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // MatrixOperation: 0=NONE, 1=TRANSPOSE
+        let a_op = if a_transpose { 1 } else { 0 };
+        let b_op = if b_transpose { 1 } else { 0 };
+
+        // Add matrix multiply layer
+        let layer = network
+            .add_matrix_multiply(input_a, a_op, input_b, b_op)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add GEMM matrix multiply: {}", e),
+            })?;
+
+        let mut result = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get GEMM layer output: {}", e),
+            })?;
+
+        // If alpha != 1.0, scale the result
+        if (alpha - 1.0).abs() > 1e-6 {
+            // Get result dimensions to create a constant with matching shape
+            let result_dims = result.dimensions().map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get result dimensions: {}", e),
+            })?;
+            
+            // Create constant filled with alpha value matching result shape
+            let num_elements: usize = result_dims.iter().map(|&d| d as usize).product();
+            let alpha_data: Vec<f32> = vec![alpha; num_elements];
+            let alpha_bytes: Vec<u8> = alpha_data.iter()
+                .flat_map(|&f| f.to_le_bytes())
+                .collect();
+            
+            // Store weights to keep them alive until engine serialization
+            temp_weights.push(alpha_bytes);
+            let alpha_bytes_ref = temp_weights.last().unwrap().as_slice();
+            
+            let alpha_layer = network
+                .add_constant(&result_dims, alpha_bytes_ref, 0) // float32
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to create alpha constant: {}", e),
+                })?;
+
+            let alpha_tensor = alpha_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get alpha tensor: {}", e),
+                })?;
+
+            // Multiply result by alpha
+            let scale_layer = network
+                .add_elementwise(&result, &alpha_tensor, ElementWiseOperation::kPROD as i32)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to scale by alpha: {}", e),
+                })?;
+
+            result = scale_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get scaled output: {}", e),
+                })?;
+        }
+
+        // If there's a C input and beta != 0, add it
+        if operation.input_operands.len() > 2 && beta.abs() > 1e-6 {
+            let input_c = tensor_map
+                .get(&operation.input_operands[2])
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Input operand {} not found", operation.input_operands[2]),
+                })?;
+
+            // Scale C by beta if needed, then add to result
+            if (beta - 1.0).abs() > 1e-6 {
+                // Get C dimensions to create a constant with matching shape
+                let c_dims = input_c.dimensions().map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get C dimensions: {}", e),
+                })?;
+                
+                // Create constant filled with beta value matching C shape
+                let num_elements: usize = c_dims.iter().map(|&d| d as usize).product();
+                let beta_data: Vec<f32> = vec![beta; num_elements];
+                let beta_bytes: Vec<u8> = beta_data.iter()
+                    .flat_map(|&f| f.to_le_bytes())
+                    .collect();
+                
+                // Store weights to keep them alive until engine serialization
+                temp_weights.push(beta_bytes);
+                let beta_bytes_ref = temp_weights.last().unwrap().as_slice();
+                
+                let beta_layer = network
+                    .add_constant(&c_dims, beta_bytes_ref, 0) // float32
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to create beta constant: {}", e),
+                    })?;
+
+                let beta_tensor = beta_layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get beta tensor: {}", e),
+                    })?;
+
+                // Multiply C by beta
+                let scale_c_layer = network
+                    .add_elementwise(input_c, &beta_tensor, ElementWiseOperation::kPROD as i32)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to scale C by beta: {}", e),
+                    })?;
+
+                let scaled_c = scale_c_layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get scaled C: {}", e),
+                    })?;
+
+                // Add result + beta*C
+                let add_layer = network
+                    .add_elementwise(&result, &scaled_c, ElementWiseOperation::kSUM as i32)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add scaled C to result: {}", e),
+                    })?;
+
+                result = add_layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get final GEMM output: {}", e),
+                    })?;
+            } else {
+                // beta == 1.0: add C directly
+                let add_layer = network
+                    .add_elementwise(&result, input_c, ElementWiseOperation::kSUM as i32)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add C to result: {}", e),
+                    })?;
+
+                result = add_layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get final GEMM output: {}", e),
+                    })?;
+            }
+        }
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, result);
+        Ok(())
+    }
+
+    /// Add 2D convolution operation
+    fn add_conv2d_op(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Get filter (weights) - operand 1
+        let filter_id = operation.input_operands[1];
+        let filter_data = Self::get_constant_data(graph, filter_id)?;
+
+        // Get optional bias - operand 2 if present
+        let bias_data = if operation.input_operands.len() > 2 {
+            Some(Self::get_constant_data(graph, operation.input_operands[2])?)
+        } else {
+            None
+        };
+
+        // Get filter operand descriptor for shape info
+        let filter_operand = graph
+            .operand(filter_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Filter operand {} not found", filter_id),
+            })?;
+
+        // Filter shape: [outputChannels, inputChannels/groups, height, width]
+        let filter_shape = &filter_operand.descriptor.shape;
+        if filter_shape.len() != 4 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Expected 4D filter shape, got {}D",
+                    filter_shape.len()
+                ),
+            });
+        }
+
+        let num_output_maps = filter_shape[0] as i32;
+        let kernel_size: [i32; 2] = [filter_shape[2] as i32, filter_shape[3] as i32];
+
+        // Add convolution layer
+        let layer = network
+            .add_convolution(input, num_output_maps, &kernel_size, filter_data, bias_data)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add convolution: {}", e),
+            })?;
+
+            // Extract output tensor from layer
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get convolution output: {}", e),
             })?;
 
         let output_ids = operation.output_operands_slice();
@@ -756,8 +1044,9 @@ impl GraphConverter for TrtxConverter {
                 reason: format!("Failed to create TensorRT network: {}", e),
             })?;
 
-        // Build the network from WebNN graph
-        Self::build_network(graph_info, &mut network)?;
+        // Build the network from WebNN graph and capture temporary weights
+        // These weights must stay alive until engine serialization completes
+        let _temp_weights = Self::build_network(graph_info, &mut network)?;
 
         // Create builder config
         let mut config = builder
