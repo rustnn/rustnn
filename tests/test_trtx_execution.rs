@@ -178,7 +178,7 @@ mod tests {
         Ok(output_data)
     }
 
-    /// Execute a graph with TensorRT and return output
+    /// Execute a graph with TensorRT and return output (single input)
     fn execute_graph(
         graph: &GraphInfo,
         input_data: &[f32],
@@ -234,6 +234,87 @@ mod tests {
         trtx::cuda::synchronize()?;
 
         // Copy output back to host (convert bytes to f32 slice)
+        let mut output_data = vec![0.0f32; output_element_count];
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_data.as_mut_ptr() as *mut u8,
+                output_data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        output_buffer.copy_to_host(output_bytes)?;
+
+        Ok(output_data)
+    }
+
+    /// Execute a graph with TensorRT and return output (multiple inputs)
+    fn execute_graph_multi_input(
+        graph: &GraphInfo,
+        input_data_vec: Vec<Vec<f32>>,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+        // Convert graph to TensorRT
+        let converter = TrtxConverter::new();
+        let converted = converter.convert(graph)?;
+
+        // Create TensorRT runtime
+        let logger = Logger::stderr()?;
+        let runtime = Runtime::new(&logger)?;
+        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut context = engine.create_execution_context()?;
+
+        // Get tensor info
+        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_inputs = graph.input_operands.len();
+        let num_outputs = graph.output_operands.len();
+        assert_eq!(num_tensors as usize, num_inputs + num_outputs, 
+                   "Expected {} tensors ({} inputs + {} outputs)", num_inputs + num_outputs, num_inputs, num_outputs);
+        assert_eq!(input_data_vec.len(), num_inputs, "Expected {} input data arrays", num_inputs);
+
+        // Calculate output size from graph's output operand descriptor
+        let output_operand_id = graph.output_operands[0];
+        let output_operand = &graph.operands[output_operand_id as usize];
+        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+
+        // Allocate device buffers for all inputs
+        let mut input_buffers = Vec::new();
+        for input_data in &input_data_vec {
+            let input_size = input_data.len() * std::mem::size_of::<f32>();
+            let mut buffer = DeviceBuffer::new(input_size)?;
+            
+            let input_bytes = unsafe {
+                std::slice::from_raw_parts(
+                    input_data.as_ptr() as *const u8,
+                    input_data.len() * std::mem::size_of::<f32>(),
+                )
+            };
+            buffer.copy_from_host(input_bytes)?;
+            input_buffers.push(buffer);
+        }
+
+        // Allocate output buffer
+        let output_size = output_element_count * std::mem::size_of::<f32>();
+        let output_buffer = DeviceBuffer::new(output_size)?;
+
+        // Set tensor addresses for all inputs
+        for (i, buffer) in input_buffers.iter().enumerate() {
+            let tensor_name = engine.get_tensor_name(i as i32)?;
+            unsafe {
+                context.set_tensor_address(&tensor_name, buffer.as_ptr())?;
+            }
+        }
+
+        // Set output tensor address
+        let output_tensor_name = engine.get_tensor_name(num_inputs as i32)?;
+        unsafe {
+            context.set_tensor_address(&output_tensor_name, output_buffer.as_ptr())?;
+        }
+
+        // Execute inference
+        unsafe {
+            context.enqueue_v3(trtx::cuda::get_default_stream())?;
+        }
+        trtx::cuda::synchronize()?;
+
+        // Copy output back to host
         let mut output_data = vec![0.0f32; output_element_count];
         let output_bytes = unsafe {
             std::slice::from_raw_parts_mut(
@@ -1905,6 +1986,651 @@ mod tests {
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let expected = vec![10.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // ============================================================================
+    // Normalization Operations Tests (2026-01-29)
+    // ============================================================================
+
+    /// Helper to create batch normalization graph
+    fn create_batch_norm_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        data_type: DataType,
+        epsilon: f64,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let stats_shape = vec![2]; // Mean and variance for 2 channels
+        let stats_desc = OperandDescriptor {
+            data_type,
+            shape: stats_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("epsilon".to_string(), serde_json::Value::from(epsilon));
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "batchNormalization".to_string(),
+                input_operands: vec![0, 1, 2], // input, mean, variance
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("batch_norm_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: stats_desc.clone(),
+                    name: Some("mean".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: stats_desc,
+                    name: Some("variance".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_batch_normalization_execution() {
+        // BatchNorm: y = (x - mean) / sqrt(variance) * 1.0 + 0.0
+        // Input: [[1, 2], [3, 4]] shape [1, 2, 1, 2] (NCHW: batch=1, channels=2, H=1, W=2)
+        // Mean: [1, 2, 1, 1] reshaped from [2] for broadcasting
+        // Variance: [1, 2, 1, 1] reshaped from [2] for broadcasting
+        // Expected: [[(1-1.5)/0.5, (2-1.5)/0.5], [(3-3.5)/0.5, (4-3.5)/0.5]]
+        //         = [[-1, 1], [-1, 1]]
+        
+        // Note: TensorRT requires mean/variance to have same rank as input for broadcasting
+        // So we use [1, 2, 1, 1] instead of [2]
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 2, 1, 2],
+            pending_permutation: Vec::new(),
+        };
+
+        let stats_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 2, 1, 1], // Reshaped for broadcasting
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 2, 1, 2],
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("epsilon".to_string(), serde_json::Value::from(0.0));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "batchNormalization".to_string(),
+                input_operands: vec![0, 1, 2], // input, mean, variance
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("batch_norm_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: stats_desc.clone(),
+                    name: Some("mean".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: stats_desc,
+                    name: Some("variance".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        // Input data in NCHW format
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let mean = vec![1.5, 3.5]; // Shape [1,2,1,1] for broadcasting
+        let variance = vec![0.25, 0.25]; // sqrt(0.25) = 0.5, shape [1,2,1,1]
+        
+        let all_inputs = vec![input, mean, variance];
+
+        let expected = vec![-1.0, 1.0, -1.0, 1.0];
+
+        let output = execute_graph_multi_input(&graph, all_inputs).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3);
+    }
+
+    /// Helper to create instance normalization graph
+    fn create_instance_norm_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        data_type: DataType,
+        layout: &str,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("epsilon".to_string(), serde_json::Value::from(1e-5));
+        attributes.insert("layout".to_string(), serde_json::Value::String(layout.to_string()));
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "instanceNormalization".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("instance_norm_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_instance_normalization_execution() {
+        // InstanceNorm: Normalize per-instance over spatial dimensions
+        // Input: [1, 2, 2, 2] NCHW format
+        // For each channel independently: compute mean/variance over H,W
+        let graph = create_instance_norm_graph(
+            vec![1, 2, 2, 2],
+            vec![1, 2, 2, 2],
+            DataType::Float32,
+            "nchw",
+        );
+
+        // Channel 0: [1,2,3,4] -> mean=2.5, variance=1.25, std=1.118
+        // Channel 1: [5,6,7,8] -> mean=6.5, variance=1.25, std=1.118
+        let input = vec![
+            1.0, 2.0, 3.0, 4.0, // Channel 0
+            5.0, 6.0, 7.0, 8.0, // Channel 1
+        ];
+
+        // After normalization: (x - mean) / std
+        // Channel 0: [(1-2.5)/1.118, (2-2.5)/1.118, (3-2.5)/1.118, (4-2.5)/1.118]
+        //          ≈ [-1.34, -0.447, 0.447, 1.34]
+        // Channel 1: [(5-6.5)/1.118, (6-6.5)/1.118, (7-6.5)/1.118, (8-6.5)/1.118]
+        //          ≈ [-1.34, -0.447, 0.447, 1.34]
+        let expected = vec![
+            -1.34, -0.447, 0.447, 1.34,
+            -1.34, -0.447, 0.447, 1.34,
+        ];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 0.1); // Looser tolerance for complex computation
+    }
+
+    /// Helper to create layer normalization graph
+    fn create_layer_norm_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        axes: Vec<u32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("epsilon".to_string(), serde_json::Value::from(1e-5));
+        attributes.insert(
+            "axes".to_string(),
+            serde_json::Value::Array(axes.iter().map(|&a| serde_json::Value::from(a)).collect()),
+        );
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "layerNormalization".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("layer_norm_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_layer_normalization_execution() {
+        // LayerNorm: Normalize over specified axes (typically last axis)
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Normalize over axis 1 (last axis)
+        let graph = create_layer_norm_graph(
+            vec![2, 2],
+            vec![2, 2],
+            vec![1],
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        
+        // Row 0: [1,2] -> mean=1.5, variance=0.25, std=0.5
+        //        normalized: [(1-1.5)/0.5, (2-1.5)/0.5] = [-1, 1]
+        // Row 1: [3,4] -> mean=3.5, variance=0.25, std=0.5
+        //        normalized: [(3-3.5)/0.5, (4-3.5)/0.5] = [-1, 1]
+        let expected = vec![-1.0, 1.0, -1.0, 1.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3);
+    }
+
+    // ============================================================================
+    // Shape Manipulation Operations Tests (2026-01-29)
+    // ============================================================================
+
+    /// Helper to create slice graph
+    fn create_slice_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        starts: Vec<i32>,
+        sizes: Vec<i32>,
+        strides: Vec<i32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "starts".to_string(),
+            serde_json::Value::Array(starts.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+        );
+        attributes.insert(
+            "sizes".to_string(),
+            serde_json::Value::Array(sizes.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+        );
+        attributes.insert(
+            "strides".to_string(),
+            serde_json::Value::Array(strides.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+        );
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "slice".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("slice_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_slice_basic_execution() {
+        // Slice [1:3, 0:2] from [[1,2,3], [4,5,6], [7,8,9], [10,11,12]]
+        // Result: [[4,5], [7,8]]
+        let graph = create_slice_graph(
+            vec![4, 3],
+            vec![2, 2],
+            vec![1, 0],    // Start at row 1, col 0
+            vec![2, 2],    // Take 2 rows, 2 cols
+            vec![1, 1],    // Stride 1 in both dimensions
+            DataType::Float32,
+        );
+
+        let input = vec![
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+            10.0, 11.0, 12.0,
+        ];
+        let expected = vec![4.0, 5.0, 7.0, 8.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_slice_with_stride_execution() {
+        // Slice with stride 2: every other element
+        // Input: [1,2,3,4,5,6,7,8] shape [8]
+        // Slice [0:8:2] -> [1,3,5,7]
+        // TensorRT's size parameter is the OUTPUT size, not input range
+        // With stride=2, to get 4 output elements we need size=4
+        let graph = create_slice_graph(
+            vec![8],
+            vec![4],
+            vec![0],
+            vec![4],  // Size is output size, not input range
+            vec![2],  // Stride 2
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let expected = vec![1.0, 3.0, 5.0, 7.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    /// Helper to create squeeze graph
+    fn create_squeeze_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "squeeze".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(serde_json::Map::new()),
+                label: Some("squeeze_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_squeeze_execution() {
+        // Squeeze: Remove size-1 dimensions
+        // Input: [1, 4, 1, 2] -> Output: [4, 2]
+        let graph = create_squeeze_graph(
+            vec![1, 4, 1, 2],
+            vec![4, 2],
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let expected = input.clone(); // Data unchanged, only shape changes
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    /// Helper to create unsqueeze graph
+    fn create_unsqueeze_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        axes: Vec<u32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "axes".to_string(),
+            serde_json::Value::Array(axes.iter().map(|&a| serde_json::Value::from(a)).collect()),
+        );
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "unsqueeze".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("unsqueeze_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_unsqueeze_execution() {
+        // Unsqueeze: Add size-1 dimensions
+        // Input: [4, 2] -> Output: [1, 4, 1, 2] (add dims at positions 0 and 2)
+        let graph = create_unsqueeze_graph(
+            vec![4, 2],
+            vec![1, 4, 1, 2],
+            vec![0, 2],
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let expected = input.clone(); // Data unchanged, only shape changes
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    /// Helper to create expand graph
+    fn create_expand_graph(
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        new_shape: Vec<i32>,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "newShape".to_string(),
+            serde_json::Value::Array(new_shape.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+        );
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "expand".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("expand_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_expand_execution() {
+        // Expand: Currently simplified implementation using identity layer
+        // Note: This is a passthrough test. Full expand requires IShuffleLayer
+        // with setReshapeDimensions() to be exposed in trtx-rs.
+        // Input: [4] -> Output: [4] (identity passthrough)
+        let graph = create_expand_graph(
+            vec![4],
+            vec![4],
+            vec![4],
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![1.0, 2.0, 3.0, 4.0]; // Identity passthrough
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
