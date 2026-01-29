@@ -1593,4 +1593,320 @@ mod tests {
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
+
+    // ============================================================================
+    // Reduction Operations Tests (2026-01-29)
+    // ============================================================================
+
+    /// Helper to create a reduction operation graph
+    fn create_reduce_graph(
+        op_type: &str,
+        input_shape: Vec<u32>,
+        output_shape: Vec<u32>,
+        axes: Vec<u32>,
+        keep_dims: bool,
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "axes".to_string(),
+            serde_json::Value::Array(axes.iter().map(|&a| serde_json::Value::from(a)).collect()),
+        );
+        attributes.insert("keepDimensions".to_string(), serde_json::Value::Bool(keep_dims));
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: op_type.to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some(format!("{}_op", op_type)),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_reduce_sum_execution() {
+        // ReduceSum: sum along axis 1
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [3, 7] shape [2] (axis 1 reduced)
+        let graph = create_reduce_graph(
+            "reduceSum",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![3.0, 7.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_mean_execution() {
+        // ReduceMean: average along axis 1
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [1.5, 3.5] shape [2] (axis 1 reduced)
+        let graph = create_reduce_graph(
+            "reduceMean",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![1.5, 3.5];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_max_execution() {
+        // ReduceMax: max along axis 1
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [2, 4] shape [2] (axis 1 reduced)
+        let graph = create_reduce_graph(
+            "reduceMax",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![2.0, 4.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_min_execution() {
+        // ReduceMin: min along axis 1
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [1, 3] shape [2] (axis 1 reduced)
+        let graph = create_reduce_graph(
+            "reduceMin",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![1.0, 3.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_product_execution() {
+        // ReduceProduct: product along axis 1
+        // Input: [[2, 3], [4, 5]] shape [2, 2]
+        // Output: [6, 20] shape [2] (axis 1 reduced)
+        let graph = create_reduce_graph(
+            "reduceProduct",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![2.0, 3.0, 4.0, 5.0];
+        let expected = vec![6.0, 20.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_l1_execution() {
+        // ReduceL1: sum(abs(x)) along axis 1
+        // Input: [[-1, 2], [-3, 4]] shape [2, 2]
+        // Output: [3, 7] shape [2] (sum of absolute values)
+        let graph = create_reduce_graph(
+            "reduceL1",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![-1.0, 2.0, -3.0, 4.0];
+        let expected = vec![3.0, 7.0]; // abs(-1)+abs(2)=3, abs(-3)+abs(4)=7
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_l2_execution() {
+        // ReduceL2: sqrt(sum(x^2)) along axis 1
+        // Input: [[3, 4], [5, 12]] shape [2, 2]
+        // Output: [5, 13] shape [2] (L2 norm)
+        let graph = create_reduce_graph(
+            "reduceL2",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![3.0, 4.0, 5.0, 12.0];
+        let expected = vec![5.0, 13.0]; // sqrt(9+16)=5, sqrt(25+144)=13
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_log_sum_execution() {
+        // ReduceLogSum: log(sum(x)) along axis 1
+        // Input: [[1, e-1], [e, e^2-e]] shape [2, 2]
+        let e = std::f32::consts::E;
+        let graph = create_reduce_graph(
+            "reduceLogSum",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, e - 1.0, e, e * e - e];
+        let expected = vec![1.0, 2.0]; // log(e)=1, log(e^2)=2
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3);
+    }
+
+    #[test]
+    fn test_reduce_log_sum_exp_execution() {
+        // ReduceLogSumExp: log(sum(exp(x))) along axis 1
+        // Input: [[0, 0], [1, 1]] shape [2, 2]
+        // Output: [log(2), log(2*e)] shape [2]
+        let graph = create_reduce_graph(
+            "reduceLogSumExp",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![0.0, 0.0, 1.0, 1.0];
+        let expected = vec![
+            (2.0f32).ln(),            // log(exp(0)+exp(0)) = log(2)
+            1.0 + (2.0f32).ln(),      // log(exp(1)+exp(1)) = log(2e) = 1 + log(2)
+        ];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3);
+    }
+
+    #[test]
+    fn test_reduce_sum_square_execution() {
+        // ReduceSumSquare: sum(x^2) along axis 1
+        // Input: [[3, 4], [1, 2]] shape [2, 2]
+        // Output: [25, 5] shape [2] (sum of squares)
+        let graph = create_reduce_graph(
+            "reduceSumSquare",
+            vec![2, 2],
+            vec![2],
+            vec![1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![3.0, 4.0, 1.0, 2.0];
+        let expected = vec![25.0, 5.0]; // 9+16=25, 1+4=5
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_sum_keep_dims_execution() {
+        // ReduceSum with keepDimensions=true
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [[3], [7]] shape [2, 1] (axis 1 kept as size 1)
+        let graph = create_reduce_graph(
+            "reduceSum",
+            vec![2, 2],
+            vec![2, 1],
+            vec![1],
+            true, // keepDimensions
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![3.0, 7.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_reduce_sum_multi_axis_execution() {
+        // ReduceSum along multiple axes [0, 1]
+        // Input: [[1, 2], [3, 4]] shape [2, 2]
+        // Output: [10] shape [] (all axes reduced to scalar)
+        let graph = create_reduce_graph(
+            "reduceSum",
+            vec![2, 2],
+            vec![],
+            vec![0, 1],
+            false,
+            DataType::Float32,
+        );
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![10.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
 }
