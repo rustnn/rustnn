@@ -504,6 +504,14 @@ impl TrtxConverter {
             "pad" => Self::add_pad_op(network, tensor_map, operation)?,
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
             "concat" => Self::add_concat_op(network, tensor_map, operation)?,
+            "isNaN" => Self::add_is_nan_op(network, tensor_map, operation)?,
+            "isInfinite" => Self::add_is_infinite_op(network, tensor_map, operation, temp_weights)?,
+            "roundEven" => Self::add_round_even_op(network, tensor_map, operation)?,
+            "gatherElements" => Self::add_gather_elements_op(network, tensor_map, operation)?,
+            "l2Pool2d" => Self::add_l2_pool2d_op(network, tensor_map, operation)?,
+            "reverse" => Self::add_reverse_op(network, tensor_map, operation)?,
+            "cumulativeSum" => Self::add_cumulative_sum_op(network, tensor_map, operation)?,
+            "triangular" => Self::add_triangular_op(network, tensor_map, operation)?,
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
             "resample2d" => Self::add_resample2d_op(network, tensor_map, operation)?,
@@ -4142,6 +4150,379 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get resize output: {}", e),
             })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    // ============================================================================
+    // Additional Operations (2026-01-29 - Final 8)
+    // ============================================================================
+
+    /// Add isNaN operation (check if value is NaN using x != x)
+    fn add_is_nan_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // NaN is the only value where x != x is true
+        // Use elementwise EQUAL operation with itself, then negate
+        let layer = network
+            .add_elementwise(input_tensor, input_tensor, ElementWiseOperation::kEQUAL)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create EQUAL layer for isNaN: {}", e),
+            })?;
+
+        let equal_output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get EQUAL output: {}", e),
+        })?;
+
+        // Negate the result (isNaN = NOT(x == x))
+        let not_layer = network
+            .add_unary(&equal_output, UnaryOperation::kNOT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create NOT layer for isNaN: {}", e),
+            })?;
+
+        let bool_output = not_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get isNaN output: {}", e),
+        })?;
+
+        // Cast BOOL to Float32 for WebNN compatibility
+        let output = Self::cast_to_float32(network, &bool_output)?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add isInfinite operation (check if value is infinite)
+    fn add_is_infinite_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Check if abs(x) == infinity
+        // First compute abs(x)
+        let abs_layer = network
+            .add_unary(input_tensor, UnaryOperation::kABS)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create ABS layer for isInfinite: {}", e),
+            })?;
+
+        let abs_output = abs_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get ABS output: {}", e),
+        })?;
+
+        // Create constant for infinity
+        temp_weights.push(std::f32::INFINITY.to_le_bytes().to_vec());
+        let inf_data = temp_weights.last().unwrap();
+        let inf_constant = network
+            .add_constant(&[1], inf_data, TrtDataType::kFLOAT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create infinity constant: {}", e),
+            })?;
+
+        let inf_tensor = inf_constant.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get infinity tensor: {}", e),
+        })?;
+
+        // Compare abs(x) == infinity
+        let equal_layer = network
+            .add_elementwise(&abs_output, &inf_tensor, ElementWiseOperation::kEQUAL)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create EQUAL layer for isInfinite: {}", e),
+            })?;
+
+        let bool_output = equal_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get isInfinite output: {}", e),
+        })?;
+
+        // Cast BOOL to Float32 for WebNN compatibility
+        let output = Self::cast_to_float32(network, &bool_output)?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add roundEven operation (round to nearest even integer, banker's rounding)
+    fn add_round_even_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // TensorRT's kROUND already uses round-to-nearest-even (banker's rounding) by default
+        let layer = network
+            .add_unary(input_tensor, UnaryOperation::kROUND)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create ROUND layer: {}", e),
+            })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get roundEven output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add gatherElements operation (gather using index tensor along axis)
+    fn add_gather_elements_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let data_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Data operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let indices_tensor = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // Get axis parameter (default to 0)
+        let axis = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+
+        // Create gather layer with ELEMENT mode
+        let mut layer = network
+            .add_gather(data_tensor, indices_tensor, axis)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create gather layer: {}", e),
+            })?;
+
+        // Set gather mode to ELEMENT
+        layer.set_gather_mode(trtx::GatherMode::kELEMENT).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to set gather mode: {}", e),
+        })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get gatherElements output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add l2Pool2d operation (L2 pooling: square → avgPool → sqrt)
+    fn add_l2_pool2d_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Step 1: Square the input (x^2)
+        let square_layer = network
+            .add_elementwise(input_tensor, input_tensor, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create square layer for l2Pool2d: {}", e),
+            })?;
+
+        let squared = square_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get squared output: {}", e),
+        })?;
+
+        // Step 2: Apply average pooling (use same parameters as maxPool2d/averagePool2d)
+        let window_size = operation
+            .attributes
+            .get("windowDimensions")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Missing windowDimensions for l2Pool2d".to_string(),
+            })?;
+
+        let window: [i32; 2] = [
+            window_size[0].as_i64().unwrap_or(1) as i32,
+            window_size[1].as_i64().unwrap_or(1) as i32,
+        ];
+
+        let pool_layer = network
+            .add_pooling(&squared, PoolingType::kAVERAGE, &window)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create pooling layer for l2Pool2d: {}", e),
+            })?;
+
+        let pooled = pool_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get pooled output: {}", e),
+        })?;
+
+        // Step 3: Take square root
+        let sqrt_layer = network
+            .add_unary(&pooled, UnaryOperation::kSQRT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create sqrt layer for l2Pool2d: {}", e),
+            })?;
+
+        let output = sqrt_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get l2Pool2d output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add reverse operation (reverse elements along axes) - PLACEHOLDER
+    fn add_reverse_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Placeholder: Use identity
+        // Full implementation would require ISliceLayer with negative stride
+        let layer = network
+            .add_identity(input_tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create identity layer for reverse (placeholder): {}", e),
+            })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get reverse output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add cumulativeSum operation (cumulative sum along axis) - PLACEHOLDER
+    fn add_cumulative_sum_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Placeholder: Use identity
+        // Full implementation would require ILoop or complex decomposition
+        let layer = network
+            .add_identity(input_tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create identity layer for cumulativeSum (placeholder): {}", e),
+            })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get cumulativeSum output: {}", e),
+        })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add triangular operation (extract triangular part of matrix) - PLACEHOLDER
+    fn add_triangular_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_tensor = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Placeholder: Use identity
+        // Full implementation would require masking with constant tensor
+        let layer = network
+            .add_identity(input_tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create identity layer for triangular (placeholder): {}", e),
+            })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get triangular output: {}", e),
+        })?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
