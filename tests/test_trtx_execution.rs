@@ -3241,7 +3241,7 @@ mod tests {
 
     #[test]
     fn test_linear_execution() {
-        // Linear: alpha * x + beta
+        // Linear: alpha * x + beta (general case with both alpha and beta)
         // Input: [1,2,3,4]
         // Alpha: 2.0, Beta: 1.0
         // Expected: [3,5,7,9]
@@ -3286,9 +3286,165 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        // Note: Current implementation is identity (passthrough)
-        // TODO: Update test once IScaleLayer is exposed
-        let expected = input.clone(); // For now, passthrough
+        // Linear: y = alpha * x + beta = 2.0 * x + 1.0
+        // [1,2,3,4] → [2*1+1, 2*2+1, 2*3+1, 2*4+1] = [3,5,7,9]
+        let expected = vec![3.0, 5.0, 7.0, 9.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_linear_multiply_only() {
+        // Linear: alpha * x (beta = 0, only multiply)
+        // Input: [1,2,3,4]
+        // Alpha: 3.0, Beta: 0.0
+        // Expected: [3,6,9,12]
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("alpha".to_string(), serde_json::Value::from(3.0));
+        attributes.insert("beta".to_string(), serde_json::Value::from(0.0));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("linear_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![3.0, 6.0, 9.0, 12.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_linear_add_only() {
+        // Linear: x + beta (alpha = 1, only add)
+        // Input: [1,2,3,4]
+        // Alpha: 1.0, Beta: 5.0
+        // Expected: [6,7,8,9]
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("alpha".to_string(), serde_json::Value::from(1.0));
+        attributes.insert("beta".to_string(), serde_json::Value::from(5.0));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("linear_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![6.0, 7.0, 8.0, 9.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_linear_defaults() {
+        // Linear: identity (alpha = 1, beta = 0, uses defaults)
+        // Input: [1,2,3,4]
+        // Expected: [1,2,3,4]
+        let attributes = serde_json::Map::new(); // No attributes, use defaults
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("linear_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let expected = vec![1.0, 2.0, 3.0, 4.0];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
@@ -4140,9 +4296,7 @@ mod tests {
 
     #[test]
     fn test_reverse() {
-        // Test reverse operation (placeholder - returns identity)
-        // Full implementation requires slice with negative stride
-
+        // Test reverse operation using ISliceLayer with negative stride
         let mut attributes = serde_json::Map::new();
         attributes.insert("axes".to_string(), serde_json::json!([0]));
 
@@ -4183,7 +4337,7 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let expected = input.clone(); // Placeholder returns identity
+        let expected = vec![4.0, 3.0, 2.0, 1.0]; // Reversed along axis 0
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
@@ -4191,9 +4345,7 @@ mod tests {
 
     #[test]
     fn test_cumulative_sum() {
-        // Test cumulativeSum operation (placeholder - returns identity)
-        // Full implementation requires ILoop or complex decomposition
-
+        // Test cumulativeSum operation using TensorRT's native ICumulativeLayer
         let mut attributes = serde_json::Map::new();
         attributes.insert("axis".to_string(), serde_json::Value::Number(serde_json::Number::from(0)));
 
@@ -4234,7 +4386,8 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let expected = input.clone(); // Placeholder returns identity
+        // Cumulative sum along axis 0: [1, 1+2=3, 1+2+3=6, 1+2+3+4=10]
+        let expected = vec![1.0, 3.0, 6.0, 10.0];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
@@ -4242,9 +4395,7 @@ mod tests {
 
     #[test]
     fn test_triangular() {
-        // Test triangular operation (placeholder - returns identity)
-        // Full implementation requires masking with constant tensor
-
+        // Test triangular operation using constant mask + elementwise multiplication
         let mut attributes = serde_json::Map::new();
         attributes.insert("upper".to_string(), serde_json::Value::Bool(true));
 
@@ -4285,10 +4436,71 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0]; // [[1,2], [3,4]]
-        let expected = input.clone(); // Placeholder returns identity
+        // Upper triangular: keep where j >= i
+        // Row 0 (i=0): keep j>=0, so [1,2] -> [1,2]
+        // Row 1 (i=1): keep j>=1, so [3,4] -> [0,4]
+        // Result: [[1,2], [0,4]]
+        let expected = vec![1.0, 2.0, 0.0, 4.0];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
+
+    #[test]
+    fn test_tile() {
+        // Test tile operation
+        // Input: [1, 2] (shape: [2])
+        // Repetitions: [3] (repeat 3 times along axis 0)
+        // Output: [1, 2, 1, 2, 1, 2] (shape: [6])
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("repetitions".to_string(), serde_json::json!([3]));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "tile".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("tile_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![6],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0];
+        let expected = vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]; // Repeated 3 times
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    // NOTE: RNN operation tests removed
+    // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
+    // RNN operations (lstm, lstmCell, gru, gruCell) remain deferred
 
 }

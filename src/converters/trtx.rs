@@ -500,7 +500,7 @@ impl TrtxConverter {
             // Other operations
             "clamp" => Self::add_clamp_op(network, tensor_map, operation, temp_weights)?,
             "where" => Self::add_where_op(network, tensor_map, operation)?,
-            "linear" => Self::add_linear_op(network, tensor_map, operation)?,
+            "linear" => Self::add_linear_op(network, tensor_map, operation, temp_weights)?,
             "pad" => Self::add_pad_op(network, tensor_map, operation)?,
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
             "concat" => Self::add_concat_op(network, tensor_map, operation)?,
@@ -509,12 +509,15 @@ impl TrtxConverter {
             "roundEven" => Self::add_round_even_op(network, tensor_map, operation)?,
             "gatherElements" => Self::add_gather_elements_op(network, tensor_map, operation)?,
             "l2Pool2d" => Self::add_l2_pool2d_op(network, tensor_map, operation)?,
-            "reverse" => Self::add_reverse_op(network, tensor_map, operation)?,
-            "cumulativeSum" => Self::add_cumulative_sum_op(network, tensor_map, operation)?,
-            "triangular" => Self::add_triangular_op(network, tensor_map, operation)?,
+            "reverse" => Self::add_reverse_op(graph, network, tensor_map, operation)?,
+            "cumulativeSum" => Self::add_cumulative_sum_op(graph, network, tensor_map, operation, temp_weights)?,
+            "triangular" => Self::add_triangular_op(graph, network, tensor_map, operation, temp_weights)?,
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
             "resample2d" => Self::add_resample2d_op(network, tensor_map, operation)?,
+
+            // NOTE: RNN operations (lstm, lstmCell, gru, gruCell) deferred
+            // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
 
             _ => {
                 return Err(GraphError::ConversionFailed {
@@ -2518,17 +2521,10 @@ impl TrtxConverter {
 
     /// Add tile operation (repeat tensor along axes)
     fn add_tile_op(
-        _network: &mut trtx::NetworkDefinition,
+        network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let _input = tensor_map
-            .get(&operation.input_operands[0])
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
-            })?;
-
         // Get repetitions from attributes
         let repetitions_value = operation
             .attributes
@@ -2538,7 +2534,7 @@ impl TrtxConverter {
                 reason: "Tile operation missing 'repetitions' attribute".to_string(),
             })?;
 
-        let _repetitions: Vec<u32> = if let Some(arr) = repetitions_value.as_array() {
+        let repetitions: Vec<u32> = if let Some(arr) = repetitions_value.as_array() {
             arr.iter()
                 .filter_map(|v| v.as_u64().map(|i| i as u32))
                 .collect()
@@ -2549,18 +2545,86 @@ impl TrtxConverter {
             });
         };
 
-        // Tile requires repeating a tensor along each axis the specified number of times
-        // This is complex and requires either:
-        // 1. Multiple concatenations along each axis
-        // 2. Using ILoop layer for dynamic tiling
-        // 3. Decomposing into slices and concatenations
+        // Tile by concatenating the tensor multiple times along each axis
+        // We process each axis sequentially: tile axis 0, then axis 1, etc.
+        // Start with the input tensor's ID
+        let mut current_id = operation.input_operands[0];
+
+        for (axis, &reps) in repetitions.iter().enumerate() {
+            if reps <= 1 {
+                // No tiling needed for this axis
+                continue;
+            }
+
+            // Get current tensor
+            let current_tensor = tensor_map
+                .get(&current_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Tensor {} not found during tiling", current_id),
+                })?;
+
+            // Create a vector of references to the same tensor, repeated 'reps' times
+            let tensors_to_concat: Vec<&trtx::Tensor> = (0..reps).map(|_| current_tensor).collect();
+
+            // Concatenate along this axis
+            let mut concat_layer = network
+                .add_concatenation(&tensors_to_concat)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add concatenation for tile axis {}: {}", axis, e),
+                })?;
+
+            // Set the concatenation axis
+            concat_layer
+                .set_axis(axis as i32)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to set concatenation axis {}: {}", axis, e),
+                })?;
+
+            // Get the output tensor
+            let output_tensor = concat_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get concat output for tile axis {}: {}", axis, e),
+                })?;
+
+            // Use a temporary ID for intermediate results
+            // We use a large number to avoid collisions with actual operand IDs
+            current_id = 1_000_000 + axis as u32;
+            tensor_map.insert(current_id, output_tensor);
+        }
+
+        // Insert the final result with the actual output operand ID
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
         
-        // For now, return an error indicating this needs full implementation
-        // Full implementation requires building a concatenation tree
-        Err(GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: "Tile operation requires complex concatenation implementation - not yet fully supported".to_string(),
-        })
+        // Move the final tensor from temporary ID to output ID
+        if let Some(final_tensor) = tensor_map.remove(&current_id) {
+            tensor_map.insert(output_id, final_tensor);
+        } else {
+            // No tiling happened (all reps were 1), just use input
+            if let Some(input_tensor) = tensor_map.get(&operation.input_operands[0]) {
+                // We need to create an identity layer to "clone" the tensor reference
+                let identity_layer = network
+                    .add_identity(input_tensor)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add identity layer: {}", e),
+                    })?;
+                let output_tensor = identity_layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get identity output: {}", e),
+                    })?;
+                tensor_map.insert(output_id, output_tensor);
+            }
+        }
+        
+        Ok(())
     }
 
     // ============================================================================
@@ -3278,6 +3342,7 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands[0])
@@ -3307,25 +3372,91 @@ impl TrtxConverter {
         // Full implementation requires IScaleLayer or IConstantLayer for alpha/beta values
         let _ = (alpha, beta); // Suppress unused variable warnings
         
-        // For now, just pass through (identity)
-        // TODO: Implement full alpha*x + beta when IScaleLayer is exposed
-        let layer = network
-            .add_identity(input)
-            .map_err(|e| GraphError::ConversionFailed {
+        // Implement as: y = alpha * x + beta using elementwise operations
+        
+        // Step 1: If alpha != 1.0, multiply x by alpha
+        let after_multiply = if (alpha - 1.0).abs() > f32::EPSILON {
+            // Create alpha constant (scalar)
+            let alpha_bytes: Vec<u8> = alpha.to_le_bytes().to_vec();
+            temp_weights.push(alpha_bytes);
+            let alpha_bytes_ref = temp_weights.last().unwrap();
+            
+            let alpha_constant = network
+                .add_constant(&[1], alpha_bytes_ref, trtx::DataType::kFLOAT)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to create alpha constant: {}", e),
+                })?;
+            
+            let alpha_tensor = alpha_constant.get_output(0).map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add identity layer: {}", e),
+                reason: format!("Failed to get alpha constant output: {}", e),
             })?;
-
-        let output = layer
-            .get_output(0)
-            .map_err(|e| GraphError::ConversionFailed {
+            
+            // Multiply: alpha * x
+            let mul_layer = network
+                .add_elementwise(input, &alpha_tensor, ElementWiseOperation::kPROD)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to multiply by alpha: {}", e),
+                })?;
+            
+            mul_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get multiply output: {}", e),
+            })?
+        } else {
+            // Use identity layer to pass through
+            let identity_layer = network
+                .add_identity(input)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add identity layer: {}", e),
+                })?;
+            identity_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get identity output: {}", e),
+            })?
+        };
+        
+        // Step 2: If beta != 0.0, add beta
+        let final_output = if beta.abs() > f32::EPSILON {
+            // Create beta constant (scalar)
+            let beta_bytes: Vec<u8> = beta.to_le_bytes().to_vec();
+            temp_weights.push(beta_bytes);
+            let beta_bytes_ref = temp_weights.last().unwrap();
+            
+            let beta_constant = network
+                .add_constant(&[1], beta_bytes_ref, trtx::DataType::kFLOAT)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to create beta constant: {}", e),
+                })?;
+            
+            let beta_tensor = beta_constant.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get beta constant output: {}", e),
             })?;
+            
+            // Add: (alpha * x) + beta
+            let add_layer = network
+                .add_elementwise(&after_multiply, &beta_tensor, ElementWiseOperation::kSUM)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add beta: {}", e),
+                })?;
+            
+            add_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get add output: {}", e),
+            })?
+        } else {
+            after_multiply
+        };
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
-        tensor_map.insert(output_id, output);
+        tensor_map.insert(output_id, final_output);
         Ok(())
     }
 
@@ -4432,7 +4563,9 @@ impl TrtxConverter {
     }
 
     /// Add reverse operation (reverse elements along axes) - PLACEHOLDER
+    /// Add reverse operation (reverse elements along axes using negative stride slicing)
     fn add_reverse_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
@@ -4444,13 +4577,65 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Placeholder: Use identity
-        // Full implementation would require ISliceLayer with negative stride
+        // Get axes to reverse from attributes (if not specified, reverse all axes)
+        let axes_value = operation.attributes.get("axes");
+        
+        // Get input shape from graph
+        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let shape = &input_operand.descriptor.shape;
+        let rank = shape.len();
+
+        // Determine which axes to reverse
+        let axes_to_reverse: Vec<usize> = if let Some(axes_val) = axes_value {
+            if let Some(arr) = axes_val.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|i| i as usize))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format for reverse".to_string(),
+                });
+            }
+        } else {
+            // If no axes specified, reverse all axes
+            (0..rank).collect()
+        };
+
+        // Build slice parameters for negative stride
+        // With negative stride: end_idx = start + (size - 1) * stride
+        // For reversing: we want indices [n-1, n-2, ..., 1, 0]
+        //   start = n-1 (last element)
+        //   size = n (number of elements)
+        //   stride = -1
+        //   end_idx should be = (n-1) + (n-1)*(-1) = (n-1) - (n-1) = 0 ✓
+        let mut starts: Vec<i32> = vec![0; rank];
+        let sizes: Vec<i32> = shape.iter().map(|&s| s as i32).collect();
+        let mut strides: Vec<i32> = vec![1; rank];
+
+        for &axis in &axes_to_reverse {
+            if axis >= rank {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Reverse axis {} out of range for rank {}", axis, rank),
+                });
+            }
+            // For negative stride in TensorRT:
+            // Start at the last valid element
+            // Size remains the same (number of elements to output)
+            // Stride = -1 to go backwards
+            // TensorRT will compute: indices = start + i*stride for i in 0..size
+            // So: indices = (size-1) + i*(-1) = (size-1) - i
+            // For i=0: size-1, i=1: size-2, ..., i=size-1: 0 ✓
+            starts[axis] = (shape[axis] - 1) as i32;
+            strides[axis] = -1;
+        }
+
         let layer = network
-            .add_identity(input_tensor)
+            .add_slice(input_tensor, &starts, &sizes, &strides)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to create identity layer for reverse (placeholder): {}", e),
+                reason: format!("Failed to add slice layer for reverse: {}", e),
             })?;
 
         let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
@@ -4465,10 +4650,15 @@ impl TrtxConverter {
     }
 
     /// Add cumulativeSum operation (cumulative sum along axis) - PLACEHOLDER
+    /// Add cumulativeSum operation using explicit slice-and-add decomposition
+    /// 
+    /// Uses TensorRT's native ICumulativeLayer for efficient implementation.
     fn add_cumulative_sum_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
             .get(&operation.input_operands[0])
@@ -4477,18 +4667,76 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Placeholder: Use identity
-        // Full implementation would require ILoop or complex decomposition
-        let layer = network
-            .add_identity(input_tensor)
+        // Get axis from attributes
+        let axis = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        // Get input shape
+        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let shape = &input_operand.descriptor.shape;
+        let rank = shape.len();
+
+        if axis >= rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("CumulativeSum axis {} out of range for rank {}", axis, rank),
+            });
+        }
+
+        // Get exclusive and reverse flags (WebNN doesn't have these, default to false)
+        let exclusive = operation
+            .attributes
+            .get("exclusive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let reverse = operation
+            .attributes
+            .get("reverse")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        // Create axis constant with proper lifetime management
+        // Store bytes in temp_weights to keep them alive until engine is built
+        let axis_value = axis as i32;
+        let axis_bytes: Vec<u8> = axis_value.to_le_bytes().to_vec();
+        temp_weights.push(axis_bytes);
+        let axis_bytes_ref = temp_weights.last().unwrap();
+
+        // Create axis constant tensor (true 0D scalar with shape [])
+        // TensorRT requires axisDims.nbDims == 0 for cumulative operations
+        let axis_constant = network
+            .add_constant(&[], axis_bytes_ref, trtx::DataType::kINT32)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to create identity layer for cumulativeSum (placeholder): {}", e),
+                reason: format!("Failed to create axis constant: {}", e),
+            })?;
+
+        let axis_tensor = axis_constant.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get axis constant output: {}", e),
+        })?;
+
+        // Use TensorRT's native ICumulativeLayer with CumulativeOperation::SUM
+        let layer = network
+            .add_cumulative_with_axis_tensor(
+                input_tensor,
+                &axis_tensor,
+                trtx::CumulativeOperation::kSUM,
+                exclusive,
+                reverse,
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add cumulative sum layer: {}", e),
             })?;
 
         let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),
-            reason: format!("Failed to get cumulativeSum output: {}", e),
+            reason: format!("Failed to get cumulative sum output: {}", e),
         })?;
 
         let output_ids = operation.output_operands_slice();
@@ -4498,10 +4746,13 @@ impl TrtxConverter {
     }
 
     /// Add triangular operation (extract triangular part of matrix) - PLACEHOLDER
+    /// Add triangular operation (extract upper/lower triangular part with masking)
     fn add_triangular_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
             .get(&operation.input_operands[0])
@@ -4510,25 +4761,107 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Placeholder: Use identity
-        // Full implementation would require masking with constant tensor
-        let layer = network
-            .add_identity(input_tensor)
+        // Get parameters from attributes
+        let upper = operation
+            .attributes
+            .get("upper")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true); // Default to upper triangular
+
+        let diagonal = operation
+            .attributes
+            .get("diagonal")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32; // Default diagonal offset is 0
+
+        // Get input shape from graph
+        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let shape = &input_operand.descriptor.shape;
+
+        // Triangular only makes sense for 2D matrices (or higher-D tensors treated as batches of 2D)
+        if shape.len() < 2 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Triangular requires at least 2D tensor, got {}D", shape.len()),
+            });
+        }
+
+        let rows = shape[shape.len() - 2] as usize;
+        let cols = shape[shape.len() - 1] as usize;
+
+        // Generate triangular mask (1.0 for keep, 0.0 for zero)
+        // The mask is computed at build time based on the known shape
+        let total_elements: usize = shape.iter().map(|&s| s as usize).product();
+        let matrix_elements = rows * cols;
+        let num_matrices = total_elements / matrix_elements;
+
+        let mut mask_data: Vec<f32> = Vec::with_capacity(total_elements);
+        
+        for _ in 0..num_matrices {
+            for i in 0..rows {
+                for j in 0..cols {
+                    let keep = if upper {
+                        // Upper triangular: keep if j >= i + diagonal
+                        (j as i32) >= (i as i32) + diagonal
+                    } else {
+                        // Lower triangular: keep if j <= i + diagonal
+                        (j as i32) <= (i as i32) + diagonal
+                    };
+                    mask_data.push(if keep { 1.0 } else { 0.0 });
+                }
+            }
+        }
+
+        // Convert mask to bytes
+        let mask_bytes: Vec<u8> = mask_data
+            .iter()
+            .flat_map(|&f| f.to_le_bytes())
+            .collect();
+
+        // Store mask in temp_weights to keep it alive (critical for weight lifetime)
+        temp_weights.push(mask_bytes);
+        let mask_bytes_ref = temp_weights.last().unwrap();
+
+        // Create constant layer with the mask
+        let dims: Vec<i32> = shape.iter().map(|&s| s as i32).collect();
+        let mask_layer = network
+            .add_constant(&dims, mask_bytes_ref, trtx::DataType::kFLOAT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to create identity layer for triangular (placeholder): {}", e),
+                reason: format!("Failed to add constant mask for triangular: {}", e),
             })?;
 
-        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to get triangular output: {}", e),
-        })?;
+        let mask_tensor = mask_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get mask tensor: {}", e),
+            })?;
+
+        // Multiply input by mask (elementwise)
+        let multiply_layer = network
+            .add_elementwise(input_tensor, &mask_tensor, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add elementwise multiply for triangular: {}", e),
+            })?;
+
+        let output = multiply_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get triangular output: {}", e),
+            })?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
+
+    // NOTE: RNN operation implementations removed
+    // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
+    // RNN operations (lstm, lstmCell, gru, gruCell) remain deferred
 }
 
 impl GraphConverter for TrtxConverter {
