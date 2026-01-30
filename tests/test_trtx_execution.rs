@@ -312,9 +312,12 @@ mod tests {
         // Get tensor info
         let num_tensors = engine.get_nb_io_tensors()?;
         let num_inputs = graph.input_operands.len();
-        let num_outputs = graph.output_operands.len();
-        assert_eq!(num_tensors as usize, num_inputs + num_outputs, 
-                   "Expected {} tensors ({} inputs + {} outputs)", num_inputs + num_outputs, num_inputs, num_outputs);
+        let num_graph_outputs = graph.output_operands.len();
+        // Note: TensorRT may have more outputs than graph.output_operands due to intermediate values
+        // being marked as OperandKind::Output. We only care about the final outputs.
+        assert!(num_tensors as usize >= num_inputs + num_graph_outputs,
+                "Expected at least {} tensors ({} inputs + {} final outputs), got {}",
+                num_inputs + num_graph_outputs, num_inputs, num_graph_outputs, num_tensors);
         assert_eq!(input_data_vec.len(), num_inputs, "Expected {} input data arrays", num_inputs);
 
         // Calculate output size from graph's output operand descriptor
@@ -363,9 +366,18 @@ mod tests {
             }
         }
 
-        // Allocate output buffer
-        let output_size = output_element_count * std::mem::size_of::<f32>();
-        let output_buffer = DeviceBuffer::new(output_size)?;
+        // Allocate output buffers for all TensorRT outputs (including intermediates)
+        let num_trt_outputs = num_tensors as usize - num_inputs;
+        let mut output_buffers = Vec::new();
+        
+        // Allocate buffer for each output tensor
+        for i in 0..num_trt_outputs {
+            // For simplicity, allocate max size based on final output
+            // (intermediate outputs are usually smaller or same size)
+            let output_size = output_element_count * std::mem::size_of::<f32>();
+            let buffer = DeviceBuffer::new(output_size)?;
+            output_buffers.push(buffer);
+        }
 
         // Set tensor addresses for all inputs
         for (i, buffer) in input_buffers.iter().enumerate() {
@@ -375,10 +387,12 @@ mod tests {
             }
         }
 
-        // Set output tensor address
-        let output_tensor_name = engine.get_tensor_name(num_inputs as i32)?;
-        unsafe {
-            context.set_tensor_address(&output_tensor_name, output_buffer.as_ptr())?;
+        // Set tensor addresses for all outputs
+        for (i, buffer) in output_buffers.iter().enumerate() {
+            let tensor_name = engine.get_tensor_name((num_inputs + i) as i32)?;
+            unsafe {
+                context.set_tensor_address(&tensor_name, buffer.as_ptr())?;
+            }
         }
 
         // Execute inference
@@ -387,7 +401,9 @@ mod tests {
         }
         trtx::cuda::synchronize()?;
 
-        // Copy output back to host
+        // Copy only the final output back to host
+        // The final output is the last output buffer
+        let final_output_buffer = &output_buffers[output_buffers.len() - 1];
         let mut output_data = vec![0.0f32; output_element_count];
         let output_bytes = unsafe {
             std::slice::from_raw_parts_mut(
@@ -395,7 +411,7 @@ mod tests {
                 output_data.len() * std::mem::size_of::<f32>(),
             )
         };
-        output_buffer.copy_to_host(output_bytes)?;
+        final_output_buffer.copy_to_host(output_bytes)?;
 
         Ok(output_data)
     }
@@ -3337,4 +3353,522 @@ mod tests {
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
+
+    #[test]
+    fn test_gather_nd() {
+        // Test gatherND operation
+        // data shape: [2, 3] = [[1, 2, 3], [4, 5, 6]]
+        // indices shape: [2, 2] = [[0, 0], [1, 2]] -> gather data[0,0] and data[1,2]
+        // output shape: [2] = [1, 6]
+        // NOTE: TensorRT requires Int32 indices, so we use Int32 and convert from f32
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "gatherND".to_string(),
+                input_operands: vec![0, 1],
+                output_operand: Some(2),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("gatherND_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2, 3],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("data".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Int32,
+                        shape: vec![2, 2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("indices".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let indices = vec![0.0, 0.0, 1.0, 2.0]; // Will be converted to Int32
+
+        let output = execute_graph_multi_input(&graph, vec![data, indices]).expect("Execution failed");
+        let expected = vec![1.0, 6.0];
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_resample2d() {
+        // Test resample2d operation with nearest-neighbor mode
+        // Input: 1x1x2x2 = [[[[1, 2], [3, 4]]]]
+        // Output: 1x1x4x4 (upscale by 2x)
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "mode".to_string(),
+            serde_json::Value::String("nearest-neighbor".to_string()),
+        );
+        attributes.insert(
+            "sizes".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Number(serde_json::Number::from(4)),
+                serde_json::Value::Number(serde_json::Number::from(4)),
+            ]),
+        );
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "resample2d".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("resample2d_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1, 2, 2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1, 4, 4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        // Nearest-neighbor upscaling: each value repeated 2x2
+        let expected = vec![
+            1.0, 1.0, 2.0, 2.0, // Row 1
+            1.0, 1.0, 2.0, 2.0, // Row 2
+            3.0, 3.0, 4.0, 4.0, // Row 3
+            3.0, 3.0, 4.0, 4.0, // Row 4
+        ];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_conv_transpose2d() {
+        // Test convTranspose2d operation (deconvolution)
+        // Input: 1x1x2x2, Kernel: 1x1x2x2, Output: 1x1x3x3
+
+        let kernel_data = vec![1.0, 0.0, 0.0, 1.0]; // 2x2 identity-like kernel
+        let bias_data = vec![0.0];
+
+        // Convert to bytes using flat_map (no base64 encoding needed)
+        let kernel_bytes: Vec<u8> = kernel_data
+            .iter()
+            .flat_map(|&f: &f32| f.to_le_bytes())
+            .collect();
+        
+        let bias_bytes: Vec<u8> = bias_data
+            .iter()
+            .flat_map(|&f: &f32| f.to_le_bytes())
+            .collect();
+
+        let mut constant_map = HashMap::new();
+        constant_map.insert(
+            1,
+            ConstantData {
+                data: kernel_bytes,
+                label: Some("kernel".to_string()),
+            },
+        );
+        constant_map.insert(
+            2,
+            ConstantData {
+                data: bias_bytes,
+                label: Some("bias".to_string()),
+            },
+        );
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "strides".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Number(serde_json::Number::from(1)),
+                serde_json::Value::Number(serde_json::Number::from(1)),
+            ]),
+        );
+        attributes.insert(
+            "padding".to_string(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Number(serde_json::Number::from(0)),
+                serde_json::Value::Number(serde_json::Number::from(0)),
+                serde_json::Value::Number(serde_json::Number::from(0)),
+                serde_json::Value::Number(serde_json::Number::from(0)),
+            ]),
+        );
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "convTranspose2d".to_string(),
+                input_operands: vec![0, 1, 2],
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("convTranspose2d_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1, 2, 2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Constant,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1, 2, 2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("kernel".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Constant,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("bias".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 1, 3, 3],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: constant_map,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        
+        // ConvTranspose2d with 2x2 kernel [1,0,0,1] produces 3x3 output
+        // Input: [[1, 2], [3, 4]] -> Output: [[1, 2, 0], [3, 5, 2], [0, 3, 4]]
+        // The diagonal kernel spreads values with overlaps (center element = 1+4 = 5)
+        let expected = vec![1.0, 2.0, 0.0, 3.0, 5.0, 2.0, 0.0, 3.0, 4.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-3);
+    }
+
+    #[test]
+    fn test_scatter_elements() {
+        // Test scatterElements operation
+        // data shape: [4] = [1, 2, 3, 4]
+        // indices shape: [2] = [1, 3] (scatter at positions 1 and 3)
+        // updates shape: [2] = [10, 20] (new values)
+        // output shape: [4] = [1, 10, 3, 20]
+        // NOTE: TensorRT requires Int32 indices
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert(
+            "axis".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(0)),
+        );
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "scatterElements".to_string(),
+                input_operands: vec![0, 1, 2],
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("scatterElements_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("data".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Int32,
+                        shape: vec![2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("indices".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("updates".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let indices = vec![1.0, 3.0]; // Will be converted to Int32
+        let updates = vec![10.0, 20.0];
+
+        let output = execute_graph_multi_input(&graph, vec![data, indices, updates])
+            .expect("Execution failed");
+        let expected = vec![1.0, 10.0, 3.0, 20.0];
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_scatter_nd() {
+        // Test scatterND operation
+        // data shape: [2, 3] = [[1, 2, 3], [4, 5, 6]]
+        // indices shape: [2, 2] = [[0, 0], [1, 2]] -> positions to update
+        // updates shape: [2] = [10, 20] -> new values
+        // output shape: [2, 3] = [[10, 2, 3], [4, 5, 20]]
+        // NOTE: TensorRT requires Int32 indices
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "scatterND".to_string(),
+                input_operands: vec![0, 1, 2],
+                output_operand: Some(3),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Null,
+                label: Some("scatterND_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2, 3],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("data".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Int32,
+                        shape: vec![2, 2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("indices".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("updates".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2, 3],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let indices = vec![0.0, 0.0, 1.0, 2.0]; // Will be converted to Int32
+        let updates = vec![10.0, 20.0];
+
+        let output = execute_graph_multi_input(&graph, vec![data, indices, updates])
+            .expect("Execution failed");
+        let expected = vec![10.0, 2.0, 3.0, 4.0, 5.0, 20.0];
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_quantize_dequantize_roundtrip() {
+        // Test quantizeLinear -> dequantizeLinear -> add (proper QDQ pattern for TensorRT)
+        // Input: [1.0, 2.0, 3.0, 4.0]
+        // -> Quantize (scale=0.5) -> INT8 [2, 4, 6, 8]
+        // -> Dequantize (scale=0.5) -> Float [1.0, 2.0, 3.0, 4.0]
+        // -> Add 1.0 -> [2.0, 3.0, 4.0, 5.0]
+
+        let graph = GraphInfo {
+            operations: vec![
+                Operation {
+                    op_type: "quantizeLinear".to_string(),
+                    input_operands: vec![0, 1],
+                    output_operand: Some(2),
+                    output_operands: Vec::new(),
+                    attributes: serde_json::Value::Null,
+                    label: Some("quantize".to_string()),
+                },
+                Operation {
+                    op_type: "dequantizeLinear".to_string(),
+                    input_operands: vec![2, 3],
+                    output_operand: Some(4),
+                    output_operands: Vec::new(),
+                    attributes: serde_json::Value::Null,
+                    label: Some("dequantize".to_string()),
+                },
+                Operation {
+                    op_type: "add".to_string(),
+                    input_operands: vec![4, 5],
+                    output_operand: Some(6),
+                    output_operands: Vec::new(),
+                    attributes: serde_json::Value::Null,
+                    label: Some("add_one".to_string()),
+                },
+            ],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("quant_scale".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Int8,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("quantized".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("dequant_scale".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("dequantized".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("add_constant".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1, 3, 5],
+            output_operands: vec![6],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![1.0, 2.0, 3.0, 4.0];
+        let quant_scale = vec![0.5];
+        let dequant_scale = vec![0.5];
+        let add_value = vec![1.0];
+        let expected = vec![2.0, 3.0, 4.0, 5.0];
+
+        let output = execute_graph_multi_input(&graph, vec![input, quant_scale, dequant_scale, add_value])
+            .expect("Execution failed");
+        verify_output(&output, &expected, 0.1); // Allow some quantization error
+    }
+
 }

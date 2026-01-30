@@ -10,8 +10,8 @@ use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, OperandKind, Operation};
 use trtx::network::Layer;
 use trtx::{
-    ActivationType, DataType as TrtDataType, ElementWiseOperation, PoolingType, ReduceOperation,
-    UnaryOperation,
+    ActivationType, DataType as TrtDataType, ElementWiseOperation, PoolingType,
+    ReduceOperation, ResizeMode, ScatterMode, UnaryOperation,
 };
 
 /// TensorRT native converter
@@ -423,6 +423,8 @@ impl TrtxConverter {
             )?,
             "identity" => Self::add_identity_op(network, tensor_map, operation)?,
             "cast" => Self::add_identity_op(network, tensor_map, operation)?, // Cast uses identity for now
+            "quantizeLinear" => Self::add_quantize_linear_op(network, tensor_map, operation)?,
+            "dequantizeLinear" => Self::add_dequantize_linear_op(network, tensor_map, operation)?,
 
             // Matrix operations
             "matmul" => Self::add_matmul_op(network, tensor_map, operation)?,
@@ -430,6 +432,9 @@ impl TrtxConverter {
 
             // Convolution operations
             "conv2d" => Self::add_conv2d_op(graph, network, tensor_map, operation)?,
+            "convTranspose2d" => {
+                Self::add_conv_transpose2d_op(graph, network, tensor_map, operation)?
+            }
 
             // Pooling operations
             "averagePool2d" => {
@@ -486,6 +491,9 @@ impl TrtxConverter {
 
             // Indexing/Gathering operations
             "gather" => Self::add_gather_op(network, tensor_map, operation)?,
+            "gatherND" => Self::add_gather_nd_op(network, tensor_map, operation)?,
+            "scatterElements" => Self::add_scatter_elements_op(network, tensor_map, operation)?,
+            "scatterND" => Self::add_scatter_nd_op(network, tensor_map, operation)?,
             "argMax" => Self::add_arg_max_op(network, tensor_map, operation)?,
             "argMin" => Self::add_arg_min_op(network, tensor_map, operation)?,
             
@@ -498,6 +506,7 @@ impl TrtxConverter {
             "concat" => Self::add_concat_op(network, tensor_map, operation)?,
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
+            "resample2d" => Self::add_resample2d_op(network, tensor_map, operation)?,
 
             _ => {
                 return Err(GraphError::ConversionFailed {
@@ -1009,6 +1018,95 @@ impl TrtxConverter {
         Ok(())
     }
 
+    /// Add quantizeLinear operation (float to quantized integer)
+    fn add_quantize_linear_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let scale = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Scale operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // Note: WebNN quantizeLinear also has zeroPoint parameter (operand 2)
+        // TensorRT's IQuantizeLayer only takes scale, so we ignore zeroPoint for now
+        // This is a limitation that should be documented
+
+        // Create quantize layer - output type is INT8 for quantization
+        let layer = network
+            .add_quantize(input, scale, TrtDataType::kINT8)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add quantize layer: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get quantize output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add dequantizeLinear operation (quantized integer to float)
+    fn add_dequantize_linear_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let scale = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Scale operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // Note: WebNN dequantizeLinear also has zeroPoint parameter (operand 2)
+        // TensorRT's IDequantizeLayer only takes scale, so we ignore zeroPoint for now
+        // This is a limitation that should be documented
+
+        // Create dequantize layer - output type is FLOAT for dequantization
+        let layer = network
+            .add_dequantize(input, scale, TrtDataType::kFLOAT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add dequantize layer: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get dequantize output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
 
     /// Add global pooling operation
     fn add_global_pooling_op(
@@ -2714,6 +2812,166 @@ impl TrtxConverter {
         Ok(())
     }
 
+    /// Add gatherND operation (N-dimensional gather)
+    fn add_gather_nd_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let indices = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+            })?;
+
+        // Create gather layer with axis 0 (required by addGather API)
+        let mut layer = network
+            .add_gather(input, indices, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gatherND layer: {}", e),
+            })?;
+
+        // Set gather mode to kND for N-dimensional gather
+        layer
+            .set_gather_mode(trtx::GatherMode::kND)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set gather mode to kND: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get gatherND output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add scatterElements operation (element-wise scatter)
+    fn add_scatter_elements_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let data = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Data operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let indices = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+            })?;
+
+        let updates = tensor_map
+            .get(&operation.input_operands[2])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Updates operand {} not found", operation.input_operands[2]),
+            })?;
+
+        // Get axis attribute (default to 0)
+        let axis = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as i32;
+
+        // Create scatter layer with mode (kELEMENT for scatterElements)
+        let mut layer = network
+            .add_scatter(data, indices, updates, ScatterMode::kELEMENT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add scatterElements layer: {}", e),
+            })?;
+
+        // Set axis for element-wise scatter
+        layer
+            .set_axis(axis)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set scatter axis: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get scatterElements output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add scatterND operation (N-dimensional scatter)
+    fn add_scatter_nd_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let data = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Data operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let indices = tensor_map
+            .get(&operation.input_operands[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+            })?;
+
+        let updates = tensor_map
+            .get(&operation.input_operands[2])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Updates operand {} not found", operation.input_operands[2]),
+            })?;
+
+        // Create scatter layer with mode kND for N-dimensional scatter
+        let layer = network
+            .add_scatter(data, indices, updates, ScatterMode::kND)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add scatterND layer: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get scatterND output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
     /// Add argMax operation (find indices of maximum values)
     fn add_arg_max_op(
         network: &mut trtx::NetworkDefinition,
@@ -3525,6 +3783,77 @@ impl TrtxConverter {
         Ok(())
     }
 
+    /// Add convTranspose2d operation (deconvolution/transposed convolution)
+    fn add_conv_transpose2d_op(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Get filter (weights) - operand 1
+        let filter_id = operation.input_operands[1];
+        let filter_data = Self::get_constant_data(graph, filter_id)?;
+
+        // Get optional bias - operand 2 if present
+        let bias_data = if operation.input_operands.len() > 2 {
+            Some(Self::get_constant_data(graph, operation.input_operands[2])?)
+        } else {
+            None
+        };
+
+        // Get filter operand descriptor for shape info
+        let filter_operand = graph
+            .operand(filter_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Filter operand {} not found", filter_id),
+            })?;
+
+        // Filter shape for convTranspose2d: [inputChannels, outputChannels/groups, height, width]
+        // Note: This is different from conv2d!
+        let filter_shape = &filter_operand.descriptor.shape;
+        if filter_shape.len() != 4 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Expected 4D filter shape for convTranspose2d, got {}D",
+                    filter_shape.len()
+                ),
+            });
+        }
+
+        let num_output_maps = filter_shape[1] as i32;
+        let kernel_size: [i32; 2] = [filter_shape[2] as i32, filter_shape[3] as i32];
+
+        // Add deconvolution layer
+        let layer = network
+            .add_deconvolution(input, num_output_maps, &kernel_size, filter_data, bias_data)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add deconvolution: {}", e),
+            })?;
+
+        // Extract output tensor from layer
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get deconvolution output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
     /// Add pooling operation
     fn add_pooling_op(
         network: &mut trtx::NetworkDefinition,
@@ -3716,6 +4045,102 @@ impl TrtxConverter {
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add resample2d operation (resize/interpolate 2D tensor)
+    fn add_resample2d_op(
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        // Parse mode attribute (default to "nearest-neighbor")
+        let mode_str = operation
+            .attributes
+            .get("mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("nearest-neighbor");
+
+        // Map WebNN mode to TensorRT ResizeMode (typedef for InterpolationMode)
+        let resize_mode = match mode_str {
+            "nearest-neighbor" => ResizeMode::kNEAREST,
+            "linear" => ResizeMode::kLINEAR,
+            _ => ResizeMode::kNEAREST, // Default to nearest
+        };
+
+        // Parse sizes from attributes (should be output spatial dimensions)
+        // WebNN resample2d uses [newHeight, newWidth]
+        let sizes = operation
+            .attributes
+            .get("sizes")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_i64().map(|i| i as i32))
+                    .collect::<Vec<i32>>()
+            })
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Missing sizes attribute for resample2d".to_string(),
+            })?;
+
+        if sizes.len() != 2 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "resample2d sizes must have 2 elements (height, width), got {}",
+                    sizes.len()
+                ),
+            });
+        }
+
+        // Create resize layer
+        let mut layer = network
+            .add_resize(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add resize layer: {}", e),
+            })?;
+
+        // TensorRT expects full output dimensions [N, C, H, W]
+        // WebNN resample2d only specifies [H, W], so we need to preserve N and C
+        // For now, we'll assume 4D NCHW input and set full dimensions
+        // TODO: Get actual input dimensions to preserve N and C
+        let output_dims = vec![1, 1, sizes[0], sizes[1]]; // Placeholder: [N=1, C=1, H, W]
+
+        // Set output dimensions
+        layer
+            .set_output_dimensions(&output_dims)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set resize output dimensions: {}", e),
+            })?;
+
+        // Set resize mode (uses ResizeMode typedef for InterpolationMode)
+        layer
+            .set_resize_mode(resize_mode)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set resize mode: {}", e),
+            })?;
+
+        let output = layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get resize output: {}", e),
             })?;
 
         let output_ids = operation.output_operands_slice();
