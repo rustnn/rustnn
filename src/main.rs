@@ -163,13 +163,27 @@ fn run() -> Result<(), GraphError> {
                     format: converted.format.to_string(),
                 });
             }
-            let outputs =
-                rustnn::run_onnx_zeroed(&converted.data, &artifacts.input_names_to_descriptors)?;
+            // Build zeroed inputs
+            let inputs: Vec<rustnn::OnnxInput> = artifacts
+                .input_names_to_descriptors
+                .iter()
+                .map(|(name, desc)| {
+                    let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+                    let total: usize = shape.iter().product();
+                    rustnn::OnnxInput {
+                        name: name.clone(),
+                        shape,
+                        data: rustnn::TensorData::Float32(vec![0f32; total.max(1)]),
+                    }
+                })
+                .collect();
+            
+            let outputs = rustnn::run_onnx_with_inputs(&converted.data, inputs)?;
             println!("Executed ONNX model with zeroed inputs (CPU):");
             for out in outputs {
                 println!(
-                    "  - {}: shape={:?} type={}",
-                    out.name, out.shape, out.data_type
+                    "  - {}: shape={:?}",
+                    out.name, out.shape
                 );
             }
         }
@@ -182,18 +196,33 @@ fn run() -> Result<(), GraphError> {
                     format: converted.format.to_string(),
                 });
             }
-            let outputs =
-                rustnn::run_trtx_zeroed(&converted.data, &artifacts.input_names_to_descriptors)?;
+            // Build zeroed inputs
+            let inputs: Vec<rustnn::TrtxInput> = artifacts
+                .input_names_to_descriptors
+                .iter()
+                .map(|(name, desc)| {
+                    let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+                    let total: usize = shape.iter().product();
+                    rustnn::TrtxInput {
+                        name: name.clone(),
+                        shape,
+                        data: vec![0f32; total.max(1)],
+                    }
+                })
+                .collect();
+            
+            let outputs = rustnn::run_trtx_with_inputs(&converted.data, inputs)?;
+            
             let model_type = if converted.format == "trtx" {
                 "TensorRT engine"
             } else {
                 "ONNX model"
             };
             println!("Executed {} with zeroed inputs (TRT-RTX):", model_type);
-            for out in outputs {
+            for out in &outputs {
                 println!(
-                    "  - {}: shape={:?} type={}",
-                    out.name, out.shape, out.data_type
+                    "  - {}: shape={:?}",
+                    out.name, out.shape
                 );
             }
         }

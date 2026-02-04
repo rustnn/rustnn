@@ -106,38 +106,63 @@ fn execute_trtx_engine(
     let mut device_buffers: Vec<(String, trtx::DeviceBuffer)> = Vec::new();
     let mut output_info: Vec<(String, Vec<usize>)> = Vec::new();
 
-    // Process each tensor
+    // Process each tensor - allocate buffers for ALL tensors (inputs and outputs)
+    // TensorRT requires ALL tensor addresses to be set, even for intermediate results
     for i in 0..num_tensors {
         let name = engine.get_tensor_name(i)?;
-
-        // Check if this is an input or output
+        
+        // Check if this is an input tensor
         if let Some(input) = inputs.iter().find(|inp| inp.name == name) {
-            // Input tensor - allocate and copy data
+            // Input tensor - validate and copy data
+            let expected_shape_i64 = engine.get_tensor_shape(&name)?;
+            let expected_shape: Vec<usize> = expected_shape_i64.iter().map(|&d| d as usize).collect();
+            let expected_elements: usize = expected_shape.iter().product();
+            let provided_elements: usize = input.shape.iter().product();
+            
+            if provided_elements != expected_elements {
+                return Err(trtx::Error::InvalidArgument(format!(
+                    "Input tensor '{}' shape mismatch: expected {:?} ({} elements), got {:?} ({} elements)",
+                    name, expected_shape, expected_elements, input.shape, provided_elements
+                )));
+            }
+            
+            if input.data.len() != provided_elements {
+                return Err(trtx::Error::InvalidArgument(format!(
+                    "Input tensor '{}' data length ({}) doesn't match shape {:?} ({} elements)",
+                    name, input.data.len(), input.shape, provided_elements
+                )));
+            }
+            
             let size_bytes = input.data.len() * std::mem::size_of::<f32>();
             let mut buffer = trtx::DeviceBuffer::new(size_bytes)?;
 
-            // Copy input data to device
             let input_bytes =
                 unsafe { std::slice::from_raw_parts(input.data.as_ptr() as *const u8, size_bytes) };
             buffer.copy_from_host(input_bytes)?;
 
-            // Bind tensor address
             unsafe {
                 context.set_tensor_address(&name, buffer.as_ptr())?;
             }
 
             device_buffers.push((name.clone(), buffer));
         } else {
-            // Output tensor - allocate buffer
-            // Estimate size (could be improved by querying actual tensor shape from engine)
-            let estimated_size = 1000 * std::mem::size_of::<f32>();
-            let buffer = trtx::DeviceBuffer::new(estimated_size)?;
+            // Non-input tensor (output or intermediate) - allocate buffer
+            let shape_i64 = engine.get_tensor_shape(&name)?;
+            let shape: Vec<usize> = shape_i64.iter().map(|&d| d as usize).collect();
+            
+            let num_elements: usize = shape.iter().product();
+            let size_bytes = num_elements * std::mem::size_of::<f32>();
+            let buffer = trtx::DeviceBuffer::new(size_bytes)?;
 
             unsafe {
                 context.set_tensor_address(&name, buffer.as_ptr())?;
             }
 
-            output_info.push((name.clone(), vec![1, 1000])); // Placeholder shape
+            // Only return tensors whose names start with "output"
+            if name.starts_with("output") {
+                output_info.push((name.clone(), shape));
+            }
+            
             device_buffers.push((name.clone(), buffer));
         }
     }

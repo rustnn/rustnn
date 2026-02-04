@@ -198,21 +198,27 @@ impl TrtxConverter {
             Self::add_operation(graph, network, &mut tensor_map, &mut temp_weights, operation)?;
         }
 
-        // Step 4: Mark outputs
+        // Step 4: Mark outputs (only actual graph outputs, not intermediate tensors)
         for (operand_id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Output {
-                let tensor = tensor_map.get(&(operand_id as u32)).ok_or_else(|| {
+                let tensor = tensor_map.get_mut(&(operand_id as u32)).ok_or_else(|| {
                     GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Output operand {} not found in tensor map", operand_id),
                     }
                 })?;
 
+                // Set the output tensor name if available
+                if let Some(name) = &operand.name {
+                    let _ = tensor.set_name(name); // Ignore error if name setting fails
+                }
+
                 network
                     .mark_output(tensor)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("Failed to mark output: {}", e),
+                        reason: format!("Failed to mark output {}: {}", 
+                            operand.name.as_deref().unwrap_or("unnamed"), e),
                     })?;
             }
         }
@@ -580,39 +586,104 @@ impl TrtxConverter {
             return Ok((t0, t1));
         }
 
-        // If ranks match, validate dimensions are broadcastable
+        // If ranks match, check if broadcasting is needed
         if dims0.len() == dims1.len() {
             // Check if dimensions are compatible for broadcasting
+            let mut needs_broadcast = false;
             for (i, (&d0, &d1)) in dims0.iter().zip(dims1.iter()).enumerate() {
-                if d0 != d1 && d0 != 1 && d1 != 1 {
-                    return Err(GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!(
-                            "Incompatible dimensions for broadcasting in {}: dimension {} has {} vs {} (neither equal nor 1). \
-                            Full shapes: {:?} vs {:?}. This may indicate a malformed model - check for missing resize/pad operations.",
-                            op_name, i, d0, d1, dims0, dims1
-                        ),
-                    });
+                if d0 != d1 {
+                    if d0 != 1 && d1 != 1 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!(
+                                "Incompatible dimensions for broadcasting in {}: dimension {} has {} vs {} (neither equal nor 1). \
+                                Full shapes: {:?} vs {:?}.",
+                                op_name, i, d0, d1, dims0, dims1
+                            ),
+                        });
+                    }
+                    needs_broadcast = true;
                 }
             }
 
-            let id0 = network.add_identity(tensor0).map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to clone tensor0: {}", e),
-            })?;
-            let t0 = id0.get_output(0).map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get identity output: {}", e),
-            })?;
+            // If no broadcasting needed, just clone both tensors
+            if !needs_broadcast {
+                let id0 = network.add_identity(tensor0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to clone tensor0: {}", e),
+                })?;
+                let t0 = id0.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get identity output: {}", e),
+                })?;
 
-            let id1 = network.add_identity(tensor1).map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to clone tensor1: {}", e),
-            })?;
-            let t1 = id1.get_output(0).map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get identity output: {}", e),
-            })?;
+                let id1 = network.add_identity(tensor1).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to clone tensor1: {}", e),
+                })?;
+                let t1 = id1.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get identity output: {}", e),
+                })?;
+
+                return Ok((t0, t1));
+            }
+
+            // Broadcasting needed - expand dimensions that are 1 to match target size
+            // Use IResizeLayer with NEAREST mode to expand
+            let t0 = if dims0.iter().zip(dims1.iter()).any(|(&d0, &d1)| d0 == 1 && d1 != 1) {
+                // tensor0 needs expansion
+                let mut resize_layer = network.add_resize(tensor0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add resize layer for tensor0: {}", e),
+                })?;
+                
+                resize_layer.set_output_dimensions(&dims1).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to set output dimensions: {}", e),
+                })?;
+                
+                resize_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get resize output: {}", e),
+                })?
+            } else {
+                let id = network.add_identity(tensor0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to clone tensor0: {}", e),
+                })?;
+                id.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get identity output: {}", e),
+                })?
+            };
+
+            let t1 = if dims1.iter().zip(dims0.iter()).any(|(&d1, &d0)| d1 == 1 && d0 != 1) {
+                // tensor1 needs expansion
+                let mut resize_layer = network.add_resize(tensor1).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add resize layer for tensor1: {}", e),
+                })?;
+                
+                resize_layer.set_output_dimensions(&dims0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to set output dimensions: {}", e),
+                })?;
+                
+                resize_layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get resize output: {}", e),
+                })?
+            } else {
+                let id = network.add_identity(tensor1).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to clone tensor1: {}", e),
+                })?;
+                id.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get identity output: {}", e),
+                })?
+            };
 
             return Ok((t0, t1));
         }
@@ -674,7 +745,7 @@ impl TrtxConverter {
 
     /// Add elementwise operation
     fn add_elementwise_op(
-        graph: &GraphInfo,
+        _graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
@@ -725,7 +796,7 @@ impl TrtxConverter {
 
     /// Add comparison operation (outputs BOOL, cast to Float32)
     fn add_comparison_op(
-        graph: &GraphInfo,
+        _graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
@@ -779,7 +850,7 @@ impl TrtxConverter {
 
     /// Add logical operation (cast Float32 to BOOL, perform operation, cast back to Float32)
     fn add_logical_binary_op(
-        graph: &GraphInfo,
+        _graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
@@ -3389,13 +3460,13 @@ impl TrtxConverter {
         // Get min and max values from attributes
         let min_value = operation
             .attributes
-            .get("minValue")
+            .get("min_value")
             .and_then(|v| v.as_f64())
             .unwrap_or(f64::NEG_INFINITY) as f32;
 
         let max_value = operation
             .attributes
-            .get("maxValue")
+            .get("max_value")
             .and_then(|v| v.as_f64())
             .unwrap_or(f64::INFINITY) as f32;
         
@@ -3872,11 +3943,15 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Debug: check actual dimensions
-        let dims_a = input_a.dimensions().ok();
-        let dims_b = input_b.dimensions().ok();
-        eprintln!("[GEMM DEBUG] Input A dims: {:?}, transpose: {}", dims_a, a_transpose);
-        eprintln!("[GEMM DEBUG] Input B dims: {:?}, transpose: {}", dims_b, b_transpose);
+        // Get actual dimensions for validation
+        let dims_a = input_a.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get input A dimensions: {}", e),
+        })?;
+        let dims_b = input_b.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get input B dimensions: {}", e),
+        })?;
 
         // Use TensorRT MatrixOperation enum
         // CRITICAL: TensorRT's IMatrixMultiplyLayer seems to have different semantics
@@ -3916,8 +3991,6 @@ impl TrtxConverter {
             let b_op = if b_transpose { MatrixOperation::kTRANSPOSE as i32 } else { MatrixOperation::kNONE as i32 };
             (input_a, input_b, a_op, b_op)
         };
-
-        eprintln!("[GEMM DEBUG] Using op_a: {}, op_b: {}", op_a, op_b);
 
         // Add matrix multiply layer
         let layer = network
@@ -4368,8 +4441,28 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Default to last axis (most common for softmax)
-        let axes = 1u32 << 0; // Apply to first axis
+        // Get the axis parameter (defaults to last axis)
+        // TensorRT uses a bitmask where bit N represents axis N
+        let axis = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(-1); // Default to last axis
+        
+        // Handle negative axis (convert to positive)
+        let dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get input dimensions: {}", e),
+        })?;
+        let num_dims = dims.len() as i64;
+        let positive_axis = if axis < 0 {
+            (num_dims + axis) as u32
+        } else {
+            axis as u32
+        };
+        
+        // Create bitmask for the axis
+        let axes = 1u32 << positive_axis;
 
         let layer = network
             .add_softmax(input, axes)

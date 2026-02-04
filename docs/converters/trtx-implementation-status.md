@@ -12,7 +12,7 @@ The TrtxConverter provides native TensorRT backend support, bypassing ONNX seria
 - **Total WebNN Operations:** 109 (105 non-RNN + 4 RNN)
 - **Coverage:** 96% of full WebNN specification (105/109 operations)
 - **Non-RNN Coverage:** 100% (105/105 operations) ✅
-- **Tests:** 108 tests passing (105 operations + 3 additional linear edge case tests)
+- **Tests:** 110 tests passing (105 operations + 3 linear edge cases + 2 multidimensional broadcasting tests)
 
 **Implementation Breakdown:**
 - 105 fully functional implementations (96% of total spec, 100% of non-RNN) ✅
@@ -541,7 +541,7 @@ Added the final 8 operations, achieving **100% WebNN specification coverage (105
 - ✓ `test_cumulative_sum` - Native cumulative sum operation
 - ✓ `test_triangular` - Triangular mask generation and application
 
-**All 108 tests passing!** ✅
+**All 110 tests passing!** ✅
 
 ### Key Technical Insights
 
@@ -606,7 +606,7 @@ Successfully replaced all 3 placeholder implementations with real TensorRT opera
 **New Tests Added:** 1 test (105 total)
 - ✅ `test_tile` - Full numerical verification [1,2] → [1,2,1,2,1,2]
 
-**All 108 tests passing!** ✅
+**All 110 tests passing!** ✅
 
 ### Implementation Details for Part 5 Operations
 
@@ -691,8 +691,54 @@ Successfully upgraded the `linear` operation from simplified identity passthroug
 - ✅ `test_linear_multiply_only` - Tests alpha ≠ 1.0, beta = 0.0 optimization
 - ✅ `test_linear_add_only` - Tests alpha = 1.0, beta ≠ 0.0 optimization
 - ✅ `test_linear_defaults` - Tests identity case (alpha=1.0, beta=0.0)
+- ✅ `test_linear_multidimensional` - Tests 4D tensor with alpha/beta broadcasting
 
-**All 108 tests passing!** ✅
+**All 110 tests passing!** ✅
+
+---
+
+## Recent Fixes (2026-01-30)
+
+### Part 7 - Scalar Broadcasting Fix for Multi-Dimensional Tensors 🐛
+
+**Critical Bug Fix:** Fixed scalar constant broadcasting in `clamp` and `linear` operations.
+
+**Problem:**
+- Scalar constants were created with fixed shape `[1]` regardless of input tensor dimensionality
+- TensorRT's `ElementWiseOperation` requires matching tensor ranks for proper broadcasting
+- Error occurred when using multi-dimensional tensors: `[1,32,222,222]` could not broadcast with `[1]`
+
+**Root Cause:**
+TensorRT requires scalar constants to have the **same number of dimensions** as the input tensor, with all dimensions set to 1 for proper broadcasting.
+
+```rust
+// Before (incorrect - fixed 1D shape):
+network.add_constant(&[1], scalar_bytes, DataType::kFLOAT)
+
+// After (correct - match input tensor's dimensionality):
+let num_dims = input_operand.descriptor.shape.len();
+let broadcast_shape: Vec<i64> = vec![1; num_dims];
+network.add_constant(&broadcast_shape, scalar_bytes, DataType::kFLOAT)
+```
+
+**Operations Fixed:**
+- ✅ `clamp` - min/max value constants now match input tensor dimensionality
+- ✅ `linear` - alpha/beta constants now match input tensor dimensionality
+
+**Broadcasting Rules:**
+- For 1D input `[8]` → scalar needs shape `[1]`
+- For 4D input `[1,32,222,222]` → scalar needs shape `[1,1,1,1]`
+- TensorRT follows NumPy-style broadcasting requiring matching rank
+- All dimensions must be 1 for proper broadcasting to any size
+
+**Test Coverage:**
+- ✅ `test_clamp_multidimensional` - Tests 4D tensor `[1,2,2,2]` with scalar min/max
+- ✅ `test_linear_multidimensional` - Tests 4D tensor `[1,2,2,2]` with scalar alpha/beta
+
+**Impact:**
+- All operations using scalar constants now work correctly with multi-dimensional tensors
+- Fixes real-world use case: MiniLM model with `[1,32,222,222]` tensors in clamp operations
+- Ensures proper broadcasting semantics across all tensor ranks
 
 ---
 
@@ -705,14 +751,14 @@ Successfully upgraded the `linear` operation from simplified identity passthroug
 - **Fully Functional:** 105 (96% of full spec, 100% of non-RNN) ✅
 - **Placeholders:** 0 (all operations fully implemented!)
 - **Deferred:** 4 (RNN operations: gru, gruCell, lstm, lstmCell)
-- **Tests:** 108 passing (105 operations + 3 edge case tests)
+- **Tests:** 110 passing (105 operations + 3 linear edge cases + 2 multidimensional broadcasting)
 
 This marks the **first complete implementation of all non-RNN WebNN operations in TensorRT with zero placeholders!**
 
 **Key Achievements:**
 - ✅ 100% non-RNN operation coverage (105/105)
 - ✅ All operations fully functional (no placeholders or simplified implementations)
-- ✅ 108 tests passing (105 operations + 3 edge case tests)
+- ✅ 110 tests passing (105 operations + 3 linear edge cases + 2 multidimensional broadcasting)
 
 **RNN Operations Deferred:**
 - TensorRT's `IRNNv2Layer` is deprecated (TRT_DEPRECATED macro)
@@ -807,13 +853,14 @@ fn build_network(
 ## Testing
 
 TrtxConverter tests are located in `tests/test_trtx_execution.rs`:
-- **108 tests** for all 105 implemented WebNN operations (as of 2026-01-30)
+- **110 tests** for all 105 implemented WebNN operations (as of 2026-01-30)
   - 105 primary operation tests
   - 3 additional `linear` edge case tests (multiply-only, add-only, defaults)
+  - 2 multidimensional broadcasting tests (`clamp_multidimensional`, `linear_multidimensional`)
 - Tests use actual TensorRT execution (not mock)
 - Numerical validation with tolerance checking
 - GPU required for full test suite
-- **All 108 tests passing!** ✅
+- **All 110 tests passing!** ✅
 
 Run tests:
 ```bash
