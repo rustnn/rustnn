@@ -192,13 +192,22 @@ pub fn run_trtx_with_inputs(
         })
         .collect();
 
-    // Execute with TensorRT
-    let outputs =
+    // Determine if we have ONNX or pre-built TensorRT engine
+    let outputs = if is_onnx_format(model_bytes) {
+        // Parse ONNX and build engine, then execute
         trtx::executor::run_onnx_with_tensorrt(model_bytes, &trtx_inputs).map_err(|e| {
             GraphError::TrtxRuntimeFailed {
-                reason: format!("TensorRT execution failed: {e}"),
+                reason: format!("TensorRT execution from ONNX failed: {e}"),
             }
-        })?;
+        })?
+    } else {
+        // Directly execute pre-built TensorRT engine
+        execute_trtx_engine(model_bytes, &trtx_inputs).map_err(|e| {
+            GraphError::TrtxRuntimeFailed {
+                reason: format!("TensorRT engine execution failed: {e}"),
+            }
+        })?
+    };
 
     // Convert outputs to our format
     let mut results = Vec::new();

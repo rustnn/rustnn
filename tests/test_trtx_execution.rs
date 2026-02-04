@@ -3168,6 +3168,63 @@ mod tests {
     }
 
     #[test]
+    fn test_clamp_multidimensional() {
+        // Test clamp with 4D input to verify scalar broadcasting fix
+        // This tests the bug fix where scalar constants must use shape [] (0D)
+        // not shape [1] (1D) for proper broadcasting with multi-dimensional tensors
+        // Input shape: [1,2,2,2] = 8 elements
+        // Input: [-2, -1, 0, 1, 2, 3, 4, 5]
+        // Range: [-1.0, 3.5]
+        // Expected: [-1, -1, 0, 1, 2, 3, 3.5, 3.5]
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("minValue".to_string(), serde_json::Value::from(-1.0));
+        attributes.insert("maxValue".to_string(), serde_json::Value::from(3.5));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "clamp".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("clamp_4d_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2, 2, 2], // 4D tensor
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2, 2, 2], // 4D tensor
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        // Clamp with min=-1.0, max=3.5 should clip values to [-1, 3.5]
+        let expected = vec![-1.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.5, 3.5];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
     fn test_where_execution() {
         // Where: Select values based on condition
         // Condition: [1,0,1,0] (true, false, true, false)
@@ -3445,6 +3502,63 @@ mod tests {
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let expected = vec![1.0, 2.0, 3.0, 4.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_linear_multidimensional() {
+        // Test linear with 4D input to verify scalar broadcasting fix
+        // This tests the bug fix where alpha/beta constants must use shape [] (0D)
+        // not shape [1] (1D) for proper broadcasting with multi-dimensional tensors
+        // Input shape: [1,2,2,2] = 8 elements
+        // Input: [0, 1, 2, 3, 4, 5, 6, 7]
+        // Alpha: 0.5, Beta: 1.0
+        // Expected: [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5] (0.5*x + 1.0)
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("alpha".to_string(), serde_json::Value::from(0.5));
+        attributes.insert("beta".to_string(), serde_json::Value::from(1.0));
+
+        let graph = GraphInfo {
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: Vec::new(),
+                attributes: serde_json::Value::Object(attributes),
+                label: Some("linear_4d_op".to_string()),
+            }],
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2, 2, 2], // 4D tensor
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2, 2, 2], // 4D tensor
+                        pending_permutation: Vec::new(),
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let input = vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0];
+        // Linear: y = 0.5*x + 1.0
+        let expected = vec![1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
@@ -4502,5 +4616,458 @@ mod tests {
     // NOTE: RNN operation tests removed
     // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
     // RNN operations (lstm, lstmCell, gru, gruCell) remain deferred
+
+    // ============================================================================
+    // Conv2D Padding Tests (2026-01-30)
+    // ============================================================================
+
+    /// Helper to create conv2d graph with explicit padding control
+    fn create_conv2d_graph_with_padding(
+        input_shape: Vec<u32>,  // [batch, channels, height, width]
+        filter_shape: Vec<u32>, // [out_channels, in_channels, kernel_h, kernel_w]
+        filter_data: Vec<f32>,
+        bias_data: Option<Vec<f32>>,
+        padding: Vec<u32>, // [pad_top, pad_bottom, pad_left, pad_right]
+        stride: Vec<u32>,  // [stride_h, stride_w]
+        data_type: DataType,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type,
+            shape: input_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        let filter_desc = OperandDescriptor {
+            data_type,
+            shape: filter_shape.clone(),
+            pending_permutation: Vec::new(),
+        };
+
+        // Calculate output shape with padding and stride
+        // out_h = floor((in_h + pad_top + pad_bottom - kernel_h) / stride_h) + 1
+        // out_w = floor((in_w + pad_left + pad_right - kernel_w) / stride_w) + 1
+        let in_h = input_shape[2];
+        let in_w = input_shape[3];
+        let kernel_h = filter_shape[2];
+        let kernel_w = filter_shape[3];
+        let pad_top = padding[0];
+        let pad_bottom = padding[1];
+        let pad_left = padding[2];
+        let pad_right = padding[3];
+        let stride_h = stride[0];
+        let stride_w = stride[1];
+
+        let out_h = ((in_h + pad_top + pad_bottom - kernel_h) / stride_h) + 1;
+        let out_w = ((in_w + pad_left + pad_right - kernel_w) / stride_w) + 1;
+        let output_shape = vec![input_shape[0], filter_shape[0], out_h, out_w];
+
+        let output_desc = OperandDescriptor {
+            data_type,
+            shape: output_shape,
+            pending_permutation: Vec::new(),
+        };
+
+        // Convert filter data to bytes
+        let filter_bytes: Vec<u8> = filter_data
+            .iter()
+            .flat_map(|&f| f.to_le_bytes())
+            .collect();
+
+        let mut constant_map = HashMap::new();
+        constant_map.insert(
+            1,
+            ConstantData {
+                data: filter_bytes,
+                label: Some("filter".to_string()),
+            },
+        );
+
+        let mut input_operands = vec![0, 1]; // input and filter
+        let mut operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: input_desc,
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Constant,
+                descriptor: filter_desc,
+                name: Some("filter".to_string()),
+            },
+        ];
+
+        // Add bias if provided
+        if let Some(bias) = bias_data {
+            let bias_desc = OperandDescriptor {
+                data_type,
+                shape: vec![filter_shape[0]], // bias shape = [out_channels]
+                pending_permutation: Vec::new(),
+            };
+
+            let bias_bytes: Vec<u8> = bias.iter().flat_map(|&f| f.to_le_bytes()).collect();
+
+            constant_map.insert(
+                2,
+                ConstantData {
+                    data: bias_bytes,
+                    label: Some("bias".to_string()),
+                },
+            );
+
+            operands.push(Operand {
+                kind: OperandKind::Constant,
+                descriptor: bias_desc,
+                name: Some("bias".to_string()),
+            });
+
+            input_operands.push(2);
+        }
+
+        operands.push(Operand {
+            kind: OperandKind::Output,
+            descriptor: output_desc,
+            name: Some("output".to_string()),
+        });
+
+        let output_operand_id = operands.len() as u32 - 1;
+
+        // Create attributes with padding and stride
+        let attributes = serde_json::json!({
+            "padding": padding,
+            "strides": stride,
+            "dilations": [1, 1],
+            "groups": 1,
+        });
+
+        GraphInfo {
+            operations: vec![Operation {
+                op_type: "conv2d".to_string(),
+                input_operands,
+                output_operand: Some(output_operand_id),
+                output_operands: Vec::new(),
+                attributes,
+                label: Some("conv2d".to_string()),
+            }],
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![output_operand_id],
+            constant_operand_ids_to_handles: constant_map,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_conv2d_valid_padding() {
+        // Test "valid" padding (no padding) with 3x3 kernel
+        // Input: [1, 1, 5, 5] = 5x5 spatial
+        // Kernel: 3x3, stride=1, padding=[0,0,0,0]
+        // Output: [1, 1, 3, 3] = (5-3+1)x(5-3+1) = 3x3
+        // This demonstrates the 2-pixel shrinkage per dimension
+
+        let input_shape = vec![1, 1, 5, 5];
+        let filter_shape = vec![1, 1, 3, 3]; // 3x3 kernel
+        
+        // Identity kernel (center=1, rest=0)
+        let filter_data = vec![
+            0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,
+        ];
+
+        let graph = create_conv2d_graph_with_padding(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            vec![0, 0, 0, 0], // No padding
+            vec![1, 1],       // stride=1
+            DataType::Float32,
+        );
+
+        // Input: 5x5 = 25 elements
+        #[rustfmt::skip]
+        let input = vec![
+            1.0,  2.0,  3.0,  4.0,  5.0,
+            6.0,  7.0,  8.0,  9.0, 10.0,
+           11.0, 12.0, 13.0, 14.0, 15.0,
+           16.0, 17.0, 18.0, 19.0, 20.0,
+           21.0, 22.0, 23.0, 24.0, 25.0,
+        ];
+
+        // Output: 3x3 = 9 elements (center values due to identity kernel)
+        #[rustfmt::skip]
+        let expected = vec![
+             7.0,  8.0,  9.0,
+            12.0, 13.0, 14.0,
+            17.0, 18.0, 19.0,
+        ];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_conv2d_same_padding() {
+        // Test "same" padding with 3x3 kernel
+        // Input: [1, 1, 5, 5]
+        // Kernel: 3x3, stride=1
+        // Padding: [1,1,1,1] to maintain spatial size
+        // Output: [1, 1, 5, 5] (same as input)
+
+        let input_shape = vec![1, 1, 5, 5];
+        let filter_shape = vec![1, 1, 3, 3];
+        
+        // Identity kernel
+        let filter_data = vec![
+            0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,
+        ];
+
+        let graph = create_conv2d_graph_with_padding(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            vec![1, 1, 1, 1], // Same padding: pad by 1 on all sides
+            vec![1, 1],
+            DataType::Float32,
+        );
+
+        #[rustfmt::skip]
+        let input = vec![
+            1.0,  2.0,  3.0,  4.0,  5.0,
+            6.0,  7.0,  8.0,  9.0, 10.0,
+           11.0, 12.0, 13.0, 14.0, 15.0,
+           16.0, 17.0, 18.0, 19.0, 20.0,
+           21.0, 22.0, 23.0, 24.0, 25.0,
+        ];
+
+        // With identity kernel and same padding, output should equal input
+        let expected = input.clone();
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_conv2d_asymmetric_padding() {
+        // Test that asymmetric padding is properly rejected
+        // TensorRT's setPaddingNd only supports symmetric padding
+        // Input: [1, 1, 4, 4]
+        // Kernel: 3x3, stride=1
+        // Padding: [1,0,1,0] (top=1, bottom=0, left=1, right=0) - ASYMMETRIC
+
+        let input_shape = vec![1, 1, 4, 4];
+        let filter_shape = vec![1, 1, 3, 3];
+        
+        // Simple averaging kernel
+        #[rustfmt::skip]
+        let filter_data = vec![
+            1.0/9.0, 1.0/9.0, 1.0/9.0,
+            1.0/9.0, 1.0/9.0, 1.0/9.0,
+            1.0/9.0, 1.0/9.0, 1.0/9.0,
+        ];
+
+        let graph = create_conv2d_graph_with_padding(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            vec![1, 0, 1, 0], // Asymmetric padding - should fail
+            vec![1, 1],
+            DataType::Float32,
+        );
+
+        #[rustfmt::skip]
+        let input = vec![
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0,
+        ];
+
+        // Asymmetric padding should now work with explicit padding layer
+        let output = execute_graph(&graph, &input).expect("Asymmetric padding execution failed");
+        assert_eq!(output.len(), 9, "Expected 3x3 output = 9 elements");
+    }
+
+    #[test]
+    fn test_conv2d_stride2_no_padding() {
+        // Test stride=2 without padding (downsampling)
+        // Input: [1, 1, 6, 6]
+        // Kernel: 3x3, stride=2, padding=[0,0,0,0]
+        // Output: [1, 1, 2, 2] = ((6-3)/2+1) x ((6-3)/2+1) = 2x2
+
+        let input_shape = vec![1, 1, 6, 6];
+        let filter_shape = vec![1, 1, 3, 3];
+        
+        // Identity kernel
+        let filter_data = vec![
+            0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0,
+        ];
+
+        let graph = create_conv2d_graph_with_padding(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            vec![0, 0, 0, 0], // No padding
+            vec![2, 2],       // stride=2
+            DataType::Float32,
+        );
+
+        #[rustfmt::skip]
+        let input = vec![
+            1.0,  2.0,  3.0,  4.0,  5.0,  6.0,
+            7.0,  8.0,  9.0, 10.0, 11.0, 12.0,
+           13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
+           19.0, 20.0, 21.0, 22.0, 23.0, 24.0,
+           25.0, 26.0, 27.0, 28.0, 29.0, 30.0,
+           31.0, 32.0, 33.0, 34.0, 35.0, 36.0,
+        ];
+
+        // With stride=2 and identity kernel, pick every other center value
+        // Centers at positions: (1,1)=8, (1,3)=10, (3,1)=20, (3,3)=22
+        let expected = vec![8.0, 10.0, 20.0, 22.0];
+
+        let output = execute_graph(&graph, &input).expect("Execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
+
+    #[test]
+    fn test_conv2d_3x3_mobilenetv2_case() {
+        // Simulate MobileNetV2 residual connection scenario
+        // Two branches should produce same spatial dimensions for residual add
+        // 
+        // Branch 1: Input 218x218 -> Conv3x3 same padding -> 218x218
+        // Branch 2: Input 218x218 -> Conv3x3 valid padding -> 216x216
+        // Add would fail due to dimension mismatch!
+
+        // Branch 1: Same padding maintains size
+        let input_shape_1 = vec![1, 1, 218, 218];
+        let filter_shape = vec![1, 1, 3, 3];
+        let filter_data = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
+
+        let graph_same = create_conv2d_graph_with_padding(
+            input_shape_1.clone(),
+            filter_shape.clone(),
+            filter_data.clone(),
+            None,
+            vec![1, 1, 1, 1], // Same padding
+            vec![1, 1],
+            DataType::Float32,
+        );
+
+        // Verify output shape: should be 218x218
+        // Operand layout: [0]=input, [1]=filter, [2]=output (no bias)
+        assert_eq!(graph_same.operands[2].descriptor.shape, vec![1, 1, 218, 218]);
+
+        // Branch 2: Valid padding shrinks by 2 per dimension
+        let graph_valid = create_conv2d_graph_with_padding(
+            input_shape_1,
+            filter_shape,
+            filter_data,
+            None,
+            vec![0, 0, 0, 0], // Valid padding (no padding)
+            vec![1, 1],
+            DataType::Float32,
+        );
+
+        // Verify output shape: should be 216x216 (218-3+1=216)
+        // Operand layout: [0]=input, [1]=filter, [2]=output (no bias)
+        assert_eq!(graph_valid.operands[2].descriptor.shape, vec![1, 1, 216, 216]);
+
+        // This test documents the root cause of MobileNetV2 dimension mismatch:
+        // Different padding modes produce incompatible spatial dimensions (218 != 216)
+        // which cannot be broadcast in elementwise operations.
+    }
+
+    #[test]
+    fn test_conv2d_depthwise() {
+        // Test depthwise convolution (groups = input_channels = output_channels)
+        // This is used extensively in MobileNet architectures
+        //
+        // Input: [1, 4, 3, 3] = 4 channels, 3x3 spatial
+        // Filter: [4, 1, 3, 3] = 4 output channels, 1 input per group, 3x3 kernel
+        // Groups: 4 (depthwise - each input channel has its own 3x3 filter)
+        // Output: [1, 4, 1, 1] with no padding
+
+        let input_shape = vec![1, 4, 3, 3]; // 4 channels
+        let filter_shape = vec![4, 1, 3, 3]; // 4 groups, 1 channel per group
+        
+        // 4 separate 3x3 filters (one per channel)
+        // Filter 0: all 1s (sum = 9)
+        // Filter 1: all 2s (sum = 18)
+        // Filter 2: all 3s (sum = 27)
+        // Filter 3: all 4s (sum = 36)
+        #[rustfmt::skip]
+        let filter_data = vec![
+            // Filter 0 (channel 0)
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            // Filter 1 (channel 1)
+            2.0, 2.0, 2.0,
+            2.0, 2.0, 2.0,
+            2.0, 2.0, 2.0,
+            // Filter 2 (channel 2)
+            3.0, 3.0, 3.0,
+            3.0, 3.0, 3.0,
+            3.0, 3.0, 3.0,
+            // Filter 3 (channel 3)
+            4.0, 4.0, 4.0,
+            4.0, 4.0, 4.0,
+            4.0, 4.0, 4.0,
+        ];
+
+        // Create graph with groups=4
+        let mut graph = create_conv2d_graph_with_padding(
+            input_shape,
+            filter_shape,
+            filter_data,
+            None,
+            vec![0, 0, 0, 0], // No padding
+            vec![1, 1],       // Stride 1
+            DataType::Float32,
+        );
+
+        // Add groups attribute
+        graph.operations[0].attributes["groups"] = serde_json::json!(4);
+
+        // Input: 4 channels, each filled with its channel number
+        #[rustfmt::skip]
+        let input = vec![
+            // Channel 0: all 1s
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            // Channel 1: all 1s
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            // Channel 2: all 1s
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            // Channel 3: all 1s
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+            1.0, 1.0, 1.0,
+        ];
+
+        // Expected output: [1, 4, 1, 1]
+        // Channel 0: 1*9 = 9
+        // Channel 1: 2*9 = 18
+        // Channel 2: 3*9 = 27
+        // Channel 3: 4*9 = 36
+        let expected = vec![9.0, 18.0, 27.0, 36.0];
+
+        let output = execute_graph(&graph, &input).expect("Depthwise conv execution failed");
+        verify_output(&output, &expected, 1e-4);
+    }
 
 }
