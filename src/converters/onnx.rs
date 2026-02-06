@@ -516,7 +516,7 @@ impl OnnxConverter {
             });
         }
 
-        if let Some(a_transpose) = op.attributes.get("a_transpose").and_then(|v| v.as_bool()) {
+        if let Some(a_transpose) = op.attributes.get("aTranspose").and_then(|v| v.as_bool()) {
             attributes.push(AttributeProto {
                 name: "transA".to_string(),
                 r#type: AttributeType::Int as i32,
@@ -525,7 +525,7 @@ impl OnnxConverter {
             });
         }
 
-        if let Some(b_transpose) = op.attributes.get("b_transpose").and_then(|v| v.as_bool()) {
+        if let Some(b_transpose) = op.attributes.get("bTranspose").and_then(|v| v.as_bool()) {
             attributes.push(AttributeProto {
                 name: "transB".to_string(),
                 r#type: AttributeType::Int as i32,
@@ -2088,7 +2088,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let onnx_dtype = Self::data_type_code(input_dtype);
 
                 // Add min value as second input (optional in ONNX Clip)
-                if let Some(min_value) = op.attributes.get("min_value").and_then(|v| v.as_f64()) {
+                if let Some(min_value) = op.attributes.get("minValue").and_then(|v| v.as_f64()) {
                     let min_name = format!("{}_min", op_name);
                     inputs.push(min_name.clone());
 
@@ -2101,7 +2101,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 // Add max value as third input (optional in ONNX Clip)
-                if let Some(max_value) = op.attributes.get("max_value").and_then(|v| v.as_f64()) {
+                if let Some(max_value) = op.attributes.get("maxValue").and_then(|v| v.as_f64()) {
                     let max_name = format!("{}_max", op_name);
                     inputs.push(max_name.clone());
 
@@ -2967,15 +2967,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let mut inputs: Vec<String> = vec![operand_name(graph, input_id)];
 
-                // Check if scale and bias are provided via attributes
+                // Check if scale and bias are provided via attributes (WebNN camelCase)
                 let has_scale = op
                     .attributes
-                    .get("has_scale")
+                    .get("hasScale")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let has_bias = op
                     .attributes
-                    .get("has_bias")
+                    .get("hasBias")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 

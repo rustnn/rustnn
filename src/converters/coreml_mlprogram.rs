@@ -1035,7 +1035,6 @@ impl CoremlMlProgramConverter {
                 if let Some(a_transpose) = op
                     .attributes
                     .get("aTranspose")
-                    .or_else(|| op.attributes.get("a_transpose"))
                     .and_then(|v| v.as_bool())
                 {
                     inputs.insert(
@@ -1047,7 +1046,6 @@ impl CoremlMlProgramConverter {
                 if let Some(b_transpose) = op
                     .attributes
                     .get("bTranspose")
-                    .or_else(|| op.attributes.get("b_transpose"))
                     .and_then(|v| v.as_bool())
                 {
                     inputs.insert(
