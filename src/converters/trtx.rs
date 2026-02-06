@@ -3933,22 +3933,22 @@ impl TrtxConverter {
 
         let a_transpose = operation
             .attributes
-            .get("a_transpose")
+            .get("aTranspose")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         let b_transpose = operation
             .attributes
-            .get("b_transpose")
+            .get("bTranspose")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
         // Get actual dimensions for validation
-        let dims_a = input_a.dimensions().map_err(|e| GraphError::ConversionFailed {
+        let _dims_a = input_a.dimensions().map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),
             reason: format!("Failed to get input A dimensions: {}", e),
         })?;
-        let dims_b = input_b.dimensions().map_err(|e| GraphError::ConversionFailed {
+        let _dims_b = input_b.dimensions().map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),
             reason: format!("Failed to get input B dimensions: {}", e),
         })?;
@@ -4220,23 +4220,48 @@ impl TrtxConverter {
             .and_then(|v| v.as_u64())
             .unwrap_or(1) as i32;
 
-        // Parse padding: WebNN uses "pads" attribute with [top, bottom, left, right]
-        let padding_arr = operation.attributes.get("pads")
-            .and_then(|v| v.as_array())
-            .map(|arr| [
-                arr[0].as_u64().unwrap_or(0) as i32, // top
-                arr[1].as_u64().unwrap_or(0) as i32, // bottom
-                arr[2].as_u64().unwrap_or(0) as i32, // left
-                arr[3].as_u64().unwrap_or(0) as i32, // right
-            ])
-            .unwrap_or([0, 0, 0, 0]);
+        // Parse padding: WebNN/ONNX use "pads" [begin_h, begin_w, end_h, end_w];
+        // WPT JSON and some tests use "padding" [top, bottom, left, right] = [begin_h, end_h, begin_w, end_w].
+        // Accept both for compatibility.
+        let (pre_padding, post_padding) = if let Some(v) = operation.attributes.get("pads") {
+            v.as_array()
+                .and_then(|arr| {
+                    if arr.len() >= 4 {
+                        let a: [i32; 4] = [
+                            arr[0].as_u64().unwrap_or(0) as i32,
+                            arr[1].as_u64().unwrap_or(0) as i32,
+                            arr[2].as_u64().unwrap_or(0) as i32,
+                            arr[3].as_u64().unwrap_or(0) as i32,
+                        ];
+                        Some((vec![a[0], a[1]], vec![a[2], a[3]])) // [begin_h, begin_w], [end_h, end_w]
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or((vec![0, 0], vec![0, 0]))
+        } else if let Some(v) = operation.attributes.get("padding") {
+            v.as_array()
+                .and_then(|arr| {
+                    if arr.len() >= 4 {
+                        let a: [i32; 4] = [
+                            arr[0].as_u64().unwrap_or(0) as i32,
+                            arr[1].as_u64().unwrap_or(0) as i32,
+                            arr[2].as_u64().unwrap_or(0) as i32,
+                            arr[3].as_u64().unwrap_or(0) as i32,
+                        ];
+                        // [top, bottom, left, right] -> pre=[top, left], post=[bottom, right]
+                        Some((vec![a[0], a[2]], vec![a[1], a[3]]))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or((vec![0, 0], vec![0, 0]))
+        } else {
+            (vec![0, 0], vec![0, 0])
+        };
 
         // Use explicit padding layer if any padding is specified
-        // This gives us exact control and matches ONNX/CoreML behavior
-        let conv_input = if padding_arr.iter().any(|&p| p != 0) {
-            let pre_padding = vec![padding_arr[0], padding_arr[2]]; // [top, left]
-            let post_padding = vec![padding_arr[1], padding_arr[3]]; // [bottom, right]
-            
+        let conv_input = if pre_padding.iter().any(|&p| p != 0) || post_padding.iter().any(|&p| p != 0) {
             let padding_layer = network
                 .add_padding(input, &pre_padding, &post_padding)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -5362,24 +5387,25 @@ impl Default for TrtxConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use trtx::DataType as TrtDataType;
 
     #[test]
     fn test_webnn_to_trt_dtype() {
-        assert_eq!(
+        assert!(matches!(
             TrtxConverter::webnn_to_trt_dtype(DataType::Float32).unwrap(),
-            0
-        );
-        assert_eq!(
+            TrtDataType::kFLOAT
+        ));
+        assert!(matches!(
             TrtxConverter::webnn_to_trt_dtype(DataType::Float16).unwrap(),
-            1
-        );
-        assert_eq!(
+            TrtDataType::kHALF
+        ));
+        assert!(matches!(
             TrtxConverter::webnn_to_trt_dtype(DataType::Int8).unwrap(),
-            2
-        );
-        assert_eq!(
+            TrtDataType::kINT8
+        ));
+        assert!(matches!(
             TrtxConverter::webnn_to_trt_dtype(DataType::Int32).unwrap(),
-            3
-        );
+            TrtDataType::kINT32
+        ));
     }
 }
