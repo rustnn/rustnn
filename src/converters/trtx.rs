@@ -3460,13 +3460,13 @@ impl TrtxConverter {
         // Get min and max values from attributes
         let min_value = operation
             .attributes
-            .get("min_value")
+            .get("minValue")
             .and_then(|v| v.as_f64())
             .unwrap_or(f64::NEG_INFINITY) as f32;
 
         let max_value = operation
             .attributes
-            .get("max_value")
+            .get("maxValue")
             .and_then(|v| v.as_f64())
             .unwrap_or(f64::INFINITY) as f32;
         
