@@ -1,4 +1,4 @@
-#![cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use std::collections::HashMap;
 
@@ -250,7 +250,7 @@ pub fn run_trtx_with_inputs(
 #[cfg(test)]
 mod tests {
     #[test]
-    #[cfg(any(feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime-mock")]
     fn test_trtx_executor_availability() {
         // This test just verifies the module compiles in mock mode
         // Real execution tests would require actual ONNX models

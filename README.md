@@ -50,6 +50,7 @@ rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"]
 **Features:**
 - `onnx-runtime` - ONNX Runtime execution (CPU/GPU)
 - `coreml-runtime` - CoreML execution (macOS only)
+- `trtx-runtime-mock` - TensorRT mock (no GPU needed)
 - `trtx-runtime` - TensorRT execution (Linux/Windows with NVIDIA GPU)
 
 ## Quick Start (Rust)

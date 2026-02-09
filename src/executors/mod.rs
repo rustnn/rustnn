@@ -2,5 +2,5 @@
 pub mod coreml;
 #[cfg(feature = "onnx-runtime")]
 pub mod onnx;
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub mod trtx;

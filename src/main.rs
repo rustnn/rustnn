@@ -33,7 +33,7 @@ struct Cli {
     #[cfg(feature = "onnx-runtime")]
     #[arg(long, requires = "convert")]
     run_onnx: bool,
-    #[cfg(feature = "trtx-runtime")]
+    #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
     #[arg(long, requires = "convert")]
     run_trtx: bool,
 }
@@ -102,7 +102,7 @@ fn run() -> Result<(), GraphError> {
             {
                 exec = exec || cli.run_onnx;
             }
-            #[cfg(feature = "trtx-runtime")]
+            #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
             {
                 exec = exec || cli.run_trtx;
             }
@@ -188,7 +188,7 @@ fn run() -> Result<(), GraphError> {
             }
         }
 
-        #[cfg(feature = "trtx-runtime")]
+        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
         if cli.run_trtx {
             // Support both ONNX format (parsed by TensorRT) and native trtx format (pre-built engine)
             if converted.format != "onnx" && converted.format != "trtx" {

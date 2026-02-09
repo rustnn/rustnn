@@ -5,13 +5,13 @@ use crate::graph::GraphInfo;
 
 mod coreml_mlprogram;
 pub mod onnx;
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
 mod weight_file_builder;
 
 pub use coreml_mlprogram::CoremlMlProgramConverter;
 pub use onnx::OnnxConverter;
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use trtx::TrtxConverter;
 pub(crate) use weight_file_builder::WeightFileBuilder;
 
@@ -51,7 +51,7 @@ impl ConverterRegistry {
         };
         registry.register(Box::new(OnnxConverter));
         registry.register(Box::new(CoremlMlProgramConverter));
-        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
         registry.register(Box::new(TrtxConverter::new()));
         registry
     }

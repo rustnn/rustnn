@@ -90,7 +90,7 @@ pub enum GraphError {
     OnnxRuntimeUnavailable,
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
-    #[error("tensorrt runtime is only available with the `trtx-runtime` feature enabled")]
+    #[error("tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled")]
     TrtxRuntimeUnavailable,
     #[error("tensorrt runtime failed: {reason}")]
     TrtxRuntimeFailed { reason: String },

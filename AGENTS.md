@@ -488,7 +488,7 @@ cargo test && python -m pytest tests/      # DON'T USE - use `make test && make 
 ## Platform Support
 
 - **Validation & Conversion**: Cross-platform (Linux, macOS, Windows)
-- **TensorRT Execution**: Linux/Windows with NVIDIA GPU and `trtx-runtime` feature (mock mode via `trtx-runtime-mock` for development on any platform)
+- **TensorRT Execution**: Linux/Windows with NVIDIA GPU and `trtx-runtime` feature (mock mode via `trtx-runtime-mock` for development without GPU)
 - **ONNX Execution**: Cross-platform with `onnx-runtime` feature
 - **CoreML Execution**: macOS only with `coreml-runtime` feature
 - **Neural Engine**: macOS with Apple Silicon (via CoreML)

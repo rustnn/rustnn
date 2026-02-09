@@ -3,6 +3,7 @@
 //! These tests verify that WebNN graphs execute correctly on TensorRT
 //! and produce numerically correct results.
 //!
+//! Tests only run with real TensorRT (trtx-runtime). With trtx-runtime-mock, they are excluded.
 //! Run with: cargo test --test test_trtx_execution --features trtx-runtime
 
 #[cfg(feature = "trtx-runtime")]
