@@ -26,7 +26,7 @@ onnx-runtime = ["ort", "ndarray"]
 # trtx mock: build without GPU
 trtx-runtime-mock = ["trtx", "trtx/mock"]
 # trtx-runtime: real TensorRT GPU execution. Requires NVIDIA GPU, CUDA, TensorRT-RTX.
-trtx-runtime = ["trtx", "trtx/real", "trtx/use-cudarc"]
+trtx-runtime = ["trtx", "trtx/real"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
