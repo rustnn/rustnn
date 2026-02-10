@@ -92,22 +92,18 @@ fn run() -> Result<(), GraphError> {
             );
         }
         // Check if execution is requested (skip stdout write if so)
-        let execution_requested = {
-            let mut exec = false;
+        let execution_requested = [
+            false,  // default to false
+
             #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
-            {
-                exec = exec || cli.run_coreml;
-            }
+            cli.run_coreml,
+            
             #[cfg(feature = "onnx-runtime")]
-            {
-                exec = exec || cli.run_onnx;
-            }
+            cli.run_onnx,
+            
             #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-            {
-                exec = exec || cli.run_trtx;
-            }
-            exec
-        };
+            cli.run_trtx,
+        ].iter().any(|x| x);
 
         if cli.convert_output.is_none() {
             if execution_requested {
