@@ -179,7 +179,7 @@ impl CoremlMlProgramConverter {
             // Scalar (0D) tensor -> reshape to [1] for CoreML compatibility
             vec![1u32]
         } else {
-            operand.descriptor.shape.clone()
+            operand.descriptor.static_or_max_shape()
         };
 
         let dimensions: Vec<Dimension> = shape_to_convert
@@ -1703,7 +1703,7 @@ impl CoremlMlProgramConverter {
                     if !op.input_operands.is_empty()
                         && let Some(input_operand) = _graph.operand(op.input_operands[0])
                     {
-                        let input_shape = &input_operand.descriptor.shape;
+                        let input_shape = input_operand.descriptor.static_or_max_shape();
                         let input_rank = input_shape.len();
                         let output_rank = new_shape_u32.len();
 
@@ -2206,7 +2206,7 @@ impl CoremlMlProgramConverter {
         let shape_to_use = if descriptor.shape.is_empty() {
             vec![1] // Scalar (0D) tensor -> [1] for CoreML compatibility
         } else {
-            descriptor.shape.clone()
+            descriptor.static_or_max_shape()
         };
 
         for &dim in &shape_to_use {
@@ -2325,7 +2325,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             );
 
                             // Calculate transposed shape
-                            let original_shape = &filter_operand.descriptor.shape;
+                            let original_shape = filter_operand.descriptor.static_or_max_shape();
                             let transposed_shape: Vec<u32> =
                                 perm.iter().map(|&i| original_shape[i as usize]).collect();
 
@@ -2403,7 +2403,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         );
 
                         // Calculate transposed shape
-                        let original_shape = &input_operand.descriptor.shape;
+                        let original_shape = input_operand.descriptor.static_or_max_shape();
                         let transposed_shape: Vec<u32> =
                             perm.iter().map(|&i| original_shape[i as usize]).collect();
 
@@ -2458,7 +2458,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     && let Some(new_shape) =
                         op.attributes.get("newShape").and_then(|v| v.as_array())
                 {
-                    let input_rank = input_operand.descriptor.shape.len();
+                    let input_shape = input_operand.descriptor.static_or_max_shape();
+                    let input_rank = input_shape.len();
                     let output_rank = new_shape.len();
 
                     if input_rank < output_rank {
@@ -2466,8 +2467,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         // Create reshaped dimensions (right-aligned, padded with 1s on left)
                         let mut reshaped_dims = vec![1u32; output_rank];
                         for i in 0..input_rank {
-                            reshaped_dims[output_rank - i - 1] =
-                                input_operand.descriptor.shape[input_rank - i - 1];
+                            reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
                         }
 
                         //Create reshape operation
@@ -2564,7 +2564,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
                     let dimensions: Vec<Dimension> = input_operand
                         .descriptor
-                        .shape
+                        .static_or_max_shape()
                         .iter()
                         .map(|&d| Dimension {
                             dimension: Some(dimension::Dimension::Constant(
@@ -2621,7 +2621,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     let output_dtype = Self::mil_data_type(&output_operand.descriptor.data_type)?;
                     let output_dimensions: Vec<Dimension> = output_operand
                         .descriptor
-                        .shape
+                        .static_or_max_shape()
                         .iter()
                         .map(|&d| Dimension {
                             dimension: Some(dimension::Dimension::Constant(
@@ -2721,7 +2721,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 let output_shape = if output_operand.descriptor.shape.is_empty() {
                     vec![1u32]
                 } else {
-                    output_operand.descriptor.shape.clone()
+                    output_operand.descriptor.static_or_max_shape()
                 };
                 let output_dimensions: Vec<Dimension> = output_shape
                     .iter()
@@ -2858,7 +2858,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 let output_dtype = Self::mil_data_type(&output_operand.descriptor.data_type)?;
                 let output_dimensions: Vec<Dimension> = output_operand
                     .descriptor
-                    .shape
+                    .static_or_max_shape()
                     .iter()
                     .map(|&d| Dimension {
                         dimension: Some(dimension::Dimension::Constant(
@@ -2995,8 +2995,15 @@ mod tests {
     use prost::Message;
     use std::collections::HashMap;
 
+    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
+        crate::graph::to_dimension_vector(shape)
+    }
+
     /// Helper to create a simple graph with a Float16 constant
-    fn create_graph_with_float16_constant(shape: Vec<u32>, data: Vec<u8>) -> GraphInfo {
+    fn create_graph_with_float16_constant(
+        shape: Vec<crate::graph::Dimension>,
+        data: Vec<u8>,
+    ) -> GraphInfo {
         let mut graph = GraphInfo {
             input_operands: vec![],
             output_operands: vec![1], // Output is operand 1
@@ -3053,7 +3060,7 @@ mod tests {
         let f16_val = half::f16::from_f32(1.5);
         let data = f16_val.to_le_bytes().to_vec();
 
-        let graph = create_graph_with_float16_constant(vec![], data.clone());
+        let graph = create_graph_with_float16_constant(s(&[]), data.clone());
 
         // Convert the graph
         let converter = CoremlMlProgramConverter;
@@ -3078,7 +3085,7 @@ mod tests {
             0x00, 0x42, // f16: 3.0
         ];
 
-        let graph = create_graph_with_float16_constant(vec![3], data.clone());
+        let graph = create_graph_with_float16_constant(s(&[3]), data.clone());
 
         // Convert the graph
         let converter = CoremlMlProgramConverter;
@@ -3135,7 +3142,7 @@ mod tests {
             0x00, 0x44, // f16: 4.0
         ];
 
-        let graph = create_graph_with_float16_constant(vec![2, 2], data.clone());
+        let graph = create_graph_with_float16_constant(s(&[2, 2]), data.clone());
 
         // Convert the graph
         let converter = CoremlMlProgramConverter;
@@ -3183,7 +3190,7 @@ mod tests {
             kind: OperandKind::Constant,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float16,
-                shape: vec![2],
+                shape: s(&[2]),
                 pending_permutation: vec![],
             },
         });
@@ -3202,7 +3209,7 @@ mod tests {
             kind: OperandKind::Constant,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float16,
-                shape: vec![2],
+                shape: s(&[2]),
                 pending_permutation: vec![],
             },
         });
@@ -3220,7 +3227,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float16,
-                shape: vec![2],
+                shape: s(&[2]),
                 pending_permutation: vec![],
             },
         });
@@ -3286,7 +3293,7 @@ mod tests {
             kind: OperandKind::Constant,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
-                shape: vec![1],
+                shape: s(&[1]),
                 pending_permutation: vec![],
             },
         });
@@ -3300,7 +3307,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
-                shape: vec![1],
+                shape: s(&[1]),
                 pending_permutation: vec![],
             },
         });
@@ -3344,7 +3351,7 @@ mod tests {
             kind: OperandKind::Input,
             descriptor: OperandDescriptor {
                 data_type: DataType::Int4,
-                shape: vec![10, 10],
+                shape: s(&[10, 10]),
                 pending_permutation: vec![],
             },
         });
@@ -3355,7 +3362,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Int4,
-                shape: vec![10, 10],
+                shape: s(&[10, 10]),
                 pending_permutation: vec![],
             },
         });
@@ -3404,7 +3411,7 @@ mod tests {
             kind: OperandKind::Constant,
             descriptor: OperandDescriptor {
                 data_type: DataType::Uint4,
-                shape: vec![8],
+                shape: s(&[8]),
                 pending_permutation: vec![],
             },
         });
@@ -3418,7 +3425,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Uint4,
-                shape: vec![8],
+                shape: s(&[8]),
                 pending_permutation: vec![],
             },
         });
@@ -3466,7 +3473,7 @@ mod tests {
             kind: OperandKind::Input,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
-                shape: vec![10, 10],
+                shape: s(&[10, 10]),
                 pending_permutation: vec![],
             },
         });
@@ -3477,7 +3484,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Int4,
-                shape: vec![10, 10],
+                shape: s(&[10, 10]),
                 pending_permutation: vec![],
             },
         });
@@ -3516,7 +3523,7 @@ mod tests {
             kind: OperandKind::Input,
             descriptor: OperandDescriptor {
                 data_type: DataType::Uint4,
-                shape: vec![1, 3, 224, 224],
+                shape: s(&[1, 3, 224, 224]),
                 pending_permutation: vec![],
             },
         });
@@ -3527,7 +3534,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
-                shape: vec![1, 3, 224, 224],
+                shape: s(&[1, 3, 224, 224]),
                 pending_permutation: vec![],
             },
         });
@@ -3559,7 +3566,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![2, 3],
+                        shape: s(&[2, 3]),
                         pending_permutation: vec![],
                     },
                 },
@@ -3568,7 +3575,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![2, 3],
+                        shape: s(&[2, 3]),
                         pending_permutation: vec![],
                     },
                 },
@@ -3618,7 +3625,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float16,
-                        shape: vec![4],
+                        shape: s(&[4]),
                         pending_permutation: vec![],
                     },
                 },
@@ -3627,7 +3634,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float16,
-                        shape: vec![4],
+                        shape: s(&[4]),
                         pending_permutation: vec![],
                     },
                 },

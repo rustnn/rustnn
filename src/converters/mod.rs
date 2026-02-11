@@ -84,6 +84,10 @@ mod tests {
     use crate::error::GraphError;
     use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind};
 
+    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
+        crate::graph::to_dimension_vector(shape)
+    }
+
     struct DummyConverter;
 
     impl GraphConverter for DummyConverter {
@@ -113,7 +117,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![],
+                    shape: s(&[]),
                     pending_permutation: vec![],
                 },
                 name: Some("x".to_string()),
@@ -211,7 +215,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![1, 2],
+                    shape: s(&[1, 2]),
                     pending_permutation: vec![],
                 },
                 name: Some("input_tensor".to_string()),
@@ -235,7 +239,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![1, 2],
+                    shape: s(&[1, 2]),
                     pending_permutation: vec![],
                 },
                 name: None,

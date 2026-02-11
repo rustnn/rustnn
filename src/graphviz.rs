@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::graph::{GraphInfo, OperandKind};
+use crate::graph::{Dimension, GraphInfo, OperandKind};
 
 pub fn graph_to_dot(graph: &GraphInfo) -> String {
     let mut dot = String::from("digraph webnn {\n");
@@ -100,22 +100,27 @@ fn escape_label(label: &str) -> String {
         .replace('\n', "\\n")
 }
 
-fn format_shape(shape: &[u32]) -> String {
+fn format_shape(shape: &[Dimension]) -> String {
     if shape.is_empty() {
-        "scalar".to_string()
-    } else {
-        shape
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join("x")
+        return "scalar".to_string();
     }
+    let dims: Vec<String> = shape
+        .iter()
+        .map(|dim| match dim {
+            Dimension::Static(v) => v.to_string(),
+            Dimension::Dynamic(d) => format!("{}(maxSize:{})", d.name, d.max_size),
+        })
+        .collect();
+    dims.join("x")
 }
 
 #[cfg(test)]
 mod tests {
     use super::graph_to_dot;
-    use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation};
+    use crate::graph::{
+        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+        to_dimension_vector,
+    };
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {
@@ -125,7 +130,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 3],
+                        shape: to_dimension_vector(&[1, 3]),
                         pending_permutation: vec![],
                     },
                     name: Some("lhs".to_string()),
@@ -134,7 +139,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 3],
+                        shape: to_dimension_vector(&[1, 3]),
                         pending_permutation: vec![],
                     },
                     name: Some("rhs".to_string()),
@@ -143,7 +148,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 3],
+                        shape: to_dimension_vector(&[1, 3]),
                         pending_permutation: vec![],
                     },
                     name: Some("sum".to_string()),

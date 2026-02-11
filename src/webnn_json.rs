@@ -1,13 +1,11 @@
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
-    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+    ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
+    OperandKind, Operation, to_dimension_vector,
 };
 use std::collections::{BTreeMap, HashMap};
-use webnn_graph::ast::{
-    ConstDecl, ConstInit, Dimension, GraphJson, Node, OperandDesc, get_static_or_max_size,
-    to_dimension_vector,
-};
+use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
 
 /// Convert our DataType to webnn-graph DataType
 fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
@@ -41,14 +39,26 @@ fn from_webnn_datatype(dt: &webnn_graph::ast::DataType) -> DataType {
     }
 }
 
-// Compatibility bridge for the upcoming dynamic dimensions feature in webnn-graph.
-// rustnn still stores shapes as Vec<u32>, while webnn-graph inputs use Vec<Dimension>.
-fn to_webnn_shape(shape: &[u32]) -> Vec<Dimension> {
-    to_dimension_vector(shape)
+fn to_webnn_dimension(dim: &Dimension) -> webnn_graph::ast::Dimension {
+    match dim {
+        Dimension::Static(v) => webnn_graph::ast::Dimension::Static(*v),
+        Dimension::Dynamic(d) => {
+            webnn_graph::ast::Dimension::Dynamic(webnn_graph::ast::DynamicDimension {
+                name: d.name.clone(),
+                max_size: d.max_size,
+            })
+        }
+    }
 }
 
-fn from_webnn_shape(shape: &[Dimension]) -> Vec<u32> {
-    shape.iter().map(get_static_or_max_size).collect()
+fn from_webnn_dimension(dim: &webnn_graph::ast::Dimension) -> Dimension {
+    match dim {
+        webnn_graph::ast::Dimension::Static(v) => Dimension::Static(*v),
+        webnn_graph::ast::Dimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
+            name: d.name.clone(),
+            max_size: d.max_size,
+        }),
+    }
 }
 
 /// Convert GraphInfo to GraphJson
@@ -71,13 +81,29 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
                     name,
                     OperandDesc {
                         data_type: to_webnn_datatype(&operand.descriptor.data_type),
-                        shape: to_webnn_shape(&operand.descriptor.shape),
+                        shape: operand
+                            .descriptor
+                            .shape
+                            .iter()
+                            .map(to_webnn_dimension)
+                            .collect(),
                     },
                 );
             }
             OperandKind::Constant => {
                 // Get constant data from the map
                 if let Some(constant) = graph.constant_operand_ids_to_handles.get(&(idx as u32)) {
+                    let const_shape =
+                        operand
+                            .descriptor
+                            .static_shape()
+                            .ok_or(GraphError::ConversionFailed {
+                                format: "webnn-graph-json".to_string(),
+                                reason: format!(
+                                    "constant operand {} has dynamic shape",
+                                    operand.name.as_deref().unwrap_or("unknown")
+                                ),
+                            })?;
                     let init = ConstInit::InlineBytes {
                         bytes: constant.data.clone(),
                     };
@@ -86,7 +112,7 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
                         name,
                         ConstDecl {
                             data_type: to_webnn_datatype(&operand.descriptor.data_type),
-                            shape: operand.descriptor.shape.clone(),
+                            shape: const_shape,
                             init,
                         },
                     );
@@ -191,7 +217,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             name: Some(name.clone()),
             descriptor: OperandDescriptor {
                 data_type: from_webnn_datatype(&desc.data_type),
-                shape: from_webnn_shape(&desc.shape),
+                shape: desc.shape.iter().map(from_webnn_dimension).collect(),
                 pending_permutation: Vec::new(),
             },
             kind: OperandKind::Input,
@@ -267,7 +293,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             name: Some(name.clone()),
             descriptor: OperandDescriptor {
                 data_type: from_webnn_datatype(&const_decl.data_type),
-                shape: const_decl.shape.clone(),
+                shape: to_dimension_vector(&const_decl.shape),
                 pending_permutation: Vec::new(),
             },
             kind: OperandKind::Constant,
@@ -452,7 +478,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             {
                 let inp = &mut graph.operands[*input_id as usize];
                 if inp.descriptor.shape.len() != repeats_len {
-                    inp.descriptor.shape = vec![1; repeats_len];
+                    inp.descriptor.shape = vec![Dimension::Static(1); repeats_len];
                     made_progress = true;
                 }
             }
@@ -471,7 +497,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             let input_shapes: Vec<Vec<u32>> = op
                 .input_operands
                 .iter()
-                .map(|&id| graph.operands[id as usize].descriptor.shape.clone())
+                .map(|&id| graph.operands[id as usize].descriptor.static_or_max_shape())
                 .collect();
             let input_types: Vec<DataType> = op
                 .input_operands
@@ -484,7 +510,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Binary element-wise operations (including comparisons/logical)
                 "add" | "sub" | "mul" | "div" | "pow" | "max" | "min" | "greater"
                 | "greaterorequal" | "less" | "lesser" | "lessorequal" | "lesserorequal"
-                | "equal" | "notequal" | "logical_and" | "logical_or" | "logical_xor" => {
+                | "equal" | "logical_and" | "logical_or" | "logical_xor" => {
                     if input_shapes.len() >= 2 {
                         broadcast_shapes(&input_shapes[0], &input_shapes[1]).ok()
                     } else {
@@ -708,7 +734,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     let inferred_indices =
                                         shape_override[..shape_override.len() - tail_len].to_vec();
                                     graph.operands[*indices_id as usize].descriptor.shape =
-                                        inferred_indices;
+                                        to_dimension_vector(&inferred_indices);
                                     made_progress = true;
                                 }
                             }
@@ -837,7 +863,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             if let Some(shape) = output_shape
                 && let Some(output_id) = op.output_operand
             {
-                graph.operands[output_id as usize].descriptor.shape = shape;
+                graph.operands[output_id as usize].descriptor.shape = to_dimension_vector(&shape);
                 made_progress = true;
             }
 
@@ -937,9 +963,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "global_max_pool"
                     | "reducesumsquare" => input_types.first().cloned(),
                     "greater" | "greaterorequal" | "less" | "lesser" | "lessorequal"
-                    | "lesserorequal" | "equal" | "notequal" | "logical_and" | "logical_or"
-                    | "logical_xor" | "logicaland" | "logicalor" | "logicalxor" | "logicalnot"
-                    | "isnan" | "isinfinite" => Some(DataType::Uint8),
+                    | "lesserorequal" | "equal" | "logical_and" | "logical_or" | "logical_xor" => {
+                        Some(DataType::Uint8)
+                    }
                     "where" => input_types
                         .get(1)
                         .cloned()
@@ -985,6 +1011,14 @@ mod tests {
     use super::*;
     use webnn_graph::serialize::{SerializeOptions, serialize_graph_to_wg_text};
 
+    fn wshape(shape: &[u32]) -> Vec<webnn_graph::ast::Dimension> {
+        webnn_graph::ast::to_dimension_vector(shape)
+    }
+
+    fn ushape(shape: &[u32]) -> Vec<u32> {
+        shape.to_vec()
+    }
+
     #[test]
     fn test_datatype_conversion() {
         let types = vec![
@@ -1013,7 +1047,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: dtype,
-                    shape: vec![2, 3],
+                    shape: to_dimension_vector(&[2, 3]),
                     pending_permutation: vec![],
                 },
                 name: Some("input".to_string()),
@@ -1084,7 +1118,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 1],
+                        shape: to_dimension_vector(&[1, 1]),
                         pending_permutation: vec![],
                     },
                     name: Some("input".to_string()),
@@ -1093,7 +1127,7 @@ mod tests {
                     kind: OperandKind::Constant,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 1],
+                        shape: to_dimension_vector(&[1, 1]),
                         pending_permutation: vec![],
                     },
                     name: Some("weight".to_string()),
@@ -1102,7 +1136,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 1],
+                        shape: to_dimension_vector(&[1, 1]),
                         pending_permutation: vec![],
                     },
                     name: Some("output".to_string()),
@@ -1138,7 +1172,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 3],
+                        shape: to_dimension_vector(&[1, 3]),
                         pending_permutation: vec![],
                     },
                     name: Some("x".to_string()),
@@ -1147,7 +1181,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1, 3],
+                        shape: to_dimension_vector(&[1, 3]),
                         pending_permutation: vec![],
                     },
                     name: Some("y".to_string()),
@@ -1185,11 +1219,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![
-                    webnn_graph::ast::Dimension::Static(1),
-                    webnn_graph::ast::Dimension::Static(2),
-                    webnn_graph::ast::Dimension::Static(3),
-                ],
+                shape: wshape(&[1, 2, 3]),
             },
         );
 
@@ -1198,7 +1228,7 @@ mod tests {
             "weight".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![3, 3],
+                shape: ushape(&[3, 3]),
                 init: ConstInit::InlineBytes {
                     bytes: vec![0u8; 36],
                 },
@@ -1240,7 +1270,7 @@ mod tests {
             "scale".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![],
+                shape: ushape(&[]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(1.5),
                 },
@@ -1263,7 +1293,7 @@ mod tests {
         // Scalar constant should be created
         assert_eq!(graph_info.operands.len(), 1);
         assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
-        let empty_shape: Vec<u32> = vec![];
+        let empty_shape: Vec<Dimension> = vec![];
         assert_eq!(graph_info.operands[0].descriptor.shape, empty_shape);
     }
 
@@ -1276,7 +1306,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1],
+                        shape: to_dimension_vector(&[1]),
                         pending_permutation: vec![],
                     },
                     name: None, // Unnamed
@@ -1285,7 +1315,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![1],
+                        shape: to_dimension_vector(&[1]),
                         pending_permutation: vec![],
                     },
                     name: None, // Unnamed
@@ -1341,7 +1371,7 @@ mod tests {
             "scale".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Float16,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(2.5),
                 },
@@ -1375,7 +1405,7 @@ mod tests {
             "int_val".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Int32,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(42),
                 },
@@ -1411,7 +1441,7 @@ mod tests {
                 "val".to_string(),
                 ConstDecl {
                     data_type: dtype.clone(),
-                    shape: vec![1],
+                    shape: ushape(&[1]),
                     init: ConstInit::Scalar {
                         value: serde_json::json!(10),
                     },
@@ -1441,7 +1471,7 @@ mod tests {
             "int4_val".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Int4,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(1),
                 },
@@ -1476,7 +1506,7 @@ mod tests {
             "bad_val".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!({"not": "a number"}),
                 },
@@ -1511,7 +1541,7 @@ mod tests {
             "weight_ref".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![2, 2],
+                shape: ushape(&[2, 2]),
                 init: ConstInit::Weights {
                     r#ref: "model_weight".to_string(),
                 },
@@ -1544,7 +1574,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![webnn_graph::ast::Dimension::Static(2)],
+                shape: wshape(&[2]),
             },
         );
 
@@ -1584,7 +1614,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![webnn_graph::ast::Dimension::Static(2)],
+                shape: wshape(&[2]),
             },
         );
 
@@ -1627,7 +1657,7 @@ mod tests {
             "int_val".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Int32,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(42_i64),
                 },
@@ -1656,7 +1686,7 @@ mod tests {
             "uint_val".to_string(),
             ConstDecl {
                 data_type: webnn_graph::ast::DataType::Uint32,
-                shape: vec![1],
+                shape: ushape(&[1]),
                 init: ConstInit::Scalar {
                     value: serde_json::json!(42_u64),
                 },
@@ -1685,7 +1715,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![webnn_graph::ast::Dimension::Static(2)],
+                shape: wshape(&[2]),
             },
         );
 
