@@ -186,6 +186,135 @@ impl OnnxConverter {
         shape_name
     }
 
+    fn create_runtime_filled_tensor(
+        prefix: &str,
+        fill_value: f32,
+        dtype: ProtoDataType,
+        shape_tensor_name: String,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let scalar_name = format!("{}_scalar", prefix);
+        initializers.push(Self::create_scalar_initializer(
+            scalar_name.clone(),
+            dtype,
+            fill_value,
+        ));
+
+        let output_name = format!("{}_filled", prefix);
+        nodes.push(NodeProto {
+            input: vec![scalar_name, shape_tensor_name],
+            output: vec![output_name.clone()],
+            name: format!("{}_expand", prefix),
+            op_type: "Expand".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+        output_name
+    }
+
+    fn build_norm_channel_shape_vector(
+        prefix: &str,
+        input_name: String,
+        channel_axis: usize,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let shape_name = format!("{}_shape", prefix);
+        nodes.push(NodeProto {
+            input: vec![input_name],
+            output: vec![shape_name.clone()],
+            name: format!("{}_shape_node", prefix),
+            op_type: "Shape".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+
+        let axis_index_name = format!("{}_axis_index", prefix);
+        initializers.push(TensorProto {
+            name: axis_index_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![1],
+            int64_data: vec![channel_axis as i64],
+            ..Default::default()
+        });
+
+        let out_name = format!("{}_channel_shape", prefix);
+        nodes.push(NodeProto {
+            input: vec![shape_name, axis_index_name],
+            output: vec![out_name.clone()],
+            name: format!("{}_gather_channel", prefix),
+            op_type: "Gather".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+        out_name
+    }
+
+    fn build_norm_layer_shape_vector(
+        prefix: &str,
+        input_name: String,
+        axis: usize,
+        rank: usize,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let shape_name = format!("{}_shape", prefix);
+        nodes.push(NodeProto {
+            input: vec![input_name],
+            output: vec![shape_name.clone()],
+            name: format!("{}_shape_node", prefix),
+            op_type: "Shape".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+
+        let starts_name = format!("{}_starts", prefix);
+        let ends_name = format!("{}_ends", prefix);
+        let axes_name = format!("{}_axes", prefix);
+        let steps_name = format!("{}_steps", prefix);
+
+        initializers.push(TensorProto {
+            name: starts_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![1],
+            int64_data: vec![axis as i64],
+            ..Default::default()
+        });
+        initializers.push(TensorProto {
+            name: ends_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![1],
+            int64_data: vec![rank as i64],
+            ..Default::default()
+        });
+        initializers.push(TensorProto {
+            name: axes_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![1],
+            int64_data: vec![0],
+            ..Default::default()
+        });
+        initializers.push(TensorProto {
+            name: steps_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![1],
+            int64_data: vec![1],
+            ..Default::default()
+        });
+
+        let out_name = format!("{}_layer_shape", prefix);
+        nodes.push(NodeProto {
+            input: vec![shape_name, starts_name, ends_name, axes_name, steps_name],
+            output: vec![out_name.clone()],
+            name: format!("{}_slice_shape", prefix),
+            op_type: "Slice".to_string(),
+            attribute: vec![],
+            ..Default::default()
+        });
+        out_name
+    }
+
     fn invalid_operand(
         context: &str,
         operand: u32,
@@ -3784,6 +3913,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 // Determine scale/bias shape based on normalization type
+                let mut norm_dynamic_defaults_shape: Option<String> = None;
                 let scale_bias_shape = if op.op_type == "layerNormalization" {
                     // For layer norm, ONNX LayerNormalization expects scale/bias shape to match
                     // X.shape[axis:], i.e., all dimensions from axis to the end
@@ -3804,8 +3934,27 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     // Calculate product of all dimensions from axis to end
                     let mut size = 1i64;
-                    for &dim in input_shape.iter().skip(actual_axis) {
-                        size *= dim as i64;
+                    for dim in input_operand.descriptor.shape.iter().skip(actual_axis) {
+                        size *= get_static_or_max_size(dim) as i64;
+                    }
+
+                    // Build runtime layer shape vector when normalized dimensions are dynamic.
+                    let has_dynamic_norm_dims = input_operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .skip(actual_axis)
+                        .any(|d| matches!(d, Dimension::Dynamic(_)));
+                    if has_dynamic_norm_dims {
+                        let shape_vec = Self::build_norm_layer_shape_vector(
+                            &format!("{}_norm_shape", op_name),
+                            operand_name(graph, input_id),
+                            actual_axis,
+                            input_operand.descriptor.shape.len(),
+                            &mut nodes,
+                            &mut initializers,
+                        );
+                        norm_dynamic_defaults_shape = Some(shape_vec);
                     }
                     vec![size]
                 } else if op.op_type == "batchNormalization" {
@@ -3829,6 +3978,22 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     } else {
                         1
                     };
+
+                    if input_operand
+                        .descriptor
+                        .shape
+                        .get(channel_dim)
+                        .is_some_and(|d| matches!(d, Dimension::Dynamic(_)))
+                    {
+                        let shape_vec = Self::build_norm_channel_shape_vector(
+                            &format!("{}_norm_shape", op_name),
+                            operand_name(graph, input_id),
+                            channel_dim,
+                            &mut nodes,
+                            &mut initializers,
+                        );
+                        norm_dynamic_defaults_shape = Some(shape_vec);
+                    }
                     vec![channels]
                 } else if op.op_type == "instanceNormalization" {
                     // For instance norm, scale/bias shape is [channels]
@@ -3860,6 +4025,22 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     } else {
                         1
                     };
+
+                    if input_operand
+                        .descriptor
+                        .shape
+                        .get(channel_dim)
+                        .is_some_and(|d| matches!(d, Dimension::Dynamic(_)))
+                    {
+                        let shape_vec = Self::build_norm_channel_shape_vector(
+                            &format!("{}_norm_shape", op_name),
+                            operand_name(graph, input_id),
+                            channel_dim,
+                            &mut nodes,
+                            &mut initializers,
+                        );
+                        norm_dynamic_defaults_shape = Some(shape_vec);
+                    }
                     vec![channels]
                 } else {
                     vec![1]
@@ -3873,13 +4054,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     if has_scale && op.input_operands.len() > 3 {
                         inputs.push(operand_name(graph, op.input_operands[3]));
                     } else {
-                        let scale_name = format!("{}_scale_default", op_name);
-                        initializers.push(Self::create_vector_initializer(
-                            scale_name.clone(),
-                            input_data_type,
-                            scale_bias_shape.clone(),
-                            1.0,
-                        ));
+                        let scale_name = if let Some(shape_vec) = &norm_dynamic_defaults_shape {
+                            Self::create_runtime_filled_tensor(
+                                &format!("{}_scale_default", op_name),
+                                1.0,
+                                input_data_type,
+                                shape_vec.clone(),
+                                &mut nodes,
+                                &mut initializers,
+                            )
+                        } else {
+                            let scale_name = format!("{}_scale_default", op_name);
+                            initializers.push(Self::create_vector_initializer(
+                                scale_name.clone(),
+                                input_data_type,
+                                scale_bias_shape.clone(),
+                                1.0,
+                            ));
+                            scale_name
+                        };
                         inputs.push(scale_name);
                     }
 
@@ -3887,13 +4080,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     if has_bias && op.input_operands.len() > 4 {
                         inputs.push(operand_name(graph, op.input_operands[4]));
                     } else {
-                        let bias_name = format!("{}_bias_default", op_name);
-                        initializers.push(Self::create_vector_initializer(
-                            bias_name.clone(),
-                            input_data_type,
-                            scale_bias_shape.clone(),
-                            0.0,
-                        ));
+                        let bias_name = if let Some(shape_vec) = &norm_dynamic_defaults_shape {
+                            Self::create_runtime_filled_tensor(
+                                &format!("{}_bias_default", op_name),
+                                0.0,
+                                input_data_type,
+                                shape_vec.clone(),
+                                &mut nodes,
+                                &mut initializers,
+                            )
+                        } else {
+                            let bias_name = format!("{}_bias_default", op_name);
+                            initializers.push(Self::create_vector_initializer(
+                                bias_name.clone(),
+                                input_data_type,
+                                scale_bias_shape.clone(),
+                                0.0,
+                            ));
+                            bias_name
+                        };
                         inputs.push(bias_name);
                     }
 
@@ -3915,14 +4120,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     if has_scale && op.input_operands.len() > 1 {
                         inputs.push(operand_name(graph, op.input_operands[1]));
                     } else {
-                        // Create default scale initializer (all 1.0) with proper dtype
-                        let scale_name = format!("{}_scale_default", op_name);
-                        initializers.push(Self::create_vector_initializer(
-                            scale_name.clone(),
-                            input_data_type,
-                            scale_bias_shape.clone(),
-                            1.0,
-                        ));
+                        let scale_name = if let Some(shape_vec) = &norm_dynamic_defaults_shape {
+                            Self::create_runtime_filled_tensor(
+                                &format!("{}_scale_default", op_name),
+                                1.0,
+                                input_data_type,
+                                shape_vec.clone(),
+                                &mut nodes,
+                                &mut initializers,
+                            )
+                        } else {
+                            let scale_name = format!("{}_scale_default", op_name);
+                            initializers.push(Self::create_vector_initializer(
+                                scale_name.clone(),
+                                input_data_type,
+                                scale_bias_shape.clone(),
+                                1.0,
+                            ));
+                            scale_name
+                        };
                         inputs.push(scale_name);
                     }
 
@@ -3930,14 +4146,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     if has_bias && op.input_operands.len() > 2 {
                         inputs.push(operand_name(graph, op.input_operands[2]));
                     } else if op.op_type != "layerNormalization" || has_bias {
-                        // Batch/instance norm always need bias; layer norm only if explicitly requested
-                        let bias_name = format!("{}_bias_default", op_name);
-                        initializers.push(Self::create_vector_initializer(
-                            bias_name.clone(),
-                            input_data_type,
-                            scale_bias_shape.clone(),
-                            0.0,
-                        ));
+                        let bias_name = if let Some(shape_vec) = &norm_dynamic_defaults_shape {
+                            Self::create_runtime_filled_tensor(
+                                &format!("{}_bias_default", op_name),
+                                0.0,
+                                input_data_type,
+                                shape_vec.clone(),
+                                &mut nodes,
+                                &mut initializers,
+                            )
+                        } else {
+                            let bias_name = format!("{}_bias_default", op_name);
+                            initializers.push(Self::create_vector_initializer(
+                                bias_name.clone(),
+                                input_data_type,
+                                scale_bias_shape.clone(),
+                                0.0,
+                            ));
+                            bias_name
+                        };
                         inputs.push(bias_name);
                     }
                 }
@@ -5299,5 +5526,167 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
         assert!(gp.node.iter().any(|n| n.op_type == "Gather"));
         assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
+    }
+
+    #[test]
+    fn test_batchnorm_dynamic_channel_builds_runtime_default_scale_bias() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "channels".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(4),
+                        Dimension::Static(4),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Constant,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[8]),
+                    pending_permutation: vec![],
+                },
+                name: Some("mean".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Constant,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[8]),
+                    pending_permutation: vec![],
+                },
+                name: Some("variance".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "channels".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(4),
+                        Dimension::Static(4),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "batchNormalization".to_string(),
+            input_operands: vec![0, 1, 2], // no scale/bias operands, defaults required
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "axis": 1,
+                "hasScale": false,
+                "hasBias": false,
+                "epsilon": 1e-5
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Gather"));
+        assert!(gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2);
+        assert!(gp.node.iter().any(|n| n.op_type == "BatchNormalization"));
+    }
+
+    #[test]
+    fn test_layernorm_dynamic_axes_builds_runtime_default_scale_bias() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(2),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "seq".to_string(),
+                            max_size: 16,
+                        }),
+                        Dimension::Static(32),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(2),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "seq".to_string(),
+                            max_size: 16,
+                        }),
+                        Dimension::Static(32),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "layerNormalization".to_string(),
+            input_operands: vec![0], // no explicit scale/bias operands
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "axes": [1],
+                "hasScale": false,
+                "hasBias": true,
+                "epsilon": 1e-5
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Slice"));
+        assert!(gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2);
+        assert!(gp.node.iter().any(|n| n.op_type == "LayerNormalization"));
     }
 }

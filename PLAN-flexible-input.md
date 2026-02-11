@@ -33,7 +33,9 @@ Guiding model: Chromium DynamicDimension { name, maxSize } and Dimension = stati
 2. [x] Add runtime shape construction for Expand/Reshape when output shape has dynamic dims.
    - ONNX converter now builds runtime shape tensors (`Shape` + `Gather` + `Concat`) for dynamic `newShape`.
    - Applied to both `reshape` and `expand` conversion paths; static shapes still use constant initializers.
-3. [ ] Add dynamic-aware scale/bias generation for batch/instance/layer norm if needed.
+3. [x] Add dynamic-aware scale/bias generation for batch/instance/layer norm if needed.
+   - ONNX converter now generates default normalization scale/bias using runtime shape vectors when normalized dimensions are dynamic.
+   - Uses `Shape` + `Gather` (batch/instance) or `Shape` + `Slice` (layer norm), then `Expand` from scalar defaults.
 4. [~] CoreML converter: map dynamic dims to UnknownDimension, keep maxSize for runtime checks only (currently uses static_or_max).
 
 ## Phase 5 - runtime checks
