@@ -93,17 +93,16 @@ fn run() -> Result<(), GraphError> {
         }
         // Check if execution is requested (skip stdout write if so)
         let execution_requested = [
-            false,  // default to false
-
+            false, // default to false
             #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
             cli.run_coreml,
-            
             #[cfg(feature = "onnx-runtime")]
             cli.run_onnx,
-            
             #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
             cli.run_trtx,
-        ].iter().any(|x| x);
+        ]
+        .iter()
+        .any(|x| *x);
 
         if cli.convert_output.is_none() {
             if execution_requested {
@@ -173,14 +172,11 @@ fn run() -> Result<(), GraphError> {
                     }
                 })
                 .collect();
-            
+
             let outputs = rustnn::run_onnx_with_inputs(&converted.data, inputs)?;
             println!("Executed ONNX model with zeroed inputs (CPU):");
             for out in outputs {
-                println!(
-                    "  - {}: shape={:?}",
-                    out.name, out.shape
-                );
+                println!("  - {}: shape={:?}", out.name, out.shape);
             }
         }
 
@@ -206,9 +202,9 @@ fn run() -> Result<(), GraphError> {
                     }
                 })
                 .collect();
-            
+
             let outputs = rustnn::run_trtx_with_inputs(&converted.data, inputs)?;
-            
+
             let model_type = if converted.format == "trtx" {
                 "TensorRT engine"
             } else {
@@ -216,10 +212,7 @@ fn run() -> Result<(), GraphError> {
             };
             println!("Executed {} with zeroed inputs (TRT-RTX):", model_type);
             for out in &outputs {
-                println!(
-                    "  - {}: shape={:?}",
-                    out.name, out.shape
-                );
+                println!("  - {}: shape={:?}", out.name, out.shape);
             }
         }
     }

@@ -6,7 +6,7 @@
 //! Tests only run with real TensorRT (trtx-runtime). With trtx-runtime-mock, they are excluded.
 //! Run with: cargo test --test test_trtx_execution --features trtx-runtime
 
-#[cfg(feature = "trtx-runtime")]
+#[cfg(all(feature = "trtx-runtime", not(feature = "trtx-runtime-mock")))]
 mod tests {
     use rustnn::converters::{GraphConverter, TrtxConverter};
     use rustnn::graph::{
@@ -174,7 +174,12 @@ mod tests {
         // Calculate output size from graph's output operand descriptor
         let output_operand_id = graph.output_operands[0];
         let output_operand = &graph.operands[output_operand_id as usize];
-        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+        let output_element_count: usize = output_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|&d| d as usize)
+            .product();
 
         // Allocate device buffers
         let input_size = input_a.len() * std::mem::size_of::<f32>();
@@ -252,7 +257,12 @@ mod tests {
         // Calculate output size from graph's output operand descriptor
         let output_operand_id = graph.output_operands[0];
         let output_operand = &graph.operands[output_operand_id as usize];
-        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+        let output_element_count: usize = output_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|&d| d as usize)
+            .product();
 
         // Allocate device buffers
         let input_size = input_data.len() * std::mem::size_of::<f32>();
@@ -316,15 +326,30 @@ mod tests {
         let num_graph_outputs = graph.output_operands.len();
         // Note: TensorRT may have more outputs than graph.output_operands due to intermediate values
         // being marked as OperandKind::Output. We only care about the final outputs.
-        assert!(num_tensors as usize >= num_inputs + num_graph_outputs,
-                "Expected at least {} tensors ({} inputs + {} final outputs), got {}",
-                num_inputs + num_graph_outputs, num_inputs, num_graph_outputs, num_tensors);
-        assert_eq!(input_data_vec.len(), num_inputs, "Expected {} input data arrays", num_inputs);
+        assert!(
+            num_tensors as usize >= num_inputs + num_graph_outputs,
+            "Expected at least {} tensors ({} inputs + {} final outputs), got {}",
+            num_inputs + num_graph_outputs,
+            num_inputs,
+            num_graph_outputs,
+            num_tensors
+        );
+        assert_eq!(
+            input_data_vec.len(),
+            num_inputs,
+            "Expected {} input data arrays",
+            num_inputs
+        );
 
         // Calculate output size from graph's output operand descriptor
         let output_operand_id = graph.output_operands[0];
         let output_operand = &graph.operands[output_operand_id as usize];
-        let output_element_count: usize = output_operand.descriptor.shape.iter().map(|&d| d as usize).product();
+        let output_element_count: usize = output_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|&d| d as usize)
+            .product();
 
         // Allocate device buffers for all inputs
         let mut input_buffers = Vec::new();
@@ -332,7 +357,7 @@ mod tests {
             let input_operand_id = graph.input_operands[i];
             let input_operand = &graph.operands[input_operand_id as usize];
             let data_type = &input_operand.descriptor.data_type;
-            
+
             // Handle different data types
             match data_type {
                 DataType::Int32 => {
@@ -340,7 +365,7 @@ mod tests {
                     let int32_data: Vec<i32> = input_data.iter().map(|&f| f as i32).collect();
                     let input_size = int32_data.len() * std::mem::size_of::<i32>();
                     let mut buffer = DeviceBuffer::new(input_size)?;
-                    
+
                     let input_bytes = unsafe {
                         std::slice::from_raw_parts(
                             int32_data.as_ptr() as *const u8,
@@ -349,12 +374,12 @@ mod tests {
                     };
                     buffer.copy_from_host(input_bytes)?;
                     input_buffers.push(buffer);
-                },
+                }
                 _ => {
                     // Float32 or other types - treat as f32
                     let input_size = input_data.len() * std::mem::size_of::<f32>();
                     let mut buffer = DeviceBuffer::new(input_size)?;
-                    
+
                     let input_bytes = unsafe {
                         std::slice::from_raw_parts(
                             input_data.as_ptr() as *const u8,
@@ -370,7 +395,7 @@ mod tests {
         // Allocate output buffers for all TensorRT outputs (including intermediates)
         let num_trt_outputs = num_tensors as usize - num_inputs;
         let mut output_buffers = Vec::new();
-        
+
         // Allocate buffer for each output tensor
         for _i in 0..num_trt_outputs {
             // For simplicity, allocate max size based on final output
@@ -855,11 +880,7 @@ mod tests {
     // ============================================================================
 
     /// Helper to create a matmul graph
-    fn create_matmul_graph(
-        a_shape: Vec<u32>,
-        b_shape: Vec<u32>,
-        data_type: DataType,
-    ) -> GraphInfo {
+    fn create_matmul_graph(a_shape: Vec<u32>, b_shape: Vec<u32>, data_type: DataType) -> GraphInfo {
         let a_desc = OperandDescriptor {
             data_type,
             shape: a_shape.clone(),
@@ -1250,9 +1271,8 @@ mod tests {
         let input_c = vec![1.0, 1.0, 1.0, 1.0];
         let expected = vec![2.0, 3.0, 4.0, 5.0];
 
-        let output =
-            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
-                .expect("Execution failed");
+        let output = execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+            .expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
 
@@ -1279,9 +1299,8 @@ mod tests {
         let input_c = vec![0.0, 0.0, 0.0, 0.0];
         let expected = vec![2.0, 4.0, 6.0, 8.0];
 
-        let output =
-            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
-                .expect("Execution failed");
+        let output = execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+            .expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
 
@@ -1308,9 +1327,8 @@ mod tests {
         let input_c = vec![1.0, 2.0, 3.0, 4.0];
         let expected = vec![3.0, 4.0, 6.0, 9.0];
 
-        let output =
-            execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
-                .expect("Execution failed");
+        let output = execute_graph_three_inputs(&graph, &input_a, &input_b, &input_c)
+            .expect("Execution failed");
         verify_output(&output, &expected, 1e-4);
     }
 
@@ -1351,10 +1369,7 @@ mod tests {
         };
 
         // Convert filter data to bytes
-        let filter_bytes: Vec<u8> = filter_data
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
+        let filter_bytes: Vec<u8> = filter_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
         let mut constant_map = HashMap::new();
         constant_map.insert(
@@ -1543,10 +1558,7 @@ mod tests {
         };
 
         let slope_data = vec![0.25f32];
-        let slope_bytes: Vec<u8> = slope_data
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
+        let slope_bytes: Vec<u8> = slope_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
         let mut constants = HashMap::new();
         constants.insert(
@@ -1660,7 +1672,7 @@ mod tests {
         // GlobalAveragePool: average over spatial dimensions (H, W)
         // Input: [1, 2, 2, 2] (NCHW format: batch=1, channels=2, height=2, width=2)
         let input_shape = vec![1, 2, 2, 2];
-        
+
         let input_desc = OperandDescriptor {
             data_type: DataType::Float32,
             shape: input_shape.clone(),
@@ -1715,7 +1727,7 @@ mod tests {
         // GlobalMaxPool: max over spatial dimensions (H, W)
         // Input: [1, 2, 2, 2] (NCHW format: batch=1, channels=2, height=2, width=2)
         let input_shape = vec![1, 2, 2, 2];
-        
+
         let input_desc = OperandDescriptor {
             data_type: DataType::Float32,
             shape: input_shape.clone(),
@@ -1795,7 +1807,10 @@ mod tests {
             "axes".to_string(),
             serde_json::Value::Array(axes.iter().map(|&a| serde_json::Value::from(a)).collect()),
         );
-        attributes.insert("keepDimensions".to_string(), serde_json::Value::Bool(keep_dims));
+        attributes.insert(
+            "keepDimensions".to_string(),
+            serde_json::Value::Bool(keep_dims),
+        );
 
         GraphInfo {
             operations: vec![Operation {
@@ -2010,8 +2025,8 @@ mod tests {
 
         let input = vec![0.0, 0.0, 1.0, 1.0];
         let expected = vec![
-            (2.0f32).ln(),            // log(exp(0)+exp(0)) = log(2)
-            1.0 + (2.0f32).ln(),      // log(exp(1)+exp(1)) = log(2e) = 1 + log(2)
+            (2.0f32).ln(),       // log(exp(0)+exp(0)) = log(2)
+            1.0 + (2.0f32).ln(), // log(exp(1)+exp(1)) = log(2e) = 1 + log(2)
         ];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
@@ -2093,7 +2108,7 @@ mod tests {
         // Variance: [1, 2, 1, 1] reshaped from [2] for broadcasting
         // Expected: [[(1-1.5)/0.5, (2-1.5)/0.5], [(3-3.5)/0.5, (4-3.5)/0.5]]
         //         = [[-1, 1], [-1, 1]]
-        
+
         // Note: TensorRT requires mean/variance to have same rank as input for broadcasting
         // So we use [1, 2, 1, 1] instead of [2]
         let input_desc = OperandDescriptor {
@@ -2159,7 +2174,7 @@ mod tests {
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let mean = vec![1.5, 3.5]; // Shape [1,2,1,1] for broadcasting
         let variance = vec![0.25, 0.25]; // sqrt(0.25) = 0.5, shape [1,2,1,1]
-        
+
         let all_inputs = vec![input, mean, variance];
 
         let expected = vec![-1.0, 1.0, -1.0, 1.0];
@@ -2189,7 +2204,10 @@ mod tests {
 
         let mut attributes = serde_json::Map::new();
         attributes.insert("epsilon".to_string(), serde_json::Value::from(1e-5));
-        attributes.insert("layout".to_string(), serde_json::Value::String(layout.to_string()));
+        attributes.insert(
+            "layout".to_string(),
+            serde_json::Value::String(layout.to_string()),
+        );
 
         GraphInfo {
             operations: vec![Operation {
@@ -2244,10 +2262,7 @@ mod tests {
         //          ≈ [-1.34, -0.447, 0.447, 1.34]
         // Channel 1: [(5-6.5)/1.118, (6-6.5)/1.118, (7-6.5)/1.118, (8-6.5)/1.118]
         //          ≈ [-1.34, -0.447, 0.447, 1.34]
-        let expected = vec![
-            -1.34, -0.447, 0.447, 1.34,
-            -1.34, -0.447, 0.447, 1.34,
-        ];
+        let expected = vec![-1.34, -0.447, 0.447, 1.34, -1.34, -0.447, 0.447, 1.34];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 0.1); // Looser tolerance for complex computation
@@ -2313,15 +2328,10 @@ mod tests {
         // LayerNorm: Normalize over specified axes (typically last axis)
         // Input: [[1, 2], [3, 4]] shape [2, 2]
         // Normalize over axis 1 (last axis)
-        let graph = create_layer_norm_graph(
-            vec![2, 2],
-            vec![2, 2],
-            vec![1],
-            DataType::Float32,
-        );
+        let graph = create_layer_norm_graph(vec![2, 2], vec![2, 2], vec![1], DataType::Float32);
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        
+
         // Row 0: [1,2] -> mean=1.5, variance=0.25, std=0.5
         //        normalized: [(1-1.5)/0.5, (2-1.5)/0.5] = [-1, 1]
         // Row 1: [3,4] -> mean=3.5, variance=0.25, std=0.5
@@ -2360,15 +2370,30 @@ mod tests {
         let mut attributes = serde_json::Map::new();
         attributes.insert(
             "starts".to_string(),
-            serde_json::Value::Array(starts.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+            serde_json::Value::Array(
+                starts
+                    .iter()
+                    .map(|&s| serde_json::Value::from(s as i64))
+                    .collect(),
+            ),
         );
         attributes.insert(
             "sizes".to_string(),
-            serde_json::Value::Array(sizes.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+            serde_json::Value::Array(
+                sizes
+                    .iter()
+                    .map(|&s| serde_json::Value::from(s as i64))
+                    .collect(),
+            ),
         );
         attributes.insert(
             "strides".to_string(),
-            serde_json::Value::Array(strides.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+            serde_json::Value::Array(
+                strides
+                    .iter()
+                    .map(|&s| serde_json::Value::from(s as i64))
+                    .collect(),
+            ),
         );
 
         GraphInfo {
@@ -2407,17 +2432,14 @@ mod tests {
         let graph = create_slice_graph(
             vec![4, 3],
             vec![2, 2],
-            vec![1, 0],    // Start at row 1, col 0
-            vec![2, 2],    // Take 2 rows, 2 cols
-            vec![1, 1],    // Stride 1 in both dimensions
+            vec![1, 0], // Start at row 1, col 0
+            vec![2, 2], // Take 2 rows, 2 cols
+            vec![1, 1], // Stride 1 in both dimensions
             DataType::Float32,
         );
 
         let input = vec![
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-            10.0, 11.0, 12.0,
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
         ];
         let expected = vec![4.0, 5.0, 7.0, 8.0];
 
@@ -2436,8 +2458,8 @@ mod tests {
             vec![8],
             vec![4],
             vec![0],
-            vec![4],  // Size is output size, not input range
-            vec![2],  // Stride 2
+            vec![4], // Size is output size, not input range
+            vec![2], // Stride 2
             DataType::Float32,
         );
 
@@ -2499,11 +2521,7 @@ mod tests {
     fn test_squeeze_execution() {
         // Squeeze: Remove size-1 dimensions
         // Input: [1, 4, 1, 2] -> Output: [4, 2]
-        let graph = create_squeeze_graph(
-            vec![1, 4, 1, 2],
-            vec![4, 2],
-            DataType::Float32,
-        );
+        let graph = create_squeeze_graph(vec![1, 4, 1, 2], vec![4, 2], DataType::Float32);
 
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let expected = input.clone(); // Data unchanged, only shape changes
@@ -2570,12 +2588,8 @@ mod tests {
     fn test_unsqueeze_execution() {
         // Unsqueeze: Add size-1 dimensions
         // Input: [4, 2] -> Output: [1, 4, 1, 2] (add dims at positions 0 and 2)
-        let graph = create_unsqueeze_graph(
-            vec![4, 2],
-            vec![1, 4, 1, 2],
-            vec![0, 2],
-            DataType::Float32,
-        );
+        let graph =
+            create_unsqueeze_graph(vec![4, 2], vec![1, 4, 1, 2], vec![0, 2], DataType::Float32);
 
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         let expected = input.clone(); // Data unchanged, only shape changes
@@ -2606,7 +2620,12 @@ mod tests {
         let mut attributes = serde_json::Map::new();
         attributes.insert(
             "newShape".to_string(),
-            serde_json::Value::Array(new_shape.iter().map(|&s| serde_json::Value::from(s as i64)).collect()),
+            serde_json::Value::Array(
+                new_shape
+                    .iter()
+                    .map(|&s| serde_json::Value::from(s as i64))
+                    .collect(),
+            ),
         );
 
         GraphInfo {
@@ -2644,12 +2663,7 @@ mod tests {
         // Note: This is a passthrough test. Full expand requires IShuffleLayer
         // with setReshapeDimensions() to be exposed in trtx-rs.
         // Input: [4] -> Output: [4] (identity passthrough)
-        let graph = create_expand_graph(
-            vec![4],
-            vec![4],
-            vec![4],
-            DataType::Float32,
-        );
+        let graph = create_expand_graph(vec![4], vec![4], vec![4], DataType::Float32);
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
         let expected = vec![1.0, 2.0, 3.0, 4.0]; // Identity passthrough
@@ -2717,12 +2731,7 @@ mod tests {
 
     #[test]
     fn test_equal_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "equal",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "equal", DataType::Float32);
 
         let input0 = vec![1.0, 2.0, 3.0, 4.0];
         let input1 = vec![1.0, 3.0, 3.0, 5.0];
@@ -2737,12 +2746,7 @@ mod tests {
 
     #[test]
     fn test_greater_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "greater",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "greater", DataType::Float32);
 
         let input0 = vec![1.0, 3.0, 2.0, 4.0];
         let input1 = vec![2.0, 2.0, 2.0, 4.0];
@@ -2757,12 +2761,7 @@ mod tests {
 
     #[test]
     fn test_greater_or_equal_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "greaterOrEqual",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "greaterOrEqual", DataType::Float32);
 
         let input0 = vec![1.0, 3.0, 2.0, 4.0];
         let input1 = vec![2.0, 2.0, 2.0, 4.0];
@@ -2777,12 +2776,7 @@ mod tests {
 
     #[test]
     fn test_lesser_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "lesser",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "lesser", DataType::Float32);
 
         let input0 = vec![1.0, 3.0, 2.0, 4.0];
         let input1 = vec![2.0, 2.0, 2.0, 4.0];
@@ -2797,12 +2791,7 @@ mod tests {
 
     #[test]
     fn test_lesser_or_equal_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "lesserOrEqual",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "lesserOrEqual", DataType::Float32);
 
         let input0 = vec![1.0, 3.0, 2.0, 4.0];
         let input1 = vec![2.0, 2.0, 2.0, 4.0];
@@ -2817,12 +2806,7 @@ mod tests {
 
     #[test]
     fn test_not_equal_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "notEqual",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "notEqual", DataType::Float32);
 
         let input0 = vec![1.0, 2.0, 3.0, 4.0];
         let input1 = vec![1.0, 3.0, 3.0, 5.0];
@@ -2841,12 +2825,7 @@ mod tests {
 
     #[test]
     fn test_logical_and_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "logicalAnd",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "logicalAnd", DataType::Float32);
 
         let input0 = vec![1.0, 1.0, 0.0, 0.0]; // true, true, false, false
         let input1 = vec![1.0, 0.0, 1.0, 0.0]; // true, false, true, false
@@ -2861,12 +2840,7 @@ mod tests {
 
     #[test]
     fn test_logical_or_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "logicalOr",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "logicalOr", DataType::Float32);
 
         let input0 = vec![1.0, 1.0, 0.0, 0.0]; // true, true, false, false
         let input1 = vec![1.0, 0.0, 1.0, 0.0]; // true, false, true, false
@@ -2881,12 +2855,7 @@ mod tests {
 
     #[test]
     fn test_logical_xor_execution() {
-        let graph = create_comparison_graph(
-            vec![4],
-            vec![4],
-            "logicalXor",
-            DataType::Float32,
-        );
+        let graph = create_comparison_graph(vec![4], vec![4], "logicalXor", DataType::Float32);
 
         let input0 = vec![1.0, 1.0, 0.0, 0.0]; // true, true, false, false
         let input1 = vec![1.0, 0.0, 1.0, 0.0]; // true, false, true, false
@@ -2901,12 +2870,7 @@ mod tests {
 
     #[test]
     fn test_logical_not_execution() {
-        let graph = create_single_input_graph(
-            vec![4],
-            vec![4],
-            "logicalNot",
-            DataType::Float32,
-        );
+        let graph = create_single_input_graph(vec![4], vec![4], "logicalNot", DataType::Float32);
 
         let input = vec![1.0, 0.0, 1.0, 0.0]; // true, false, true, false
 
@@ -2990,13 +2954,7 @@ mod tests {
         // Input: [1,2,3,4,5,6] shape [6]
         // Indices: [0,2,4] shape [3]
         // Expected: [1,3,5] (elements at positions 0, 2, 4)
-        let graph = create_gather_graph(
-            vec![6],
-            vec![3],
-            vec![3],
-            0,
-            DataType::Float32,
-        );
+        let graph = create_gather_graph(vec![6], vec![3], vec![3], 0, DataType::Float32);
 
         let input = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let indices = vec![0.0, 2.0, 4.0]; // Will be converted to int32
@@ -3031,7 +2989,10 @@ mod tests {
 
         let mut attributes = serde_json::Map::new();
         attributes.insert("axis".to_string(), serde_json::Value::from(axis));
-        attributes.insert("keepDimensions".to_string(), serde_json::Value::from(keep_dims));
+        attributes.insert(
+            "keepDimensions".to_string(),
+            serde_json::Value::from(keep_dims),
+        );
 
         GraphInfo {
             operations: vec![Operation {
@@ -3068,14 +3029,7 @@ mod tests {
         // Input: [[1,3,2], [4,2,5]] shape [2,3]
         // Axis: 1 (along columns)
         // Expected: [1, 2] (max indices in each row)
-        let graph = create_arg_graph(
-            vec![2, 3],
-            vec![2],
-            1,
-            false,
-            "argMax",
-            DataType::Float32,
-        );
+        let graph = create_arg_graph(vec![2, 3], vec![2], 1, false, "argMax", DataType::Float32);
 
         let input = vec![1.0, 3.0, 2.0, 4.0, 2.0, 5.0];
 
@@ -3092,14 +3046,7 @@ mod tests {
         // Input: [[3,1,2], [4,5,2]] shape [2,3]
         // Axis: 1 (along columns)
         // Expected: [1, 2] (min indices in each row)
-        let graph = create_arg_graph(
-            vec![2, 3],
-            vec![2],
-            1,
-            false,
-            "argMin",
-            DataType::Float32,
-        );
+        let graph = create_arg_graph(vec![2, 3], vec![2], 1, false, "argMin", DataType::Float32);
 
         let input = vec![3.0, 1.0, 2.0, 4.0, 5.0, 2.0];
 
@@ -3681,7 +3628,8 @@ mod tests {
         let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         let indices = vec![0.0, 0.0, 1.0, 2.0]; // Will be converted to Int32
 
-        let output = execute_graph_multi_input(&graph, vec![data, indices]).expect("Execution failed");
+        let output =
+            execute_graph_multi_input(&graph, vec![data, indices]).expect("Execution failed");
         let expected = vec![1.0, 6.0];
         verify_output(&output, &expected, 1e-4);
     }
@@ -3767,7 +3715,7 @@ mod tests {
             .iter()
             .flat_map(|&f: &f32| f.to_le_bytes())
             .collect();
-        
+
         let bias_bytes: Vec<u8> = bias_data
             .iter()
             .flat_map(|&f: &f32| f.to_le_bytes())
@@ -3862,7 +3810,7 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        
+
         // ConvTranspose2d with 2x2 kernel [1,0,0,1] produces 3x3 output
         // Input: [[1, 2], [3, 4]] -> Output: [[1, 2, 0], [3, 5, 2], [0, 3, 4]]
         // The diagonal kernel spreads values with overlaps (center element = 1+4 = 5)
@@ -4137,8 +4085,9 @@ mod tests {
         let add_value = vec![1.0];
         let expected = vec![2.0, 3.0, 4.0, 5.0];
 
-        let output = execute_graph_multi_input(&graph, vec![input, quant_scale, dequant_scale, add_value])
-            .expect("Execution failed");
+        let output =
+            execute_graph_multi_input(&graph, vec![input, quant_scale, dequant_scale, add_value])
+                .expect("Execution failed");
         verify_output(&output, &expected, 0.1); // Allow some quantization error
     }
 
@@ -4349,7 +4298,8 @@ mod tests {
         let data = vec![10.0, 20.0, 30.0, 40.0];
         let indices = vec![3.0, 1.0, 0.0, 2.0]; // Will be converted to Int32
 
-        let output = execute_graph_multi_input(&graph, vec![data, indices]).expect("Execution failed");
+        let output =
+            execute_graph_multi_input(&graph, vec![data, indices]).expect("Execution failed");
         let expected = vec![40.0, 20.0, 10.0, 30.0];
         verify_output(&output, &expected, 1e-4);
     }
@@ -4361,10 +4311,7 @@ mod tests {
         // With 2x2 window: sqrt(avg(1^2 + 2^2 + 3^2 + 4^2)) = sqrt(avg(1+4+9+16)) = sqrt(7.5) ≈ 2.74
 
         let mut attributes = serde_json::Map::new();
-        attributes.insert(
-            "windowDimensions".to_string(),
-            serde_json::json!([2, 2]),
-        );
+        attributes.insert("windowDimensions".to_string(), serde_json::json!([2, 2]));
 
         let graph = GraphInfo {
             operations: vec![Operation {
@@ -4403,7 +4350,9 @@ mod tests {
         };
 
         let input = vec![1.0, 2.0, 3.0, 4.0];
-        let expected = vec![((1.0f32.powi(2) + 2.0f32.powi(2) + 3.0f32.powi(2) + 4.0f32.powi(2)) / 4.0).sqrt()];
+        let expected = vec![
+            ((1.0f32.powi(2) + 2.0f32.powi(2) + 3.0f32.powi(2) + 4.0f32.powi(2)) / 4.0).sqrt(),
+        ];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-3);
@@ -4462,7 +4411,10 @@ mod tests {
     fn test_cumulative_sum() {
         // Test cumulativeSum operation using TensorRT's native ICumulativeLayer
         let mut attributes = serde_json::Map::new();
-        attributes.insert("axis".to_string(), serde_json::Value::Number(serde_json::Number::from(0)));
+        attributes.insert(
+            "axis".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(0)),
+        );
 
         let graph = GraphInfo {
             operations: vec![Operation {
@@ -4669,10 +4621,7 @@ mod tests {
         };
 
         // Convert filter data to bytes
-        let filter_bytes: Vec<u8> = filter_data
-            .iter()
-            .flat_map(|&f| f.to_le_bytes())
-            .collect();
+        let filter_bytes: Vec<u8> = filter_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
         let mut constant_map = HashMap::new();
         constant_map.insert(
@@ -4768,13 +4717,9 @@ mod tests {
 
         let input_shape = vec![1, 1, 5, 5];
         let filter_shape = vec![1, 1, 3, 3]; // 3x3 kernel
-        
+
         // Identity kernel (center=1, rest=0)
-        let filter_data = vec![
-            0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0,
-        ];
+        let filter_data = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
 
         let graph = create_conv2d_graph_with_padding(
             input_shape,
@@ -4818,13 +4763,9 @@ mod tests {
 
         let input_shape = vec![1, 1, 5, 5];
         let filter_shape = vec![1, 1, 3, 3];
-        
+
         // Identity kernel
-        let filter_data = vec![
-            0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0,
-        ];
+        let filter_data = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
 
         let graph = create_conv2d_graph_with_padding(
             input_shape,
@@ -4862,7 +4803,7 @@ mod tests {
 
         let input_shape = vec![1, 1, 4, 4];
         let filter_shape = vec![1, 1, 3, 3];
-        
+
         // Simple averaging kernel
         #[rustfmt::skip]
         let filter_data = vec![
@@ -4903,13 +4844,9 @@ mod tests {
 
         let input_shape = vec![1, 1, 6, 6];
         let filter_shape = vec![1, 1, 3, 3];
-        
+
         // Identity kernel
-        let filter_data = vec![
-            0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0,
-        ];
+        let filter_data = vec![0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0];
 
         let graph = create_conv2d_graph_with_padding(
             input_shape,
@@ -4943,7 +4880,7 @@ mod tests {
     fn test_conv2d_3x3_mobilenetv2_case() {
         // Simulate MobileNetV2 residual connection scenario
         // Two branches should produce same spatial dimensions for residual add
-        // 
+        //
         // Branch 1: Input 218x218 -> Conv3x3 same padding -> 218x218
         // Branch 2: Input 218x218 -> Conv3x3 valid padding -> 216x216
         // Add would fail due to dimension mismatch!
@@ -4965,7 +4902,10 @@ mod tests {
 
         // Verify output shape: should be 218x218
         // Operand layout: [0]=input, [1]=filter, [2]=output (no bias)
-        assert_eq!(graph_same.operands[2].descriptor.shape, vec![1, 1, 218, 218]);
+        assert_eq!(
+            graph_same.operands[2].descriptor.shape,
+            vec![1, 1, 218, 218]
+        );
 
         // Branch 2: Valid padding shrinks by 2 per dimension
         let graph_valid = create_conv2d_graph_with_padding(
@@ -4980,7 +4920,10 @@ mod tests {
 
         // Verify output shape: should be 216x216 (218-3+1=216)
         // Operand layout: [0]=input, [1]=filter, [2]=output (no bias)
-        assert_eq!(graph_valid.operands[2].descriptor.shape, vec![1, 1, 216, 216]);
+        assert_eq!(
+            graph_valid.operands[2].descriptor.shape,
+            vec![1, 1, 216, 216]
+        );
 
         // This test documents the root cause of MobileNetV2 dimension mismatch:
         // Different padding modes produce incompatible spatial dimensions (218 != 216)
@@ -4999,7 +4942,7 @@ mod tests {
 
         let input_shape = vec![1, 4, 3, 3]; // 4 channels
         let filter_shape = vec![4, 1, 3, 3]; // 4 groups, 1 channel per group
-        
+
         // 4 separate 3x3 filters (one per channel)
         // Filter 0: all 1s (sum = 9)
         // Filter 1: all 2s (sum = 18)
@@ -5070,5 +5013,4 @@ mod tests {
         let output = execute_graph(&graph, &input).expect("Depthwise conv execution failed");
         verify_output(&output, &expected, 1e-4);
     }
-
 }

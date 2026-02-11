@@ -110,29 +110,33 @@ fn execute_trtx_engine(
     // TensorRT requires ALL tensor addresses to be set, even for intermediate results
     for i in 0..num_tensors {
         let name = engine.get_tensor_name(i)?;
-        
+
         // Check if this is an input tensor
         if let Some(input) = inputs.iter().find(|inp| inp.name == name) {
             // Input tensor - validate and copy data
             let expected_shape_i64 = engine.get_tensor_shape(&name)?;
-            let expected_shape: Vec<usize> = expected_shape_i64.iter().map(|&d| d as usize).collect();
+            let expected_shape: Vec<usize> =
+                expected_shape_i64.iter().map(|&d| d as usize).collect();
             let expected_elements: usize = expected_shape.iter().product();
             let provided_elements: usize = input.shape.iter().product();
-            
+
             if provided_elements != expected_elements {
                 return Err(trtx::Error::InvalidArgument(format!(
                     "Input tensor '{}' shape mismatch: expected {:?} ({} elements), got {:?} ({} elements)",
                     name, expected_shape, expected_elements, input.shape, provided_elements
                 )));
             }
-            
+
             if input.data.len() != provided_elements {
                 return Err(trtx::Error::InvalidArgument(format!(
                     "Input tensor '{}' data length ({}) doesn't match shape {:?} ({} elements)",
-                    name, input.data.len(), input.shape, provided_elements
+                    name,
+                    input.data.len(),
+                    input.shape,
+                    provided_elements
                 )));
             }
-            
+
             let size_bytes = input.data.len() * std::mem::size_of::<f32>();
             let mut buffer = trtx::DeviceBuffer::new(size_bytes)?;
 
@@ -149,7 +153,7 @@ fn execute_trtx_engine(
             // Non-input tensor (output or intermediate) - allocate buffer
             let shape_i64 = engine.get_tensor_shape(&name)?;
             let shape: Vec<usize> = shape_i64.iter().map(|&d| d as usize).collect();
-            
+
             let num_elements: usize = shape.iter().product();
             let size_bytes = num_elements * std::mem::size_of::<f32>();
             let buffer = trtx::DeviceBuffer::new(size_bytes)?;
@@ -162,7 +166,7 @@ fn execute_trtx_engine(
             if name.starts_with("output") {
                 output_info.push((name.clone(), shape));
             }
-            
+
             device_buffers.push((name.clone(), buffer));
         }
     }

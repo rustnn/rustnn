@@ -19,9 +19,13 @@ pub use converters::{ConvertedGraph, ConverterRegistry, GraphConverter};
 pub use coreml::{CoremlOutput, CoremlRunAttempt, run_coreml_zeroed, run_coreml_zeroed_cached};
 pub use error::GraphError;
 #[cfg(feature = "onnx-runtime")]
-pub use executors::onnx::{OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs, run_onnx_zeroed};
+pub use executors::onnx::{
+    OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs, run_onnx_zeroed,
+};
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-pub use executors::trtx::{TrtxInput, TrtxOutput, TrtxOutputWithData, run_trtx_with_inputs, run_trtx_zeroed};
+pub use executors::trtx::{
+    TrtxInput, TrtxOutput, TrtxOutputWithData, run_trtx_with_inputs, run_trtx_zeroed,
+};
 pub use graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
 };
