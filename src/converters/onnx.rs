@@ -1,7 +1,10 @@
 use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
-use crate::graph::{DataType, GraphInfo, OperandKind, Operation, to_dimension_vector};
+use crate::graph::{
+    DataType, Dimension, GraphInfo, OperandKind, Operation, get_static_or_max_size,
+    to_dimension_vector,
+};
 use crate::protos::onnx::{
     AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
     TensorShapeProto, TypeProto, ValueInfoProto, attribute_proto::AttributeType,
@@ -20,6 +23,169 @@ use webnn_onnx_utils::{
 pub struct OnnxConverter;
 
 impl OnnxConverter {
+    fn parse_dimension_array(value: &serde_json::Value) -> Option<Vec<Dimension>> {
+        let arr = value.as_array()?;
+        let mut out = Vec::with_capacity(arr.len());
+        for v in arr {
+            if let Some(n) = v.as_u64() {
+                out.push(Dimension::Static(n as u32));
+                continue;
+            }
+            if let Some(n) = v.as_i64() {
+                if n < 0 {
+                    return None;
+                }
+                out.push(Dimension::Static(n as u32));
+                continue;
+            }
+            let obj = v.as_object()?;
+            let name = obj.get("name")?.as_str()?.to_string();
+            let max_size = obj
+                .get("maxSize")
+                .or_else(|| obj.get("max_size"))?
+                .as_u64()? as u32;
+            out.push(Dimension::Dynamic(crate::graph::DynamicDimension {
+                name,
+                max_size,
+            }));
+        }
+        Some(out)
+    }
+
+    fn resolve_dynamic_dim_source(
+        graph: &GraphInfo,
+        op: &Operation,
+        dim_name: &str,
+    ) -> Option<(String, usize)> {
+        if dim_name.is_empty() {
+            return None;
+        }
+
+        // Prefer op inputs, then graph inputs for runtime-available sources.
+        for id in op
+            .input_operands
+            .iter()
+            .copied()
+            .chain(graph.input_operands.iter().copied())
+        {
+            let operand = graph.operand(id)?;
+            for (axis, dim) in operand.descriptor.shape.iter().enumerate() {
+                if let Dimension::Dynamic(dd) = dim
+                    && dd.name == dim_name
+                {
+                    return Some((operand_name(graph, id), axis));
+                }
+            }
+        }
+        None
+    }
+
+    fn build_runtime_shape_input(
+        prefix: &str,
+        target_shape: &[Dimension],
+        graph: &GraphInfo,
+        op: &Operation,
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        let mut parts = Vec::with_capacity(target_shape.len());
+        let mut shape_cache: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+
+        for (idx, dim) in target_shape.iter().enumerate() {
+            match dim {
+                Dimension::Static(v) => {
+                    let name = format!("{}_dim{}_const", prefix, idx);
+                    initializers.push(TensorProto {
+                        name: name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![*v as i64],
+                        ..Default::default()
+                    });
+                    parts.push(name);
+                }
+                Dimension::Dynamic(dd) => {
+                    if let Some((source_tensor, axis)) =
+                        Self::resolve_dynamic_dim_source(graph, op, &dd.name)
+                    {
+                        let shape_output = if let Some(existing) = shape_cache.get(&source_tensor) {
+                            existing.clone()
+                        } else {
+                            let shape_name = format!("{}_{}_shape", prefix, source_tensor);
+                            nodes.push(NodeProto {
+                                input: vec![source_tensor.clone()],
+                                output: vec![shape_name.clone()],
+                                name: format!("{}_{}_shape_node", prefix, source_tensor),
+                                op_type: "Shape".to_string(),
+                                attribute: vec![],
+                                ..Default::default()
+                            });
+                            shape_cache.insert(source_tensor.clone(), shape_name.clone());
+                            shape_name
+                        };
+
+                        let index_name = format!("{}_dim{}_index", prefix, idx);
+                        initializers.push(TensorProto {
+                            name: index_name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![1],
+                            int64_data: vec![axis as i64],
+                            ..Default::default()
+                        });
+
+                        let gather_out = format!("{}_dim{}_value", prefix, idx);
+                        nodes.push(NodeProto {
+                            input: vec![shape_output, index_name],
+                            output: vec![gather_out.clone()],
+                            name: format!("{}_dim{}_gather", prefix, idx),
+                            op_type: "Gather".to_string(),
+                            attribute: vec![],
+                            ..Default::default()
+                        });
+                        parts.push(gather_out);
+                    } else {
+                        debug_print!(
+                            "[ONNX CONVERTER] Could not resolve dynamic dim '{}' for {}; falling back to max_size={}",
+                            dd.name,
+                            prefix,
+                            dd.max_size
+                        );
+                        let name = format!("{}_dim{}_fallback", prefix, idx);
+                        initializers.push(TensorProto {
+                            name: name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![1],
+                            int64_data: vec![dd.max_size as i64],
+                            ..Default::default()
+                        });
+                        parts.push(name);
+                    }
+                }
+            }
+        }
+
+        if parts.len() == 1 {
+            return parts[0].clone();
+        }
+
+        let shape_name = format!("{}_runtime_shape", prefix);
+        nodes.push(NodeProto {
+            input: parts,
+            output: vec![shape_name.clone()],
+            name: format!("{}_runtime_shape_concat", prefix),
+            op_type: "Concat".to_string(),
+            attribute: vec![AttributeProto {
+                name: "axis".to_string(),
+                r#type: AttributeType::Int as i32,
+                i: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        shape_name
+    }
+
     fn invalid_operand(
         context: &str,
         operand: u32,
@@ -799,12 +965,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     // Check for newShape attribute first
                     if let Some(new_shape_attr) = op.attributes.get("newShape") {
-                        if let Some(new_shape_array) = new_shape_attr.as_array() {
-                            let shape: Vec<u32> = new_shape_array
-                                .iter()
-                                .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                                .map(|v| v as u32)
-                                .collect();
+                        if let Some(shape_dims) = Self::parse_dimension_array(new_shape_attr) {
+                            let shape: Vec<u32> =
+                                shape_dims.iter().map(get_static_or_max_size).collect();
                             if !shape.is_empty() {
                                 shape_overrides.insert(output_id, shape.clone());
                                 operand_shapes.insert(output_id, shape);
@@ -1150,13 +1313,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
             else if op.op_type.eq_ignore_ascii_case("reshape") {
                 if let Some(output_id) = op.output_operand
                     && let Some(new_shape_val) = op.attributes.get("newShape")
-                    && let Some(arr) = new_shape_val.as_array()
+                    && let Some(shape_dims) = Self::parse_dimension_array(new_shape_val)
                 {
-                    let shape: Vec<u32> = arr
-                        .iter()
-                        .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                        .map(|v| v as u32)
-                        .collect();
+                    let shape: Vec<u32> = shape_dims.iter().map(get_static_or_max_size).collect();
                     if !shape.is_empty() {
                         shape_overrides.insert(output_id, shape.clone());
                         operand_shapes.insert(output_id, shape);
@@ -2671,24 +2830,37 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Handle newShape attribute - can be array (static), string (operand reference), or missing
                 if let Some(new_shape_attr) = op.attributes.get("newShape") {
-                    if let Some(new_shape_array) = new_shape_attr.as_array() {
-                        // Case 1: newShape is an array (static shape) - create constant initializer
-                        let shape_values: Vec<i64> = new_shape_array
+                    if let Some(shape_dims) = Self::parse_dimension_array(new_shape_attr) {
+                        // Case 1: newShape is an array (static or dynamic)
+                        let has_dynamic = shape_dims
                             .iter()
-                            .filter_map(|v| v.as_u64().map(|u| u as i64))
-                            .collect();
+                            .any(|d| matches!(d, Dimension::Dynamic(_)));
+                        if has_dynamic {
+                            let runtime_shape_name = Self::build_runtime_shape_input(
+                                &format!("{}_shape", op_name),
+                                &shape_dims,
+                                graph,
+                                op,
+                                &mut nodes,
+                                &mut initializers,
+                            );
+                            inputs.push(runtime_shape_name);
+                        } else {
+                            let shape_values: Vec<i64> = shape_dims
+                                .iter()
+                                .map(|d| get_static_or_max_size(d) as i64)
+                                .collect();
+                            let shape_name = format!("{}_shape", op_name);
+                            inputs.push(shape_name.clone());
 
-                        let shape_name = format!("{}_shape", op_name);
-                        inputs.push(shape_name.clone());
-
-                        // Add shape as an initializer (constant tensor)
-                        initializers.push(TensorProto {
-                            name: shape_name,
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![shape_values.len() as i64], // 1D tensor
-                            int64_data: shape_values.clone(),
-                            ..Default::default()
-                        });
+                            initializers.push(TensorProto {
+                                name: shape_name,
+                                data_type: ProtoDataType::Int64 as i32,
+                                dims: vec![shape_values.len() as i64],
+                                int64_data: shape_values,
+                                ..Default::default()
+                            });
+                        }
                     } else if let Some(shape_operand_name) = new_shape_attr.as_str() {
                         // Case 2: newShape is a string (operand reference) - use referenced operand as second input
                         // This handles dynamic reshapes where the shape is computed at runtime
@@ -2706,29 +2878,41 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         });
                     }
                 } else {
-                    // Case 3: No newShape attribute - infer from output operand descriptor (static shape)
+                    // Case 3: No newShape attribute - infer from output operand descriptor
                     let output_id = op.output_operand.expect("Single-output operation expected");
                     let output_operand = graph.operand(output_id).ok_or_else(|| {
                         Self::invalid_operand("reshape output lookup", output_id, Some((op, idx)))
                     })?;
-                    let shape_values: Vec<i64> = output_operand
-                        .descriptor
-                        .static_or_max_shape()
+                    let shape_dims = output_operand.descriptor.shape.clone();
+                    let has_dynamic = shape_dims
                         .iter()
-                        .map(|&dim| dim as i64)
-                        .collect();
+                        .any(|d| matches!(d, Dimension::Dynamic(_)));
+                    if has_dynamic {
+                        let runtime_shape_name = Self::build_runtime_shape_input(
+                            &format!("{}_shape", op_name),
+                            &shape_dims,
+                            graph,
+                            op,
+                            &mut nodes,
+                            &mut initializers,
+                        );
+                        inputs.push(runtime_shape_name);
+                    } else {
+                        let shape_values: Vec<i64> = shape_dims
+                            .iter()
+                            .map(|d| get_static_or_max_size(d) as i64)
+                            .collect();
 
-                    let shape_name = format!("{}_shape", op_name);
-                    inputs.push(shape_name.clone());
-
-                    // Add shape as an initializer (constant tensor)
-                    initializers.push(TensorProto {
-                        name: shape_name,
-                        data_type: ProtoDataType::Int64 as i32,
-                        dims: vec![shape_values.len() as i64], // 1D tensor
-                        int64_data: shape_values,
-                        ..Default::default()
-                    });
+                        let shape_name = format!("{}_shape", op_name);
+                        inputs.push(shape_name.clone());
+                        initializers.push(TensorProto {
+                            name: shape_name,
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![shape_values.len() as i64],
+                            int64_data: shape_values,
+                            ..Default::default()
+                        });
+                    }
                 }
 
                 nodes.push(NodeProto {
@@ -2802,9 +2986,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .map(|id| operand_name(graph, *id))
                         .collect();
 
-                    let shape_values: Vec<i64> = new_shape
+                    let target_dims =
+                        Self::parse_dimension_array(&serde_json::Value::Array(new_shape.clone()))
+                            .ok_or_else(|| GraphError::ConversionFailed {
+                                format: "onnx".to_string(),
+                                reason: format!(
+                                    "Expand newShape contains invalid or unsupported dimensions in operation {}",
+                                    op_name
+                                ),
+                            })?;
+                    let shape_values: Vec<i64> = target_dims
                         .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as i64))
+                        .map(|d| get_static_or_max_size(d) as i64)
                         .collect();
 
                     // Get input operand shape to determine if this is broadcasting or reshaping
@@ -2912,7 +3105,22 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     };
 
                     let shape_name = format!("{}_shape", op_name);
-                    inputs.push(shape_name.clone());
+                    let has_dynamic_shape = target_dims
+                        .iter()
+                        .any(|d| matches!(d, Dimension::Dynamic(_)));
+                    if has_dynamic_shape {
+                        let runtime_shape_name = Self::build_runtime_shape_input(
+                            &shape_name,
+                            &target_dims,
+                            graph,
+                            op,
+                            &mut nodes,
+                            &mut initializers,
+                        );
+                        inputs.push(runtime_shape_name);
+                    } else {
+                        inputs.push(shape_name.clone());
+                    }
 
                     // Update operand_shapes with the output shape before moving shape_values
                     if let Some(output_id) = op.output_operand {
@@ -2921,14 +3129,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         operand_shapes.insert(output_id, output_shape);
                     }
 
-                    // Add shape as an initializer (constant tensor)
-                    initializers.push(TensorProto {
-                        name: shape_name,
-                        data_type: ProtoDataType::Int64 as i32,
-                        dims: vec![shape_values.len() as i64], // 1D tensor
-                        int64_data: shape_values,
-                        ..Default::default()
-                    });
+                    if !has_dynamic_shape {
+                        // Add shape as an initializer (constant tensor)
+                        initializers.push(TensorProto {
+                            name: shape_name,
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![shape_values.len() as i64], // 1D tensor
+                            int64_data: shape_values,
+                            ..Default::default()
+                        });
+                    }
 
                     nodes.push(NodeProto {
                         input: inputs,
@@ -4952,5 +5162,142 @@ mod tests {
             .iter()
             .any(|n| n.name.contains("_squeeze_h") && n.op_type == "Squeeze");
         assert!(has_output_squeeze);
+    }
+
+    #[test]
+    fn test_reshape_dynamic_new_shape_builds_runtime_shape_tensor() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(2),
+                        Dimension::Static(2),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(4),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "reshape".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "newShape": [
+                    { "name": "batch", "maxSize": 8 },
+                    4
+                ]
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+        assert!(gp.node.iter().any(|n| n.op_type == "Reshape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Gather"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
+    }
+
+    #[test]
+    fn test_expand_dynamic_new_shape_builds_runtime_shape_tensor() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(1),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(4),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "expand".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "newShape": [
+                    { "name": "batch", "maxSize": 8 },
+                    4
+                ]
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+        assert!(gp.node.iter().any(|n| n.op_type == "Expand"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Gather"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
     }
 }

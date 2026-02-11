@@ -30,7 +30,9 @@ Guiding model: Chromium DynamicDimension { name, maxSize } and Dimension = stati
 
 ## Phase 4 - rustnn converters
 1. [x] ONNX converter: emit dim_param for dynamic dims; avoid over-specifying shapes.
-2. [ ] Add runtime shape construction for Expand/Reshape when output shape has dynamic dims.
+2. [x] Add runtime shape construction for Expand/Reshape when output shape has dynamic dims.
+   - ONNX converter now builds runtime shape tensors (`Shape` + `Gather` + `Concat`) for dynamic `newShape`.
+   - Applied to both `reshape` and `expand` conversion paths; static shapes still use constant initializers.
 3. [ ] Add dynamic-aware scale/bias generation for batch/instance/layer norm if needed.
 4. [~] CoreML converter: map dynamic dims to UnknownDimension, keep maxSize for runtime checks only (currently uses static_or_max).
 
