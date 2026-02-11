@@ -18,15 +18,11 @@ exclude = [
 ]
 
 [features]
-# Default: no trtx. Use trtx-runtime-mock or trtx-runtime explicitly.
-# (trtx-runtime-mock and trtx-runtime are mutually exclusive; default excluded so trtx-runtime works.)
 default = []
 coreml-runtime = ["objc"]
 onnx-runtime = ["ort", "ndarray"]
-# trtx mock: build without GPU
-trtx-runtime-mock = ["trtx", "trtx/mock"]
-# trtx-runtime: real TensorRT GPU execution. Requires NVIDIA GPU, CUDA, TensorRT-RTX.
-trtx-runtime = ["trtx", "trtx/real"]
+trtx-runtime = ["trtx"]
+trtx-runtime-mock = ["trtx/mock"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -43,7 +39,7 @@ ndarray = { version = "0.16", optional = true }
 objc = { version = "0.2", optional = true }
 ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half", "load-dynamic"] }
 half = "2.4"
-trtx = { path = "../trtx-rs/trtx", optional = true, default-features = false }
+trtx = { version = "0.3.0", optional = true }
 regex = "1.11"
 webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
