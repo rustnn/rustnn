@@ -1958,4 +1958,153 @@ mod tests {
         assert_eq!(out_desc.shape, vec![3, 4]);
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
+
+    #[test]
+    fn test_from_graph_json_parses_dynamic_input_dimensions() {
+        use webnn_graph::ast::{
+            DataType as WDataType, Dimension as WDimension, DynamicDimension as WDynamicDimension,
+            OperandDesc,
+        };
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: WDataType::Float32,
+                shape: vec![
+                    WDimension::Dynamic(WDynamicDimension {
+                        name: "batch".to_string(),
+                        max_size: 16,
+                    }),
+                    WDimension::Static(64),
+                ],
+            },
+        );
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("x_out".to_string(), "x".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("dynamic_input".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes: vec![],
+            outputs,
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+        assert_eq!(graph_info.input_operands.len(), 1);
+        let input = &graph_info.operands[graph_info.input_operands[0] as usize];
+        assert_eq!(input.name.as_deref(), Some("x"));
+        assert_eq!(input.descriptor.shape.len(), 2);
+        match &input.descriptor.shape[0] {
+            Dimension::Dynamic(d) => {
+                assert_eq!(d.name, "batch");
+                assert_eq!(d.max_size, 16);
+            }
+            _ => panic!("expected dynamic dimension at axis 0"),
+        }
+        assert_eq!(input.descriptor.shape[1], Dimension::Static(64));
+    }
+
+    #[test]
+    fn test_to_graph_json_preserves_dynamic_dimensions() {
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            Dimension::Dynamic(DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            Dimension::Static(3),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("x".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            Dimension::Dynamic(DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            Dimension::Static(3),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("y".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let json = to_graph_json(&graph, false).expect("to_graph_json");
+        let input_desc = json.inputs.get("x").expect("input x");
+        assert_eq!(input_desc.shape.len(), 2);
+        match &input_desc.shape[0] {
+            webnn_graph::ast::Dimension::Dynamic(d) => {
+                assert_eq!(d.name, "batch");
+                assert_eq!(d.max_size, 8);
+            }
+            _ => panic!("expected dynamic input dimension"),
+        }
+        assert_eq!(input_desc.shape[1], webnn_graph::ast::Dimension::Static(3));
+    }
+
+    #[test]
+    fn test_to_graph_json_rejects_dynamic_constant_shape() {
+        let mut constants = HashMap::new();
+        constants.insert(
+            0u32,
+            ConstantData {
+                data: vec![0u8; 4],
+                label: None,
+            },
+        );
+
+        let graph = GraphInfo {
+            operands: vec![Operand {
+                kind: OperandKind::Constant,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![Dimension::Dynamic(DynamicDimension {
+                        name: "n".to_string(),
+                        max_size: 4,
+                    })],
+                    pending_permutation: vec![],
+                },
+                name: Some("const_dynamic".to_string()),
+            }],
+            input_operands: vec![],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: constants,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let err = to_graph_json(&graph, false).unwrap_err();
+        match err {
+            GraphError::ConversionFailed { reason, .. } => {
+                assert!(reason.contains("constant operand"));
+                assert!(reason.contains("has dynamic shape"));
+            }
+            _ => panic!("expected ConversionFailed for dynamic constant shape"),
+        }
+    }
 }

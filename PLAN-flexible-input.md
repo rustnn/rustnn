@@ -46,8 +46,10 @@ Notes:
 - Checked APIs enforce descriptor rank/static dims, same-name dynamic dim equality, and maxSize.
 
 ## Phase 6 - tests and docs
-1. Add JSON tests mirroring Chromium dynamic WPT coverage for a small subset of ops.
-2. Document dynamic shape encoding and runtime behavior in docs.
+1. [~] Add JSON tests mirroring Chromium dynamic WPT coverage for a small subset of ops.
+   - Added rustnn JSON/unit coverage for dynamic dimension parsing/roundtrip and constant-shape rejection.
+2. [x] Document dynamic shape encoding and runtime behavior in docs.
+   - Added `docs/development/flexible-input-shapes.md`.
 
 Notes:
 - TensorRT support deferred (explicitly reject dynamic dims on TRT path or fall back).
