@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[pre-commit] make fmt-check"
+make fmt-check
+
+echo "[pre-commit] make lint"
+make lint

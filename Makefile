@@ -66,6 +66,7 @@ endif
 
 .PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
+	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	help clean-all
 
@@ -86,6 +87,12 @@ test:
 
 fmt:
 	$(CARGO) fmt
+
+fmt-check:
+	$(CARGO) fmt --check
+
+lint:
+	$(CARGO) clippy --all-targets -- -D warnings
 
 # ==============================================================================
 # Code Coverage Targets
