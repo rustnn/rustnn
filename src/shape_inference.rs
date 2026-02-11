@@ -1,5 +1,6 @@
 /// Shape inference and validation for WebNN operations
 use crate::error::GraphError;
+use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size};
 
 /// Compute the broadcasted shape for two operands following NumPy broadcasting rules
 ///
@@ -38,6 +39,81 @@ pub fn broadcast_shapes(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, Gr
     }
 
     // Reverse to get back to original order
+    result.reverse();
+    Ok(result)
+}
+
+fn merge_dynamic_names(lhs: &str, rhs: &str) -> String {
+    if !lhs.is_empty() {
+        lhs.to_string()
+    } else {
+        rhs.to_string()
+    }
+}
+
+fn merge_broadcast_dim(dim_a: &Dimension, dim_b: &Dimension) -> Result<Dimension, GraphError> {
+    match (dim_a, dim_b) {
+        (Dimension::Static(a), Dimension::Static(b)) => {
+            if *a == *b || *a == 1 {
+                Ok(Dimension::Static(*b))
+            } else if *b == 1 {
+                Ok(Dimension::Static(*a))
+            } else {
+                Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Incompatible static dimensions for broadcasting: {} vs {}",
+                        a, b
+                    ),
+                })
+            }
+        }
+        (Dimension::Static(1), other) | (other, Dimension::Static(1)) => Ok(other.clone()),
+        (Dimension::Static(a), Dimension::Dynamic(b))
+        | (Dimension::Dynamic(b), Dimension::Static(a)) => {
+            Ok(Dimension::Dynamic(DynamicDimension {
+                name: b.name.clone(),
+                max_size: (*a).max(b.max_size),
+            }))
+        }
+        (Dimension::Dynamic(a), Dimension::Dynamic(b)) => {
+            if a.name == b.name && !a.name.is_empty() {
+                Ok(Dimension::Dynamic(DynamicDimension {
+                    name: a.name.clone(),
+                    max_size: a.max_size.max(b.max_size),
+                }))
+            } else {
+                Ok(Dimension::Dynamic(DynamicDimension {
+                    name: merge_dynamic_names(&a.name, &b.name),
+                    max_size: a.max_size.max(b.max_size),
+                }))
+            }
+        }
+    }
+}
+
+/// Compute the broadcasted shape for two operands following NumPy broadcasting rules, preserving dynamic dimensions.
+pub fn broadcast_shapes_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let max_rank = shape_a.len().max(shape_b.len());
+    let mut result = Vec::with_capacity(max_rank);
+
+    for i in 0..max_rank {
+        let dim_a = if i < shape_a.len() {
+            shape_a[shape_a.len() - 1 - i].clone()
+        } else {
+            Dimension::Static(1)
+        };
+        let dim_b = if i < shape_b.len() {
+            shape_b[shape_b.len() - 1 - i].clone()
+        } else {
+            Dimension::Static(1)
+        };
+
+        result.push(merge_broadcast_dim(&dim_a, &dim_b)?);
+    }
+
     result.reverse();
     Ok(result)
 }
@@ -82,6 +158,48 @@ pub fn infer_matmul_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, 
     batch_dims.push(a_rows);
     batch_dims.push(b_cols);
 
+    Ok(batch_dims)
+}
+
+/// Infer output shape for matrix multiplication (matmul), preserving dynamic dimensions.
+pub fn infer_matmul_shape_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    if shape_a.len() < 2 || shape_b.len() < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Matmul requires at least 2D tensors, got shapes {:?} and {:?}",
+                shape_a, shape_b
+            ),
+        });
+    }
+
+    let a_rows = shape_a[shape_a.len() - 2].clone();
+    let a_cols = &shape_a[shape_a.len() - 1];
+    let b_rows = &shape_b[shape_b.len() - 2];
+    let b_cols = shape_b[shape_b.len() - 1].clone();
+
+    if let (Dimension::Static(a), Dimension::Static(b)) = (a_cols, b_rows)
+        && a != b
+    {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Incompatible shapes for matmul: {:?} and {:?} (inner dimensions {} != {})",
+                shape_a, shape_b, a, b
+            ),
+        });
+    }
+
+    if shape_a.len() == 2 && shape_b.len() == 2 {
+        return Ok(vec![a_rows, b_cols]);
+    }
+
+    let batch_a = &shape_a[..shape_a.len() - 2];
+    let batch_b = &shape_b[..shape_b.len() - 2];
+    let mut batch_dims = broadcast_shapes_dimensions(batch_a, batch_b)?;
+    batch_dims.push(a_rows);
+    batch_dims.push(b_cols);
     Ok(batch_dims)
 }
 
@@ -788,6 +906,55 @@ pub fn infer_reduce_shape(
     Ok(output_shape)
 }
 
+/// Infer output shape for reduction operations while preserving dynamic dimensions.
+pub fn infer_reduce_shape_dimensions(
+    input_shape: &[Dimension],
+    options: &ReduceOptions,
+) -> Result<Vec<Dimension>, GraphError> {
+    let axes_to_reduce: Vec<u32> = if options.axes.is_empty() {
+        (0..input_shape.len() as u32).collect()
+    } else {
+        options.axes.clone()
+    };
+
+    for &axis in &axes_to_reduce {
+        if axis >= input_shape.len() as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Reduce axis {} out of bounds for shape {:?} (rank {})",
+                    axis,
+                    input_shape,
+                    input_shape.len()
+                ),
+            });
+        }
+    }
+
+    let mut sorted_axes = axes_to_reduce.clone();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Duplicate axis {} in reduction axes", sorted_axes[i]),
+            });
+        }
+    }
+
+    let mut output_shape = Vec::new();
+    for (idx, dim) in input_shape.iter().enumerate() {
+        let is_reduced = axes_to_reduce.contains(&(idx as u32));
+        if is_reduced {
+            if options.keep_dimensions {
+                output_shape.push(Dimension::Static(1));
+            }
+        } else {
+            output_shape.push(dim.clone());
+        }
+    }
+
+    Ok(output_shape)
+}
+
 /// Infer the output shape for element-wise unary operations
 /// All element-wise unary operations preserve the input shape
 ///
@@ -1001,6 +1168,56 @@ pub fn infer_transpose_shape(
     Ok(output_shape)
 }
 
+/// Infer output shape for transpose operation while preserving dynamic dimensions.
+pub fn infer_transpose_shape_dimensions(
+    input_shape: &[Dimension],
+    permutation: Option<&[u32]>,
+) -> Result<Vec<Dimension>, GraphError> {
+    let rank = input_shape.len();
+
+    if permutation.is_none() {
+        let mut output_shape = input_shape.to_vec();
+        output_shape.reverse();
+        return Ok(output_shape);
+    }
+
+    let perm = permutation.expect("permutation checked above");
+    if perm.len() != rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Transpose permutation length {} must match input rank {}, input shape: {:?}",
+                perm.len(),
+                rank,
+                input_shape
+            ),
+        });
+    }
+
+    let mut seen = vec![false; rank];
+    for &axis in perm {
+        if axis >= rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Transpose permutation axis {} out of bounds for rank {}, input shape: {:?}",
+                    axis, rank, input_shape
+                ),
+            });
+        }
+        if seen[axis as usize] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Transpose permutation contains duplicate axis {}", axis),
+            });
+        }
+        seen[axis as usize] = true;
+    }
+
+    let output_shape: Vec<Dimension> = perm
+        .iter()
+        .map(|&i| input_shape[i as usize].clone())
+        .collect();
+    Ok(output_shape)
+}
+
 /// Infer output shape for concat operation
 ///
 /// Concatenates multiple tensors along a specified axis.
@@ -1061,6 +1278,88 @@ pub fn infer_concat_shape(input_shapes: &[Vec<u32>], axis: u32) -> Result<Vec<u3
     let mut output_shape = first_shape.clone();
     let concat_dim_size: u32 = input_shapes.iter().map(|shape| shape[axis as usize]).sum();
     output_shape[axis as usize] = concat_dim_size;
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for concat while preserving dynamic dimensions.
+pub fn infer_concat_shape_dimensions(
+    input_shapes: &[Vec<Dimension>],
+    axis: u32,
+) -> Result<Vec<Dimension>, GraphError> {
+    if input_shapes.is_empty() {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: "Concat requires at least one input".to_string(),
+        });
+    }
+
+    let first_shape = &input_shapes[0];
+    let rank = first_shape.len();
+    if axis >= rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Concat axis {} out of bounds for rank {}, shape: {:?}",
+                axis, rank, first_shape
+            ),
+        });
+    }
+
+    for (idx, shape) in input_shapes.iter().enumerate() {
+        if shape.len() != rank {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Concat input {} has rank {} but expected rank {}, shapes: {:?}",
+                    idx,
+                    shape.len(),
+                    rank,
+                    input_shapes
+                ),
+            });
+        }
+    }
+
+    let axis_idx = axis as usize;
+    let mut output_shape = first_shape.clone();
+    for dim_idx in 0..rank {
+        if dim_idx == axis_idx {
+            continue;
+        }
+
+        let mut merged = first_shape[dim_idx].clone();
+        for shape in input_shapes.iter().skip(1) {
+            merged = match (&merged, &shape[dim_idx]) {
+                (Dimension::Static(a), Dimension::Static(b)) if a != b => {
+                    return Err(GraphError::ShapeInferenceFailed {
+                        reason: format!(
+                            "Concat dimension {} mismatch on non-axis dimensions: {} vs {}",
+                            dim_idx, a, b
+                        ),
+                    });
+                }
+                _ => merge_broadcast_dim(&merged, &shape[dim_idx])?,
+            };
+        }
+        output_shape[dim_idx] = merged;
+    }
+
+    let mut sum = 0u32;
+    let mut has_dynamic_axis = false;
+    for shape in input_shapes {
+        let dim = &shape[axis_idx];
+        sum = sum.saturating_add(get_static_or_max_size(dim));
+        if matches!(dim, Dimension::Dynamic(_)) {
+            has_dynamic_axis = true;
+        }
+    }
+
+    output_shape[axis_idx] = if has_dynamic_axis {
+        Dimension::Dynamic(DynamicDimension {
+            name: String::new(),
+            max_size: sum,
+        })
+    } else {
+        Dimension::Static(sum)
+    };
 
     Ok(output_shape)
 }
@@ -1168,6 +1467,93 @@ pub fn infer_expand_shape(input_shape: &[u32], new_shape: &[u32]) -> Result<Vec<
     Ok(new_shape.to_vec())
 }
 
+fn propagate_expand_dimension(input_dim: &Dimension, target_dim: &Dimension) -> Dimension {
+    match (input_dim, target_dim) {
+        // Keep a named dynamic input when newShape encodes only its current maxSize.
+        (Dimension::Dynamic(input_dyn), Dimension::Static(target))
+            if *target == input_dyn.max_size && *target != 1 =>
+        {
+            Dimension::Dynamic(input_dyn.clone())
+        }
+        // If target is dynamic but unnamed and has same max as input, keep the input name.
+        (Dimension::Dynamic(input_dyn), Dimension::Dynamic(target_dyn))
+            if target_dyn.name.is_empty() && target_dyn.max_size == input_dyn.max_size =>
+        {
+            Dimension::Dynamic(DynamicDimension {
+                name: input_dyn.name.clone(),
+                max_size: target_dyn.max_size,
+            })
+        }
+        _ => target_dim.clone(),
+    }
+}
+
+/// Infer output shape for expand operation while preserving dynamic dimensions.
+///
+/// Explicit propagation rules:
+/// - New dimensions (leading rank expansion) come from `new_shape`.
+/// - If input dimension is dynamic and `new_shape` uses a static maxSize placeholder,
+///   keep the input dynamic dimension in output.
+/// - Otherwise output dimension follows `new_shape`.
+pub fn infer_expand_shape_dimensions(
+    input_shape: &[Dimension],
+    new_shape: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = new_shape.len();
+
+    if output_rank < input_rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Expand new_shape rank {} must be >= input rank {}, input shape: {:?}, new_shape: {:?}",
+                output_rank, input_rank, input_shape, new_shape
+            ),
+        });
+    }
+
+    let offset = output_rank - input_rank;
+    let mut output = new_shape.to_vec();
+
+    for i in 0..input_rank {
+        let input_dim = &input_shape[i];
+        let target_dim = &new_shape[offset + i];
+        let input_max = get_static_or_max_size(input_dim);
+        let target_max = get_static_or_max_size(target_dim);
+
+        if let (Dimension::Static(in_static), Dimension::Static(out_static)) =
+            (input_dim, target_dim)
+            && *in_static != 1
+            && *in_static != *out_static
+        {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
+                    i, in_static, out_static, input_shape, new_shape
+                ),
+            });
+        }
+
+        if let (Dimension::Static(in_static), Dimension::Dynamic(_)) = (input_dim, target_dim)
+            && *in_static != 1
+            && target_max < *in_static
+        {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Expand dimension {} mismatch: input {} exceeds dynamic new_shape max {}",
+                    i, in_static, target_max
+                ),
+            });
+        }
+
+        // Keep explicit dynamic information when possible.
+        if input_max != 1 || target_max != 1 {
+            output[offset + i] = propagate_expand_dimension(input_dim, target_dim);
+        }
+    }
+
+    Ok(output)
+}
+
 /// Infer output shape for gather operation
 ///
 /// Gathers values from input tensor along an axis according to indices.
@@ -1194,6 +1580,29 @@ pub fn infer_gather_shape(
     output_shape.extend_from_slice(indices_shape);
     output_shape.extend_from_slice(&input_shape[(axis as usize + 1)..]);
 
+    Ok(output_shape)
+}
+
+/// Infer output shape for gather while preserving dynamic dimensions.
+pub fn infer_gather_shape_dimensions(
+    input_shape: &[Dimension],
+    indices_shape: &[Dimension],
+    axis: u32,
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    if axis >= input_rank as u32 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Gather axis {} out of bounds for input rank {}, input shape: {:?}",
+                axis, input_rank, input_shape
+            ),
+        });
+    }
+
+    let mut output_shape = Vec::new();
+    output_shape.extend_from_slice(&input_shape[..axis as usize]);
+    output_shape.extend_from_slice(indices_shape);
+    output_shape.extend_from_slice(&input_shape[(axis as usize + 1)..]);
     Ok(output_shape)
 }
 
@@ -1287,6 +1696,16 @@ pub fn infer_where_shape(
     let output_shape = broadcast_shapes(&temp_shape, false_value_shape)?;
 
     Ok(output_shape)
+}
+
+/// Infer output shape for where while preserving dynamic dimensions.
+pub fn infer_where_shape_dimensions(
+    condition_shape: &[Dimension],
+    true_value_shape: &[Dimension],
+    false_value_shape: &[Dimension],
+) -> Result<Vec<Dimension>, GraphError> {
+    let temp_shape = broadcast_shapes_dimensions(condition_shape, true_value_shape)?;
+    broadcast_shapes_dimensions(&temp_shape, false_value_shape)
 }
 
 /// Pad mode for pad operation
@@ -1418,6 +1837,50 @@ pub fn infer_unsqueeze_shape(input_shape: &[u32], axes: &[u32]) -> Result<Vec<u3
             output_shape.push(1);
         } else {
             output_shape.push(input_shape[input_idx]);
+            input_idx += 1;
+        }
+    }
+
+    Ok(output_shape)
+}
+
+/// Infer output shape for unsqueeze operation while preserving dynamic dimensions.
+pub fn infer_unsqueeze_shape_dimensions(
+    input_shape: &[Dimension],
+    axes: &[u32],
+) -> Result<Vec<Dimension>, GraphError> {
+    let input_rank = input_shape.len();
+    let output_rank = input_rank + axes.len();
+
+    for &axis in axes {
+        if axis > output_rank as u32 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
+                    axis, output_rank, input_shape
+                ),
+            });
+        }
+    }
+
+    let mut sorted_axes = axes.to_vec();
+    sorted_axes.sort_unstable();
+    for i in 1..sorted_axes.len() {
+        if sorted_axes[i] == sorted_axes[i - 1] {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Unsqueeze axes contain duplicate: {}", sorted_axes[i]),
+            });
+        }
+    }
+
+    let mut output_shape = Vec::with_capacity(output_rank);
+    let mut input_idx = 0;
+
+    for out_idx in 0..output_rank {
+        if sorted_axes.contains(&(out_idx as u32)) {
+            output_shape.push(Dimension::Static(1));
+        } else {
+            output_shape.push(input_shape[input_idx].clone());
             input_idx += 1;
         }
     }
@@ -1834,6 +2297,14 @@ pub fn infer_split_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::{Dimension, DynamicDimension};
+
+    fn d(name: &str, max_size: u32) -> Dimension {
+        Dimension::Dynamic(DynamicDimension {
+            name: name.to_string(),
+            max_size,
+        })
+    }
 
     #[test]
     fn test_broadcast_same_shape() {
@@ -1867,6 +2338,16 @@ mod tests {
     fn test_broadcast_incompatible() {
         assert!(broadcast_shapes(&[2, 3], &[2, 4]).is_err());
         assert!(broadcast_shapes(&[2, 3, 4], &[2, 5, 4]).is_err());
+    }
+
+    #[test]
+    fn test_broadcast_dimensions_preserves_dynamic() {
+        let out = broadcast_shapes_dimensions(
+            &[d("batch", 16), Dimension::Static(64)],
+            &[Dimension::Static(1), Dimension::Static(64)],
+        )
+        .unwrap();
+        assert_eq!(out, vec![d("batch", 16), Dimension::Static(64)]);
     }
 
     #[test]
@@ -2577,6 +3058,40 @@ mod tests {
 
         // Non-1 dimension can't be expanded
         assert!(infer_expand_shape(&[2, 3], &[4, 3]).is_err());
+    }
+
+    #[test]
+    fn test_expand_shape_dimensions_propagates_dynamic_from_static_max_placeholder() {
+        let output = infer_expand_shape_dimensions(
+            &[d("batch", 16), Dimension::Static(1), Dimension::Static(64)],
+            &[
+                Dimension::Static(16),
+                Dimension::Static(32),
+                Dimension::Static(64),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            output,
+            vec![d("batch", 16), Dimension::Static(32), Dimension::Static(64)]
+        );
+    }
+
+    #[test]
+    fn test_expand_shape_dimensions_prefers_named_dynamic_when_target_is_unnamed() {
+        let output = infer_expand_shape_dimensions(
+            &[d("seq", 128), Dimension::Static(1)],
+            &[
+                Dimension::Dynamic(DynamicDimension {
+                    name: String::new(),
+                    max_size: 128,
+                }),
+                Dimension::Static(32),
+            ],
+        )
+        .unwrap();
+        assert_eq!(output[0], d("seq", 128));
+        assert_eq!(output[1], Dimension::Static(32));
     }
 
     // Gather tests

@@ -23,7 +23,10 @@ Guiding model: Chromium DynamicDimension { name, maxSize } and Dimension = stati
 2. [x] Update loader/webnn_json to parse dynamic dims and enforce constant shape concreteness.
 3. [x] Update validator to allow dynamic dims on inputs/outputs and track known dynamic dims.
 4. [~] Implement StaticShape usage where ops require concrete sizes (partial: using static_or_max in converters).
-5. [ ] Update shape_inference to be Dimension-aware and add ExpandShape rules.
+5. [x] Update shape_inference to be Dimension-aware and add ExpandShape rules.
+   - Added Dimension-native inference helpers (broadcast/matmul/reduce/transpose/concat/unsqueeze/gather/where/expand).
+   - Switched `webnn_json` inference pass to operate on `Vec<Dimension>` directly (no `static_or_max_shape` fallback in the pass).
+   - Added explicit dynamic ExpandShape propagation rules and unit tests.
 
 ## Phase 4 - rustnn converters
 1. [x] ONNX converter: emit dim_param for dynamic dims; avoid over-specifying shapes.

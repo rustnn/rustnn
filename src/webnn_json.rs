@@ -2,7 +2,7 @@ use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
     ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, Operation, to_dimension_vector,
+    OperandKind, Operation, get_static_or_max_size, to_dimension_vector,
 };
 use std::collections::{BTreeMap, HashMap};
 use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
@@ -433,20 +433,29 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
         Some(out)
     }
 
-    fn parse_u32_array(value: &serde_json::Value) -> Option<Vec<u32>> {
+    fn parse_dimension_array(value: &serde_json::Value) -> Option<Vec<Dimension>> {
         let arr = value.as_array()?;
         let mut out = Vec::with_capacity(arr.len());
         for v in arr {
             if let Some(n) = v.as_u64() {
-                out.push(n as u32);
-            } else if let Some(n) = v.as_i64() {
+                out.push(Dimension::Static(n as u32));
+                continue;
+            }
+            if let Some(n) = v.as_i64() {
                 if n < 0 {
                     return None;
                 }
-                out.push(n as u32);
-            } else {
-                return None;
+                out.push(Dimension::Static(n as u32));
+                continue;
             }
+
+            let obj = v.as_object()?;
+            let name = obj.get("name")?.as_str()?.to_string();
+            let max_size = obj
+                .get("maxSize")
+                .or_else(|| obj.get("max_size"))?
+                .as_u64()? as u32;
+            out.push(Dimension::Dynamic(DynamicDimension { name, max_size }));
         }
         Some(out)
     }
@@ -494,10 +503,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             }
 
             // Get input shapes and types
-            let input_shapes: Vec<Vec<u32>> = op
+            let input_shapes: Vec<Vec<Dimension>> = op
                 .input_operands
                 .iter()
-                .map(|&id| graph.operands[id as usize].descriptor.static_or_max_shape())
+                .map(|&id| graph.operands[id as usize].descriptor.shape.clone())
                 .collect();
             let input_types: Vec<DataType> = op
                 .input_operands
@@ -512,7 +521,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "greaterorequal" | "less" | "lesser" | "lessorequal" | "lesserorequal"
                 | "equal" | "logical_and" | "logical_or" | "logical_xor" => {
                     if input_shapes.len() >= 2 {
-                        broadcast_shapes(&input_shapes[0], &input_shapes[1]).ok()
+                        broadcast_shapes_dimensions(&input_shapes[0], &input_shapes[1]).ok()
                     } else {
                         None
                     }
@@ -572,9 +581,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
                     if let Some(axis_val) = axis_u32 {
                         if input_shapes.iter().all(|s| s.is_empty()) && axis_val == 0 {
-                            Some(vec![input_shapes.len() as u32])
+                            Some(vec![Dimension::Static(input_shapes.len() as u32)])
                         } else {
-                            infer_concat_shape(&input_shapes, axis_val).ok()
+                            infer_concat_shape_dimensions(&input_shapes, axis_val).ok()
                         }
                     } else {
                         None
@@ -600,14 +609,16 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                 normalized.push(axis as u32);
                             }
                             if valid {
-                                infer_unsqueeze_shape(&input_shapes[0], &normalized).ok()
+                                infer_unsqueeze_shape_dimensions(&input_shapes[0], &normalized).ok()
                             } else {
                                 None
                             }
-                        } else if let Some(new_shape) =
-                            op.attributes.get("newShape").and_then(parse_u32_array)
+                        } else if let Some(new_shape) = op
+                            .attributes
+                            .get("newShape")
+                            .and_then(parse_dimension_array)
                         {
-                            infer_expand_shape(&input_shapes[0], &new_shape).ok()
+                            infer_expand_shape_dimensions(&input_shapes[0], &new_shape).ok()
                         } else {
                             None
                         }
@@ -620,13 +631,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "reshape" => op
                     .attributes
                     .get("newShape")
-                    .and_then(|v| v.as_array())
-                    .map(|new_shape_array| {
-                        new_shape_array
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|u| u as u32))
-                            .collect()
-                    }),
+                    .and_then(parse_dimension_array),
 
                 // Transpose
                 "transpose" => {
@@ -638,10 +643,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                 .iter()
                                 .filter_map(|v| v.as_u64().map(|u| u as u32))
                                 .collect();
-                            infer_transpose_shape(&input_shapes[0], Some(&perm)).ok()
+                            infer_transpose_shape_dimensions(&input_shapes[0], Some(&perm)).ok()
                         } else {
                             // Default permutation (None = reverse axes)
-                            infer_transpose_shape(&input_shapes[0], None).ok()
+                            infer_transpose_shape_dimensions(&input_shapes[0], None).ok()
                         }
                     } else {
                         None
@@ -654,7 +659,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         if input_shapes[0].len() < 2 || input_shapes[1].len() < 2 {
                             None
                         } else {
-                            infer_matmul_shape(&input_shapes[0], &input_shapes[1]).ok()
+                            infer_matmul_shape_dimensions(&input_shapes[0], &input_shapes[1]).ok()
                         }
                     } else {
                         None
@@ -697,7 +702,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                 axes: normalized_axes,
                                 keep_dimensions,
                             };
-                            infer_reduce_shape(input_shape, &options).ok()
+                            infer_reduce_shape_dimensions(input_shape, &options).ok()
                         }
                     } else {
                         None
@@ -707,7 +712,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Gather
                 "gather" => {
                     if let Some(shape_override) =
-                        op.attributes.get("shape").and_then(parse_u32_array)
+                        op.attributes.get("shape").and_then(parse_dimension_array)
                     {
                         // Also try to back-propagate the implied indices shape when we know the data
                         // shape and axis. This helps downstream ops (e.g., Where) get proper ranks.
@@ -734,7 +739,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     let inferred_indices =
                                         shape_override[..shape_override.len() - tail_len].to_vec();
                                     graph.operands[*indices_id as usize].descriptor.shape =
-                                        to_dimension_vector(&inferred_indices);
+                                        inferred_indices;
                                     made_progress = true;
                                 }
                             }
@@ -754,7 +759,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         if axis < 0 || axis >= rank {
                             None
                         } else {
-                            infer_gather_shape(&input_shapes[0], &input_shapes[1], axis as u32).ok()
+                            infer_gather_shape_dimensions(
+                                &input_shapes[0],
+                                &input_shapes[1],
+                                axis as u32,
+                            )
+                            .ok()
                         }
                     } else {
                         None
@@ -764,7 +774,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Where (broadcast across condition/true/false)
                 "where" => {
                     if input_shapes.len() >= 3 {
-                        infer_where_shape(&input_shapes[0], &input_shapes[1], &input_shapes[2]).ok()
+                        infer_where_shape_dimensions(
+                            &input_shapes[0],
+                            &input_shapes[1],
+                            &input_shapes[2],
+                        )
+                        .ok()
                     } else {
                         None
                     }
@@ -803,7 +818,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                         break;
                                     }
                                     let axis = axis as usize;
-                                    let dim = output[axis] as i64;
+                                    let dim = get_static_or_max_size(&output[axis]) as i64;
                                     let mut start = starts[i];
                                     let mut end = ends[i];
                                     let step = steps[i];
@@ -825,7 +840,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     } else {
                                         (end - start + (step_abs - 1)) / step_abs
                                     };
-                                    output[axis] = span as u32;
+                                    output[axis] = Dimension::Static(span as u32);
                                 }
                                 if valid { Some(output) } else { None }
                             } else {
@@ -842,7 +857,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Shape
                 "shape" => {
                     if let Some(input_shape) = input_shapes.first() {
-                        Some(vec![input_shape.len() as u32])
+                        Some(vec![Dimension::Static(input_shape.len() as u32)])
                     } else {
                         None
                     }
@@ -852,7 +867,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "constant" => op
                     .attributes
                     .get("shape")
-                    .and_then(parse_u32_array)
+                    .and_then(parse_dimension_array)
                     .or_else(|| Some(Vec::new())),
 
                 // For other operations, leave shape empty (will be handled later or is dynamic)
@@ -863,7 +878,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             if let Some(shape) = output_shape
                 && let Some(output_id) = op.output_operand
             {
-                graph.operands[output_id as usize].descriptor.shape = to_dimension_vector(&shape);
+                graph.operands[output_id as usize].descriptor.shape = shape;
                 made_progress = true;
             }
 
