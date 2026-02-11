@@ -106,6 +106,56 @@ pub enum GraphError {
     DeviceTensorNotReadable,
     #[error("device tensor is not writable")]
     DeviceTensorNotWritable,
+    #[error("missing runtime {kind} tensor `{name}`")]
+    RuntimeTensorMissing { kind: String, name: String },
+    #[error("unexpected runtime {kind} tensor `{name}`")]
+    RuntimeTensorUnexpected { kind: String, name: String },
+    #[error(
+        "runtime {kind} tensor `{name}` rank mismatch (expected {expected_rank}, got {actual_rank})"
+    )]
+    RuntimeTensorRankMismatch {
+        kind: String,
+        name: String,
+        expected_rank: usize,
+        actual_rank: usize,
+    },
+    #[error(
+        "runtime {kind} tensor `{name}` dimension {axis} mismatch (expected {expected}, got {actual})"
+    )]
+    RuntimeStaticDimensionMismatch {
+        kind: String,
+        name: String,
+        axis: usize,
+        expected: u32,
+        actual: usize,
+    },
+    #[error(
+        "runtime {kind} tensor `{name}` dynamic dimension `{dim_name}` at axis {axis} exceeds maxSize ({actual} > {max_size})"
+    )]
+    RuntimeDynamicDimensionExceeded {
+        kind: String,
+        name: String,
+        axis: usize,
+        dim_name: String,
+        max_size: u32,
+        actual: usize,
+    },
+    #[error("runtime dynamic dimension `{dim_name}` mismatch (expected {expected}, got {actual})")]
+    RuntimeDynamicDimensionNameMismatch {
+        dim_name: String,
+        expected: usize,
+        actual: usize,
+    },
+    #[error("runtime tensor `{name}` shape {shape:?} overflows element count")]
+    RuntimeTensorShapeOverflow { name: String, shape: Vec<usize> },
+    #[error(
+        "runtime tensor `{name}` data length mismatch (expected {expected} elements, got {actual})"
+    )]
+    RuntimeTensorDataLengthMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl GraphError {

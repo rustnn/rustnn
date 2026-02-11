@@ -32,9 +32,18 @@ Guiding model: Chromium DynamicDimension { name, maxSize } and Dimension = stati
 4. [~] CoreML converter: map dynamic dims to UnknownDimension, keep maxSize for runtime checks only (currently uses static_or_max).
 
 ## Phase 5 - runtime checks
-1. Enforce actual tensor shape against descriptor.
-2. Ensure dynamic dims with same name match across inputs/outputs.
-3. Reject actual > maxSize.
+1. [x] Enforce actual tensor shape against descriptor.
+2. [x] Ensure dynamic dims with same name match across inputs/outputs.
+3. [x] Reject actual > maxSize.
+
+Implemented in rustnn via runtime-checked executor entry points:
+- `run_onnx_with_inputs_checked(...)`
+- `run_trtx_with_inputs_checked(...)`
+- `run_coreml_with_inputs_checked(...)`
+
+Notes:
+- Existing unchecked `run_*_with_inputs(...)` APIs are preserved for compatibility.
+- Checked APIs enforce descriptor rank/static dims, same-name dynamic dim equality, and maxSize.
 
 ## Phase 6 - tests and docs
 1. Add JSON tests mirroring Chromium dynamic WPT coverage for a small subset of ops.

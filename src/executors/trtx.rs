@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::error::GraphError;
 use crate::graph::OperandDescriptor;
+use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
 #[derive(Debug, Clone)]
 pub struct TrtxOutput {
@@ -45,7 +46,11 @@ pub fn run_trtx_zeroed(
     // Build zero-filled inputs from descriptors
     let mut input_tensors = Vec::new();
     for (name, desc) in inputs {
-        let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+        let shape: Vec<usize> = desc
+            .static_or_max_shape()
+            .into_iter()
+            .map(|d| d as usize)
+            .collect();
         let total: usize = shape.iter().product();
         let zeros = vec![0f32; total.max(1)];
 
@@ -211,6 +216,44 @@ pub fn run_trtx_with_inputs(
     model_bytes: &[u8],
     inputs: Vec<TrtxInput>,
 ) -> Result<Vec<TrtxOutputWithData>, GraphError> {
+    run_trtx_with_inputs_impl(model_bytes, inputs, None, None)
+}
+
+/// Run TensorRT inference with runtime descriptor checks for dynamic dimensions.
+pub fn run_trtx_with_inputs_checked(
+    model_bytes: &[u8],
+    inputs: Vec<TrtxInput>,
+    input_descriptors: &HashMap<String, OperandDescriptor>,
+    output_descriptors: &HashMap<String, OperandDescriptor>,
+) -> Result<Vec<TrtxOutputWithData>, GraphError> {
+    run_trtx_with_inputs_impl(
+        model_bytes,
+        inputs,
+        Some(input_descriptors),
+        Some(output_descriptors),
+    )
+}
+
+fn run_trtx_with_inputs_impl(
+    model_bytes: &[u8],
+    inputs: Vec<TrtxInput>,
+    input_descriptors: Option<&HashMap<String, OperandDescriptor>>,
+    output_descriptors: Option<&HashMap<String, OperandDescriptor>>,
+) -> Result<Vec<TrtxOutputWithData>, GraphError> {
+    let mut runtime_shape_state = RuntimeShapeState::new();
+    let mut actual_input_shapes = HashMap::new();
+    for input in &inputs {
+        validate_shape_data_length(&input.name, &input.shape, input.data.len())?;
+        actual_input_shapes.insert(input.name.clone(), input.shape.clone());
+    }
+    if let Some(descriptors) = input_descriptors {
+        runtime_shape_state.validate_named_shapes(
+            &actual_input_shapes,
+            descriptors,
+            TensorKind::Input,
+        )?;
+    }
+
     // Convert our inputs to trtx format
     let trtx_inputs: Vec<trtx::executor::TensorInput> = inputs
         .into_iter()
@@ -246,6 +289,18 @@ pub fn run_trtx_with_inputs(
             shape: output.shape,
             data: output.data,
         });
+    }
+
+    if let Some(descriptors) = output_descriptors {
+        let mut actual_output_shapes = HashMap::new();
+        for output in &results {
+            actual_output_shapes.insert(output.name.clone(), output.shape.clone());
+        }
+        runtime_shape_state.validate_named_shapes(
+            &actual_output_shapes,
+            descriptors,
+            TensorKind::Output,
+        )?;
     }
 
     Ok(results)

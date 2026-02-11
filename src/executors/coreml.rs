@@ -18,6 +18,7 @@ use objc::{class, msg_send, sel, sel_impl};
 
 use crate::error::GraphError;
 use crate::graph::{DataType, OperandDescriptor};
+use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
 // Link against the system frameworks we use.
 #[link(name = "Foundation", kind = "framework")]
@@ -87,7 +88,9 @@ pub fn run_coreml_with_inputs_with_weights(
     weights_data: Option<&[u8]>,
     inputs: Vec<CoremlInput>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
-    autoreleasepool(|| run_impl_with_inputs_with_weights(model_bytes, weights_data, inputs, None))
+    autoreleasepool(|| {
+        run_impl_with_inputs_with_weights(model_bytes, weights_data, inputs, None, None, None)
+    })
 }
 
 /// Run CoreML inference with actual input data and model caching
@@ -96,7 +99,28 @@ pub fn run_coreml_with_inputs_cached(
     inputs: Vec<CoremlInput>,
     cache_path: Option<&Path>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
-    autoreleasepool(|| run_impl_with_inputs_with_weights(model_bytes, None, inputs, cache_path))
+    autoreleasepool(|| {
+        run_impl_with_inputs_with_weights(model_bytes, None, inputs, cache_path, None, None)
+    })
+}
+
+/// Run CoreML inference with runtime descriptor checks for dynamic dimensions.
+pub fn run_coreml_with_inputs_checked(
+    model_bytes: &[u8],
+    inputs: Vec<CoremlInput>,
+    input_descriptors: &HashMap<String, OperandDescriptor>,
+    output_descriptors: &HashMap<String, OperandDescriptor>,
+) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    autoreleasepool(|| {
+        run_impl_with_inputs_with_weights(
+            model_bytes,
+            None,
+            inputs,
+            None,
+            Some(input_descriptors),
+            Some(output_descriptors),
+        )
+    })
 }
 
 #[allow(dead_code)]
@@ -245,7 +269,7 @@ fn run_impl_with_inputs(
     inputs: Vec<CoremlInput>,
     cache_path: Option<&Path>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
-    run_impl_with_inputs_with_weights(model_bytes, None, inputs, cache_path)
+    run_impl_with_inputs_with_weights(model_bytes, None, inputs, cache_path, None, None)
 }
 
 fn run_impl_with_inputs_with_weights(
@@ -253,7 +277,23 @@ fn run_impl_with_inputs_with_weights(
     weights_data: Option<&[u8]>,
     inputs: Vec<CoremlInput>,
     cache_path: Option<&Path>,
+    input_descriptors: Option<&HashMap<String, OperandDescriptor>>,
+    output_descriptors: Option<&HashMap<String, OperandDescriptor>>,
 ) -> Result<Vec<CoremlRunAttempt>, GraphError> {
+    let mut runtime_shape_state = RuntimeShapeState::new();
+    let mut actual_input_shapes = HashMap::new();
+    for input in &inputs {
+        validate_shape_data_length(&input.name, &input.shape, input.data.len())?;
+        actual_input_shapes.insert(input.name.clone(), input.shape.clone());
+    }
+    if let Some(descriptors) = input_descriptors {
+        runtime_shape_state.validate_named_shapes(
+            &actual_input_shapes,
+            descriptors,
+            TensorKind::Input,
+        )?;
+    }
+
     unsafe {
         let (compiled_url, compiled_path_buf, temp_mlmodel) =
             prepare_compiled_model_with_weights(model_bytes, weights_data, cache_path)?;
@@ -382,6 +422,34 @@ fn run_impl_with_inputs_with_weights(
         // Only delete compiled model if not cached
         if cache_path.is_none() {
             let _ = std::fs::remove_dir_all(&compiled_path_buf);
+        }
+
+        if let Some(descriptors) = output_descriptors {
+            for attempt in &attempts {
+                if let Ok(outputs) = &attempt.result {
+                    let mut actual_output_shapes = HashMap::new();
+                    for output in outputs {
+                        let mut shape = Vec::with_capacity(output.shape.len());
+                        for &dim in &output.shape {
+                            let dim = usize::try_from(dim).map_err(|_| {
+                                GraphError::CoremlRuntimeFailed {
+                                    reason: format!(
+                                        "output `{}` has invalid negative dimension {}",
+                                        output.name, dim
+                                    ),
+                                }
+                            })?;
+                            shape.push(dim);
+                        }
+                        actual_output_shapes.insert(output.name.clone(), shape);
+                    }
+                    runtime_shape_state.validate_named_shapes(
+                        &actual_output_shapes,
+                        descriptors,
+                        TensorKind::Output,
+                    )?;
+                }
+            }
         }
 
         Ok(attempts)
