@@ -1507,7 +1507,7 @@ dependencies = [
  "thiserror 1.0.69",
  "trtx",
  "webnn-graph",
- "webnn-onnx-utils 0.1.0",
+ "webnn-onnx-utils 0.1.0 (git+https://github.com/rustnn/webnn-onnx-utils?branch=tarek-flexible-input)",
 ]
 
 [[package]]
@@ -2048,6 +2048,7 @@ dependencies = [
 [[package]]
 name = "webnn-graph"
 version = "0.2.1"
+source = "git+https://github.com/rustnn/webnn-graph?branch=tarek-flexible-input#730b4d4e2793273279c2a82b58348e49fb981624"
 dependencies = [
  "anyhow",
  "base64",
@@ -2064,6 +2065,7 @@ dependencies = [
 [[package]]
 name = "webnn-onnx-utils"
 version = "0.1.0"
+source = "git+https://github.com/rustnn/webnn-onnx-utils?branch=main#2e48450d12122dd0f776c1aca7ae9e09b1eaf743"
 dependencies = [
  "half",
  "once_cell",
@@ -2078,7 +2080,7 @@ dependencies = [
 [[package]]
 name = "webnn-onnx-utils"
 version = "0.1.0"
-source = "git+https://github.com/rustnn/webnn-onnx-utils?branch=main#2e48450d12122dd0f776c1aca7ae9e09b1eaf743"
+source = "git+https://github.com/rustnn/webnn-onnx-utils?branch=tarek-flexible-input#9d094d98ba9111d955563e289a6bca65f326a696"
 dependencies = [
  "half",
  "once_cell",

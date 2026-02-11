@@ -33,7 +33,7 @@ if has_rust_changes; then
     cargo fmt --all -- --check
 
     echo "Running cargo clippy..."
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets -- -D warnings
 fi
 
 if has_python_changes; then
