@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Once;
 
+use ndarray::{ArrayD, IxDyn};
 use ort::session::SessionInputValue;
 
 use half;
@@ -247,16 +248,34 @@ fn run_onnx_with_inputs_impl(
     for input in inputs {
         let session_value = match input.data {
             TensorData::Float32(data) => {
-                // Convert shape to i64 for ort compatibility
-                let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
-                    GraphError::OnnxRuntimeFailed {
+                let value = if input.shape.contains(&0) {
+                    // ort tuple-shape API rejects 0-sized dimensions; ndarray path supports them.
+                    let array = ArrayD::from_shape_vec(IxDyn(&input.shape), data).map_err(|e| {
+                        GraphError::OnnxRuntimeFailed {
+                            reason: format!(
+                                "failed to create float32 ndarray input tensor for {}: {e}",
+                                input.name
+                            ),
+                        }
+                    })?;
+                    Value::from_array(array).map_err(|e| GraphError::OnnxRuntimeFailed {
                         reason: format!(
-                            "failed to create float32 input tensor for {}: {e}",
+                            "failed to create float32 input tensor for {} via ndarray: {e}",
                             input.name
                         ),
-                    }
-                })?;
+                    })?
+                } else {
+                    // Convert shape to i64 for ort compatibility
+                    let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
+                    Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                        GraphError::OnnxRuntimeFailed {
+                            reason: format!(
+                                "failed to create float32 input tensor for {}: {e}",
+                                input.name
+                            ),
+                        }
+                    })?
+                };
                 SessionInputValue::from(value)
             }
             TensorData::Float16(data) => {

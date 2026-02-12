@@ -14,21 +14,18 @@ use crate::webnn_json;
 /// This function preprocesses WebNN text format to ensure all identifiers follow
 /// valid Rust naming conventions (alphanumeric + underscores only). It handles:
 /// - Variable declarations: `embeddings.LayerNorm.bias:` -> `embeddings_LayerNorm_bias:`
-/// - Weight references: `@weights("embeddings.LayerNorm.bias")` -> `@weights("embeddings_LayerNorm_bias")`
 /// - Operand references: `%embeddings.LayerNorm.bias` -> `%embeddings_LayerNorm_bias`
 /// - Namespace separators: `onnx::MatMul_0` -> `onnx__MatMul_0`
 ///
 /// This allows models exported from tools like onnx2webnn to be loaded without
 /// manual identifier sanitization.
 pub fn sanitize_webnn_identifiers(text: &str) -> String {
-    static PATTERNS: OnceLock<(Regex, Regex, Regex, Regex)> = OnceLock::new();
+    static PATTERNS: OnceLock<(Regex, Regex, Regex)> = OnceLock::new();
 
-    let (decl_re, weights_re, operand_re, bare_id_re) = PATTERNS.get_or_init(|| {
+    let (decl_re, operand_re, bare_id_re) = PATTERNS.get_or_init(|| {
         (
             // Match identifier declarations: `name.with.dots:` -> `name_with_dots:`
             Regex::new(r"([a-zA-Z_][a-zA-Z0-9_.]*\.[a-zA-Z0-9_.]+):").unwrap(),
-            // Match weight references: `@weights("name.with.dots")` -> `@weights("name_with_dots")`
-            Regex::new(r#"@weights\("([^"]+)"\)"#).unwrap(),
             // Match operand references: `%name.with.dots` -> `%name_with_dots`
             Regex::new(r"%([a-zA-Z_][a-zA-Z0-9_.]*)").unwrap(),
             // Match bare identifiers in operations (but not in strings or declarations)
@@ -46,13 +43,6 @@ pub fn sanitize_webnn_identifiers(text: &str) -> String {
     result = decl_re
         .replace_all(&result, |caps: &regex::Captures| {
             format!("{}:", caps[1].replace('.', "_"))
-        })
-        .to_string();
-
-    // Replace dots in weight references
-    result = weights_re
-        .replace_all(&result, |caps: &regex::Captures| {
-            format!(r#"@weights("{}")"#, caps[1].replace('.', "_"))
         })
         .to_string();
 
@@ -167,21 +157,28 @@ pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphEr
         }
 
         if let Ok(manifest) = serde_json::from_str::<Manifest>(&manifest_text) {
-            let mut manifest_by_sanitized: std::collections::HashMap<String, TensorEntry> =
+            let mut manifest_by_sanitized: std::collections::HashMap<String, Vec<TensorEntry>> =
                 std::collections::HashMap::new();
             for (name, entry) in &manifest.tensors {
                 let sanitized = name.replace("::", "__").replace('.', "_");
-                manifest_by_sanitized.insert(sanitized, entry.clone());
+                manifest_by_sanitized
+                    .entry(sanitized)
+                    .or_default()
+                    .push(entry.clone());
             }
 
             for (_name, const_decl) in graph_json.consts.iter_mut() {
                 if let webnn_graph::ast::ConstInit::Weights { r#ref } = &const_decl.init {
-                    // Try sanitized lookup first (matches the sanitized graph identifiers)
-                    let entry = manifest_by_sanitized
-                        .get(r#ref)
-                        .cloned()
-                        // Fallback to dot-style lookup if needed
-                        .or_else(|| manifest.tensors.get(&r#ref.replace('_', ".")).cloned());
+                    // Prefer exact name lookup; only use sanitized fallback when unique.
+                    let entry = manifest.tensors.get(r#ref).cloned().or_else(|| {
+                        manifest_by_sanitized.get(r#ref).and_then(|entries| {
+                            if entries.len() == 1 {
+                                Some(entries[0].clone())
+                            } else {
+                                None
+                            }
+                        })
+                    });
 
                     if let Some(t) = entry {
                         let start = t.byte_offset;
@@ -222,10 +219,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_weight_references() {
+    fn test_keep_weight_references_unchanged() {
         let input = r#"@weights("embeddings.LayerNorm.bias")"#;
         let output = sanitize_webnn_identifiers(input);
-        assert_eq!(output, r#"@weights("embeddings_LayerNorm_bias")"#);
+        assert_eq!(output, input);
     }
 
     #[test]
@@ -256,7 +253,7 @@ mod tests {
 
         assert!(output.contains("onnx__input_tensor:"));
         assert!(output.contains("%result = matmul(%onnx__input_tensor"));
-        assert!(output.contains(r#"@weights("model_weight_0")"#));
+        assert!(output.contains(r#"@weights("model.weight.0")"#));
     }
 
     #[test]
@@ -423,7 +420,7 @@ mod tests {
 
         assert!(output.contains("onnx__node_name:"));
         assert!(output.contains("%output = add(%input_x"));
-        assert!(output.contains(r#"@weights("weight_bias")"#));
+        assert!(output.contains(r#"@weights("weight.bias")"#));
     }
 
     #[test]

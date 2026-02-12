@@ -20,7 +20,7 @@ exclude = [
 [features]
 default = []
 coreml-runtime = ["objc"]
-onnx-runtime = ["ort", "ndarray"]
+onnx-runtime = ["ort", "ndarray", "tokenizers"]
 trtx-runtime = ["trtx"]
 trtx-runtime-mock = ["trtx/mock"]
 
@@ -35,14 +35,15 @@ prost = "0.12"
 prost-types = "0.12"
 bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
-ndarray = { version = "0.16", optional = true }
+ndarray = { version = "0.17", optional = true }
 objc = { version = "0.2", optional = true }
 ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half", "load-dynamic"] }
+tokenizers = { version = "0.22", optional = true }
 half = "2.4"
 trtx = { version = "0.3.0", optional = true }
 regex = "1.11"
-webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "tarek-flexible-input" }
-webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "tarek-flexible-input" }
+webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
+webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
 
 [build-dependencies]
 prost-build = "0.12"
