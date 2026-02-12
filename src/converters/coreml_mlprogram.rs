@@ -2449,6 +2449,102 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
         // Convert all operations to MIL operations
         for op in &graph_info.operations {
+            // Special handling for clamp with equal bounds.
+            // CoreML clip rejects alpha == beta, while WebNN clamp(min==max) is valid and
+            // should produce a constant tensor. Lower as: output = input * 0 + bound.
+            if op.op_type.to_lowercase() == "clamp" {
+                let min_value = op
+                    .attributes
+                    .get("minValue")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(f64::NEG_INFINITY);
+                let max_value = op
+                    .attributes
+                    .get("maxValue")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(f64::INFINITY);
+
+                if min_value == max_value {
+                    if op.input_operands.is_empty() || op.output_operand.is_none() {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: "clamp requires input and output operand".to_string(),
+                        });
+                    }
+
+                    let input_id = op.input_operands[0];
+                    let input_operand = graph_info.operand(input_id).ok_or_else(|| {
+                        GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("Input operand {} not found", input_id),
+                        }
+                    })?;
+                    let output_id = op.output_operand.expect("checked above");
+                    let (output_name, output_type) = Self::create_value(graph_info, output_id)?;
+                    let input_name = operand_name(graph_info, input_id);
+                    let zeroed_name = format!("{}_clamp_zeroed", output_name);
+
+                    let use_float16 = input_operand.descriptor.data_type == DataType::Float16;
+
+                    // zeroed = input * 0
+                    let mut mul_inputs: HashMap<String, Argument> = HashMap::new();
+                    mul_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+                    if use_float16 {
+                        mul_inputs.insert("y".to_string(), Self::create_immediate_float16(0.0));
+                    } else {
+                        mul_inputs.insert("y".to_string(), Self::create_immediate_float(0.0));
+                    }
+
+                    let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                    let dimensions = Self::mil_dimensions_from_graph_shape(
+                        &input_operand.descriptor.shape,
+                        false,
+                    );
+                    let zeroed_type = NamedValueType {
+                        name: zeroed_name.clone(),
+                        r#type: Some(ValueType {
+                            r#type: Some(
+                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                    TensorType {
+                                        rank: dimensions.len() as i64,
+                                        data_type: dtype,
+                                        dimensions,
+                                        attributes: HashMap::new(),
+                                    },
+                                ),
+                            ),
+                        }),
+                    };
+                    main_block.operations.push(Self::create_mil_operation(
+                        "mul",
+                        mul_inputs,
+                        vec![zeroed_type],
+                    ));
+
+                    // output = zeroed + min_value
+                    let mut add_inputs: HashMap<String, Argument> = HashMap::new();
+                    add_inputs.insert("x".to_string(), Self::create_name_argument(zeroed_name));
+                    if use_float16 {
+                        add_inputs.insert(
+                            "y".to_string(),
+                            Self::create_immediate_float16(min_value as f32),
+                        );
+                    } else {
+                        add_inputs.insert(
+                            "y".to_string(),
+                            Self::create_immediate_float(min_value as f32),
+                        );
+                    }
+                    main_block.operations.push(Self::create_mil_operation(
+                        "add",
+                        add_inputs,
+                        vec![output_type],
+                    ));
+
+                    continue;
+                }
+            }
+
             // Special handling for expand operation (may need reshape first)
             if op.op_type.to_lowercase() == "expand" {
                 // Check if rank-increasing expand (add reshape operation first)
