@@ -36,7 +36,9 @@ Guiding model: Chromium DynamicDimension { name, maxSize } and Dimension = stati
 3. [x] Add dynamic-aware scale/bias generation for batch/instance/layer norm if needed.
    - ONNX converter now generates default normalization scale/bias using runtime shape vectors when normalized dimensions are dynamic.
    - Uses `Shape` + `Gather` (batch/instance) or `Shape` + `Slice` (layer norm), then `Expand` from scalar defaults.
-4. [~] CoreML converter: map dynamic dims to UnknownDimension, keep maxSize for runtime checks only (currently uses static_or_max).
+4. [x] CoreML converter: map dynamic dims to UnknownDimension, keep maxSize for runtime checks only.
+   - MIL tensor types now preserve dynamic dimensions as `UnknownDimension` instead of forcing max-size constants.
+   - Added converter test coverage that decodes model output and verifies dynamic input dims become unknown MIL dimensions.
 
 ## Phase 5 - runtime checks
 1. [x] Enforce actual tensor shape against descriptor.
