@@ -2122,4 +2122,217 @@ mod tests {
             _ => panic!("expected ConversionFailed for dynamic constant shape"),
         }
     }
+
+    #[test]
+    fn test_from_graph_json_dynamic_expand_shape_inference_subset() {
+        use webnn_graph::ast::{
+            DataType as WDataType, Dimension as WDimension, DynamicDimension as WDynamicDimension,
+            OperandDesc,
+        };
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: WDataType::Float32,
+                shape: vec![
+                    WDimension::Dynamic(WDynamicDimension {
+                        name: "batch".to_string(),
+                        max_size: 8,
+                    }),
+                    WDimension::Static(1),
+                ],
+            },
+        );
+
+        let mut options = serde_json::Map::new();
+        options.insert(
+            "newShape".to_string(),
+            serde_json::json!([
+                { "name": "batch", "maxSize": 8 },
+                4
+            ]),
+        );
+
+        let nodes = vec![Node {
+            id: "n0".to_string(),
+            op: "expand".to_string(),
+            inputs: vec!["x".to_string()],
+            options,
+            outputs: Some(vec!["y".to_string()]),
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("y".to_string(), "y".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("dynamic_expand_subset".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes,
+            outputs,
+        };
+
+        let graph = from_graph_json(&graph_json).expect("from_graph_json");
+        let y_id = graph.output_operands[0] as usize;
+        let y_shape = &graph.operands[y_id].descriptor.shape;
+        assert_eq!(y_shape.len(), 2);
+        match &y_shape[0] {
+            Dimension::Dynamic(d) => {
+                assert_eq!(d.name, "batch");
+                assert_eq!(d.max_size, 8);
+            }
+            _ => panic!("expected dynamic batch dimension"),
+        }
+        assert_eq!(y_shape[1], Dimension::Static(4));
+    }
+
+    #[test]
+    fn test_from_graph_json_dynamic_reshape_shape_inference_subset() {
+        use webnn_graph::ast::{
+            DataType as WDataType, Dimension as WDimension, DynamicDimension as WDynamicDimension,
+            OperandDesc,
+        };
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: WDataType::Float32,
+                shape: vec![
+                    WDimension::Dynamic(WDynamicDimension {
+                        name: "batch".to_string(),
+                        max_size: 8,
+                    }),
+                    WDimension::Static(2),
+                    WDimension::Static(2),
+                ],
+            },
+        );
+
+        let mut options = serde_json::Map::new();
+        options.insert(
+            "newShape".to_string(),
+            serde_json::json!([
+                { "name": "batch", "maxSize": 8 },
+                4
+            ]),
+        );
+
+        let nodes = vec![Node {
+            id: "n0".to_string(),
+            op: "reshape".to_string(),
+            inputs: vec!["x".to_string()],
+            options,
+            outputs: Some(vec!["y".to_string()]),
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("y".to_string(), "y".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("dynamic_reshape_subset".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes,
+            outputs,
+        };
+
+        let graph = from_graph_json(&graph_json).expect("from_graph_json");
+        let y_id = graph.output_operands[0] as usize;
+        let y_shape = &graph.operands[y_id].descriptor.shape;
+        assert_eq!(y_shape.len(), 2);
+        match &y_shape[0] {
+            Dimension::Dynamic(d) => {
+                assert_eq!(d.name, "batch");
+                assert_eq!(d.max_size, 8);
+            }
+            _ => panic!("expected dynamic batch dimension"),
+        }
+        assert_eq!(y_shape[1], Dimension::Static(4));
+    }
+
+    #[test]
+    fn test_from_graph_json_dynamic_where_broadcast_subset() {
+        use webnn_graph::ast::{
+            DataType as WDataType, Dimension as WDimension, DynamicDimension as WDynamicDimension,
+            OperandDesc,
+        };
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "cond".to_string(),
+            OperandDesc {
+                data_type: WDataType::Uint8,
+                shape: vec![WDimension::Static(1), WDimension::Static(4)],
+            },
+        );
+        inputs.insert(
+            "a".to_string(),
+            OperandDesc {
+                data_type: WDataType::Float32,
+                shape: vec![
+                    WDimension::Dynamic(WDynamicDimension {
+                        name: "batch".to_string(),
+                        max_size: 8,
+                    }),
+                    WDimension::Static(4),
+                ],
+            },
+        );
+        inputs.insert(
+            "b".to_string(),
+            OperandDesc {
+                data_type: WDataType::Float32,
+                shape: vec![
+                    WDimension::Dynamic(WDynamicDimension {
+                        name: "batch".to_string(),
+                        max_size: 8,
+                    }),
+                    WDimension::Static(1),
+                ],
+            },
+        );
+
+        let nodes = vec![Node {
+            id: "n0".to_string(),
+            op: "where".to_string(),
+            inputs: vec!["cond".to_string(), "a".to_string(), "b".to_string()],
+            options: serde_json::Map::new(),
+            outputs: Some(vec!["y".to_string()]),
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("y".to_string(), "y".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("dynamic_where_subset".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes,
+            outputs,
+        };
+
+        let graph = from_graph_json(&graph_json).expect("from_graph_json");
+        let y_id = graph.output_operands[0] as usize;
+        let y_shape = &graph.operands[y_id].descriptor.shape;
+        assert_eq!(y_shape.len(), 2);
+        match &y_shape[0] {
+            Dimension::Dynamic(d) => {
+                assert_eq!(d.name, "batch");
+                assert_eq!(d.max_size, 8);
+            }
+            _ => panic!("expected dynamic batch dimension"),
+        }
+        assert_eq!(y_shape[1], Dimension::Static(4));
+    }
 }
