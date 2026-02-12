@@ -17,7 +17,7 @@ use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::error::GraphError;
-use crate::graph::{DataType, OperandDescriptor};
+use crate::graph::{DataType, Dimension, OperandDescriptor, get_static_or_max_size};
 use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
 // Link against the system frameworks we use.
@@ -655,8 +655,11 @@ fn write_temp_model_with_weights(
     }
 }
 
-fn coerce_shape(shape: &[u32]) -> Vec<i64> {
-    let mut dims: Vec<i64> = shape.iter().map(|d| *d as i64).collect();
+fn coerce_shape(shape: &[Dimension]) -> Vec<i64> {
+    let mut dims: Vec<i64> = shape
+        .iter()
+        .map(|d| i64::from(get_static_or_max_size(d)))
+        .collect();
     match dims.len() {
         0 => vec![1],
         1 => dims,
