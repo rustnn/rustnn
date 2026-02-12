@@ -4018,11 +4018,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         (first_axis as usize).min(input_shape.len())
                     };
 
-                    // Calculate product of all dimensions from axis to end
-                    let mut size = 1i64;
-                    for dim in input_operand.descriptor.shape.iter().skip(actual_axis) {
-                        size *= get_static_or_max_size(dim) as i64;
-                    }
+                    // ONNX LayerNormalization expects scale/bias to match X.shape[axis:].
+                    // Keep the tail dimensions, rather than flattening them to a single size.
+                    let norm_shape: Vec<i64> = input_operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .skip(actual_axis)
+                        .map(|d| get_static_or_max_size(d) as i64)
+                        .collect();
 
                     // Build runtime layer shape vector when normalized dimensions are dynamic.
                     let has_dynamic_norm_dims = input_operand
@@ -4042,7 +4046,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         );
                         norm_dynamic_defaults_shape = Some(shape_vec);
                     }
-                    vec![size]
+                    if norm_shape.is_empty() {
+                        vec![1]
+                    } else {
+                        norm_shape
+                    }
                 } else if op.op_type == "batchNormalization" {
                     // For batch norm, scale/bias/mean/variance shape is [channels]
                     // Channel dimension is specified by the axis parameter
