@@ -1,10 +1,10 @@
-site_name: WebNN Python API
-site_description: Python bindings for the W3C WebNN API
-site_author: Tarek Ziadé
-site_url: https://tarekziade.github.io/rustnn
+site_name: RustNN
+site_description: Rust Implementation of the W3C WebNN API
+site_author: Tarek Ziadé and contributors
+site_url: https://rustnn.github.io/rustnn/
 
-repo_name: tarekziade/rustnn
-repo_url: https://github.com/tarekziade/rustnn
+repo_name: rustnn/rustnn
+repo_url: https://github.com/rustnn/rustnn
 edit_uri: edit/main/docs/
 
 theme:
@@ -95,11 +95,12 @@ nav:
   - Reference:
       - WebNN Spec: reference/webnn-spec.md
       - IPC Design: reference/ipc-design.md
+      - Changelog: https://github.com/rustnn/rustnn/blob/main/CHANGELOG.md
 
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/tarekziade/rustnn
+      link: https://github.com/rustnn/rustnn
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/webnn/
   version:

@@ -146,6 +146,7 @@ See [examples/](examples/) for more samples.
 - **[Examples](docs/user-guide/examples.md)** - Code examples and tutorials
 - **[Architecture](docs/architecture/overview.md)** - Design principles and structure
 - **[Development Guide](docs/development/setup.md)** - Building and contributing
+- **[Changelog](CHANGELOG.md)** - Consolidated release history
 
 ## Implementation Status
 
@@ -199,9 +200,10 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for detai
 
 ## Links
 
-- **GitHub**: [https://github.com/tarekziade/rustnn](https://github.com/tarekziade/rustnn)
+- **GitHub**: [https://github.com/rustnn/rustnn](https://github.com/rustnn/rustnn)
 - **PyPI**: [https://pypi.org/project/pywebnn/](https://pypi.org/project/pywebnn/)
-- **Documentation**: [https://tarekziade.github.io/rustnn/](https://tarekziade.github.io/rustnn/)
+- **Documentation**: [https://rustnn.github.io/rustnn/](https://rustnn.github.io/rustnn/)
+- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
 - **W3C WebNN Spec**: [https://www.w3.org/TR/webnn/](https://www.w3.org/TR/webnn/)
 
 ## Acknowledgments
