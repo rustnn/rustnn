@@ -831,7 +831,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         .get("outputDataType")
                         .or_else(|| op.attributes.get("output_data_type"))
                         .and_then(parse_dtype)
-                        .or(Some(DataType::Int64)),
+                        .or(Some(DataType::Int32)),
                     "expand"
                     | "gather"
                     | "concat"

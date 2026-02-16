@@ -201,6 +201,70 @@ impl OnnxConverter {
         attributes
     }
 
+    /// Infer ceil_mode from outputSizes by matching ONNX floor/ceil output formulas.
+    fn infer_pool_ceil_mode_from_output_sizes(op: &Operation, graph: &GraphInfo) -> Option<i64> {
+        let target = Self::parse_i64_array(op, "outputSizes")?;
+        if target.len() != 2 {
+            return None;
+        }
+
+        let input_id = *op.input_operands.first()?;
+        let input_shape = &graph.operand(input_id)?.descriptor.shape;
+        if input_shape.len() != 4 {
+            return None;
+        }
+        let layout = op
+            .attributes
+            .get("layout")
+            .and_then(|v| v.as_str())
+            .unwrap_or("nchw")
+            .to_ascii_lowercase();
+        let (input_h, input_w) = if layout == "nhwc" {
+            (input_shape[1] as i64, input_shape[2] as i64)
+        } else {
+            (input_shape[2] as i64, input_shape[3] as i64)
+        };
+
+        let kernel = Self::parse_i64_array(op, "windowDimensions").or_else(|| {
+            if layout == "nhwc" {
+                Some(vec![input_shape[1] as i64, input_shape[2] as i64])
+            } else {
+                Some(vec![input_shape[2] as i64, input_shape[3] as i64])
+            }
+        })?;
+        if kernel.len() != 2 {
+            return None;
+        }
+        let strides = Self::parse_i64_array(op, "strides").unwrap_or_else(|| vec![1, 1]);
+        let dilations = Self::parse_i64_array(op, "dilations").unwrap_or_else(|| vec![1, 1]);
+        let pads = Self::parse_i64_array(op, "pads")
+            .or_else(|| Self::parse_i64_array(op, "padding"))
+            .unwrap_or_else(|| vec![0, 0, 0, 0]);
+        if strides.len() != 2 || dilations.len() != 2 || pads.len() != 4 {
+            return None;
+        }
+
+        let eff_h = dilations[0] * (kernel[0] - 1) + 1;
+        let eff_w = dilations[1] * (kernel[1] - 1) + 1;
+        let numer_h = input_h + pads[0] + pads[2] - eff_h;
+        let numer_w = input_w + pads[1] + pads[3] - eff_w;
+        if numer_h < 0 || numer_w < 0 {
+            return None;
+        }
+        let floor_h = (numer_h / strides[0]) + 1;
+        let floor_w = (numer_w / strides[1]) + 1;
+        let ceil_h = ((numer_h + strides[0] - 1) / strides[0]) + 1;
+        let ceil_w = ((numer_w + strides[1] - 1) / strides[1]) + 1;
+
+        if target[0] == floor_h && target[1] == floor_w {
+            Some(0)
+        } else if target[0] == ceil_h && target[1] == ceil_w {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
     /// Create ONNX attributes for pool2d operations
     fn create_pool2d_attributes(op: &Operation, graph: &GraphInfo) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
@@ -231,10 +295,7 @@ impl OnnxConverter {
         if let Some(strides) = Self::parse_i64_array(op, "strides") {
             Self::add_ints_attribute(&mut attributes, "strides", strides);
         }
-        // ONNX opset 14 AveragePool does not accept "dilations"; MaxPool does.
-        if op.op_type == "maxPool2d"
-            && let Some(dilations) = Self::parse_i64_array(op, "dilations")
-        {
+        if let Some(dilations) = Self::parse_i64_array(op, "dilations") {
             Self::add_ints_attribute(&mut attributes, "dilations", dilations);
         }
         if let Some(pads) =
@@ -242,12 +303,21 @@ impl OnnxConverter {
         {
             Self::add_ints_attribute(&mut attributes, "pads", pads);
         }
-        if let Some(rounding_type) = op.attributes.get("roundingType").and_then(|v| v.as_str()) {
-            let ceil_mode = if rounding_type.eq_ignore_ascii_case("ceil") {
-                1
-            } else {
-                0
-            };
+        // outputSizes should dominate rounding behavior when provided.
+        if let Some(ceil_mode) = if op.attributes.get("outputSizes").is_some() {
+            Self::infer_pool_ceil_mode_from_output_sizes(op, graph)
+        } else {
+            op.attributes
+                .get("roundingType")
+                .and_then(|v| v.as_str())
+                .map(|rounding_type| {
+                    if rounding_type.eq_ignore_ascii_case("ceil") {
+                        1
+                    } else {
+                        0
+                    }
+                })
+        } {
             Self::add_int_attribute(&mut attributes, "ceil_mode", ceil_mode);
         }
 
@@ -318,18 +388,18 @@ impl OnnxConverter {
             });
         }
 
-        if let Some(keep_dims) = op
+        // WebNN default is keepDimensions=false, while ONNX default is keepdims=1.
+        let keep_dims = op
             .attributes
             .get("keepDimensions")
             .and_then(|v| v.as_bool())
-        {
-            attributes.push(AttributeProto {
-                name: "keepdims".to_string(), // ONNX uses "keepdims" not "keepDimensions"
-                r#type: AttributeType::Int as i32,
-                i: if keep_dims { 1 } else { 0 },
-                ..Default::default()
-            });
-        }
+            .unwrap_or(false);
+        attributes.push(AttributeProto {
+            name: "keepdims".to_string(), // ONNX uses "keepdims" not "keepDimensions"
+            r#type: AttributeType::Int as i32,
+            i: if keep_dims { 1 } else { 0 },
+            ..Default::default()
+        });
 
         // Note: outputDataType is handled by the output tensor's data type, not as an attribute
 
@@ -1869,6 +1939,116 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
+                continue;
+            }
+
+            if op.op_type.eq_ignore_ascii_case("argmax")
+                || op.op_type.eq_ignore_ascii_case("argmin")
+            {
+                let input_name = operand_name(graph, op.input_operands[0]);
+                let output_id = op.output_operand.expect("Single-output operation expected");
+                let final_output_name = operand_name(graph, output_id);
+                let output_dtype = graph
+                    .operand(output_id)
+                    .map(|o| o.descriptor.data_type)
+                    .unwrap_or(DataType::Int32);
+                let attributes = Self::create_operation_attributes(op, graph);
+
+                // ONNX ArgMax/ArgMin output type is int64. Cast when WebNN requests int32.
+                let arg_output_name = if output_dtype == DataType::Int32 {
+                    format!("{}_int64_output", op_name)
+                } else {
+                    final_output_name.clone()
+                };
+
+                nodes.push(NodeProto {
+                    input: vec![input_name],
+                    output: vec![arg_output_name.clone()],
+                    name: op_name.clone(),
+                    op_type: Self::onnx_op_type(&op.op_type),
+                    attribute: attributes,
+                    ..Default::default()
+                });
+
+                if output_dtype == DataType::Int32 {
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_to_int32", op_name),
+                        arg_output_name,
+                        final_output_name,
+                        ProtoDataType::Int32,
+                    ));
+                }
+                continue;
+            }
+
+            if op.op_type.eq_ignore_ascii_case("averagepool2d")
+                || op.op_type.eq_ignore_ascii_case("maxpool2d")
+            {
+                let input_id = op.input_operands[0];
+                let input_name = operand_name(graph, input_id);
+                let output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+                let layout = op
+                    .attributes
+                    .get("layout")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("nchw")
+                    .to_ascii_lowercase();
+                let attributes = Self::create_operation_attributes(op, graph);
+
+                if layout == "nhwc" {
+                    // NHWC -> NCHW before pooling
+                    let nchw_input = format!("{}_nchw_in", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![nchw_input.clone()],
+                        name: format!("{}_to_nchw", op_name),
+                        op_type: "Transpose".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "perm".to_string(),
+                            r#type: AttributeType::Ints as i32,
+                            ints: vec![0, 3, 1, 2],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+
+                    let nchw_output = format!("{}_nchw_out", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![nchw_input],
+                        output: vec![nchw_output.clone()],
+                        name: op_name.clone(),
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+
+                    // NCHW -> NHWC after pooling
+                    nodes.push(NodeProto {
+                        input: vec![nchw_output],
+                        output: vec![output_name],
+                        name: format!("{}_to_nhwc", op_name),
+                        op_type: "Transpose".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "perm".to_string(),
+                            r#type: AttributeType::Ints as i32,
+                            ints: vec![0, 2, 3, 1],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![output_name],
+                        name: op_name.clone(),
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+                }
                 continue;
             }
 
@@ -3642,7 +3822,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             producer_version: "0.1.0".to_string(),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
-                version: 14,            // Opset 14 adds Trilu support
+                version: 19,            // AveragePool dilations + modern operator support
                 domain: "".to_string(), // Empty string = default ONNX domain
             }],
             ..Default::default()
