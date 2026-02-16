@@ -202,21 +202,53 @@ impl OnnxConverter {
     }
 
     /// Create ONNX attributes for pool2d operations
-    fn create_pool2d_attributes(op: &Operation) -> Vec<AttributeProto> {
+    fn create_pool2d_attributes(op: &Operation, graph: &GraphInfo) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Parse attributes from JSON using helpers
-        if let Some(kernel_shape) = Self::parse_i64_array(op, "windowDimensions") {
+        // WebNN uses windowDimensions; if omitted, default to full spatial window.
+        let kernel_shape = Self::parse_i64_array(op, "windowDimensions").or_else(|| {
+            let input_id = *op.input_operands.first()?;
+            let input_shape = &graph.operand(input_id)?.descriptor.shape;
+            if input_shape.len() != 4 {
+                return None;
+            }
+            let layout = op
+                .attributes
+                .get("layout")
+                .and_then(|v| v.as_str())
+                .unwrap_or("nchw")
+                .to_ascii_lowercase();
+            let (h, w) = if layout == "nhwc" {
+                (input_shape[1] as i64, input_shape[2] as i64)
+            } else {
+                (input_shape[2] as i64, input_shape[3] as i64)
+            };
+            Some(vec![h, w])
+        });
+        if let Some(kernel_shape) = kernel_shape {
             Self::add_ints_attribute(&mut attributes, "kernel_shape", kernel_shape);
         }
         if let Some(strides) = Self::parse_i64_array(op, "strides") {
             Self::add_ints_attribute(&mut attributes, "strides", strides);
         }
-        if let Some(dilations) = Self::parse_i64_array(op, "dilations") {
+        // ONNX opset 14 AveragePool does not accept "dilations"; MaxPool does.
+        if op.op_type == "maxPool2d"
+            && let Some(dilations) = Self::parse_i64_array(op, "dilations")
+        {
             Self::add_ints_attribute(&mut attributes, "dilations", dilations);
         }
-        if let Some(pads) = Self::parse_i64_array(op, "pads") {
+        if let Some(pads) =
+            Self::parse_i64_array(op, "pads").or_else(|| Self::parse_i64_array(op, "padding"))
+        {
             Self::add_ints_attribute(&mut attributes, "pads", pads);
+        }
+        if let Some(rounding_type) = op.attributes.get("roundingType").and_then(|v| v.as_str()) {
+            let ceil_mode = if rounding_type.eq_ignore_ascii_case("ceil") {
+                1
+            } else {
+                0
+            };
+            Self::add_int_attribute(&mut attributes, "ceil_mode", ceil_mode);
         }
 
         attributes
@@ -598,13 +630,13 @@ impl OnnxConverter {
         attributes
     }
 
-    fn create_operation_attributes(op: &Operation) -> Vec<AttributeProto> {
+    fn create_operation_attributes(op: &Operation, graph: &GraphInfo) -> Vec<AttributeProto> {
         if op.op_type == "conv2d" {
             Self::create_conv2d_attributes(op)
         } else if op.op_type == "convTranspose2d" {
             Self::create_conv_transpose2d_attributes(op)
         } else if op.op_type == "averagePool2d" || op.op_type == "maxPool2d" {
-            Self::create_pool2d_attributes(op)
+            Self::create_pool2d_attributes(op, graph)
         } else if op.op_type.starts_with("reduce") {
             Self::create_reduce_attributes(op)
         } else if op.op_type == "squeeze" || op.op_type == "unsqueeze" {
@@ -1803,7 +1835,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     inputs.push(input_name);
                 }
 
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
 
                 // Debug: trace concat operations to find rank mismatches
                 if op_name.contains("concat") {
@@ -1872,7 +1904,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Create the logical operation node (outputs bool)
                 let bool_output_name = format!("{}_bool_output", op_name);
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
 
                 nodes.push(NodeProto {
                     input: cast_inputs,
@@ -1897,7 +1929,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             } else if is_comparison_op {
                 // Comparison operations: Execute op (outputs bool), cast output to uint8
                 let bool_output_name = format!("{}_bool_output", op_name);
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
 
                 // Create comparison node (outputs bool)
                 nodes.push(NodeProto {
@@ -1954,7 +1986,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     operand_name(graph, input_id)
                 };
 
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
 
                 nodes.push(NodeProto {
                     input: vec![input_name],
@@ -1986,7 +2018,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     inputs[0] = cast_name;
                 }
 
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
 
                 nodes.push(NodeProto {
                     input: inputs,
@@ -2828,7 +2860,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 inputs.push(final_indices);
 
                 // Create Gather node
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
                 nodes.push(NodeProto {
                     input: inputs,
                     output: vec![operand_name(
@@ -2940,7 +2972,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 // Create Conv/ConvTranspose node
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
                 nodes.push(NodeProto {
                     input: conv_inputs,
                     output: vec![operand_name(
@@ -3191,7 +3223,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 }
 
-                let attributes = Self::create_operation_attributes(op);
+                let attributes = Self::create_operation_attributes(op, graph);
                 nodes.push(NodeProto {
                     input: inputs,
                     output: vec![operand_name(
@@ -3507,7 +3539,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     } else {
                         final_output_name.clone()
                     };
-                    let attributes = Self::create_operation_attributes(op);
+                    let attributes = Self::create_operation_attributes(op, graph);
 
                     nodes.push(NodeProto {
                         input: cast_inputs,
@@ -3534,7 +3566,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 } else {
                     // Regular operation - no Cast nodes needed
-                    let attributes = Self::create_operation_attributes(op);
+                    let attributes = Self::create_operation_attributes(op, graph);
 
                     nodes.push(NodeProto {
                         input: op
