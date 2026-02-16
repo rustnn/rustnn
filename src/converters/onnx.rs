@@ -2675,18 +2675,40 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
             } else if op.op_type.starts_with("reduce") {
-                // Reduction operations - in ONNX opset 13, only ReduceSum supports axes as input
-                // In opset 18+, ReduceMean, ReduceProd, ReduceMax, ReduceMin also support axes as input
-                // But we're using opset 13, so only ReduceSum gets axes as input
-                let supports_axes_as_input = matches!(op.op_type.as_str(), "reduceSum");
-
-                // Check if input needs casting (uint32 not supported by ONNX Runtime for some reductions)
                 let input_id = op.input_operands[0];
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
                     Self::invalid_operand("reduction input lookup", input_id, Some((op, idx)))
                 })?;
-
                 let input_name = operand_name(graph, input_id);
+                let final_output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+                let axes_i64 = Self::parse_i64_array(op, "axes");
+
+                if axes_i64.as_ref().is_some_and(|axes| axes.is_empty()) {
+                    let (special_op, special_inputs): (&str, Vec<String>) = match op
+                        .op_type
+                        .as_str()
+                    {
+                        "reduceL1" | "reduceL2" => ("Abs", vec![input_name.clone()]),
+                        "reduceSumSquare" => ("Mul", vec![input_name.clone(), input_name.clone()]),
+                        "reduceLogSum" => ("Log", vec![input_name.clone()]),
+                        // sum/mean/min/max/product/logSumExp with empty axes are identity.
+                        _ => ("Identity", vec![input_name.clone()]),
+                    };
+
+                    nodes.push(NodeProto {
+                        input: special_inputs,
+                        output: vec![final_output_name],
+                        name: op_name.clone(),
+                        op_type: special_op.to_string(),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+
+                // Check if input needs casting (uint32 not supported by ONNX Runtime for some reductions)
                 let needs_cast = matches!(
                     input_operand.descriptor.data_type,
                     DataType::Uint32 | DataType::Uint8
@@ -2723,49 +2745,31 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let mut attributes = Vec::new();
 
-                // Extract axes from attributes
-                if let Some(axes_i64) = Self::parse_i64_array(op, "axes") {
-                    if supports_axes_as_input {
-                        // Add axes as an input tensor (opset 13+ for supported operations)
-                        let axes_name = format!("{}_axes", op_name);
-                        inputs.push(axes_name.clone());
-
-                        initializers.push(TensorProto {
-                            name: axes_name,
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![axes_i64.len() as i64],
-                            int64_data: axes_i64,
-                            ..Default::default()
-                        });
-                    } else {
-                        // Add axes as an attribute (for operations that don't support axes as input in opset 13)
-                        attributes.push(AttributeProto {
-                            name: "axes".to_string(),
-                            r#type: AttributeType::Ints as i32,
-                            ints: axes_i64,
-                            ..Default::default()
-                        });
-                    }
-                }
-
-                // Add keepDimensions attribute
-                if let Some(keep_dims) = op
-                    .attributes
-                    .get("keepDimensions")
-                    .and_then(|v| v.as_bool())
-                {
-                    attributes.push(AttributeProto {
-                        name: "keepdims".to_string(),
-                        r#type: AttributeType::Int as i32,
-                        i: if keep_dims { 1 } else { 0 },
+                // In ONNX opset 18+, reduction ops take axes as an optional tensor input.
+                if let Some(axes_i64) = axes_i64 {
+                    let axes_name = format!("{}_axes", op_name);
+                    inputs.push(axes_name.clone());
+                    initializers.push(TensorProto {
+                        name: axes_name,
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![axes_i64.len() as i64],
+                        int64_data: axes_i64,
                         ..Default::default()
                     });
                 }
 
-                let final_output_name = operand_name(
-                    graph,
-                    op.output_operand.expect("Single-output operation expected"),
-                );
+                // WebNN default is keepDimensions=false, while ONNX default keepdims=1.
+                let keep_dims = op
+                    .attributes
+                    .get("keepDimensions")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                attributes.push(AttributeProto {
+                    name: "keepdims".to_string(),
+                    r#type: AttributeType::Int as i32,
+                    i: if keep_dims { 1 } else { 0 },
+                    ..Default::default()
+                });
 
                 let reduce_output_name = if needs_cast {
                     // Output to temporary name, will cast back after
