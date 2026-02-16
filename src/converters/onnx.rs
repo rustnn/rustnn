@@ -167,6 +167,19 @@ impl OnnxConverter {
         attributes.extend(builder.build());
     }
 
+    /// Parse WebNN padding and return ONNX pads ordering: [top, left, bottom, right].
+    /// WebNN `padding` is [top, bottom, left, right].
+    fn parse_onnx_pads(op: &Operation) -> Option<Vec<i64>> {
+        if let Some(pads) = Self::parse_i64_array(op, "pads") {
+            return Some(pads);
+        }
+        let padding = Self::parse_i64_array(op, "padding")?;
+        if padding.len() == 4 {
+            return Some(vec![padding[0], padding[2], padding[1], padding[3]]);
+        }
+        Some(padding)
+    }
+
     /// Create ONNX attributes for conv2d operation
     fn create_conv2d_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
@@ -178,7 +191,7 @@ impl OnnxConverter {
         if let Some(dilations) = Self::parse_i64_array(op, "dilations") {
             Self::add_ints_attribute(&mut attributes, "dilations", dilations);
         }
-        if let Some(pads) = Self::parse_i64_array(op, "pads") {
+        if let Some(pads) = Self::parse_onnx_pads(op) {
             Self::add_ints_attribute(&mut attributes, "pads", pads);
         }
         if let Some(groups) = op.attributes.get("groups").and_then(|v| v.as_u64()) {
@@ -199,13 +212,20 @@ impl OnnxConverter {
         if let Some(dilations) = Self::parse_i64_array(op, "dilations") {
             Self::add_ints_attribute(&mut attributes, "dilations", dilations);
         }
-        if let Some(pads) = Self::parse_i64_array(op, "pads") {
+        if let Some(pads) = Self::parse_onnx_pads(op) {
             Self::add_ints_attribute(&mut attributes, "pads", pads);
         }
         if let Some(output_padding) = Self::parse_i64_array(op, "outputPadding") {
             Self::add_ints_attribute(&mut attributes, "output_padding", output_padding);
         }
-        if let Some(output_shape) = Self::parse_i64_array(op, "outputSizes") {
+        // NOTE: WebNN outputSizes can combine with explicit asymmetric padding in ways that map
+        // ambiguously to ONNX ConvTranspose output placement when output_shape is set.
+        // In that case rely on pads/strides/dilations/output_padding.
+        let has_explicit_padding =
+            op.attributes.get("pads").is_some() || op.attributes.get("padding").is_some();
+        if let Some(output_shape) = Self::parse_i64_array(op, "outputSizes")
+            && !has_explicit_padding
+        {
             Self::add_ints_attribute(&mut attributes, "output_shape", output_shape);
         }
         if let Some(groups) = op.attributes.get("groups").and_then(|v| v.as_u64()) {
@@ -251,9 +271,7 @@ impl OnnxConverter {
         }
         let strides = Self::parse_i64_array(op, "strides").unwrap_or_else(|| vec![1, 1]);
         let dilations = Self::parse_i64_array(op, "dilations").unwrap_or_else(|| vec![1, 1]);
-        let pads = Self::parse_i64_array(op, "pads")
-            .or_else(|| Self::parse_i64_array(op, "padding"))
-            .unwrap_or_else(|| vec![0, 0, 0, 0]);
+        let pads = Self::parse_onnx_pads(op).unwrap_or_else(|| vec![0, 0, 0, 0]);
         if strides.len() != 2 || dilations.len() != 2 || pads.len() != 4 {
             return None;
         }
@@ -312,9 +330,7 @@ impl OnnxConverter {
         if let Some(dilations) = Self::parse_i64_array(op, "dilations") {
             Self::add_ints_attribute(&mut attributes, "dilations", dilations);
         }
-        if let Some(pads) =
-            Self::parse_i64_array(op, "pads").or_else(|| Self::parse_i64_array(op, "padding"))
-        {
+        if let Some(pads) = Self::parse_onnx_pads(op) {
             Self::add_ints_attribute(&mut attributes, "pads", pads);
         }
         // outputSizes should dominate rounding behavior when provided.
@@ -3213,19 +3229,43 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     conv_inputs.push(operand_name(graph, op.input_operands[2]));
                 }
 
+                // If WebNN input layout is NHWC, ONNX output (NCHW) must be transposed back.
+                let final_output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+                let conv_output_name = if input_layout == "nhwc" {
+                    format!("{}_output_nchw", op_name)
+                } else {
+                    final_output_name.clone()
+                };
+
                 // Create Conv/ConvTranspose node
                 let attributes = Self::create_operation_attributes(op, graph);
                 nodes.push(NodeProto {
                     input: conv_inputs,
-                    output: vec![operand_name(
-                        graph,
-                        op.output_operand.expect("Single-output operation expected"),
-                    )],
-                    name: op_name,
+                    output: vec![conv_output_name.clone()],
+                    name: op_name.clone(),
                     op_type: Self::onnx_op_type(&op.op_type),
                     attribute: attributes,
                     ..Default::default()
                 });
+
+                if input_layout == "nhwc" {
+                    nodes.push(NodeProto {
+                        input: vec![conv_output_name],
+                        output: vec![final_output_name],
+                        name: format!("{}_transpose_output", op_name),
+                        op_type: "Transpose".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "perm".to_string(),
+                            r#type: AttributeType::Ints as i32,
+                            ints: vec![0, 2, 3, 1], // NCHW → NHWC
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
             } else if matches!(
                 op.op_type.as_str(),
                 "layerNormalization" | "batchNormalization" | "instanceNormalization"
