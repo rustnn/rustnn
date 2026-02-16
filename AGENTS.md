@@ -444,6 +444,12 @@ tests/
 
 The Makefile provides consistent build targets with proper feature flags, environment setup, and dependency management. Using Make ensures builds are reproducible and properly configured.
 
+**IMPORTANT: Run WebNN conformance tests via `rustnnpt` (separate project) instead of in-repo conformance harnesses.**
+
+- Conformance test execution should use [rustnnpt](https://github.com/rustnn/rustnnpt).
+- `rustnnpt` lives in its own repository.
+- In-repo conformance paths under this repository are being deprecated and will be removed soon.
+
 For detailed development instructions, build commands, and troubleshooting, see **[docs/development.md](docs/development.md)**.
 
 Common Make targets:
