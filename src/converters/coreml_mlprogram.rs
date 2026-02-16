@@ -2588,6 +2588,118 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 continue;
             }
 
+            // Special handling for linear: y = alpha * x + beta
+            // Lower to mul + add primitives for backend parity.
+            if op_type_lower == "linear" {
+                if op.input_operands.is_empty() || op.output_operand.is_none() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: "linear requires input and output operand".to_string(),
+                    });
+                }
+
+                let input_operand = graph_info.operand(op.input_operands[0]).ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Input operand {} not found", op.input_operands[0]),
+                    }
+                })?;
+                let output_operand_id = op.output_operand.unwrap();
+                let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Output operand {} not found", output_operand_id),
+                    }
+                })?;
+
+                let alpha = op
+                    .attributes
+                    .get("alpha")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(1.0) as f32;
+                let beta = op
+                    .attributes
+                    .get("beta")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as f32;
+
+                let (alpha_arg, beta_arg) = match input_operand.descriptor.data_type {
+                    DataType::Float16 => (
+                        Self::create_immediate_float16(alpha),
+                        Self::create_immediate_float16(beta),
+                    ),
+                    DataType::Float32 => (
+                        Self::create_immediate_float(alpha),
+                        Self::create_immediate_float(beta),
+                    ),
+                    _ => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!(
+                                "linear currently supports float32/float16, got {:?}",
+                                input_operand.descriptor.data_type
+                            ),
+                        });
+                    }
+                };
+
+                let input_name = operand_name(graph_info, op.input_operands[0]);
+                let output_name = operand_name(graph_info, output_operand_id);
+                let mul_output_name = format!("{}_linear_mul", output_name);
+
+                let output_dtype = Self::mil_data_type(&output_operand.descriptor.data_type)?;
+                let output_shape = if output_operand.descriptor.shape.is_empty() {
+                    vec![1u32]
+                } else {
+                    output_operand.descriptor.shape.clone()
+                };
+                let output_dimensions: Vec<Dimension> = output_shape
+                    .iter()
+                    .map(|&d| Dimension {
+                        dimension: Some(dimension::Dimension::Constant(
+                            dimension::ConstantDimension { size: d as u64 },
+                        )),
+                    })
+                    .collect();
+
+                let value_type = ValueType {
+                    r#type: Some(
+                        crate::protos::coreml::mil_spec::value_type::Type::TensorType(TensorType {
+                            rank: output_dimensions.len() as i64,
+                            data_type: output_dtype,
+                            dimensions: output_dimensions.clone(),
+                            attributes: HashMap::new(),
+                        }),
+                    ),
+                };
+
+                let mut mul_inputs: HashMap<String, Argument> = HashMap::new();
+                mul_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+                mul_inputs.insert("y".to_string(), alpha_arg);
+                main_block.operations.push(Self::create_mil_operation(
+                    "mul",
+                    mul_inputs,
+                    vec![NamedValueType {
+                        name: mul_output_name.clone(),
+                        r#type: Some(value_type.clone()),
+                    }],
+                ));
+
+                let mut add_inputs: HashMap<String, Argument> = HashMap::new();
+                add_inputs.insert("x".to_string(), Self::create_name_argument(mul_output_name));
+                add_inputs.insert("y".to_string(), beta_arg);
+                main_block.operations.push(Self::create_mil_operation(
+                    "add",
+                    add_inputs,
+                    vec![NamedValueType {
+                        name: output_name,
+                        r#type: Some(value_type),
+                    }],
+                ));
+
+                continue;
+            }
+
             // Special handling for neg (decompose into mul(x, -1) with typed constant)
             // Following Chromium: neg = mul(x, -1) with constant matching input dtype
             if op_type_lower == "neg" {
@@ -2810,6 +2922,7 @@ mod tests {
     use crate::graph::{
         ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
     };
+    use prost::Message;
     use std::collections::HashMap;
 
     /// Helper to create a simple graph with a Float16 constant
@@ -3363,5 +3476,109 @@ mod tests {
         let converter = CoremlMlProgramConverter;
         let result = converter.convert(&graph);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_linear_float32_converts_to_mul_add_ops() {
+        let graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2, 3],
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![2, 3],
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::json!({
+                    "alpha": 2.0,
+                    "beta": -1.0
+                }),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("coreml linear float32 conversion should succeed");
+        let model = Model::decode(converted.data.as_slice()).expect("decode coreml model");
+        let program = match model.r#type.expect("model type") {
+            crate::protos::coreml::specification::model::Type::MlProgram(program) => program,
+            _ => panic!("expected MLProgram model"),
+        };
+        let main_fn = program.functions.get("main").expect("main function");
+        let main_block = main_fn
+            .block_specializations
+            .get("CoreML7")
+            .expect("CoreML7 block");
+
+        assert!(main_block.operations.iter().any(|op| op.r#type == "mul"));
+        assert!(main_block.operations.iter().any(|op| op.r#type == "add"));
+    }
+
+    #[test]
+    fn test_linear_float16_converts_successfully() {
+        let graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float16,
+                        shape: vec![4],
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float16,
+                        shape: vec![4],
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![Operation {
+                op_type: "linear".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::json!({}),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("coreml linear float16 conversion should succeed");
+        let model = Model::decode(converted.data.as_slice()).expect("decode coreml model");
+        assert!(model.r#type.is_some(), "model type should be set");
     }
 }

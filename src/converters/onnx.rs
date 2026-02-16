@@ -2748,6 +2748,96 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ProtoDataType::Float16,
                     ));
                 }
+            } else if op.op_type.eq_ignore_ascii_case("linear") {
+                // linear: y = alpha * x + beta
+                // Lower to primitive Mul + Add for broad ONNX Runtime compatibility.
+                let input_id = op.input_operands[0];
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("linear input", input_id, Some((op, idx)))
+                })?;
+                if !matches!(
+                    input_operand.descriptor.data_type,
+                    DataType::Float32 | DataType::Float16
+                ) {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "linear currently supports float32/float16, got {:?}",
+                            input_operand.descriptor.data_type
+                        ),
+                    });
+                }
+                let input_name = operand_name(graph, input_id);
+                let output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+
+                let alpha = Self::parse_f64_attr(op.attributes.get("alpha")).unwrap_or(1.0) as f32;
+                let beta = Self::parse_f64_attr(op.attributes.get("beta")).unwrap_or(0.0) as f32;
+
+                // Compute in float32 for float16 inputs, then cast back.
+                let (compute_input, needs_cast_back) =
+                    if input_operand.descriptor.data_type == DataType::Float16 {
+                        let cast_name = format!("{}_input_f32", op_name);
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_input", op_name),
+                            input_name,
+                            cast_name.clone(),
+                            ProtoDataType::Float,
+                        ));
+                        (cast_name, true)
+                    } else {
+                        (input_name, false)
+                    };
+
+                let alpha_name = format!("{}_linear_alpha", op_name);
+                let beta_name = format!("{}_linear_beta", op_name);
+                initializers.push(TensorProto {
+                    name: alpha_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![],
+                    float_data: vec![alpha],
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: beta_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![],
+                    float_data: vec![beta],
+                    ..Default::default()
+                });
+
+                let scaled_name = format!("{}_linear_scaled", op_name);
+                let final_compute_name = if needs_cast_back {
+                    format!("{}_linear_out_f32", op_name)
+                } else {
+                    output_name.clone()
+                };
+
+                nodes.push(NodeProto {
+                    input: vec![compute_input, alpha_name],
+                    output: vec![scaled_name.clone()],
+                    name: format!("{}_linear_mul", op_name),
+                    op_type: "Mul".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![scaled_name, beta_name],
+                    output: vec![final_compute_name.clone()],
+                    name: format!("{}_linear_add", op_name),
+                    op_type: "Add".to_string(),
+                    ..Default::default()
+                });
+
+                if needs_cast_back {
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_output", op_name),
+                        final_compute_name,
+                        output_name,
+                        ProtoDataType::Float16,
+                    ));
+                }
             } else if op.op_type.eq_ignore_ascii_case("triangular") {
                 // Triangular operation: Cast integer inputs to float32
                 let input_id = op.input_operands[0];
@@ -5476,6 +5566,122 @@ mod tests {
                 .node
                 .iter()
                 .any(|n| n.op_type == "QuantizeLinear")
+        );
+    }
+
+    #[test]
+    fn test_linear_conversion_float32_decomposes_to_mul_add() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "linear".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "alpha": 2.5,
+                "beta": -0.75
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("linear conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Mul"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Add"));
+        assert!(!graph_proto.node.iter().any(|n| n.op_type == "Linear"));
+    }
+
+    #[test]
+    fn test_linear_conversion_float16_inserts_casts() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "linear".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("linear float16 conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Mul"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Add"));
+        assert!(
+            graph_proto
+                .node
+                .iter()
+                .filter(|n| n.op_type == "Cast")
+                .count()
+                >= 2
         );
     }
 

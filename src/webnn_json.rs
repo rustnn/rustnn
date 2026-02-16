@@ -496,7 +496,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "abs" | "ceil" | "floor" | "neg" | "relu" | "sigmoid" | "tanh" | "exp" | "log"
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
                 | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
-                | "softplus" | "softsign" | "softmax" | "gelu" | "identity" | "cast"
+                | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
                 | "logical_not" | "quantizelinear" | "dequantizelinear" => {
                     input_shapes.first().cloned()
                 }
@@ -881,6 +881,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "softsign"
                     | "softmax"
                     | "gelu"
+                    | "linear"
                     | "identity"
                     | "hardsigmoid"
                     | "hardswish"
