@@ -30,12 +30,16 @@ function extractTests(filePath) {
         // This line references utilities that we don't need for data extraction
         content = content.replace(/\nwebnn_conformance_test\([^)]*\);?\s*$/, '');
 
-        // Custom JSON.stringify replacement that handles BigInt
+        // Custom JSON.stringify replacement: BigInt, Infinity, -Infinity, NaN (JSON has no native form)
         const originalStringify = JSON.stringify;
         JSON.stringify = function(value) {
-            return originalStringify(value, (key, val) =>
-                typeof val === 'bigint' ? val.toString() + 'n' : val
-            );
+            return originalStringify(value, (key, val) => {
+                if (typeof val === 'bigint') return val.toString() + 'n';
+                if (val === Infinity) return 'Infinity';
+                if (val === -Infinity) return '-Infinity';
+                if (Number.isNaN(val)) return 'NaN';
+                return val;
+            });
         };
 
         // Wrap the content to capture the test array

@@ -1,7 +1,7 @@
 {
   "operation": "clamp",
-  "wpt_version": "2025-12-13",
-  "wpt_commit": "555200215767c4460e2e11f663a45f9f11641216",
+  "wpt_version": "2026-02-16",
+  "wpt_commit": "2c4fe5065d91a8cf0210c6ec9d45a27bdc1d1073",
   "source_file": "webnn/conformance_tests/clamp.https.any.js",
   "conversion_note": "This file was auto-generated from WPT JavaScript tests. Manual verification recommended. Some test cases may require manual conversion from JavaScript syntax.",
   "tests": [
@@ -3786,8 +3786,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -3812,7 +3812,7 @@
               },
               {
                 "options": {
-                  "minValue": null
+                  "minValue": "-Infinity"
                 }
               }
             ],
@@ -3822,8 +3822,8 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -3846,8 +3846,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -3872,7 +3872,7 @@
               },
               {
                 "options": {
-                  "minValue": null
+                  "minValue": "Infinity"
                 }
               }
             ],
@@ -3882,13 +3882,13 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null
+              "Infinity",
+              "Infinity",
+              "Infinity",
+              "Infinity",
+              "Infinity",
+              "Infinity",
+              "Infinity"
             ],
             "descriptor": {
               "shape": [
@@ -3906,8 +3906,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -3932,7 +3932,7 @@
               },
               {
                 "options": {
-                  "maxValue": null
+                  "maxValue": "-Infinity"
                 }
               }
             ],
@@ -3942,13 +3942,13 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
-              null,
-              null,
-              null,
-              null,
-              null
+              "-Infinity",
+              "-Infinity",
+              "-Infinity",
+              "-Infinity",
+              "-Infinity",
+              "-Infinity",
+              "-Infinity"
             ],
             "descriptor": {
               "shape": [
@@ -3966,8 +3966,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -3992,7 +3992,7 @@
               },
               {
                 "options": {
-                  "maxValue": null
+                  "maxValue": "Infinity"
                 }
               }
             ],
@@ -4002,8 +4002,8 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -4026,8 +4026,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -4087,8 +4087,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -4113,7 +4113,7 @@
               },
               {
                 "options": {
-                  "minValue": null
+                  "minValue": "NaN"
                 }
               }
             ],
@@ -4123,8 +4123,8 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -4147,8 +4147,8 @@
         "inputs": {
           "clampInput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
@@ -4173,7 +4173,7 @@
               },
               {
                 "options": {
-                  "maxValue": null
+                  "maxValue": "NaN"
                 }
               }
             ],
@@ -4183,8 +4183,8 @@
         "expectedOutputs": {
           "clampOutput": {
             "data": [
-              null,
-              null,
+              "-Infinity",
+              "Infinity",
               -3e+35,
               2147483647,
               -2,
