@@ -3829,6 +3829,40 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         transpose_back_perm = Some(perm);
                     }
                 }
+                if op.op_type == "instanceNormalization" {
+                    let rank = input_operand.descriptor.shape.len();
+                    let layout = op
+                        .attributes
+                        .get("layout")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("nchw")
+                        .to_ascii_lowercase();
+                    // ONNX InstanceNormalization expects channel-first layout.
+                    if layout == "nhwc" && rank == 4 {
+                        let perm = vec![0, 3, 1, 2];
+                        let transposed_input_name = format!("{}_in_nchw", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![normalized_input_name],
+                            output: vec![transposed_input_name.clone()],
+                            name: format!("{}_in_pre_transpose", op_name),
+                            op_type: "Transpose".to_string(),
+                            attribute: vec![AttributeProto {
+                                name: "perm".to_string(),
+                                r#type: AttributeType::Ints as i32,
+                                ints: perm.clone(),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        });
+                        normalized_input_name = transposed_input_name;
+                        normalized_input_shape = perm
+                            .iter()
+                            .map(|&i| input_operand.descriptor.shape[i as usize])
+                            .collect();
+                        node_output_name = format!("{}_instancenorm_output", op_name);
+                        transpose_back_perm = Some(vec![0, 2, 3, 1]);
+                    }
+                }
                 if op.op_type == "layerNormalization" {
                     let rank = input_operand.descriptor.shape.len();
                     let axes_raw = op.attributes.get("axes").and_then(|v| v.as_array());
@@ -4026,32 +4060,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     };
                     vec![channels]
                 } else if op.op_type == "instanceNormalization" {
-                    // For instance norm, scale/bias shape is [channels]
-                    // Channel dimension depends on layout: NCHW=1, NHWC=last
-                    let layout = op
-                        .attributes
-                        .get("layout")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("nchw");
-
-                    // TODO: ONNX InstanceNormalization ALWAYS requires NCHW layout
-                    // When layout='nhwc', we need to add transpose nodes:
-                    // 1. Input: NHWC → NCHW (before operation)
-                    // 2. Output: NCHW → NHWC (after operation)
-                    // Currently failing 4 tests: instanceNormalization with layout='nhwc'
-                    // See: https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/ort/graph_builder_ort.cc
-                    // Chromium comment: "ONNX InstanceNormalization expects NCHW layout, channel is at index 1"
-
-                    let channel_dim = if layout == "nhwc" {
-                        // NHWC: channels at last dimension
-                        input_operand.descriptor.shape.len().saturating_sub(1)
-                    } else {
-                        // NCHW: channels at dimension 1 (default)
-                        1
-                    };
-
-                    let channels = if input_operand.descriptor.shape.len() > channel_dim {
-                        input_operand.descriptor.shape[channel_dim] as i64
+                    // For instance norm, scale/bias shape is [channels] and channel is index 1
+                    // after normalization pre-processing (NCHW expected by ONNX).
+                    let channels = if normalized_input_shape.len() > 1 {
+                        normalized_input_shape[1] as i64
                     } else {
                         1
                     };
