@@ -826,6 +826,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     "shape" => Some(DataType::Int64),
                     "constant" => op.attributes.get("dataType").and_then(parse_dtype),
                     "cast" => op.attributes.get("to").and_then(parse_dtype),
+                    "dequantizelinear" => Some(DataType::Float32),
+                    "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
                     "argmax" | "argmin" => op
                         .attributes
                         .get("outputDataType")
@@ -876,6 +878,21 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "softmax"
                     | "gelu"
                     | "identity"
+                    | "hardsigmoid"
+                    | "hardswish"
+                    | "elu"
+                    | "leakyrelu"
+                    | "prelu"
+                    | "clamp"
+                    | "pad"
+                    | "tile"
+                    | "triangular"
+                    | "conv2d"
+                    | "convtranspose2d"
+                    | "gemm"
+                    | "batchnormalization"
+                    | "instancenormalization"
+                    | "layernormalization"
                     | "reducemean"
                     | "reducesum"
                     | "reducemax"
@@ -891,7 +908,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "global_max_pool"
                     | "reducesumsquare" => input_types.first().cloned(),
                     "greater" | "greaterorequal" | "less" | "lesser" | "lessorequal"
-                    | "lesserorequal" | "equal" | "logical_and" | "logical_or" | "logical_xor" => {
+                    | "lesserorequal" | "equal" | "notequal" | "logical_and" | "logical_or"
+                    | "logical_xor" | "logicaland" | "logicalor" | "logicalxor" | "logicalnot" => {
                         Some(DataType::Uint8)
                     }
                     "where" => input_types

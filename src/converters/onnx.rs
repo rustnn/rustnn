@@ -20,6 +20,20 @@ use webnn_onnx_utils::{
 pub struct OnnxConverter;
 
 impl OnnxConverter {
+    fn parse_f64_attr(value: Option<&serde_json::Value>) -> Option<f64> {
+        let v = value?;
+        if let Some(n) = v.as_f64() {
+            return Some(n);
+        }
+        let s = v.as_str()?.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+            "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+            "nan" => Some(f64::NAN),
+            _ => s.parse::<f64>().ok(),
+        }
+    }
+
     fn invalid_operand(
         context: &str,
         operand: u32,
@@ -2329,8 +2343,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_dtype = input_operand.descriptor.data_type;
                 let onnx_dtype = Self::data_type_code(input_dtype);
 
+                let min_value = Self::parse_f64_attr(op.attributes.get("minValue"));
+                let max_value = Self::parse_f64_attr(op.attributes.get("maxValue"));
+
                 // Add min value as second input (optional in ONNX Clip)
-                if let Some(min_value) = op.attributes.get("minValue").and_then(|v| v.as_f64()) {
+                if let Some(min_value) = min_value {
                     let min_name = format!("{}_min", op_name);
                     inputs.push(min_name.clone());
 
@@ -2342,8 +2359,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                 }
 
-                // Add max value as third input (optional in ONNX Clip)
-                if let Some(max_value) = op.attributes.get("maxValue").and_then(|v| v.as_f64()) {
+                // Add max value as third input (optional in ONNX Clip).
+                // If max is present but min is absent, ONNX requires an empty placeholder for min.
+                if max_value.is_some() && min_value.is_none() {
+                    inputs.push(String::new());
+                }
+                if let Some(max_value) = max_value {
                     let max_name = format!("{}_max", op_name);
                     inputs.push(max_name.clone());
 
@@ -4336,5 +4357,95 @@ mod tests {
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_f64_attr_handles_non_finite_strings() {
+        let inf = OnnxConverter::parse_f64_attr(Some(&serde_json::json!("Infinity")))
+            .expect("Infinity should parse");
+        assert!(inf.is_infinite() && inf.is_sign_positive());
+
+        let neg_inf = OnnxConverter::parse_f64_attr(Some(&serde_json::json!("-Infinity")))
+            .expect("-Infinity should parse");
+        assert!(neg_inf.is_infinite() && neg_inf.is_sign_negative());
+
+        let nan =
+            OnnxConverter::parse_f64_attr(Some(&serde_json::json!("NaN"))).expect("NaN parses");
+        assert!(nan.is_nan());
+    }
+
+    #[test]
+    fn test_clamp_max_only_uses_empty_min_and_accepts_infinity() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "clamp".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "maxValue": "Infinity" }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("clamp conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        let clip_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "Clip")
+            .expect("Clip node");
+        assert_eq!(clip_node.input.len(), 3);
+        assert_eq!(clip_node.input[1], "");
+        assert!(!clip_node.input[2].is_empty());
+
+        let max_init = graph_proto
+            .initializer
+            .iter()
+            .find(|t| t.name == clip_node.input[2])
+            .expect("max initializer");
+        assert_eq!(max_init.data_type, ProtoDataType::Float as i32);
+
+        let value = if let Some(v) = max_init.float_data.first() {
+            *v
+        } else {
+            let bytes: [u8; 4] = max_init.raw_data[0..4]
+                .try_into()
+                .expect("4 bytes for float32");
+            f32::from_le_bytes(bytes)
+        };
+        assert!(value.is_infinite() && value.is_sign_positive());
     }
 }
