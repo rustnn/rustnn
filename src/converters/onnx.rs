@@ -2531,10 +2531,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
             }
 
             // Check if this is a logic operation that needs type conversion
-            let is_comparison_op = matches!(
-                op.op_type.as_str(),
-                "equal" | "greater" | "greaterOrEqual" | "lesser" | "lesserOrEqual"
-            );
+            let is_not_equal_op = op.op_type.eq_ignore_ascii_case("notEqual")
+                || op.op_type.eq_ignore_ascii_case("notequal");
+            let is_comparison_op = is_not_equal_op
+                || matches!(
+                    op.op_type.as_str(),
+                    "equal" | "greater" | "greaterOrEqual" | "lesser" | "lesserOrEqual"
+                );
             let is_logical_op = matches!(
                 op.op_type.as_str(),
                 "logicalNot" | "logicalAnd" | "logicalOr" | "logicalXor"
@@ -2585,32 +2588,54 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 ));
                 cast_counter += 1;
             } else if is_comparison_op {
-                // Comparison operations: Execute op (outputs bool), cast output to uint8
+                // Comparison operations: execute op (or decomposition), then cast bool output to uint8
                 let bool_output_name = format!("{}_bool_output", op_name);
                 let attributes = Self::create_operation_attributes(op, graph);
+                let output_operand_id =
+                    op.output_operand.expect("Single-output operation expected");
+                let output_name = operand_name(graph, output_operand_id);
+                let input_names: Vec<String> = op
+                    .input_operands
+                    .iter()
+                    .map(|id| operand_name(graph, *id))
+                    .collect();
 
-                // Create comparison node (outputs bool)
-                nodes.push(NodeProto {
-                    input: op
-                        .input_operands
-                        .iter()
-                        .map(|id| operand_name(graph, *id))
-                        .collect(),
-                    output: vec![bool_output_name.clone()],
-                    name: op_name,
-                    op_type: Self::onnx_op_type(&op.op_type),
-                    attribute: attributes,
-                    ..Default::default()
-                });
+                if is_not_equal_op {
+                    // ONNX has no NotEqual op; lower to Not(Equal(x, y)).
+                    let equal_output_name = format!("{}_equal_output", op_name);
+                    nodes.push(NodeProto {
+                        input: input_names,
+                        output: vec![equal_output_name.clone()],
+                        name: format!("{}_equal", op_name),
+                        op_type: "Equal".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![equal_output_name],
+                        output: vec![bool_output_name.clone()],
+                        name: format!("{}_not", op_name),
+                        op_type: "Not".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                } else {
+                    // Create comparison node (outputs bool)
+                    nodes.push(NodeProto {
+                        input: input_names,
+                        output: vec![bool_output_name.clone()],
+                        name: op_name,
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+                }
 
                 // Cast bool → uint8 (matching Chromium's WebNN implementation)
                 nodes.push(Self::create_cast_node(
                     &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
-                    operand_name(
-                        graph,
-                        op.output_operand.expect("Single-output operation expected"),
-                    ),
+                    output_name,
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;

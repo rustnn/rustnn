@@ -484,7 +484,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Binary element-wise operations (including comparisons/logical)
                 "add" | "sub" | "mul" | "div" | "pow" | "max" | "min" | "greater"
                 | "greaterorequal" | "less" | "lesser" | "lessorequal" | "lesserorequal"
-                | "equal" | "logical_and" | "logical_or" | "logical_xor" => {
+                | "equal" | "notequal" | "logical_and" | "logical_or" | "logical_xor" => {
                     if input_shapes.len() >= 2 {
                         broadcast_shapes(&input_shapes[0], &input_shapes[1]).ok()
                     } else {
