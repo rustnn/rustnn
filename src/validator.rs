@@ -371,10 +371,10 @@ impl<'a> GraphValidator<'a> {
                     input_desc.data_type
                 )));
             }
-            if !matches!(output_desc.data_type, DataType::Float32) {
+            if output_desc.data_type != scale_desc.data_type {
                 return Err(invalid(format!(
-                    "dequantize output must be float32 (got {:?})",
-                    output_desc.data_type
+                    "dequantize output dtype {:?} must match scale dtype {:?}",
+                    output_desc.data_type, scale_desc.data_type
                 )));
             }
         }

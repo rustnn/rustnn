@@ -828,7 +828,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     "shape" => Some(DataType::Int64),
                     "constant" => op.attributes.get("dataType").and_then(parse_dtype),
                     "cast" => op.attributes.get("to").and_then(parse_dtype),
-                    "dequantizelinear" => Some(DataType::Float32),
+                    "dequantizelinear" => input_types.get(1).cloned().or(Some(DataType::Float32)),
                     "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
                     "argmax" | "argmin" => op
                         .attributes
