@@ -287,14 +287,14 @@ impl<'a> GraphValidator<'a> {
             .output_operand
             .ok_or_else(|| invalid("missing output operand".to_string()))?;
 
-        let input_desc = self
+        let input_operand = self
             .graph
             .operand(operation.input_operands[0])
-            .map(|o| &o.descriptor)
             .ok_or_else(|| GraphError::InvalidOperandReference {
                 operation: op_name.clone(),
                 operand: operation.input_operands[0],
             })?;
+        let input_desc = &input_operand.descriptor;
         let scale_desc = self
             .graph
             .operand(operation.input_operands[1])
@@ -311,14 +311,14 @@ impl<'a> GraphValidator<'a> {
                 operation: op_name.clone(),
                 operand: operation.input_operands[2],
             })?;
-        let output_desc = self
-            .graph
-            .operand(output_id)
-            .map(|o| &o.descriptor)
-            .ok_or_else(|| GraphError::InvalidOperandReference {
-                operation: op_name.clone(),
-                operand: output_id,
-            })?;
+        let output_operand =
+            self.graph
+                .operand(output_id)
+                .ok_or_else(|| GraphError::InvalidOperandReference {
+                    operation: op_name.clone(),
+                    operand: output_id,
+                })?;
+        let output_desc = &output_operand.descriptor;
 
         // Dtype constraints
         let scale_ok = matches!(scale_desc.data_type, DataType::Float16 | DataType::Float32);
@@ -383,6 +383,12 @@ impl<'a> GraphValidator<'a> {
         let input_shape = &input_desc.shape;
         let scale_shape = &scale_desc.shape;
         let zero_point_shape = &zero_point_desc.shape;
+        // Intermediate operation outputs may still carry unresolved shape metadata ([]).
+        // Treat those as unknown to avoid rejecting valid subgraphs during early validation.
+        let input_shape_known =
+            !(input_shape.is_empty() && matches!(input_operand.kind, OperandKind::Output));
+        let output_shape_known =
+            !(output_desc.shape.is_empty() && matches!(output_operand.kind, OperandKind::Output));
 
         if scale_shape.is_empty() {
             if !zero_point_shape.is_empty() {
@@ -391,7 +397,7 @@ impl<'a> GraphValidator<'a> {
                     zero_point_shape
                 )));
             }
-        } else {
+        } else if input_shape_known {
             if scale_shape.len() != input_shape.len() {
                 return Err(invalid(format!(
                     "scale rank {} must match input rank {}",
@@ -406,11 +412,15 @@ impl<'a> GraphValidator<'a> {
                 )));
             }
         }
-        if output_desc.shape != *input_shape {
+        if input_shape_known && output_shape_known && output_desc.shape != *input_shape {
             return Err(invalid(format!(
                 "output shape {:?} must match input shape {:?}",
                 output_desc.shape, input_shape
             )));
+        }
+
+        if !input_shape_known {
+            return Ok(());
         }
 
         let mut non_one_dims = Vec::new();
@@ -608,6 +618,102 @@ mod tests {
             }
             other => panic!("unexpected error {:?}", other),
         }
+    }
+
+    #[test]
+    fn quantize_unknown_intermediate_shape_validates() {
+        let input_operand = Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![1, 3, 4, 4],
+                pending_permutation: Vec::new(),
+            },
+            name: Some("input".to_string()),
+        };
+
+        let scale_descriptor = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![1, 3, 1, 1],
+            pending_permutation: Vec::new(),
+        };
+        let scale_operand = Operand {
+            kind: OperandKind::Constant,
+            descriptor: scale_descriptor.clone(),
+            name: None,
+        };
+
+        let zero_point_descriptor = OperandDescriptor {
+            data_type: DataType::Uint8,
+            shape: vec![1, 3, 1, 1],
+            pending_permutation: Vec::new(),
+        };
+        let zero_point_operand = Operand {
+            kind: OperandKind::Constant,
+            descriptor: zero_point_descriptor.clone(),
+            name: None,
+        };
+
+        // Intermediate output with unresolved shape metadata ([]).
+        let unresolved_intermediate = Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: vec![],
+                pending_permutation: Vec::new(),
+            },
+            name: Some("intermediate".to_string()),
+        };
+
+        let quantized_output = Operand {
+            kind: OperandKind::Output,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Uint8,
+                shape: vec![],
+                pending_permutation: Vec::new(),
+            },
+            name: Some("output".to_string()),
+        };
+
+        let relu = Operation {
+            op_type: "relu".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+        let quantize = Operation {
+            op_type: "quantizeLinear".to_string(),
+            input_operands: vec![3, 1, 2],
+            output_operand: Some(4),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        };
+
+        let mut constants = HashMap::new();
+        constants.insert(1, constant_data_for(&scale_descriptor));
+        constants.insert(2, constant_data_for(&zero_point_descriptor));
+
+        let graph = GraphInfo {
+            operands: vec![
+                input_operand,
+                scale_operand,
+                zero_point_operand,
+                unresolved_intermediate,
+                quantized_output,
+            ],
+            input_operands: vec![0],
+            output_operands: vec![4],
+            operations: vec![relu, quantize],
+            constant_operand_ids_to_handles: constants,
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: true,
+        };
+
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        assert!(validator.validate().is_ok());
     }
 
     #[test]

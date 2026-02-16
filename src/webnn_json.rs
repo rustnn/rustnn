@@ -497,7 +497,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
                 | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "identity" | "cast"
-                | "logical_not" => input_shapes.first().cloned(),
+                | "logical_not" | "quantizelinear" | "dequantizelinear" => {
+                    input_shapes.first().cloned()
+                }
 
                 // Concat
                 "concat" => {
@@ -1686,5 +1688,77 @@ mod tests {
         let graph_info = result.unwrap();
         assert_eq!(graph_info.operations.len(), 1);
         assert_eq!(graph_info.operations[0].output_operands.len(), 0);
+    }
+
+    #[test]
+    fn test_quantize_linear_infers_output_shape_and_dtype() {
+        use webnn_graph::ast::{ConstDecl, ConstInit, OperandDesc};
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(2),
+                    webnn_graph::ast::Dimension::Static(3),
+                ],
+            },
+        );
+
+        let mut consts = BTreeMap::new();
+        consts.insert(
+            "scale".to_string(),
+            ConstDecl {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![],
+                init: ConstInit::Scalar {
+                    value: serde_json::json!(0.5),
+                },
+            },
+        );
+        consts.insert(
+            "zero_point".to_string(),
+            ConstDecl {
+                data_type: webnn_graph::ast::DataType::Uint8,
+                shape: vec![],
+                init: ConstInit::Scalar {
+                    value: serde_json::json!(128),
+                },
+            },
+        );
+
+        let nodes = vec![Node {
+            id: "q".to_string(),
+            op: "quantizeLinear".to_string(),
+            inputs: vec![
+                "x".to_string(),
+                "scale".to_string(),
+                "zero_point".to_string(),
+            ],
+            options: serde_json::Map::new(),
+            outputs: None,
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), "q".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("q_test".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: true,
+            inputs,
+            consts,
+            nodes,
+            outputs,
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
+        let out_id = graph_info.output_operands[0] as usize;
+        let out_desc = &graph_info.operands[out_id].descriptor;
+        assert_eq!(out_desc.shape, vec![2, 3]);
+        assert_eq!(out_desc.data_type, DataType::Uint8);
     }
 }
