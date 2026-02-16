@@ -51,6 +51,7 @@ prost-build = "0.12"
 
 [dev-dependencies]
 tempfile = "3.8"
+half = "2.4"
 
 [lib]
 name = "rustnn"
