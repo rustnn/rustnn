@@ -3,6 +3,8 @@
 
   # rustnn
 
+  [![WPT Conformance](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Frustnn.github.io%2Frustnnpt%2Fconformance.json&query=%24.summary.passRatePct&suffix=%25&label=WPT&color=0b7d4f&style=for-the-badge)](https://rustnn.github.io/rustnnpt/)
+
   A Rust implementation of the W3C WebNN specification for neural network graph validation and backend conversion.
 </div>
 
