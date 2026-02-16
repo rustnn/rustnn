@@ -1694,12 +1694,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 .clone()
                 .unwrap_or_else(|| format!("{}_{}", op.op_type, idx));
 
-            // QuantizeLinear: propagate axis/block_size where applicable.
-            // DequantizeLinear is lowered via primitive ops (Cast/Sub/Mul) for broader ORT support.
+            // QuantizeLinear is lowered via primitive ops for broader ORT compatibility and
+            // to match WebNN blockwise/per-tensor behavior.
             if op.op_type.eq_ignore_ascii_case("quantizeLinear") {
                 let input_id = op.input_operands[0];
                 let scale_id = op.input_operands[1];
                 let zero_point_id = op.input_operands[2];
+                let output_id = op
+                    .output_operand
+                    .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
 
                 let input_shape = operand_shapes.get(&input_id).cloned().unwrap_or_else(|| {
                     graph
@@ -1723,115 +1726,325 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 .map(|o| o.descriptor.shape.clone())
                                 .unwrap_or_default()
                         });
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("quantizeLinear input lookup", input_id, Some((op, idx)))
+                })?;
+                let scale_operand = graph.operand(scale_id).ok_or_else(|| {
+                    Self::invalid_operand("quantizeLinear scale lookup", scale_id, Some((op, idx)))
+                })?;
 
-                let mut attributes = Vec::new();
-                let mut non_one_dims = Vec::new();
-                for (i, &dim) in scale_shape.iter().enumerate() {
-                    if dim != 1 {
-                        non_one_dims.push(i);
+                fn align_param_with_input(
+                    op_name: &str,
+                    prefix: &str,
+                    name: String,
+                    param_shape: &[u32],
+                    input_shape: &[u32],
+                    nodes: &mut Vec<NodeProto>,
+                    initializers: &mut Vec<TensorProto>,
+                ) -> String {
+                    if input_shape.is_empty()
+                        || param_shape.is_empty()
+                        || param_shape == input_shape
+                        || param_shape.len() != input_shape.len()
+                    {
+                        return name;
                     }
-                }
 
-                if non_one_dims.len() == 1
-                    && scale_shape
-                        .get(non_one_dims[0])
-                        .zip(input_shape.get(non_one_dims[0]))
-                        .map(|(s, i)| s == i)
-                        .unwrap_or(false)
-                {
-                    attributes.push(AttributeProto {
-                        name: "axis".to_string(),
-                        r#type: AttributeType::Int as i32,
-                        i: non_one_dims[0] as i64,
+                    let broadcastable = param_shape
+                        .iter()
+                        .zip(input_shape.iter())
+                        .all(|(&p, &i)| p == 1 || p == i);
+                    if broadcastable {
+                        return name;
+                    }
+
+                    let tileable = param_shape
+                        .iter()
+                        .zip(input_shape.iter())
+                        .all(|(&p, &i)| p > 0 && i % p == 0);
+                    if !tileable {
+                        return name;
+                    }
+
+                    let repeats: Vec<i64> = input_shape
+                        .iter()
+                        .zip(param_shape.iter())
+                        .map(|(&i, &p)| (i / p) as i64)
+                        .collect();
+                    if repeats.iter().all(|&r| r == 1) {
+                        return name;
+                    }
+
+                    let expanded_shape: Vec<i64> = param_shape
+                        .iter()
+                        .flat_map(|&d| [d as i64, 1_i64])
+                        .collect();
+                    let expanded_shape_name = format!("{}_{}_expand_shape", op_name, prefix);
+                    initializers.push(TensorProto {
+                        name: expanded_shape_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![expanded_shape.len() as i64],
+                        int64_data: expanded_shape,
                         ..Default::default()
                     });
+
+                    let expanded_name = format!("{}_{}_expanded", op_name, prefix);
+                    nodes.push(NodeProto {
+                        input: vec![name, expanded_shape_name],
+                        output: vec![expanded_name.clone()],
+                        name: format!("{}_reshape_expand_{}", op_name, prefix),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+
+                    let tile_repeats: Vec<i64> = repeats.iter().flat_map(|&r| [1_i64, r]).collect();
+                    let tile_repeats_name = format!("{}_{}_tile_repeats", op_name, prefix);
+                    initializers.push(TensorProto {
+                        name: tile_repeats_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![tile_repeats.len() as i64],
+                        int64_data: tile_repeats,
+                        ..Default::default()
+                    });
+
+                    let tiled_name = format!("{}_{}_tiled", op_name, prefix);
+                    nodes.push(NodeProto {
+                        input: vec![expanded_name, tile_repeats_name],
+                        output: vec![tiled_name.clone()],
+                        name: format!("{}_tile_{}", op_name, prefix),
+                        op_type: "Tile".to_string(),
+                        ..Default::default()
+                    });
+
+                    let final_shape: Vec<i64> = input_shape.iter().map(|&d| d as i64).collect();
+                    let final_shape_name = format!("{}_{}_final_shape", op_name, prefix);
+                    initializers.push(TensorProto {
+                        name: final_shape_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![final_shape.len() as i64],
+                        int64_data: final_shape,
+                        ..Default::default()
+                    });
+
+                    let aligned_name = format!("{}_{}_aligned", op_name, prefix);
+                    nodes.push(NodeProto {
+                        input: vec![tiled_name, final_shape_name],
+                        output: vec![aligned_name.clone()],
+                        name: format!("{}_reshape_final_{}", op_name, prefix),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+                    aligned_name
                 }
 
-                // Prepare inputs, inserting reshapes when needed.
                 let input_name = operand_name(graph, input_id);
                 let mut scale_name = operand_name(graph, scale_id);
                 let mut zero_point_name = operand_name(graph, zero_point_id);
+                scale_name = align_param_with_input(
+                    &op_name,
+                    "scale",
+                    scale_name,
+                    &scale_shape,
+                    &input_shape,
+                    &mut nodes,
+                    &mut initializers,
+                );
+                zero_point_name = align_param_with_input(
+                    &op_name,
+                    "zero_point",
+                    zero_point_name,
+                    &zero_point_shape,
+                    &input_shape,
+                    &mut nodes,
+                    &mut initializers,
+                );
 
-                // Per-tensor: scale/zero-point are all ones but rank > 0 -> reshape to scalar
-                let scale_all_ones = scale_shape.iter().all(|&d| d == 1);
-                if scale_all_ones && !scale_shape.is_empty() {
-                    let reshape_prefix = format!("{}_per_tensor_scale", op_name);
-                    scale_name = Self::create_reshape_node(
-                        &reshape_prefix,
-                        scale_name,
-                        vec![],
-                        &mut nodes,
-                        &mut initializers,
-                    );
-                    let zp_prefix = format!("{}_per_tensor_zp", op_name);
-                    zero_point_name = Self::create_reshape_node(
-                        &zp_prefix,
-                        zero_point_name,
-                        vec![],
-                        &mut nodes,
-                        &mut initializers,
-                    );
-                }
+                let input_for_div = if input_operand.descriptor.data_type == DataType::Float16 {
+                    let cast_name = format!("{}_input_f32", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name.clone()],
+                        output: vec![cast_name.clone()],
+                        name: format!("{}_cast_input_f32", op_name),
+                        op_type: "Cast".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: ProtoDataType::Float as i64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    cast_name
+                } else {
+                    input_name.clone()
+                };
 
-                // Per-axis: reshape scale/zero-point to 1D of axis size if not already
-                if non_one_dims.len() == 1
-                    && scale_shape
-                        .get(non_one_dims[0])
-                        .zip(input_shape.get(non_one_dims[0]))
-                        .map(|(s, i)| s == i)
-                        .unwrap_or(false)
-                    && scale_shape.len() != 1
-                {
-                    let target = vec![*input_shape.get(non_one_dims[0]).unwrap_or(&1) as i64];
-                    let reshape_prefix = format!("{}_per_axis_scale", op_name);
-                    scale_name = Self::create_reshape_node(
-                        &reshape_prefix,
-                        scale_name,
-                        target.clone(),
-                        &mut nodes,
-                        &mut initializers,
-                    );
-                    let zp_prefix = format!("{}_per_axis_zp", op_name);
-                    zero_point_name = Self::create_reshape_node(
-                        &zp_prefix,
-                        zero_point_name,
-                        target,
-                        &mut nodes,
-                        &mut initializers,
-                    );
-                } else if !zero_point_shape.is_empty() && zero_point_shape != scale_shape {
-                    // Align zero-point shape to scale shape when mismatched (defensive)
-                    let reshape_prefix = format!("{}_align_zp", op_name);
-                    let target: Vec<i64> = scale_shape.iter().map(|&d| d as i64).collect();
-                    zero_point_name = Self::create_reshape_node(
-                        &reshape_prefix,
-                        zero_point_name,
-                        target,
-                        &mut nodes,
-                        &mut initializers,
-                    );
-                }
+                let scale_for_div = if scale_operand.descriptor.data_type == DataType::Float16 {
+                    let cast_name = format!("{}_scale_f32", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![scale_name],
+                        output: vec![cast_name.clone()],
+                        name: format!("{}_cast_scale_f32", op_name),
+                        op_type: "Cast".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: ProtoDataType::Float as i64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    cast_name
+                } else {
+                    scale_name
+                };
 
-                let inputs = vec![input_name, scale_name, zero_point_name];
-
-                let output = op
-                    .output_operand
-                    .ok_or(GraphError::InvalidConversionOperand {
-                        operand: 0, // validated earlier in traversal
-                    })?;
-
+                // y = clamp(roundToNearestEven(input / scale) + zeroPoint, qmin, qmax)
+                let div_name = format!("{}_div", op_name);
                 nodes.push(NodeProto {
-                    input: inputs,
-                    output: vec![operand_name(graph, output)],
-                    name: op_name,
-                    op_type: if op.op_type.eq_ignore_ascii_case("quantizeLinear") {
-                        "QuantizeLinear".to_string()
-                    } else {
-                        "DequantizeLinear".to_string()
-                    },
-                    attribute: attributes,
+                    input: vec![input_for_div, scale_for_div],
+                    output: vec![div_name.clone()],
+                    name: format!("{}_divide_scale", op_name),
+                    op_type: "Div".to_string(),
                     ..Default::default()
                 });
+
+                let round_name = format!("{}_round", op_name);
+                nodes.push(NodeProto {
+                    input: vec![div_name],
+                    output: vec![round_name.clone()],
+                    name: format!("{}_round_even", op_name),
+                    op_type: "Round".to_string(),
+                    ..Default::default()
+                });
+
+                let rounded_i32_name = format!("{}_rounded_i32", op_name);
+                nodes.push(NodeProto {
+                    input: vec![round_name],
+                    output: vec![rounded_i32_name.clone()],
+                    name: format!("{}_cast_rounded_i32", op_name),
+                    op_type: "Cast".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "to".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: ProtoDataType::Int32 as i64,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                let zp_i32_name = format!("{}_zero_point_i32", op_name);
+                nodes.push(NodeProto {
+                    input: vec![zero_point_name],
+                    output: vec![zp_i32_name.clone()],
+                    name: format!("{}_cast_zero_point_i32", op_name),
+                    op_type: "Cast".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "to".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: ProtoDataType::Int32 as i64,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                let shifted_name = format!("{}_shifted", op_name);
+                nodes.push(NodeProto {
+                    input: vec![rounded_i32_name, zp_i32_name],
+                    output: vec![shifted_name.clone()],
+                    name: format!("{}_add_zero_point", op_name),
+                    op_type: "Add".to_string(),
+                    ..Default::default()
+                });
+
+                let output_operand = graph.operand(output_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "quantizeLinear output lookup",
+                        output_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let output_dtype = output_operand.descriptor.data_type;
+                let mut quantized_i32_name = shifted_name;
+                let clip_bounds = match output_dtype {
+                    DataType::Int8 => Some((-128_i32, 127_i32)),
+                    DataType::Uint8 => Some((0_i32, 255_i32)),
+                    DataType::Int4 => Some((-8_i32, 7_i32)),
+                    DataType::Uint4 => Some((0_i32, 15_i32)),
+                    DataType::Int32 => None,
+                    _ => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!(
+                                "Unsupported quantizeLinear output data type {:?}",
+                                output_dtype
+                            ),
+                        });
+                    }
+                };
+
+                if let Some((qmin, qmax)) = clip_bounds {
+                    let qmin_name = format!("{}_qmin", op_name);
+                    initializers.push(TensorProto {
+                        name: qmin_name.clone(),
+                        data_type: ProtoDataType::Int32 as i32,
+                        dims: vec![],
+                        int32_data: vec![qmin],
+                        ..Default::default()
+                    });
+                    let qmax_name = format!("{}_qmax", op_name);
+                    initializers.push(TensorProto {
+                        name: qmax_name.clone(),
+                        data_type: ProtoDataType::Int32 as i32,
+                        dims: vec![],
+                        int32_data: vec![qmax],
+                        ..Default::default()
+                    });
+
+                    let clamped_low_name = format!("{}_clamped_low", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![quantized_i32_name, qmin_name],
+                        output: vec![clamped_low_name.clone()],
+                        name: format!("{}_clamp_low", op_name),
+                        op_type: "Max".to_string(),
+                        ..Default::default()
+                    });
+                    let clamped_name = format!("{}_clamped", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![clamped_low_name, qmax_name],
+                        output: vec![clamped_name.clone()],
+                        name: format!("{}_clamp_high", op_name),
+                        op_type: "Min".to_string(),
+                        ..Default::default()
+                    });
+                    quantized_i32_name = clamped_name;
+                }
+
+                let output_name = operand_name(graph, output_id);
+                let onnx_output_dtype = Self::data_type_code(output_dtype);
+                if onnx_output_dtype == ProtoDataType::Int32 {
+                    nodes.push(NodeProto {
+                        input: vec![quantized_i32_name],
+                        output: vec![output_name],
+                        name: format!("{}_output_identity", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![quantized_i32_name],
+                        output: vec![output_name],
+                        name: op_name,
+                        op_type: "Cast".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: onnx_output_dtype as i64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
 
                 continue;
             }
@@ -4453,13 +4666,16 @@ mod tests {
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
 
-        let quant_node = graph_proto
-            .node
-            .iter()
-            .find(|n| n.op_type == "QuantizeLinear");
-        assert!(quant_node.is_some());
-        let node = quant_node.unwrap();
-        assert_eq!(node.input.len(), 3);
+        // QuantizeLinear is lowered to primitive ops for broader ORT compatibility.
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Div"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Round"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Add"));
+        assert!(
+            !graph_proto
+                .node
+                .iter()
+                .any(|n| n.op_type == "QuantizeLinear")
+        );
     }
 
     #[test]
@@ -4612,16 +4828,15 @@ mod tests {
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
 
-        let quant_node = graph_proto
-            .node
-            .iter()
-            .find(|n| n.op_type == "QuantizeLinear");
-        assert!(quant_node.is_some());
-
-        let node = quant_node.unwrap();
-        let axis_attr = node.attribute.iter().find(|a| a.name == "axis");
-        assert!(axis_attr.is_some());
-        assert_eq!(axis_attr.unwrap().i, 1);
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Div"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Round"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Add"));
+        assert!(
+            !graph_proto
+                .node
+                .iter()
+                .any(|n| n.op_type == "QuantizeLinear")
+        );
     }
 
     #[test]
