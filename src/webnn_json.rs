@@ -4,7 +4,10 @@ use crate::graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
 };
 use std::collections::{BTreeMap, HashMap};
-use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
+use webnn_graph::ast::{
+    ConstDecl, ConstInit, Dimension, GraphJson, Node, OperandDesc, get_static_or_max_size,
+    to_dimension_vector,
+};
 
 /// Convert our DataType to webnn-graph DataType
 fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
@@ -38,6 +41,16 @@ fn from_webnn_datatype(dt: &webnn_graph::ast::DataType) -> DataType {
     }
 }
 
+// Compatibility bridge for the upcoming dynamic dimensions feature in webnn-graph.
+// rustnn still stores shapes as Vec<u32>, while webnn-graph inputs use Vec<Dimension>.
+fn to_webnn_shape(shape: &[u32]) -> Vec<Dimension> {
+    to_dimension_vector(shape)
+}
+
+fn from_webnn_shape(shape: &[Dimension]) -> Vec<u32> {
+    shape.iter().map(get_static_or_max_size).collect()
+}
+
 /// Convert GraphInfo to GraphJson
 pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, GraphError> {
     let mut inputs = BTreeMap::new();
@@ -58,7 +71,7 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
                     name,
                     OperandDesc {
                         data_type: to_webnn_datatype(&operand.descriptor.data_type),
-                        shape: operand.descriptor.shape.clone(),
+                        shape: to_webnn_shape(&operand.descriptor.shape),
                     },
                 );
             }
@@ -178,7 +191,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             name: Some(name.clone()),
             descriptor: OperandDescriptor {
                 data_type: from_webnn_datatype(&desc.data_type),
-                shape: desc.shape.clone(),
+                shape: from_webnn_shape(&desc.shape),
                 pending_permutation: Vec::new(),
             },
             kind: OperandKind::Input,
@@ -1071,7 +1084,11 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![1, 2, 3],
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(1),
+                    webnn_graph::ast::Dimension::Static(2),
+                    webnn_graph::ast::Dimension::Static(3),
+                ],
             },
         );
 
@@ -1426,7 +1443,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![2],
+                shape: vec![webnn_graph::ast::Dimension::Static(2)],
             },
         );
 
@@ -1466,7 +1483,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![2],
+                shape: vec![webnn_graph::ast::Dimension::Static(2)],
             },
         );
 
@@ -1567,7 +1584,7 @@ mod tests {
             "x".to_string(),
             OperandDesc {
                 data_type: webnn_graph::ast::DataType::Float32,
-                shape: vec![2],
+                shape: vec![webnn_graph::ast::Dimension::Static(2)],
             },
         );
 
