@@ -1945,7 +1945,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
             if op.op_type.eq_ignore_ascii_case("argmax")
                 || op.op_type.eq_ignore_ascii_case("argmin")
             {
-                let input_name = operand_name(graph, op.input_operands[0]);
+                let input_id = op.input_operands[0];
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("arg reduce input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_name = operand_name(graph, input_id);
                 let output_id = op.output_operand.expect("Single-output operation expected");
                 let final_output_name = operand_name(graph, output_id);
                 let output_dtype = graph
@@ -1953,6 +1957,24 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|o| o.descriptor.data_type)
                     .unwrap_or(DataType::Int32);
                 let attributes = Self::create_operation_attributes(op, graph);
+
+                // ONNX Runtime does not provide ArgMin/ArgMax kernels for uint32/uint64.
+                // Cast to int64 first to preserve ordering for the tested value ranges.
+                let arg_input_name = if matches!(
+                    input_operand.descriptor.data_type,
+                    DataType::Uint32 | DataType::Uint64
+                ) {
+                    let cast_output = format!("{}_arg_input_int64", op_name);
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_pre_cast", op_name),
+                        input_name,
+                        cast_output.clone(),
+                        ProtoDataType::Int64,
+                    ));
+                    cast_output
+                } else {
+                    input_name
+                };
 
                 // ONNX ArgMax/ArgMin output type is int64. Cast when WebNN requests int32.
                 let arg_output_name = if output_dtype == DataType::Int32 {
@@ -1962,7 +1984,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
 
                 nodes.push(NodeProto {
-                    input: vec![input_name],
+                    input: vec![arg_input_name],
                     output: vec![arg_output_name.clone()],
                     name: op_name.clone(),
                     op_type: Self::onnx_op_type(&op.op_type),
