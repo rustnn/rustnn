@@ -1319,7 +1319,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         axis += rank;
                     }
                     if axis >= 0 && (axis as usize) < data_shape.len() {
-                        let mut out_shape = indices_shape.clone();
+                        let mut out_shape = data_shape[..axis as usize].to_vec();
+                        out_shape.extend_from_slice(indices_shape);
                         out_shape.extend_from_slice(&data_shape[(axis as usize + 1)..]);
                         shape_overrides.insert(output_id, out_shape.clone());
                         operand_shapes.insert(output_id, out_shape);
@@ -3579,7 +3580,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 inputs.push(final_indices);
 
                 // Create Gather node
-                let attributes = Self::create_operation_attributes(op, graph);
+                let axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let attributes = vec![AttributeProto {
+                    name: "axis".to_string(),
+                    r#type: AttributeType::Int as i32,
+                    i: axis,
+                    ..Default::default()
+                }];
                 nodes.push(NodeProto {
                     input: inputs,
                     output: vec![operand_name(
@@ -3589,6 +3600,204 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     name: op_name,
                     op_type: "Gather".to_string(),
                     attribute: attributes,
+                    ..Default::default()
+                });
+            } else if op.op_type.eq_ignore_ascii_case("gatherelements") {
+                // GatherElements: cast indices to int64 and clamp to valid range to match
+                // WebNN/Chromium behavior for out-of-bounds indices.
+                let data_id = op.input_operands[0];
+                let indices_id = op.input_operands[1];
+                let data_name = operand_name(graph, data_id);
+                let indices_name = operand_name(graph, indices_id);
+
+                let data_operand = graph.operand(data_id).ok_or_else(|| {
+                    Self::invalid_operand("gatherElements data lookup", data_id, Some((op, idx)))
+                })?;
+
+                let rank = data_operand.descriptor.shape.len();
+                if rank == 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "gatherElements requires rank >= 1 input".to_string(),
+                    });
+                }
+                let mut axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if axis < 0 {
+                    axis += rank as i64;
+                }
+                if axis < 0 || axis as usize >= rank {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "gatherElements axis {} out of bounds for rank {}",
+                            axis, rank
+                        ),
+                    });
+                }
+                let dim_size = data_operand.descriptor.shape[axis as usize] as i64;
+
+                // Cast indices to int64 (ONNX allows int32/int64; this also simplifies clamping).
+                let indices_i64 = format!("{}_indices_i64", op_name);
+                nodes.push(Self::create_cast_node(
+                    &format!("{}_indices_cast", op_name),
+                    indices_name,
+                    indices_i64.clone(),
+                    ProtoDataType::Int64,
+                ));
+
+                // Clamp to [-dim_size, dim_size - 1] to avoid ORT out-of-bounds runtime errors.
+                let min_name = format!("{}_indices_min", op_name);
+                let max_name = format!("{}_indices_max", op_name);
+                let clamped_name = format!("{}_indices_clamped", op_name);
+                initializers.push(TensorProto {
+                    name: min_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![],
+                    int64_data: vec![-dim_size],
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: max_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![],
+                    int64_data: vec![dim_size - 1],
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![indices_i64, min_name, max_name],
+                    output: vec![clamped_name.clone()],
+                    name: format!("{}_indices_clip", op_name),
+                    op_type: "Clip".to_string(),
+                    ..Default::default()
+                });
+
+                nodes.push(NodeProto {
+                    input: vec![data_name, clamped_name],
+                    output: vec![operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
+                    name: op_name,
+                    op_type: "GatherElements".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: axis,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+            } else if op.op_type.eq_ignore_ascii_case("gathernd") {
+                // GatherND: ONNX requires int64 indices. Clamp each index component per-axis
+                // to avoid out-of-bounds runtime errors and match WebNN conformance behavior.
+                let data_id = op.input_operands[0];
+                let indices_id = op.input_operands[1];
+                let data_name = operand_name(graph, data_id);
+                let indices_name = operand_name(graph, indices_id);
+
+                let data_operand = graph.operand(data_id).ok_or_else(|| {
+                    Self::invalid_operand("gatherND data lookup", data_id, Some((op, idx)))
+                })?;
+                let indices_operand = graph.operand(indices_id).ok_or_else(|| {
+                    Self::invalid_operand("gatherND indices lookup", indices_id, Some((op, idx)))
+                })?;
+
+                let k = indices_operand
+                    .descriptor
+                    .shape
+                    .last()
+                    .copied()
+                    .unwrap_or(1) as usize;
+                let data_rank = data_operand.descriptor.shape.len();
+                if k == 0 || k > data_rank {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "gatherND invalid indices last dim {} for data rank {}",
+                            k, data_rank
+                        ),
+                    });
+                }
+
+                let indices_i64 = format!("{}_indices_i64", op_name);
+                nodes.push(Self::create_cast_node(
+                    &format!("{}_indices_cast", op_name),
+                    indices_name,
+                    indices_i64.clone(),
+                    ProtoDataType::Int64,
+                ));
+
+                let mins: Vec<i64> = data_operand.descriptor.shape[..k]
+                    .iter()
+                    .map(|&d| -(d as i64))
+                    .collect();
+                let maxs: Vec<i64> = data_operand.descriptor.shape[..k]
+                    .iter()
+                    .map(|&d| d as i64 - 1)
+                    .collect();
+
+                let min_name = format!("{}_indices_min", op_name);
+                let max_name = format!("{}_indices_max", op_name);
+                let clamped_low_name = format!("{}_indices_clamped_low", op_name);
+                let clamped_name = format!("{}_indices_clamped", op_name);
+                initializers.push(TensorProto {
+                    name: min_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![k as i64],
+                    int64_data: mins,
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: max_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![k as i64],
+                    int64_data: maxs,
+                    ..Default::default()
+                });
+                // ORT Clip<int64> requires scalar min/max; use Max/Min with vector bounds
+                // to clamp each index component and rely on broadcast across leading dims.
+                nodes.push(NodeProto {
+                    input: vec![indices_i64, min_name],
+                    output: vec![clamped_low_name.clone()],
+                    name: format!("{}_indices_max", op_name),
+                    op_type: "Max".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![clamped_low_name, max_name],
+                    output: vec![clamped_name.clone()],
+                    name: format!("{}_indices_min", op_name),
+                    op_type: "Min".to_string(),
+                    ..Default::default()
+                });
+
+                let mut attrs = Vec::new();
+                if let Some(batch_dims) = op
+                    .attributes
+                    .get("batchDimensions")
+                    .and_then(|v| v.as_i64())
+                {
+                    attrs.push(AttributeProto {
+                        name: "batch_dims".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: batch_dims,
+                        ..Default::default()
+                    });
+                }
+
+                nodes.push(NodeProto {
+                    input: vec![data_name, clamped_name],
+                    output: vec![operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    )],
+                    name: op_name,
+                    op_type: "GatherND".to_string(),
+                    attribute: attrs,
                     ..Default::default()
                 });
             } else if op.op_type == "conv2d" || op.op_type == "convTranspose2d" {
