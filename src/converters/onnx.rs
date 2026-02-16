@@ -2304,6 +2304,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
             } else if op.op_type == "clamp" {
                 // Clamp (Clip in ONNX) uses min/max as inputs (not attributes) in opset 11+
+                if op.input_operands.is_empty() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "clamp requires at least 1 input, got 0 in operation {op_name}"
+                        ),
+                    });
+                }
                 let mut inputs: Vec<String> = op
                     .input_operands
                     .iter()
@@ -3076,6 +3084,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
             } else if op.op_type == "conv2d" || op.op_type == "convTranspose2d" {
                 // Conv2d/ConvTranspose2d operations - handle layout transformations
+                if op.input_operands.len() < 2 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "{} requires 2 inputs (input, filter), got {} in operation {}",
+                            op.op_type,
+                            op.input_operands.len(),
+                            op_name
+                        ),
+                    });
+                }
                 let mut conv_inputs: Vec<String> = Vec::new();
 
                 // Handle input layout (NHWC → NCHW if needed)
