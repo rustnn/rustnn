@@ -838,6 +838,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         .or(Some(DataType::Int32)),
                     "expand"
                     | "gather"
+                    | "gatherelements"
+                    | "gathernd"
                     | "concat"
                     | "slice"
                     | "reshape"
