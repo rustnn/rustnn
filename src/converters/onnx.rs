@@ -2640,6 +2640,114 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
+            } else if op.op_type.eq_ignore_ascii_case("gelu") {
+                // GELU exact formulation:
+                // 0.5 * x * (1 + erf(x / sqrt(2)))
+                // Avoid ONNX Gelu op because it is unavailable in our current ORT build.
+                let input_id = op.input_operands[0];
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("gelu input", input_id, Some((op, idx)))
+                })?;
+                let input_name = operand_name(graph, input_id);
+                let output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+
+                // Compute in float32 for float16 inputs, then cast back.
+                let (compute_input, needs_cast_back) =
+                    if input_operand.descriptor.data_type == DataType::Float16 {
+                        let cast_name = format!("{}_input_f32", op_name);
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_input", op_name),
+                            input_name.clone(),
+                            cast_name.clone(),
+                            ProtoDataType::Float,
+                        ));
+                        (cast_name, true)
+                    } else {
+                        (input_name.clone(), false)
+                    };
+
+                let half_name = format!("{}_gelu_half", op_name);
+                let one_name = format!("{}_gelu_one", op_name);
+                let inv_sqrt2_name = format!("{}_gelu_inv_sqrt2", op_name);
+                initializers.push(TensorProto {
+                    name: half_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![],
+                    float_data: vec![0.5],
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: one_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![],
+                    float_data: vec![1.0],
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: inv_sqrt2_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![],
+                    float_data: vec![std::f32::consts::FRAC_1_SQRT_2],
+                    ..Default::default()
+                });
+
+                let scaled_name = format!("{}_gelu_scaled", op_name);
+                let erf_name = format!("{}_gelu_erf", op_name);
+                let add_name = format!("{}_gelu_add", op_name);
+                let mul_name = format!("{}_gelu_mul", op_name);
+                let final_compute_name = if needs_cast_back {
+                    format!("{}_gelu_out_f32", op_name)
+                } else {
+                    output_name.clone()
+                };
+
+                nodes.push(NodeProto {
+                    input: vec![compute_input.clone(), inv_sqrt2_name],
+                    output: vec![scaled_name.clone()],
+                    name: format!("{}_gelu_scale", op_name),
+                    op_type: "Mul".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![scaled_name],
+                    output: vec![erf_name.clone()],
+                    name: format!("{}_gelu_erf", op_name),
+                    op_type: "Erf".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![erf_name, one_name],
+                    output: vec![add_name.clone()],
+                    name: format!("{}_gelu_add", op_name),
+                    op_type: "Add".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![compute_input, add_name],
+                    output: vec![mul_name.clone()],
+                    name: format!("{}_gelu_mul", op_name),
+                    op_type: "Mul".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![mul_name, half_name],
+                    output: vec![final_compute_name.clone()],
+                    name: format!("{}_gelu_half_mul", op_name),
+                    op_type: "Mul".to_string(),
+                    ..Default::default()
+                });
+
+                if needs_cast_back {
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_output", op_name),
+                        final_compute_name,
+                        output_name,
+                        ProtoDataType::Float16,
+                    ));
+                }
             } else if op.op_type.eq_ignore_ascii_case("triangular") {
                 // Triangular operation: Cast integer inputs to float32
                 let input_id = op.input_operands[0];
