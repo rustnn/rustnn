@@ -770,6 +770,110 @@ impl OnnxConverter {
             Vec::new()
         }
     }
+
+    fn clamp_scatter_nd_indices(
+        op_name: &str,
+        indices_name: &str,
+        indices_shape: &[u32],
+        data_shape: &[u32],
+        nodes: &mut Vec<NodeProto>,
+        initializers: &mut Vec<TensorProto>,
+    ) -> String {
+        if data_shape.is_empty() || indices_shape.is_empty() {
+            return indices_name.to_string();
+        }
+
+        let index_dim = *indices_shape.last().unwrap_or(&0);
+        if index_dim == 0 {
+            return indices_name.to_string();
+        }
+
+        let k = index_dim as usize;
+        let split_axis = indices_shape.len() as i64 - 1;
+        let mut split_outputs = Vec::new();
+        for i in 0..k {
+            split_outputs.push(format!("{}_indices_split_{}", op_name, i));
+        }
+
+        let split_node_name = format!("{}_indices_split", op_name);
+        let split_sizes_name = format!("{}_split_sizes", op_name);
+        initializers.push(TensorProto {
+            name: split_sizes_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![k as i64],
+            int64_data: vec![1i64; k],
+            ..Default::default()
+        });
+        nodes.push(NodeProto {
+            input: vec![indices_name.to_string(), split_sizes_name],
+            output: split_outputs.clone(),
+            name: split_node_name,
+            op_type: "Split".to_string(),
+            attribute: vec![AttributeProto {
+                name: "axis".to_string(),
+                r#type: AttributeType::Int as i32,
+                i: split_axis,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let min_name = format!("{}_indices_clip_min", op_name);
+        initializers.push(TensorProto {
+            name: min_name.clone(),
+            data_type: ProtoDataType::Int64 as i32,
+            dims: vec![],
+            int64_data: vec![0],
+            ..Default::default()
+        });
+
+        let mut clipped = Vec::new();
+        let clamp_axes = usize::min(k, data_shape.len());
+        for axis_idx in 0..k {
+            if axis_idx < clamp_axes {
+                let dim = data_shape[axis_idx];
+                let max_val = if dim == 0 { 0 } else { dim.saturating_sub(1) } as i64;
+                let max_name = format!("{}_indices_clip_max_{}", op_name, axis_idx);
+                initializers.push(TensorProto {
+                    name: max_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![],
+                    int64_data: vec![max_val],
+                    ..Default::default()
+                });
+
+                let clip_output = format!("{}_indices_clamped_{}", op_name, axis_idx);
+                nodes.push(NodeProto {
+                    input: vec![split_outputs[axis_idx].clone(), min_name.clone(), max_name],
+                    output: vec![clip_output.clone()],
+                    name: format!("{}_clip_indices_{}", op_name, axis_idx),
+                    op_type: "Clip".to_string(),
+                    ..Default::default()
+                });
+                clipped.push(clip_output);
+            } else {
+                clipped.push(split_outputs[axis_idx].clone());
+            }
+        }
+
+        let concat_output = format!("{}_indices_clamped", op_name);
+        let concat_name = format!("{}_indices_concat", op_name);
+        nodes.push(NodeProto {
+            input: clipped,
+            output: vec![concat_output.clone()],
+            name: concat_name,
+            op_type: "Concat".to_string(),
+            attribute: vec![AttributeProto {
+                name: "axis".to_string(),
+                r#type: AttributeType::Int as i32,
+                i: split_axis,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        concat_output
+    }
 }
 
 impl crate::converters::GraphConverter for OnnxConverter {
@@ -1216,6 +1320,28 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         if let Some(dtype) = input_type {
                             type_overrides.insert(output_id, dtype);
                         }
+                    }
+                }
+            } else if op.op_type.eq_ignore_ascii_case("scatterelements")
+                || op.op_type.eq_ignore_ascii_case("scatternd")
+            {
+                // ScatterElements/ScatterND output shape and type follow the data input.
+                if let (Some(&data_input_id), Some(output_id)) =
+                    (op.input_operands.first(), op.output_operand)
+                {
+                    if let Some(input_shape) = operand_shapes.get(&data_input_id) {
+                        shape_overrides.insert(output_id, input_shape.clone());
+                        operand_shapes.insert(output_id, input_shape.clone());
+                    }
+
+                    let input_type = type_overrides.get(&data_input_id).copied().or_else(|| {
+                        graph
+                            .operand(data_input_id)
+                            .map(|op| op.descriptor.data_type)
+                    });
+
+                    if let Some(dtype) = input_type {
+                        type_overrides.insert(output_id, dtype);
                     }
                 }
             } else if op.op_type.eq_ignore_ascii_case("unsqueeze") {
@@ -4933,6 +5059,108 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     attribute: vec![], // No attributes for Unsqueeze/Squeeze in opset 13+
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("scatterelements") {
+                // ScatterElements expects data/updates to have the same dtype.
+                let mut inputs: Vec<String> = Vec::new();
+
+                let data_id = *op.input_operands.first().ok_or_else(|| {
+                    Self::invalid_operand("scatterElements data input missing", 0, Some((op, idx)))
+                })?;
+                let data_operand = graph.operand(data_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "scatterElements data input lookup",
+                        data_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let data_dtype = type_overrides
+                    .get(&data_id)
+                    .copied()
+                    .unwrap_or(data_operand.descriptor.data_type);
+                inputs.push(operand_name(graph, data_id));
+
+                if let Some(&indices_id) = op.input_operands.get(1) {
+                    let indices_operand = graph.operand(indices_id).ok_or_else(|| {
+                        Self::invalid_operand(
+                            "scatterElements indices input lookup",
+                            indices_id,
+                            Some((op, idx)),
+                        )
+                    })?;
+                    let indices_dtype = type_overrides
+                        .get(&indices_id)
+                        .copied()
+                        .unwrap_or(indices_operand.descriptor.data_type);
+
+                    if matches!(indices_dtype, DataType::Int64) {
+                        inputs.push(operand_name(graph, indices_id));
+                    } else {
+                        let cast_output = format!("{}_indices_cast", op_name);
+                        cast_counter += 1;
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_indices_{}", op_name, cast_counter),
+                            operand_name(graph, indices_id),
+                            cast_output.clone(),
+                            ProtoDataType::Int64,
+                        ));
+                        inputs.push(cast_output);
+                    }
+                }
+
+                if let Some(&updates_id) = op.input_operands.get(2) {
+                    let updates_operand = graph.operand(updates_id).ok_or_else(|| {
+                        Self::invalid_operand(
+                            "scatterElements updates input lookup",
+                            updates_id,
+                            Some((op, idx)),
+                        )
+                    })?;
+                    let updates_dtype = type_overrides
+                        .get(&updates_id)
+                        .copied()
+                        .unwrap_or(updates_operand.descriptor.data_type);
+
+                    if updates_dtype == data_dtype {
+                        inputs.push(operand_name(graph, updates_id));
+                    } else {
+                        let cast_output = format!("{}_updates_cast", op_name);
+                        cast_counter += 1;
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_updates_{}", op_name, cast_counter),
+                            operand_name(graph, updates_id),
+                            cast_output.clone(),
+                            Self::data_type_code(data_dtype),
+                        ));
+                        inputs.push(cast_output);
+                    }
+                }
+
+                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_dtype = type_overrides
+                    .get(&output_id)
+                    .copied()
+                    .or_else(|| graph.operand(output_id).map(|o| o.descriptor.data_type))
+                    .unwrap_or(data_dtype);
+                let final_output = operand_name(graph, output_id);
+                let scatter_output = format!("{}_scatter_out", op_name);
+
+                nodes.push(NodeProto {
+                    input: inputs,
+                    output: vec![scatter_output.clone()],
+                    name: op_name.clone(),
+                    op_type: Self::onnx_op_type(&op.op_type),
+                    attribute: Self::create_operation_attributes(op, graph),
+                    ..Default::default()
+                });
+
+                cast_counter += 1;
+                nodes.push(Self::create_cast_node(
+                    &format!("{}_cast_output_{}", op_name, cast_counter),
+                    scatter_output,
+                    final_output.clone(),
+                    Self::data_type_code(output_dtype),
+                ));
+                type_overrides.insert(output_id, output_dtype);
             } else if op.op_type.eq_ignore_ascii_case("scatternd") {
                 // ScatterND requires int64 indices - insert Cast if needed
                 let mut inputs: Vec<String> = Vec::new();
@@ -4952,9 +5180,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 // Input 0: data
-                if let Some(&data_id) = op.input_operands.first() {
-                    inputs.push(operand_name(graph, data_id));
-                }
+                let data_id = *op.input_operands.first().ok_or_else(|| {
+                    Self::invalid_operand("scatterND data input missing", 0, Some((op, idx)))
+                })?;
+                inputs.push(operand_name(graph, data_id));
+                let data_operand = graph.operand(data_id).ok_or_else(|| {
+                    Self::invalid_operand("scatterND data input lookup", data_id, Some((op, idx)))
+                })?;
+                let data_dtype = type_overrides
+                    .get(&data_id)
+                    .copied()
+                    .unwrap_or(data_operand.descriptor.data_type);
 
                 // Input 1: indices - must be int64
                 if let Some(&indices_id) = op.input_operands.get(1) {
@@ -4980,9 +5216,28 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 }],
                                 ..Default::default()
                             });
-                            inputs.push(cast_output);
+                            inputs.push(cast_output.clone());
+                            let clamped = Self::clamp_scatter_nd_indices(
+                                &op_name,
+                                &cast_output,
+                                &indices_operand.descriptor.shape,
+                                &data_operand.descriptor.shape,
+                                &mut nodes,
+                                &mut initializers,
+                            );
+                            inputs.pop();
+                            inputs.push(clamped);
                         } else {
-                            inputs.push(operand_name(graph, indices_id));
+                            let base_name = operand_name(graph, indices_id);
+                            let clamped = Self::clamp_scatter_nd_indices(
+                                &op_name,
+                                &base_name,
+                                &indices_operand.descriptor.shape,
+                                &data_operand.descriptor.shape,
+                                &mut nodes,
+                                &mut initializers,
+                            );
+                            inputs.push(clamped);
                         }
                     } else {
                         inputs.push(operand_name(graph, indices_id));
@@ -4991,20 +5246,56 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Input 2: updates
                 if let Some(&updates_id) = op.input_operands.get(2) {
-                    inputs.push(operand_name(graph, updates_id));
+                    if let Some(updates_operand) = graph.operand(updates_id) {
+                        let updates_dtype = type_overrides
+                            .get(&updates_id)
+                            .copied()
+                            .unwrap_or(updates_operand.descriptor.data_type);
+
+                        if updates_dtype == data_dtype {
+                            inputs.push(operand_name(graph, updates_id));
+                        } else {
+                            let cast_output = format!("{}_updates_cast", op_name);
+                            cast_counter += 1;
+                            nodes.push(Self::create_cast_node(
+                                &format!("{}_cast_updates_{}", op_name, cast_counter),
+                                operand_name(graph, updates_id),
+                                cast_output.clone(),
+                                Self::data_type_code(data_dtype),
+                            ));
+                            inputs.push(cast_output);
+                        }
+                    } else {
+                        inputs.push(operand_name(graph, updates_id));
+                    }
                 }
+
+                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_dtype = type_overrides
+                    .get(&output_id)
+                    .copied()
+                    .or_else(|| graph.operand(output_id).map(|o| o.descriptor.data_type))
+                    .unwrap_or(data_dtype);
+                let final_output = operand_name(graph, output_id);
+                let scatter_output = format!("{}_scatter_out", op_name);
 
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: vec![operand_name(
-                        graph,
-                        op.output_operand.expect("Single-output operation expected"),
-                    )],
-                    name: op_name,
+                    output: vec![scatter_output.clone()],
+                    name: op_name.clone(),
                     op_type: "ScatterND".to_string(),
                     attribute: vec![],
                     ..Default::default()
                 });
+
+                cast_counter += 1;
+                nodes.push(Self::create_cast_node(
+                    &format!("{}_cast_output_{}", op_name, cast_counter),
+                    scatter_output,
+                    final_output.clone(),
+                    Self::data_type_code(output_dtype),
+                ));
+                type_overrides.insert(output_id, output_dtype);
             } else if op.op_type.eq_ignore_ascii_case("pad") {
                 let input_id = op.input_operands[0];
                 let input_name = operand_name(graph, input_id);
@@ -6260,6 +6551,167 @@ mod tests {
         assert!(graph_proto.node.iter().any(|n| n.op_type == "Equal"));
         assert!(graph_proto.node.iter().any(|n| n.op_type == "Cast"));
         assert!(!graph_proto.node.iter().any(|n| n.op_type == "IsInfinite"));
+    }
+
+    #[test]
+    fn test_scatter_elements_casts_indices_and_updates_to_compatible_types() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("data".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Int32,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("indices".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("updates".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "scatterElements".to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "axis": 0 }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("scatterElements conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(
+            graph_proto
+                .node
+                .iter()
+                .any(|n| n.op_type == "ScatterElements")
+        );
+
+        let cast_targets: Vec<i64> = graph_proto
+            .node
+            .iter()
+            .filter(|n| n.op_type == "Cast")
+            .filter_map(|n| n.attribute.iter().find(|a| a.name == "to").map(|a| a.i))
+            .collect();
+        assert!(cast_targets.contains(&(ProtoDataType::Int64 as i64)));
+        assert!(cast_targets.contains(&(ProtoDataType::Float16 as i64)));
+    }
+
+    #[test]
+    fn test_scatter_nd_casts_indices_and_updates_to_compatible_types() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![2, 2],
+                    pending_permutation: vec![],
+                },
+                name: Some("data".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Int32,
+                    shape: vec![2, 1],
+                    pending_permutation: vec![],
+                },
+                name: Some("indices".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 2],
+                    pending_permutation: vec![],
+                },
+                name: Some("updates".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: vec![2, 2],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "scatterND".to_string(),
+            input_operands: vec![0, 1, 2],
+            output_operand: Some(3),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("scatterND conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "ScatterND"));
+
+        let cast_targets: Vec<i64> = graph_proto
+            .node
+            .iter()
+            .filter(|n| n.op_type == "Cast")
+            .filter_map(|n| n.attribute.iter().find(|a| a.name == "to").map(|a| a.i))
+            .collect();
+        assert!(cast_targets.contains(&(ProtoDataType::Int64 as i64)));
+        assert!(cast_targets.contains(&(ProtoDataType::Float16 as i64)));
     }
 
     #[test]
