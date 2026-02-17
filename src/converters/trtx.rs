@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
+use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
 use crate::graph::{DataType, GraphInfo, OperandKind, Operation};
 use trtx::network::Layer;
 use trtx::{
@@ -5638,8 +5639,13 @@ impl GraphConverter for TrtxConverter {
     }
 
     fn convert(&self, graph_info: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        ensure_trtx_loaded().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: e.to_string(),
+        })?;
+
         // Create TensorRT logger, builder, and network
-        let logger = trtx::Logger::stderr().map_err(|e| GraphError::ConversionFailed {
+        let logger = create_trtx_logger().map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),
             reason: format!("Failed to create TensorRT logger: {}", e),
         })?;

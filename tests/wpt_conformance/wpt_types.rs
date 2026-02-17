@@ -40,6 +40,7 @@ pub struct WptGraph {
     #[serde(rename = "expectedOutputs")]
     pub expected_outputs: HashMap<String, WptTensorSpec>,
     /// Optional named constants (same shape as inputs).
+    #[allow(dead_code)]
     #[serde(default)]
     pub constants: HashMap<String, WptTensorSpec>,
 }

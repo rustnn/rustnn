@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 
 /// Tolerance specification: ULP (units in last place) or ATOL (absolute).
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ToleranceSpec {
     pub kind: ToleranceKind,
@@ -18,12 +19,14 @@ pub enum ToleranceKind {
 }
 
 /// For ATOL we need a float value.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ToleranceValue {
     Ulp(u64),
     Atol(f64),
 }
 
+#[allow(dead_code)]
 impl ToleranceSpec {
     pub fn ulp(v: u64) -> Self {
         Self {

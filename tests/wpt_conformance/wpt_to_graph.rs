@@ -3,8 +3,8 @@
 use rustnn::graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
 };
-use rustnn::OnnxInput;
-use rustnn::TensorData;
+#[cfg(feature = "onnx-runtime")]
+use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -607,6 +607,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
 }
 
 /// Build ONNX input list from WPT graph (non-constant inputs only).
+#[cfg(feature = "onnx-runtime")]
 pub fn wpt_graph_to_onnx_inputs(
     graph: &WptGraph,
     input_names: &[String],
@@ -757,6 +758,100 @@ pub fn wpt_graph_to_onnx_inputs(
     Ok(inputs)
 }
 
+/// Encode f32 values as little-endian float16 bytes for TensorRT kHALF.
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+fn f32_to_f16_bytes(slice: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(slice.len() * 2);
+    for &f in slice {
+        out.extend_from_slice(&half::f16::from_f32(f).to_bits().to_le_bytes());
+    }
+    out
+}
+
+/// Build TensorRT input list from WPT graph. Caller encodes values as bytes (float32 or float16).
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+pub fn wpt_graph_to_trtx_inputs(
+    graph: &WptGraph,
+    input_names: &[String],
+) -> Result<Vec<rustnn::TrtxInput>, String> {
+    let mut inputs = Vec::new();
+    for name in input_names {
+        let spec = graph.inputs.get(name).ok_or_else(|| format!("input {} not found", name))?;
+        let dtype = spec.data_type();
+        let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
+        let n: usize = shape.iter().product();
+        let n = n.max(1);
+
+        let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+        let f32_data: Vec<f32> = match dtype {
+            "float32" | "float16" => {
+                let mut buf = vec![0.0f32; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        buf[i] = parse_float_for_tensor(v).unwrap_or(buf[i]);
+                    }
+                } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+                    buf.fill(f);
+                }
+                buf
+            }
+            "int32" | "uint32" | "int8" | "uint8" | "int64" | "uint64" => {
+                let mut buf = vec![0.0f32; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        let x = v
+                            .as_i64()
+                            .or_else(|| parse_number(v).map(|f| f as i64))
+                            .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                            .or_else(|| v.as_u64().map(|u| u as i64));
+                        if let Some(x) = x {
+                            buf[i] = x as f32;
+                        }
+                    }
+                } else if let Some(x) = spec
+                    .data
+                    .as_i64()
+                    .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+                    .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                    .or_else(|| spec.data.as_u64().map(|u| u as i64))
+                {
+                    buf.fill(x as f32);
+                }
+                buf
+            }
+            _ => {
+                let mut buf = vec![0.0f32; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(f) = parse_float_for_tensor(v).or_else(|| v.as_f64().map(|f| f as f32)) {
+                            buf[i] = f;
+                        }
+                    }
+                } else if let Some(f) = parse_float_for_tensor(&spec.data).or_else(|| spec.data.as_f64().map(|f| f as f32)) {
+                    buf.fill(f);
+                }
+                buf
+            }
+        };
+
+        let data: Vec<u8> = if dtype == "float16" {
+            f32_to_f16_bytes(&f32_data)
+        } else {
+            // float32 or other: raw f32 bytes
+            f32_data
+                .iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect()
+        };
+
+        inputs.push(rustnn::TrtxInput {
+            name: name.clone(),
+            data,
+        });
+    }
+    Ok(inputs)
+}
+
 /// Expected output as f32 slice (for validation). Converts from WPT expected_outputs.
 /// Handles "Infinity", "-Infinity", "NaN" strings and null (→ NaN).
 pub fn expected_output_to_f32(spec: &WptTensorSpec) -> Vec<f32> {
@@ -776,6 +871,7 @@ pub fn expected_output_to_f32(spec: &WptTensorSpec) -> Vec<f32> {
 }
 
 /// Expected output as i64 slice (for int64 validation). Handles numbers and bigint strings.
+#[allow(dead_code)]
 pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
@@ -801,6 +897,7 @@ pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
 }
 
 /// Expected output as u64 slice (for uint64 validation). Handles numbers and bigint strings.
+#[allow(dead_code)]
 pub fn expected_output_to_u64(spec: &WptTensorSpec) -> Vec<u64> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
