@@ -2539,7 +2539,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op.op_type.as_str(),
                     "equal" | "greater" | "greaterOrEqual" | "lesser" | "lesserOrEqual"
                 );
-            let is_unary_predicate_op = matches!(op.op_type.as_str(), "isNaN" | "isInfinite");
+            let is_isnan_op = op.op_type.eq_ignore_ascii_case("isnan");
+            let is_isinfinite_op = op.op_type.eq_ignore_ascii_case("isinfinite");
+            let is_unary_predicate_op = is_isnan_op;
             let is_logical_op = matches!(
                 op.op_type.as_str(),
                 "logicalNot" | "logicalAnd" | "logicalOr" | "logicalXor"
@@ -2641,8 +2643,54 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
+            } else if is_isinfinite_op {
+                // isInfinite: lower to Equal(Abs(x), +inf) for ORT compatibility.
+                let input_id = op.input_operands[0];
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("isInfinite input", input_id, Some((op, idx)))
+                })?;
+                let input_name = operand_name(graph, input_id);
+
+                let abs_output = format!("{}_abs_output", op_name);
+                nodes.push(NodeProto {
+                    input: vec![input_name],
+                    output: vec![abs_output.clone()],
+                    name: format!("{}_abs", op_name),
+                    op_type: "Abs".to_string(),
+                    attribute: vec![],
+                    ..Default::default()
+                });
+
+                let inf_name = format!("{}_inf_const", op_name);
+                let inf_dtype = Self::data_type_code(input_operand.descriptor.data_type);
+                initializers.push(Self::create_scalar_initializer(
+                    inf_name.clone(),
+                    inf_dtype,
+                    f32::INFINITY,
+                ));
+
+                let bool_output_name = format!("{}_bool_output", op_name);
+                nodes.push(NodeProto {
+                    input: vec![abs_output, inf_name],
+                    output: vec![bool_output_name.clone()],
+                    name: format!("{}_equal_inf", op_name),
+                    op_type: "Equal".to_string(),
+                    attribute: vec![],
+                    ..Default::default()
+                });
+
+                nodes.push(Self::create_cast_node(
+                    &format!("cast_to_uint8_{}", cast_counter),
+                    bool_output_name,
+                    operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    ),
+                    ProtoDataType::Uint8,
+                ));
+                cast_counter += 1;
             } else if is_unary_predicate_op {
-                // Unary predicates (isNaN/isInfinite): execute op (bool), cast output to uint8.
+                // Unary predicate (isNaN): execute op (bool), cast output to uint8.
                 let bool_output_name = format!("{}_bool_output", op_name);
 
                 nodes.push(NodeProto {
@@ -5763,6 +5811,60 @@ mod tests {
 
         assert!(graph_proto.node.iter().any(|n| n.op_type == "IsNaN"));
         assert!(graph_proto.node.iter().any(|n| n.op_type == "Cast"));
+    }
+
+    #[test]
+    fn test_isinfinite_conversion_decomposes_to_abs_equal_cast() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint8,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "isInfinite".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("isInfinite conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Abs"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Equal"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Cast"));
+        assert!(!graph_proto.node.iter().any(|n| n.op_type == "IsInfinite"));
     }
 
     #[test]
