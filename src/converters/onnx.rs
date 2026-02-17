@@ -3097,20 +3097,69 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_dtype = input_operand.descriptor.data_type;
                 let onnx_dtype = Self::data_type_code(input_dtype);
 
-                let min_value = Self::parse_f64_attr(op.attributes.get("minValue"));
-                let max_value = Self::parse_f64_attr(op.attributes.get("maxValue"));
+                let min_value_raw = Self::parse_f64_attr(op.attributes.get("minValue"));
+                let max_value_raw = Self::parse_f64_attr(op.attributes.get("maxValue"));
+
+                // WebNN clamp semantics:
+                // - minValue/maxValue default to -Infinity/+Infinity for float inputs.
+                // - NaN bound behaves like unspecified.
+                // ONNX Clip defaults for floating-point are finite min/max, so we must
+                // materialize explicit infinities to preserve WebNN behavior.
+                let min_value = min_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
+                let max_value = max_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
+                let is_float_input = matches!(input_dtype, DataType::Float32 | DataType::Float16);
+                let min_value = if is_float_input {
+                    Some(min_value.unwrap_or(f64::NEG_INFINITY))
+                } else {
+                    min_value
+                };
+                let max_value = if is_float_input {
+                    Some(max_value.unwrap_or(f64::INFINITY))
+                } else {
+                    max_value
+                };
 
                 // Add min value as second input (optional in ONNX Clip)
                 if let Some(min_value) = min_value {
                     let min_name = format!("{}_min", op_name);
                     inputs.push(min_name.clone());
-
-                    // Add min initializer with matching data type
-                    initializers.push(Self::create_scalar_initializer(
-                        min_name,
-                        onnx_dtype,
-                        min_value as f32,
-                    ));
+                    let min_tensor = match input_dtype {
+                        DataType::Float32 => TensorProto {
+                            name: min_name,
+                            data_type: ProtoDataType::Float as i32,
+                            dims: vec![],
+                            raw_data: (min_value as f32).to_le_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                        DataType::Float16 => {
+                            let bits = half::f16::from_f32(min_value as f32).to_bits();
+                            TensorProto {
+                                name: min_name,
+                                data_type: ProtoDataType::Float16 as i32,
+                                dims: vec![],
+                                raw_data: bits.to_le_bytes().to_vec(),
+                                ..Default::default()
+                            }
+                        }
+                        DataType::Int64 => TensorProto {
+                            name: min_name,
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![],
+                            int64_data: vec![min_value as i64],
+                            ..Default::default()
+                        },
+                        DataType::Uint64 => TensorProto {
+                            name: min_name,
+                            data_type: ProtoDataType::Uint64 as i32,
+                            dims: vec![],
+                            uint64_data: vec![min_value as u64],
+                            ..Default::default()
+                        },
+                        _ => {
+                            Self::create_scalar_initializer(min_name, onnx_dtype, min_value as f32)
+                        }
+                    };
+                    initializers.push(min_tensor);
                 }
 
                 // Add max value as third input (optional in ONNX Clip).
@@ -3121,13 +3170,43 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if let Some(max_value) = max_value {
                     let max_name = format!("{}_max", op_name);
                     inputs.push(max_name.clone());
-
-                    // Add max initializer with matching data type
-                    initializers.push(Self::create_scalar_initializer(
-                        max_name,
-                        onnx_dtype,
-                        max_value as f32,
-                    ));
+                    let max_tensor = match input_dtype {
+                        DataType::Float32 => TensorProto {
+                            name: max_name,
+                            data_type: ProtoDataType::Float as i32,
+                            dims: vec![],
+                            raw_data: (max_value as f32).to_le_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                        DataType::Float16 => {
+                            let bits = half::f16::from_f32(max_value as f32).to_bits();
+                            TensorProto {
+                                name: max_name,
+                                data_type: ProtoDataType::Float16 as i32,
+                                dims: vec![],
+                                raw_data: bits.to_le_bytes().to_vec(),
+                                ..Default::default()
+                            }
+                        }
+                        DataType::Int64 => TensorProto {
+                            name: max_name,
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![],
+                            int64_data: vec![max_value as i64],
+                            ..Default::default()
+                        },
+                        DataType::Uint64 => TensorProto {
+                            name: max_name,
+                            data_type: ProtoDataType::Uint64 as i32,
+                            dims: vec![],
+                            uint64_data: vec![max_value as u64],
+                            ..Default::default()
+                        },
+                        _ => {
+                            Self::create_scalar_initializer(max_name, onnx_dtype, max_value as f32)
+                        }
+                    };
+                    initializers.push(max_tensor);
                 }
 
                 nodes.push(NodeProto {
@@ -5056,6 +5135,162 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }],
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("softmax") {
+                let input_id = op.input_operands[0];
+                let input_name = operand_name(graph, input_id);
+                let output_id = op
+                    .output_operand
+                    .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
+                let output_name = operand_name(graph, output_id);
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("softmax input lookup", input_id, Some((op, idx)))
+                })?;
+                let softmax_shape = operand_shapes
+                    .get(&input_id)
+                    .cloned()
+                    .unwrap_or_else(|| input_operand.descriptor.shape.clone());
+                let rank = softmax_shape.len() as i64;
+                let mut axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|x| x as i64)))
+                    .unwrap_or(1);
+                if rank > 0 && axis < 0 {
+                    axis += rank;
+                }
+                if rank > 0 && (axis < 0 || axis >= rank) {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!("softmax axis {} out of bounds for rank {}", axis, rank),
+                    });
+                }
+
+                // WebNN softmax normalizes over a single axis. ONNX Softmax
+                // flattens dimensions from axis onward, so lower to stable ops.
+                let axes_name = format!("{}_axes", op_name);
+                initializers.push(TensorProto {
+                    name: axes_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![axis],
+                    ..Default::default()
+                });
+
+                let max_name = format!("{}_max", op_name);
+                nodes.push(NodeProto {
+                    input: vec![input_name.clone(), axes_name.clone()],
+                    output: vec![max_name.clone()],
+                    name: format!("{}_reduce_max", op_name),
+                    op_type: "ReduceMax".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "keepdims".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                let centered_name = format!("{}_centered", op_name);
+                nodes.push(NodeProto {
+                    input: vec![input_name, max_name],
+                    output: vec![centered_name.clone()],
+                    name: format!("{}_sub_max", op_name),
+                    op_type: "Sub".to_string(),
+                    ..Default::default()
+                });
+
+                let exp_name = format!("{}_exp", op_name);
+                nodes.push(NodeProto {
+                    input: vec![centered_name],
+                    output: vec![exp_name.clone()],
+                    name: format!("{}_exp", op_name),
+                    op_type: "Exp".to_string(),
+                    ..Default::default()
+                });
+
+                let sum_name = format!("{}_sum", op_name);
+                nodes.push(NodeProto {
+                    input: vec![exp_name.clone(), axes_name],
+                    output: vec![sum_name.clone()],
+                    name: format!("{}_reduce_sum", op_name),
+                    op_type: "ReduceSum".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "keepdims".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                nodes.push(NodeProto {
+                    input: vec![exp_name, sum_name],
+                    output: vec![output_name],
+                    name: op_name,
+                    op_type: "Div".to_string(),
+                    ..Default::default()
+                });
+            } else if op.op_type.eq_ignore_ascii_case("sin")
+                || op.op_type.eq_ignore_ascii_case("cos")
+            {
+                let input_id = op.input_operands[0];
+                let input_name = operand_name(graph, input_id);
+                let output_name = operand_name(
+                    graph,
+                    op.output_operand.expect("Single-output operation expected"),
+                );
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("trig input lookup", input_id, Some((op, idx)))
+                })?;
+
+                if input_operand.descriptor.data_type == DataType::Float16 {
+                    let cast_input_name = format!("{}_f32_in", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![cast_input_name.clone()],
+                        name: format!("{}_cast_in", op_name),
+                        op_type: "Cast".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: ProtoDataType::Float as i32 as i64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+
+                    let trig_out_name = format!("{}_f32_out", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![cast_input_name],
+                        output: vec![trig_out_name.clone()],
+                        name: format!("{}_core", op_name),
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        ..Default::default()
+                    });
+
+                    nodes.push(NodeProto {
+                        input: vec![trig_out_name],
+                        output: vec![output_name],
+                        name: format!("{}_cast_out", op_name),
+                        op_type: "Cast".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: ProtoDataType::Float16 as i32 as i64,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![output_name],
+                        name: op_name,
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        ..Default::default()
+                    });
+                }
             } else {
                 // Check if operation requires float types (ONNX limitation)
                 let has_float_inputs = op.input_operands.iter().any(|&input_id| {
@@ -5988,7 +6223,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clamp_max_only_uses_empty_min_and_accepts_infinity() {
+    fn test_clamp_max_infinity_preserves_webnn_defaults() {
         let operands = vec![
             Operand {
                 kind: OperandKind::Input,
@@ -6041,25 +6276,123 @@ mod tests {
             .find(|n| n.op_type == "Clip")
             .expect("Clip node");
         assert_eq!(clip_node.input.len(), 3);
-        assert_eq!(clip_node.input[1], "");
+        assert!(!clip_node.input[1].is_empty());
         assert!(!clip_node.input[2].is_empty());
+    }
+
+    #[test]
+    fn test_clamp_nan_bound_is_ignored() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "clamp".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "minValue": "NaN" }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("clamp conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        let clip_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "Clip")
+            .expect("Clip node");
+        // NaN minValue should be treated as unspecified and resolve to WebNN
+        // floating-point defaults (-Infinity/+Infinity).
+        assert_eq!(clip_node.input.len(), 3);
+    }
+
+    #[test]
+    fn test_clamp_uint64_uses_exact_uint64_initializer() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint64,
+                    shape: vec![1],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint64,
+                    shape: vec![1],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "clamp".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "minValue": 5, "maxValue": 5294967290u64 }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("clamp conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
 
         let max_init = graph_proto
             .initializer
             .iter()
-            .find(|t| t.name == clip_node.input[2])
+            .find(|t| t.name.ends_with("_max"))
             .expect("max initializer");
-        assert_eq!(max_init.data_type, ProtoDataType::Float as i32);
-
-        let value = if let Some(v) = max_init.float_data.first() {
-            *v
-        } else {
-            let bytes: [u8; 4] = max_init.raw_data[0..4]
-                .try_into()
-                .expect("4 bytes for float32");
-            f32::from_le_bytes(bytes)
-        };
-        assert!(value.is_infinite() && value.is_sign_positive());
+        assert_eq!(max_init.data_type, ProtoDataType::Uint64 as i32);
+        assert_eq!(max_init.uint64_data, vec![5294967290u64]);
     }
 
     #[test]
