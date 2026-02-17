@@ -5135,6 +5135,166 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }],
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("resample2d") {
+                let input_id = op.input_operands[0];
+                let input_name = operand_name(graph, input_id);
+                let output_id = op
+                    .output_operand
+                    .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
+                let output_name = operand_name(graph, output_id);
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("resample2d input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_shape = operand_shapes
+                    .get(&input_id)
+                    .cloned()
+                    .unwrap_or_else(|| input_operand.descriptor.shape.clone());
+                let rank = input_shape.len();
+                if rank == 0 {
+                    // Scalar resample is identity.
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![output_name],
+                        name: op_name,
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+
+                let axes: Vec<usize> = Self::parse_i64_array(op, "axes")
+                    .unwrap_or_else(|| vec![rank as i64 - 2, rank as i64 - 1])
+                    .into_iter()
+                    .map(|a| {
+                        if a < 0 {
+                            (rank as i64 + a) as usize
+                        } else {
+                            a as usize
+                        }
+                    })
+                    .collect();
+                if axes.len() != 2 || axes.iter().any(|&a| a >= rank) {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "resample2d axes must contain 2 valid axes for rank {}: {:?}",
+                            rank, axes
+                        ),
+                    });
+                }
+
+                let sizes_attr: Option<Vec<i64>> = op.attributes.get("sizes").and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)))
+                            .collect::<Vec<_>>()
+                    })
+                });
+
+                let scales_attr: Option<Vec<f64>> = op.attributes.get("scales").and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| Self::parse_f64_attr(Some(x)))
+                            .collect::<Vec<_>>()
+                    })
+                });
+
+                let spatial_sizes = if let Some(sizes) = sizes_attr {
+                    if sizes.len() != 2 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!("resample2d sizes must have length 2, got {:?}", sizes),
+                        });
+                    }
+                    sizes
+                } else if let Some(scales) = scales_attr {
+                    if scales.len() != 2 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!(
+                                "resample2d scales must have length 2, got {:?}",
+                                scales
+                            ),
+                        });
+                    }
+                    let mut sizes = Vec::with_capacity(2);
+                    for (axis_idx, scale) in scales.iter().enumerate() {
+                        let in_dim = input_shape[axes[axis_idx]] as f64;
+                        let out_dim = (in_dim * *scale).round().max(1.0) as i64;
+                        sizes.push(out_dim);
+                    }
+                    sizes
+                } else {
+                    vec![input_shape[axes[0]] as i64, input_shape[axes[1]] as i64]
+                };
+
+                let mut output_sizes: Vec<i64> = input_shape.iter().map(|&d| d as i64).collect();
+                output_sizes[axes[0]] = spatial_sizes[0];
+                output_sizes[axes[1]] = spatial_sizes[1];
+
+                // Supply only scales input to Resize for broad ORT compatibility.
+                let scales: Vec<f32> = output_sizes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &out_dim)| {
+                        let in_dim = input_shape[i].max(1) as f32;
+                        out_dim as f32 / in_dim
+                    })
+                    .collect();
+                let scales_name = format!("{}_scales", op_name);
+                initializers.push(TensorProto {
+                    name: scales_name.clone(),
+                    data_type: ProtoDataType::Float as i32,
+                    dims: vec![scales.len() as i64],
+                    float_data: scales,
+                    ..Default::default()
+                });
+
+                let mode = op
+                    .attributes
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("nearest-neighbor")
+                    .to_ascii_lowercase();
+                let onnx_mode = if mode == "linear" {
+                    "linear"
+                } else {
+                    "nearest"
+                };
+                let coord_mode = if onnx_mode == "linear" {
+                    "half_pixel"
+                } else {
+                    "asymmetric"
+                };
+                let nearest_mode = "floor";
+
+                nodes.push(NodeProto {
+                    input: vec![input_name, String::new(), scales_name],
+                    output: vec![output_name],
+                    name: op_name,
+                    op_type: "Resize".to_string(),
+                    attribute: vec![
+                        AttributeProto {
+                            name: "mode".to_string(),
+                            r#type: AttributeType::String as i32,
+                            s: onnx_mode.as_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                        AttributeProto {
+                            name: "coordinate_transformation_mode".to_string(),
+                            r#type: AttributeType::String as i32,
+                            s: coord_mode.as_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                        AttributeProto {
+                            name: "nearest_mode".to_string(),
+                            r#type: AttributeType::String as i32,
+                            s: nearest_mode.as_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                });
             } else if op.op_type.eq_ignore_ascii_case("softmax") {
                 let input_id = op.input_operands[0];
                 let input_name = operand_name(graph, input_id);
