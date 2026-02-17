@@ -497,9 +497,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
                 | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
-                | "logical_not" | "quantizelinear" | "dequantizelinear" => {
-                    input_shapes.first().cloned()
-                }
+                | "logical_not" | "isnan" | "isinfinite" | "quantizelinear"
+                | "dequantizelinear" => input_shapes.first().cloned(),
 
                 // Concat
                 "concat" => {
@@ -914,9 +913,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "reducesumsquare" => input_types.first().cloned(),
                     "greater" | "greaterorequal" | "less" | "lesser" | "lessorequal"
                     | "lesserorequal" | "equal" | "notequal" | "logical_and" | "logical_or"
-                    | "logical_xor" | "logicaland" | "logicalor" | "logicalxor" | "logicalnot" => {
-                        Some(DataType::Uint8)
-                    }
+                    | "logical_xor" | "logicaland" | "logicalor" | "logicalxor" | "logicalnot"
+                    | "isnan" | "isinfinite" => Some(DataType::Uint8),
                     "where" => input_types
                         .get(1)
                         .cloned()

@@ -2539,6 +2539,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op.op_type.as_str(),
                     "equal" | "greater" | "greaterOrEqual" | "lesser" | "lesserOrEqual"
                 );
+            let is_unary_predicate_op = matches!(op.op_type.as_str(), "isNaN" | "isInfinite");
             let is_logical_op = matches!(
                 op.op_type.as_str(),
                 "logicalNot" | "logicalAnd" | "logicalOr" | "logicalXor"
@@ -2637,6 +2638,33 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     &format!("cast_to_uint8_{}", cast_counter),
                     bool_output_name,
                     output_name,
+                    ProtoDataType::Uint8,
+                ));
+                cast_counter += 1;
+            } else if is_unary_predicate_op {
+                // Unary predicates (isNaN/isInfinite): execute op (bool), cast output to uint8.
+                let bool_output_name = format!("{}_bool_output", op_name);
+
+                nodes.push(NodeProto {
+                    input: op
+                        .input_operands
+                        .iter()
+                        .map(|id| operand_name(graph, *id))
+                        .collect(),
+                    output: vec![bool_output_name.clone()],
+                    name: op_name,
+                    op_type: Self::onnx_op_type(&op.op_type),
+                    attribute: vec![],
+                    ..Default::default()
+                });
+
+                nodes.push(Self::create_cast_node(
+                    &format!("cast_to_uint8_{}", cast_counter),
+                    bool_output_name,
+                    operand_name(
+                        graph,
+                        op.output_operand.expect("Single-output operation expected"),
+                    ),
                     ProtoDataType::Uint8,
                 ));
                 cast_counter += 1;
@@ -5683,6 +5711,58 @@ mod tests {
                 .count()
                 >= 2
         );
+    }
+
+    #[test]
+    fn test_isnan_conversion_casts_bool_output_to_uint8() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint8,
+                    shape: vec![4],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "isNaN".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("isNaN conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "IsNaN"));
+        assert!(graph_proto.node.iter().any(|n| n.op_type == "Cast"));
     }
 
     #[test]
