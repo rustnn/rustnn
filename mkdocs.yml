@@ -85,6 +85,7 @@ nav:
   - Development:
       - Setup: development/setup.md
       - Implementation Status: development/implementation-status.md
+      - Backend Operator Support: development/backend-operator-support.md
   - Testing:
       - WPT Test Guide: testing/wpt-test-guide.md
       - Performance Benchmarks: testing/performance-benchmarks.md

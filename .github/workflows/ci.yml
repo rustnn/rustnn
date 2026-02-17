@@ -50,6 +50,14 @@ jobs:
       - name: Run cargo fmt check
         run: cargo fmt --all -- --check
 
+      - name: Check backend operator report is up to date
+        run: |
+          python3 scripts/generate_backend_operator_report.py --check
+
+      - name: Run backend operator report parser tests
+        run: |
+          python3 -m unittest scripts/test_generate_backend_operator_report.py
+
   # Documentation build test
   docs-test:
     name: Test Documentation Build

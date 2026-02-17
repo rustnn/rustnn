@@ -17,6 +17,9 @@ rustnn implements 88 of 105 WebNN operations (84% coverage) with full backend su
 - ✓ 1479 CoreML tests temporarily disabled due to executor bugs
 - ✓ Explicit backend selection implemented via device_type parameter
 
+For source-derived backend converter/executor operator coverage, see
+[Backend Operator Support](backend-operator-support.md).
+
 ---
 
 ## Implementation Status

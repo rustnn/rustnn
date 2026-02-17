@@ -65,7 +65,7 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 endif
 
 .PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
-	docs-serve docs-build docs-clean ci-docs \
+	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	help clean-all
 
@@ -183,6 +183,14 @@ docs-clean:
 	@echo "Cleaning documentation build artifacts..."
 	rm -rf site/
 
+docs-backend-ops:
+	@echo "Generating backend operator support report..."
+	python3 scripts/generate_backend_operator_report.py
+
+docs-backend-ops-check:
+	@echo "Checking backend operator support report for drift..."
+	python3 scripts/generate_backend_operator_report.py --check
+
 # ==============================================================================
 # Comprehensive Clean
 # ==============================================================================
@@ -229,6 +237,8 @@ help:
 	@echo "  docs-build         - Build static documentation site"
 	@echo "  ci-docs            - Build documentation in strict mode (CI)"
 	@echo "  docs-clean         - Clean documentation artifacts"
+	@echo "  docs-backend-ops   - Generate backend operator support report"
+	@echo "  docs-backend-ops-check - Verify backend operator report is up to date"
 	@echo ""
 	@echo "Comprehensive:"
 	@echo "  validate-all-env   - Run full pipeline (build/test/convert/validate)"
