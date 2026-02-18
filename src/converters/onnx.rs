@@ -5804,6 +5804,58 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let mut cast_inputs = Vec::new();
                     let mut original_types = Vec::new();
 
+                    let output_operand_id =
+                        op.output_operand.expect("Single-output operation expected");
+                    let output_dtype = type_overrides
+                        .get(&output_operand_id)
+                        .copied()
+                        .or_else(|| {
+                            graph
+                                .operand(output_operand_id)
+                                .map(|o| o.descriptor.data_type)
+                        })
+                        .unwrap_or(DataType::Float32);
+                    let final_output_name = operand_name(graph, output_operand_id);
+
+                    if op.op_type.eq_ignore_ascii_case("relu")
+                        && Self::is_integer_dtype(output_dtype)
+                    {
+                        let input_operand_id =
+                            op.input_operands.first().copied().expect("relu input");
+                        let input_name = operand_name(graph, input_operand_id);
+                        let proto_dtype = Self::data_type_code(output_dtype);
+                        let min_name = format!("{}_relu_min", op_name);
+                        let max_name = format!("{}_relu_max", op_name);
+                        initializers.push(Self::create_integer_scalar_initializer(
+                            min_name.clone(),
+                            proto_dtype,
+                            0,
+                        ));
+                        if let Some(max_val) = Self::max_value_for_data_type(output_dtype) {
+                            initializers.push(Self::create_integer_scalar_initializer(
+                                max_name.clone(),
+                                proto_dtype,
+                                max_val as i64,
+                            ));
+                        } else {
+                            initializers.push(Self::create_integer_scalar_initializer(
+                                max_name.clone(),
+                                proto_dtype,
+                                0,
+                            ));
+                        }
+
+                        nodes.push(NodeProto {
+                            input: vec![input_name, min_name, max_name],
+                            output: vec![final_output_name.clone()],
+                            name: format!("{}_relu_clip", op_name),
+                            op_type: "Clip".to_string(),
+                            ..Default::default()
+                        });
+                        type_overrides.insert(output_operand_id, output_dtype);
+                        continue;
+                    }
+
                     for &input_id in &op.input_operands {
                         let input_name = operand_name(graph, input_id);
                         let input_operand = graph.operand(input_id).ok_or_else(|| {
@@ -6003,6 +6055,83 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
             ..Default::default()
         }),
         ..Default::default()
+    }
+}
+
+impl OnnxConverter {
+    fn max_value_for_data_type(data_type: DataType) -> Option<i128> {
+        match data_type {
+            DataType::Int8 => Some(i8::MAX as i128),
+            DataType::Uint8 => Some(u8::MAX as i128),
+            DataType::Int32 => Some(i32::MAX as i128),
+            DataType::Uint32 => Some(u32::MAX as i128),
+            DataType::Int64 => Some(i64::MAX as i128),
+            DataType::Uint64 => Some(u64::MAX as i128),
+            _ => None,
+        }
+    }
+
+    fn create_integer_scalar_initializer(
+        name: String,
+        dtype: ProtoDataType,
+        value: i64,
+    ) -> TensorProto {
+        match dtype {
+            ProtoDataType::Int64 => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                int64_data: vec![value],
+                ..Default::default()
+            },
+            ProtoDataType::Int32 => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                int32_data: vec![value as i32],
+                ..Default::default()
+            },
+            ProtoDataType::Uint64 => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                uint64_data: vec![value as u64],
+                ..Default::default()
+            },
+            ProtoDataType::Uint32 => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                uint64_data: vec![value as u64],
+                ..Default::default()
+            },
+            ProtoDataType::Int8 | ProtoDataType::Uint8 => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                raw_data: vec![value as u8],
+                ..Default::default()
+            },
+            _ => TensorProto {
+                name,
+                data_type: dtype as i32,
+                dims: vec![],
+                raw_data: vec![value as u8],
+                ..Default::default()
+            },
+        }
+    }
+
+    fn is_integer_dtype(data_type: DataType) -> bool {
+        matches!(
+            data_type,
+            DataType::Int8
+                | DataType::Uint8
+                | DataType::Int32
+                | DataType::Uint32
+                | DataType::Int64
+                | DataType::Uint64
+        )
     }
 }
 
