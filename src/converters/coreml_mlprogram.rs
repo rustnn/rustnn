@@ -141,6 +141,7 @@ mod mil_ops {
 
     // Tile operation
     pub const TILE: &str = "tile";
+    pub const REVERSE: &str = "reverse";
 
     // Triangular operation
     pub const TRIANGULAR: &str = "band_part";
@@ -962,6 +963,9 @@ impl CoremlMlProgramConverter {
 
             // Tile operation
             "tile" => mil_ops::TILE,
+
+            // Reverse operation
+            "reverse" => mil_ops::REVERSE,
 
             // Triangular operation
             "triangular" => mil_ops::TRIANGULAR,
@@ -2000,6 +2004,37 @@ impl CoremlMlProgramConverter {
                         );
                     }
                 }
+            }
+
+            "reverse" => {
+                // reverse: x, axes
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                // Default behavior: reverse all axes when options.axes is omitted.
+                let axes_u32: Vec<u32> =
+                    if let Some(axes) = op.attributes.get("axes").and_then(|v| v.as_array()) {
+                        axes.iter()
+                            .filter_map(|v| v.as_u64().map(|u| u as u32))
+                            .collect()
+                    } else if let Some(input_id) = op.input_operands.first() {
+                        if let Some(input_operand) = _graph.operand(*input_id) {
+                            (0..input_operand.descriptor.shape.len())
+                                .map(|axis| axis as u32)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                // Always provide axes, including empty arrays (explicit no-op).
+                inputs.insert(
+                    "axes".to_string(),
+                    Self::create_immediate_int_array(&axes_u32),
+                );
             }
 
             "triangular" => {

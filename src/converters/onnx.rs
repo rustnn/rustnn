@@ -3127,6 +3127,131 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     attribute: attributes,
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("reverse") {
+                // ONNX has no standard "Reverse" op; lower WebNN reverse to a sequence of Slice
+                // ops with step=-1 for each target axis.
+                let input_id = *op.input_operands.first().ok_or_else(|| {
+                    Self::invalid_operand("reverse missing data input", idx as u32, Some((op, idx)))
+                })?;
+                let input_name = operand_name(graph, input_id);
+                let output_id = op.output_operand.expect("Single-output operation expected");
+                let final_output_name = operand_name(graph, output_id);
+
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("reverse data input lookup", input_id, Some((op, idx)))
+                })?;
+                let rank = input_operand.descriptor.shape.len();
+                let rank_i64 = rank as i64;
+
+                let axes = if let Some(axes_val) = op.attributes.get("axes") {
+                    let arr = axes_val
+                        .as_array()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: "reverse axes must be an array".to_string(),
+                        })?;
+                    let mut parsed = Vec::with_capacity(arr.len());
+                    for value in arr {
+                        let axis = value.as_i64().ok_or_else(|| GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!("reverse axis must be integer, got {value}"),
+                        })?;
+                        parsed.push(axis);
+                    }
+                    parsed
+                } else {
+                    (0..rank_i64).collect()
+                };
+
+                let mut normalized_axes = Vec::with_capacity(axes.len());
+                for axis in axes {
+                    let mut axis = axis;
+                    if axis < 0 {
+                        axis += rank_i64;
+                    }
+                    if axis < 0 || axis >= rank_i64 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!("reverse axis {axis} out of range for rank {rank}"),
+                        });
+                    }
+                    normalized_axes.push(axis);
+                }
+                normalized_axes.sort_unstable();
+                normalized_axes.dedup();
+
+                if normalized_axes.is_empty() {
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![final_output_name.clone()],
+                        name: format!("{}_identity", op_name),
+                        op_type: "Identity".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                    type_overrides.insert(output_id, input_operand.descriptor.data_type);
+                    continue;
+                }
+
+                let mut current_input = input_name;
+                for (axis_index, axis) in normalized_axes.iter().enumerate() {
+                    let starts_name = format!("{}_reverse_{}_starts", op_name, axis_index);
+                    let ends_name = format!("{}_reverse_{}_ends", op_name, axis_index);
+                    let axes_name = format!("{}_reverse_{}_axes", op_name, axis_index);
+                    let steps_name = format!("{}_reverse_{}_steps", op_name, axis_index);
+
+                    initializers.push(TensorProto {
+                        name: starts_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![-1],
+                        ..Default::default()
+                    });
+                    initializers.push(TensorProto {
+                        name: ends_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![i64::MIN],
+                        ..Default::default()
+                    });
+                    initializers.push(TensorProto {
+                        name: axes_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![*axis],
+                        ..Default::default()
+                    });
+                    initializers.push(TensorProto {
+                        name: steps_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![-1],
+                        ..Default::default()
+                    });
+
+                    let slice_output = if axis_index + 1 == normalized_axes.len() {
+                        final_output_name.clone()
+                    } else {
+                        format!("{}_reverse_{}_out", op_name, axis_index)
+                    };
+
+                    nodes.push(NodeProto {
+                        input: vec![
+                            current_input.clone(),
+                            starts_name,
+                            ends_name,
+                            axes_name,
+                            steps_name,
+                        ],
+                        output: vec![slice_output.clone()],
+                        name: format!("{}_reverse_slice_{}", op_name, axis_index),
+                        op_type: "Slice".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                    current_input = slice_output;
+                }
+                type_overrides.insert(output_id, input_operand.descriptor.data_type);
             } else if op.op_type.eq_ignore_ascii_case("tile") {
                 // ONNX Tile takes repeats as a second input tensor (INT64)
                 let data_input = if let Some(data_id) = op.input_operands.first() {
@@ -7267,5 +7392,114 @@ mod tests {
             .find(|n| n.op_type == "Tile" || n.op_type == "Identity")
             .expect("tile lowering node");
         assert_eq!(tile_like_node.output[0], "output");
+    }
+
+    #[test]
+    fn test_reverse_default_lowers_without_onnx_reverse_node() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "reverse".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({}),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("reverse conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert!(graph_proto.node.iter().all(|n| n.op_type != "Reverse"));
+        let slice_count = graph_proto
+            .node
+            .iter()
+            .filter(|n| n.op_type == "Slice")
+            .count();
+        assert_eq!(slice_count, 2);
+    }
+
+    #[test]
+    fn test_reverse_with_empty_axes_is_identity() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "reverse".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "axes": [] }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("reverse conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        assert_eq!(graph_proto.node.len(), 1);
+        assert_eq!(graph_proto.node[0].op_type, "Identity");
     }
 }

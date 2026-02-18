@@ -497,7 +497,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
                 | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
-                | "logical_not" | "isnan" | "isinfinite" | "quantizelinear"
+                | "reverse" | "logical_not" | "isnan" | "isinfinite" | "quantizelinear"
                 | "dequantizelinear" => input_shapes.first().cloned(),
 
                 // Concat
@@ -890,6 +890,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "clamp"
                     | "pad"
                     | "tile"
+                    | "reverse"
                     | "triangular"
                     | "conv2d"
                     | "convtranspose2d"
