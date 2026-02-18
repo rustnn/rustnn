@@ -66,6 +66,9 @@ impl<'a> GraphValidator<'a> {
         {
             return Err(GraphError::EmptyGraph);
         }
+        if !crate::graph::dynamic_inputs_enabled() && self.graph.has_dynamic_dimensions() {
+            return Err(GraphError::DynamicInputsFeatureDisabled);
+        }
         if self.graph.operands.len() >= u32::MAX as usize {
             return Err(GraphError::TooManyOperands {
                 count: self.graph.operands.len(),
@@ -559,6 +562,69 @@ mod tests {
             id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
+    }
+
+    fn build_dynamic_relu_graph() -> GraphInfo {
+        let dynamic_shape = vec![
+            crate::graph::Dimension::Dynamic(crate::graph::DynamicDimension {
+                name: "batch".to_string(),
+                max_size: 8,
+            }),
+            crate::graph::Dimension::Static(4),
+        ];
+
+        GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: dynamic_shape.clone(),
+                        pending_permutation: vec![],
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: dynamic_shape,
+                        pending_permutation: vec![],
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation {
+                op_type: "relu".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::json!({}),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[cfg(not(feature = "dynamic-inputs"))]
+    #[test]
+    fn dynamic_shapes_require_opt_in_feature() {
+        let graph = build_dynamic_relu_graph();
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        let err = validator.validate().unwrap_err();
+        assert!(matches!(err, GraphError::DynamicInputsFeatureDisabled));
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn dynamic_shapes_validate_when_feature_enabled() {
+        let graph = build_dynamic_relu_graph();
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        assert!(validator.validate().is_ok());
     }
 
     #[test]

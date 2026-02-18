@@ -28,6 +28,10 @@ pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
     }
 }
 
+pub fn dynamic_inputs_enabled() -> bool {
+    cfg!(feature = "dynamic-inputs")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataType {
@@ -71,6 +75,12 @@ pub struct OperandDescriptor {
 }
 
 impl OperandDescriptor {
+    pub fn has_dynamic_dimensions(&self) -> bool {
+        self.shape
+            .iter()
+            .any(|dim| matches!(dim, Dimension::Dynamic(_)))
+    }
+
     pub fn static_shape(&self) -> Option<Vec<u32>> {
         let mut shape = Vec::with_capacity(self.shape.len());
         for dim in &self.shape {
@@ -187,6 +197,12 @@ pub struct GraphInfo {
 impl GraphInfo {
     pub fn operand(&self, id: u32) -> Option<&Operand> {
         self.operands.get(id as usize)
+    }
+
+    pub fn has_dynamic_dimensions(&self) -> bool {
+        self.operands
+            .iter()
+            .any(|operand| operand.descriptor.has_dynamic_dimensions())
     }
 }
 

@@ -2247,6 +2247,10 @@ impl super::GraphConverter for CoremlMlProgramConverter {
     }
 
     fn convert(&self, graph_info: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+        if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
+            return Err(GraphError::DynamicInputsFeatureDisabled);
+        }
+
         // Create weight file builder for Float16 constants
         let mut weight_builder = super::WeightFileBuilder::new();
 
@@ -3064,12 +3068,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 mod tests {
     use super::*;
     use crate::converters::GraphConverter;
+    #[cfg(feature = "dynamic-inputs")]
+    use crate::graph::DynamicDimension;
     use crate::graph::{
-        ConstantData, DynamicDimension, GraphInfo, Operand, OperandDescriptor, OperandKind,
-        Operation,
+        ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
     };
+    #[cfg(feature = "dynamic-inputs")]
     use crate::protos::coreml::mil_spec::dimension;
-    use crate::protos::coreml::specification::{Model, model::Type};
+    use crate::protos::coreml::specification::Model;
+    #[cfg(feature = "dynamic-inputs")]
+    use crate::protos::coreml::specification::model::Type;
     use prost::Message;
     use std::collections::HashMap;
 
@@ -3692,6 +3700,62 @@ mod tests {
         assert!(main_block.operations.iter().any(|op| op.r#type == "add"));
     }
 
+    #[cfg(not(feature = "dynamic-inputs"))]
+    #[test]
+    fn test_dynamic_dimensions_require_feature_opt_in() {
+        let graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            crate::graph::Dimension::Dynamic(crate::graph::DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            crate::graph::Dimension::Static(4),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            crate::graph::Dimension::Dynamic(crate::graph::DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            crate::graph::Dimension::Static(4),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![Operation {
+                op_type: "identity".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::Value::Null,
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let err = CoremlMlProgramConverter.convert(&graph).unwrap_err();
+        assert!(matches!(err, GraphError::DynamicInputsFeatureDisabled));
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_dynamic_input_dim_maps_to_unknown_mil_dimension() {
         let mut graph = GraphInfo {

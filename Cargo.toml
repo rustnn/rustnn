@@ -19,6 +19,7 @@ exclude = [
 
 [features]
 default = []
+dynamic-inputs = []
 coreml-runtime = ["objc"]
 onnx-runtime = ["ort", "ndarray", "tokenizers"]
 trtx-runtime = ["trtx"]

@@ -999,6 +999,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
     }
 
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        if !crate::graph::dynamic_inputs_enabled() && graph.has_dynamic_dimensions() {
+            return Err(GraphError::DynamicInputsFeatureDisabled);
+        }
+
         debug_print!("[DEBUG] Starting ONNX conversion");
         debug_print!("  Total operations: {}", graph.operations.len());
         let expand_count = graph
@@ -5307,6 +5311,62 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[cfg(not(feature = "dynamic-inputs"))]
+    #[test]
+    fn test_dynamic_dimensions_require_feature_opt_in() {
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            Dimension::Dynamic(DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            Dimension::Static(4),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![
+                            Dimension::Dynamic(DynamicDimension {
+                                name: "batch".to_string(),
+                                max_size: 8,
+                            }),
+                            Dimension::Static(4),
+                        ],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation {
+                op_type: "identity".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::json!({}),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let err = OnnxConverter.convert(&graph).unwrap_err();
+        assert!(matches!(err, GraphError::DynamicInputsFeatureDisabled));
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_dynamic_dim_emits_dim_param() {
         let mut operands = Vec::new();
@@ -5395,6 +5455,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_cumulative_sum_lowers_to_cumsum_with_axis_input() {
         let operands = vec![
@@ -5678,6 +5739,7 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_expand_dynamic_new_shape_builds_runtime_shape_tensor() {
         let operands = vec![
@@ -5746,6 +5808,7 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_batchnorm_dynamic_channel_builds_runtime_default_scale_bias() {
         let operands = vec![
@@ -5837,6 +5900,7 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "BatchNormalization"));
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_layernorm_dynamic_axes_builds_runtime_default_scale_bias() {
         let operands = vec![

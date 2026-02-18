@@ -98,6 +98,8 @@ pub enum GraphError {
     TrtxRuntimeFailed { reason: String },
     #[error("shape inference failed: {reason}")]
     ShapeInferenceFailed { reason: String },
+    #[error("graph uses dynamic dimensions but the `dynamic-inputs` feature is not enabled")]
+    DynamicInputsFeatureDisabled,
     #[error("device tensor operation failed: {reason}")]
     DeviceTensorFailed { reason: String },
     #[error("device tensor has been destroyed")]
