@@ -254,12 +254,10 @@ impl<'a> GraphValidator<'a> {
                     // that carry extra weight entries.
                     continue;
                 }
-                _ => {
-                    if !self.operand_to_dependents.contains_key(&operand_id) {
-                        return Err(GraphError::OperandNeverUsed {
-                            operand: operand_id,
-                        });
-                    }
+                OperandKind::Input => {
+                    // Imported graphs may carry optional inputs that are not consumed by the
+                    // selected subgraph (for example, shared Q/DQ parameter bundles).
+                    continue;
                 }
             }
         }
@@ -1190,6 +1188,57 @@ mod tests {
         let validator = GraphValidator::new(&graph, ContextProperties::default());
         let err = validator.validate().unwrap_err();
         assert!(matches!(err, GraphError::OperandProducedTwice { .. }));
+    }
+
+    #[test]
+    fn test_unused_optional_input_is_allowed() {
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("optional_input".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![1, 2],
+                        pending_permutation: vec![],
+                    },
+                    name: Some("output".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            operations: vec![Operation {
+                op_type: "relu".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(2),
+                output_operands: vec![],
+                attributes: serde_json::json!({}),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let validator = GraphValidator::new(&graph, ContextProperties::default());
+        assert!(validator.validate().is_ok());
     }
 
     #[test]
