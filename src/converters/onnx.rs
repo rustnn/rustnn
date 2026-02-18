@@ -14,8 +14,8 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use prost::Message;
 use webnn_onnx_utils::{
-    attributes::AttrBuilder, data_types as utils_data_types, onnx_shape::dim_to_onnx,
-    operation_names::mapper, tensor_data::TensorData,
+    attributes::AttrBuilder, data_types as utils_data_types, operation_names::mapper,
+    tensor_data::TensorData,
 };
 
 #[derive(Default)]
@@ -4818,18 +4818,24 @@ impl crate::converters::GraphConverter for OnnxConverter {
 }
 
 fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoProto {
-    let dims = desc
-        .shape
-        .iter()
-        .map(|d| match d {
-            crate::graph::Dimension::Static(v) => {
-                webnn_onnx_utils::shape_inference::Dim::Known(*v as i64)
+    let dims = desc.shape.iter().map(|d| match d {
+        crate::graph::Dimension::Static(v) => crate::protos::onnx::tensor_shape_proto::Dimension {
+            value: Some(
+                crate::protos::onnx::tensor_shape_proto::dimension::Value::DimValue(*v as i64),
+            ),
+            ..Default::default()
+        },
+        crate::graph::Dimension::Dynamic(dd) => {
+            crate::protos::onnx::tensor_shape_proto::Dimension {
+                value: Some(
+                    crate::protos::onnx::tensor_shape_proto::dimension::Value::DimParam(
+                        dd.name.clone(),
+                    ),
+                ),
+                ..Default::default()
             }
-            crate::graph::Dimension::Dynamic(dd) => {
-                webnn_onnx_utils::shape_inference::Dim::Dynamic(dd.name.clone())
-            }
-        })
-        .collect::<Vec<_>>();
+        }
+    });
     ValueInfoProto {
         name: name.to_string(),
         r#type: Some(TypeProto {
@@ -4837,7 +4843,7 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
                 TensorTypeProto {
                     elem_type: OnnxConverter::data_type_code(desc.data_type) as i32,
                     shape: Some(TensorShapeProto {
-                        dim: dims.iter().map(dim_to_onnx).collect(),
+                        dim: dims.collect(),
                     }),
                 },
             )),
