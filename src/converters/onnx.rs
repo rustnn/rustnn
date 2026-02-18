@@ -3146,7 +3146,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .or_else(|| op.attributes.get("repeats"))
                         .and_then(|v| v.as_array())
                         .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
-                        .filter(|v: &Vec<i64>| !v.is_empty())
                         .ok_or_else(|| {
                             let operand_id =
                                 op.input_operands.get(1).copied().unwrap_or_else(|| {
@@ -7212,5 +7211,61 @@ mod tests {
             f32::from_le_bytes(bytes)
         };
         assert!(value.is_nan());
+    }
+
+    #[test]
+    fn test_tile_scalar_with_empty_repetitions_converts() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "tile".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({ "repetitions": [] }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("tile conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        let tile_like_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "Tile" || n.op_type == "Identity")
+            .expect("tile lowering node");
+        assert_eq!(tile_like_node.output[0], "output");
     }
 }
