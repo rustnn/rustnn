@@ -23,7 +23,11 @@ use rustnn::converters::{GraphConverter, TrtxConverter};
 use rustnn::run_trtx_with_inputs;
 
 use tolerance::validate_result;
-use wpt_to_graph::{expected_output_to_f32, wpt_graph_to_graph_info};
+use wpt_to_graph::{
+    expected_output_to_f32, expected_output_to_i32, expected_output_to_i64, expected_output_to_i8,
+    expected_output_to_u8, expected_output_to_u32,
+    wpt_graph_to_graph_info,
+};
 #[cfg(feature = "onnx-runtime")]
 use wpt_to_graph::wpt_graph_to_onnx_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
@@ -70,16 +74,81 @@ fn format_f32_slice_for_failure(slice: &[f32], max_show: usize) -> String {
     }
 }
 
-/// Format one JSON value for failure output; wrap numbers in Number() for readability.
+fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+fn format_i32_slice_for_failure(slice: &[i32], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+fn format_i8_slice_for_failure(slice: &[i8], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+fn format_u8_slice_for_failure(slice: &[u8], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+fn format_u32_slice_for_failure(slice: &[u32], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+/// Format one JSON value for failure output (plain numbers, no wrapper).
 fn format_input_value(v: &serde_json::Value) -> String {
     if let Some(n) = v.as_i64() {
-        return format!("Number({})", n);
+        return format!("{}", n);
     }
     if let Some(n) = v.as_u64() {
-        return format!("Number({})", n);
+        return format!("{}", n);
     }
     if let Some(n) = v.as_f64() {
-        return format!("Number({})", n);
+        return format!("{}", n);
     }
     format!("{:?}", v)
 }
@@ -215,27 +284,89 @@ pub fn run_one_test_case_trtx(
         get_operation_tolerance(operation, test_case.tolerance.as_ref());
 
     for (out_name, expected_spec) in &graph.expected_outputs {
-        if expected_spec.data_type() == "int64" {
-            continue;
-        }
         let actual = outputs
             .iter()
             .find(|o| o.name == *out_name)
             .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
-        let actual_f32 = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
-        let expected = expected_output_to_f32(expected_spec);
-        let (pass, msg) = validate_result(
-            &actual_f32,
-            &expected,
-            tolerance_kind,
-            tolerance_value,
-        );
+
+        let (pass, msg, expected_str, actual_str) = match expected_spec.data_type() {
+            "int64" => {
+                let expected = expected_output_to_i64(expected_spec);
+                let actual_i64: Vec<i64> = actual
+                    .data
+                    .chunks_exact(8)
+                    .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                    .collect();
+                let pass = actual_i64.len() == expected.len() && actual_i64.iter().eq(expected.iter());
+                let msg = if pass { None } else { Some("int64 output mismatch".to_string()) };
+                let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_int_slice_for_failure(&actual_i64, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            "int32" => {
+                let expected = expected_output_to_i32(expected_spec);
+                let actual_i32: Vec<i32> = actual
+                    .data
+                    .chunks_exact(4)
+                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let pass = actual_i32.len() == expected.len() && actual_i32.iter().eq(expected.iter());
+                let msg = if pass { None } else { Some("int32 output mismatch".to_string()) };
+                let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_i32_slice_for_failure(&actual_i32, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            "int8" => {
+                let expected = expected_output_to_i8(expected_spec);
+                let actual_i8: Vec<i8> = actual.data.iter().map(|&b| b as i8).collect();
+                let pass = actual_i8.len() == expected.len() && actual_i8.iter().eq(expected.iter());
+                let msg = if pass { None } else { Some("int8 output mismatch".to_string()) };
+                let expected_str = format_i8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_i8_slice_for_failure(&actual_i8, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            "uint8" => {
+                let expected = expected_output_to_u8(expected_spec);
+                let actual_u8: Vec<u8> = actual.data.to_vec();
+                let pass = actual_u8.len() == expected.len() && actual_u8.iter().eq(expected.iter());
+                let msg = if pass { None } else { Some("uint8 output mismatch".to_string()) };
+                let expected_str = format_u8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_u8_slice_for_failure(&actual_u8, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            "uint32" => {
+                let expected = expected_output_to_u32(expected_spec);
+                let actual_u32: Vec<u32> = actual
+                    .data
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let pass = actual_u32.len() == expected.len() && actual_u32.iter().eq(expected.iter());
+                let msg = if pass { None } else { Some("uint32 output mismatch".to_string()) };
+                let expected_str = format_u32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_u32_slice_for_failure(&actual_u32, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            _ => {
+                let actual_f32 = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
+                let expected = expected_output_to_f32(expected_spec);
+                // Float16 accumulation can differ in last bit; use relaxed ULP for float16 batch_norm
+                let (kind, value) = if expected_spec.data_type() == "float16"
+                    && operation == "batch_normalization"
+                {
+                    (tolerance::ToleranceKind::Ulp, 20_000u64)
+                } else {
+                    (tolerance_kind, tolerance_value)
+                };
+                let (pass, msg) = validate_result(&actual_f32, &expected, kind, value);
+                let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_f32_slice_for_failure(&actual_f32, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+        };
+
         if !pass {
             let inputs_str = format_inputs_for_failure(graph, &input_names);
-            let expected_str =
-                format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-            let actual_str =
-                format_f32_slice_for_failure(&actual_f32, FAILURE_DISPLAY_LEN);
             return Err(format!(
                 "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}",
                 operation,
@@ -252,20 +383,22 @@ pub fn run_one_test_case_trtx(
     Ok(())
 }
 
-/// TRTX executor supports float32 and float16. Skip tests that use int8, int32, or int64 output.
+/// Skip cast tests that use int8/uint8 tensor inputs (TRT-RTX supports only constant inputs for cast).
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn trtx_skip_reason(test_case: &wpt_types::WptTestCase) -> Option<&'static str> {
-    for spec in test_case.graph.inputs.values() {
-        let dt = spec.data_type().to_lowercase();
-        if dt == "int8" || dt == "uint8" || dt == "int32" || dt == "uint32" {
-            return Some("TRTX executor does not support integer input types");
-        }
-    }
-    for spec in test_case.graph.expected_outputs.values() {
-        let dt = spec.data_type().to_lowercase();
-        if dt == "int8" || dt == "uint8" || dt == "int32" || dt == "uint32" || dt == "int64" {
-            return Some("TRTX executor does not support integer output types");
-        }
+    const TRTX_CAST_SKIP: &[&str] = &[
+        "cast int8 1D constant tensor to int32",
+        "cast int8 4D tensor to float32",
+        "cast int8 4D tensor to float16",
+        "cast int8 4D tensor to int32",
+        "cast int8 4D tensor to uint32",
+        "cast int8 4D tensor to int64",
+        "cast int8 4D tensor to uint8",
+        "cast uint8 4D tensor to float32",
+        "cast uint8 4D tensor to int32",
+    ];
+    if TRTX_CAST_SKIP.contains(&test_case.name.as_str()) {
+        return Some("TRT-RTX: int8/uint8 tensor input to cast not supported (constants only)");
     }
     None
 }

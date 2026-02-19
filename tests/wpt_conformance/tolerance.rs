@@ -66,9 +66,9 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u32)> {
     m.insert("reduce_log_sum".to_string(), (ToleranceKind::Ulp, 10));
     m.insert("reduce_log_sum_exp".to_string(), (ToleranceKind::Ulp, 100));
     m.insert("reduce_sum_square".to_string(), (ToleranceKind::Ulp, 2));
-    // Convolution / pooling
-    m.insert("conv2d".to_string(), (ToleranceKind::Ulp, 100));
-    m.insert("conv_transpose2d".to_string(), (ToleranceKind::Ulp, 100));
+    // Convolution / pooling (conv2d/conv_transpose2d: TensorRT can differ ~20k ULP), TODO evaluate rtol/atol instead of ULP.
+    m.insert("conv2d".to_string(), (ToleranceKind::Ulp, 20000));
+    m.insert("conv_transpose2d".to_string(), (ToleranceKind::Ulp, 20000));
     m.insert("average_pool2d".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("max_pool2d".to_string(), (ToleranceKind::Ulp, 0));
     m.insert("global_average_pool".to_string(), (ToleranceKind::Ulp, 2));

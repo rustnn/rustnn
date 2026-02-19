@@ -283,11 +283,20 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
             let mut buf = vec![0i64; n];
             if let Some(arr) = arr_opt {
                 for (i, v) in arr.iter().enumerate().take(n) {
-                    if let Some(x) = v.as_i64().or_else(|| parse_number(v).map(|f| f as i64)) {
+                    if let Some(x) = v
+                        .as_i64()
+                        .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                        .or_else(|| parse_number(v).map(|f| f as i64))
+                    {
                         buf[i] = x;
                     }
                 }
-            } else if let Some(x) = spec.data.as_i64().or_else(|| parse_number(&spec.data).map(|f| f as i64)) {
+            } else if let Some(x) = spec
+                .data
+                .as_i64()
+                .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+            {
                 buf.fill(x);
             }
             buf.iter().flat_map(|x| x.to_ne_bytes()).collect()
@@ -488,7 +497,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             }
         }
 
-        // batch_normalization: ONNX expects input_operands [input, mean, variance, scale?, bias?]
+        // batch_normalization: ONNX/TRTX expect fixed input_operands [input, mean, variance, scale?, bias?]
+        // with scale at index 3 and bias at index 4. If only one of scale/bias is provided, insert
+        // a default constant so converters always see 5 operands when scale or bias is used.
         if op_type == "batch_normalization" {
             let order = ["input", "mean", "variance", "scale", "bias"];
             let ordered: Vec<u32> = order
@@ -498,7 +509,63 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 })
                 .collect();
             if !ordered.is_empty() {
-                input_ids = ordered;
+                if ordered.len() == 4 {
+                    let mean_id = ordered[1];
+                    let mean_shape = operands
+                        .get(mean_id as usize)
+                        .map(|o| o.descriptor.shape.clone())
+                        .unwrap_or_default();
+                    let data_type = operands
+                        .get(mean_id as usize)
+                        .map(|o| o.descriptor.data_type)
+                        .unwrap_or(DataType::Float32);
+                    let n: usize = mean_shape.iter().product::<u32>().max(1) as usize;
+                    let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
+                    let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
+                    if has_bias && !has_scale {
+                        // Only bias provided: insert default scale (1.0) at index 3, then bias at 4
+                        let scale_bytes: Vec<u8> = match data_type {
+                            DataType::Float32 => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
+                            DataType::Float16 => (0..n).flat_map(|_| half::f16::from_f32(1.0).to_bits().to_ne_bytes()).collect(),
+                            _ => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
+                        };
+                        constant_data.insert(next_id, ConstantData { data: scale_bytes, label: None });
+                        operands.push(Operand {
+                            kind: OperandKind::Constant,
+                            descriptor: OperandDescriptor {
+                                data_type,
+                                shape: mean_shape.clone(),
+                                pending_permutation: Vec::new(),
+                            },
+                            name: Some("batch_norm_default_scale".to_string()),
+                        });
+                        input_ids = vec![ordered[0], ordered[1], ordered[2], next_id, ordered[3]];
+                        next_id += 1;
+                    } else if has_scale && !has_bias {
+                        // Only scale provided: insert default bias (0.0) at index 4
+                        let bias_bytes: Vec<u8> = match data_type {
+                            DataType::Float32 => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
+                            DataType::Float16 => (0..n).flat_map(|_| half::f16::from_f32(0.0).to_bits().to_ne_bytes()).collect(),
+                            _ => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
+                        };
+                        constant_data.insert(next_id, ConstantData { data: bias_bytes, label: None });
+                        operands.push(Operand {
+                            kind: OperandKind::Constant,
+                            descriptor: OperandDescriptor {
+                                data_type,
+                                shape: mean_shape,
+                                pending_permutation: Vec::new(),
+                            },
+                            name: Some("batch_norm_default_bias".to_string()),
+                        });
+                        input_ids = vec![ordered[0], ordered[1], ordered[2], ordered[3], next_id];
+                        next_id += 1;
+                    } else {
+                        input_ids = ordered;
+                    }
+                } else {
+                    input_ids = ordered;
+                }
             }
         }
         // instance_normalization: ONNX expects [input, scale?, bias?]
@@ -768,7 +835,17 @@ fn f32_to_f16_bytes(slice: &[f32]) -> Vec<u8> {
     out
 }
 
-/// Build TensorRT input list from WPT graph. Caller encodes values as bytes (float32 or float16).
+/// Parse one JSON value to i64 for integer tensor inputs.
+/// For bigint strings (e.g. "-9223372036854775807n"), parse as i64 directly to avoid f64 precision loss.
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
+    v.as_i64()
+        .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| parse_number(v).map(|f| f as i64))
+        .or_else(|| v.as_u64().map(|u| u as i64))
+}
+
+/// Build TensorRT input list from WPT graph. Caller encodes values as bytes per dtype (float32, float16, int8, int32, etc.).
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn wpt_graph_to_trtx_inputs(
     graph: &WptGraph,
@@ -781,10 +858,10 @@ pub fn wpt_graph_to_trtx_inputs(
         let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
         let n: usize = shape.iter().product();
         let n = n.max(1);
-
         let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
-        let f32_data: Vec<f32> = match dtype {
-            "float32" | "float16" => {
+
+        let data: Vec<u8> = match dtype {
+            "float32" => {
                 let mut buf = vec![0.0f32; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
@@ -793,31 +870,83 @@ pub fn wpt_graph_to_trtx_inputs(
                 } else if let Some(f) = parse_float_for_tensor(&spec.data) {
                     buf.fill(f);
                 }
-                buf
+                buf.iter().flat_map(|f| f.to_le_bytes()).collect()
             }
-            "int32" | "uint32" | "int8" | "uint8" | "int64" | "uint64" => {
+            "float16" => {
                 let mut buf = vec![0.0f32; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        let x = v
-                            .as_i64()
-                            .or_else(|| parse_number(v).map(|f| f as i64))
-                            .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
-                            .or_else(|| v.as_u64().map(|u| u as i64));
-                        if let Some(x) = x {
-                            buf[i] = x as f32;
+                        buf[i] = parse_float_for_tensor(v).unwrap_or(buf[i]);
+                    }
+                } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+                    buf.fill(f);
+                }
+                f32_to_f16_bytes(&buf)
+            }
+            "int8" => {
+                let mut buf = vec![0i8; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(x) = parse_int_for_tensor(v) {
+                            buf[i] = x as i8;
                         }
                     }
-                } else if let Some(x) = spec
-                    .data
-                    .as_i64()
-                    .or_else(|| parse_number(&spec.data).map(|f| f as i64))
-                    .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
-                    .or_else(|| spec.data.as_u64().map(|u| u as i64))
-                {
-                    buf.fill(x as f32);
+                } else if let Some(x) = parse_int_for_tensor(&spec.data) {
+                    buf.fill(x as i8);
+                }
+                buf.iter().map(|&x| x as u8).collect()
+            }
+            "uint8" => {
+                let mut buf = vec![0u8; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(x) = v.as_u64().or_else(|| parse_int_for_tensor(v).map(|x| x as u64)) {
+                            buf[i] = x as u8;
+                        }
+                    }
+                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64)) {
+                    buf.fill(x as u8);
                 }
                 buf
+            }
+            "int32" => {
+                let mut buf = vec![0i32; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(x) = parse_int_for_tensor(v) {
+                            buf[i] = x as i32;
+                        }
+                    }
+                } else if let Some(x) = parse_int_for_tensor(&spec.data) {
+                    buf.fill(x as i32);
+                }
+                buf.iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            "uint32" => {
+                let mut buf = vec![0u32; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(x) = v.as_u64().or_else(|| parse_int_for_tensor(v).map(|x| x as u64)) {
+                            buf[i] = x as u32;
+                        }
+                    }
+                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64)) {
+                    buf.fill(x as u32);
+                }
+                buf.iter().flat_map(|x| x.to_le_bytes()).collect()
+            }
+            "int64" | "uint64" => {
+                let mut buf = vec![0i64; n];
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        if let Some(x) = parse_int_for_tensor(v) {
+                            buf[i] = x;
+                        }
+                    }
+                } else if let Some(x) = parse_int_for_tensor(&spec.data) {
+                    buf.fill(x);
+                }
+                buf.iter().flat_map(|x| x.to_le_bytes()).collect()
             }
             _ => {
                 let mut buf = vec![0.0f32; n];
@@ -830,18 +959,8 @@ pub fn wpt_graph_to_trtx_inputs(
                 } else if let Some(f) = parse_float_for_tensor(&spec.data).or_else(|| spec.data.as_f64().map(|f| f as f32)) {
                     buf.fill(f);
                 }
-                buf
+                buf.iter().flat_map(|f| f.to_le_bytes()).collect()
             }
-        };
-
-        let data: Vec<u8> = if dtype == "float16" {
-            f32_to_f16_bytes(&f32_data)
-        } else {
-            // float32 or other: raw f32 bytes
-            f32_data
-                .iter()
-                .flat_map(|f| f.to_le_bytes())
-                .collect()
         };
 
         inputs.push(rustnn::TrtxInput {
@@ -870,7 +989,112 @@ pub fn expected_output_to_f32(spec: &WptTensorSpec) -> Vec<f32> {
     buf
 }
 
+/// Expected output as i32 slice (for int32 validation).
+pub fn expected_output_to_i32(spec: &WptTensorSpec) -> Vec<i32> {
+    let shape = spec.shape();
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    let n = n.max(1);
+    let mut buf = vec![0i32; n];
+    let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+    if let Some(arr) = arr_opt {
+        for (i, v) in arr.iter().enumerate().take(n) {
+            if let Some(x) = v.as_i64()
+                .or_else(|| parse_number(v).map(|f| f as i64))
+                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+            {
+                buf[i] = x as i32;
+            }
+        }
+    } else if let Some(x) = spec.data.as_i64()
+        .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+    {
+        buf.fill(x as i32);
+    }
+    buf
+}
+
+/// Expected output as u32 slice (for uint32 validation).
+pub fn expected_output_to_u32(spec: &WptTensorSpec) -> Vec<u32> {
+    let shape = spec.shape();
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    let n = n.max(1);
+    let mut buf = vec![0u32; n];
+    let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+    if let Some(arr) = arr_opt {
+        for (i, v) in arr.iter().enumerate().take(n) {
+            if let Some(x) = v.as_u64()
+                .or_else(|| parse_number(v).map(|f| f as u64))
+                .or_else(|| v.as_i64().map(|i| i as u64))
+            {
+                buf[i] = x as u32;
+            }
+        }
+    } else if let Some(x) = spec
+        .data
+        .as_u64()
+        .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+        .or_else(|| spec.data.as_i64().map(|i| i as u64))
+    {
+        buf.fill(x as u32);
+    }
+    buf
+}
+
+/// Expected output as u8 slice (for uint8 validation).
+pub fn expected_output_to_u8(spec: &WptTensorSpec) -> Vec<u8> {
+    let shape = spec.shape();
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    let n = n.max(1);
+    let mut buf = vec![0u8; n];
+    let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+    if let Some(arr) = arr_opt {
+        for (i, v) in arr.iter().enumerate().take(n) {
+            if let Some(x) = v.as_u64()
+                .or_else(|| parse_number(v).map(|f| f as u64))
+                .or_else(|| v.as_i64().map(|i| i as u64))
+            {
+                buf[i] = x as u8;
+            }
+        }
+    } else if let Some(x) = spec
+        .data
+        .as_u64()
+        .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+        .or_else(|| spec.data.as_i64().map(|i| i as u64))
+    {
+        buf.fill(x as u8);
+    }
+    buf
+}
+
+/// Expected output as i8 slice (for int8 validation).
+pub fn expected_output_to_i8(spec: &WptTensorSpec) -> Vec<i8> {
+    let shape = spec.shape();
+    let n: usize = shape.iter().map(|&d| d as usize).product();
+    let n = n.max(1);
+    let mut buf = vec![0i8; n];
+    let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+    if let Some(arr) = arr_opt {
+        for (i, v) in arr.iter().enumerate().take(n) {
+            if let Some(x) = v.as_i64()
+                .or_else(|| parse_number(v).map(|f| f as i64))
+                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+            {
+                buf[i] = x as i8;
+            }
+        }
+    } else if let Some(x) = spec.data.as_i64()
+        .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+    {
+        buf.fill(x as i8);
+    }
+    buf
+}
+
 /// Expected output as i64 slice (for int64 validation). Handles numbers and bigint strings.
+/// Prefer string parse for i64 to avoid f64 precision loss for values outside ±2^53.
 #[allow(dead_code)]
 pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
     let shape = spec.shape();
@@ -880,16 +1104,19 @@ pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_i64()
-                .or_else(|| parse_number(v).map(|f| f as i64))
+            if let Some(x) = v
+                .as_i64()
                 .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| parse_number(v).map(|f| f as i64))
             {
                 buf[i] = x;
             }
         }
-    } else if let Some(x) = spec.data.as_i64()
-        .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+    } else if let Some(x) = spec
+        .data
+        .as_i64()
         .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| parse_number(&spec.data).map(|f| f as i64))
     {
         buf.fill(x);
     }

@@ -3,7 +3,7 @@
 //! This converter bypasses ONNX serialization and builds TensorRT networks directly
 //! from WebNN graph IR, providing better performance and avoiding ONNX limitations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
@@ -24,7 +24,8 @@ impl TrtxConverter {
         TrtxConverter
     }
 
-    /// Map WebNN DataType to TensorRT DataType enum
+    /// Map WebNN DataType to TensorRT DataType enum.
+    /// TensorRT has no kUINT32; we use kINT32 (same 4-byte layout, bit-identical for cast output).
     fn webnn_to_trt_dtype(dtype: DataType) -> Result<TrtDataType, GraphError> {
         match dtype {
             DataType::Float32 => Ok(TrtDataType::kFLOAT),
@@ -32,6 +33,8 @@ impl TrtxConverter {
             DataType::Int8 => Ok(TrtDataType::kINT8),
             DataType::Int32 => Ok(TrtDataType::kINT32),
             DataType::Uint8 => Ok(TrtDataType::kUINT8),
+            DataType::Uint32 => Ok(TrtDataType::kINT32),
+            DataType::Int64 => Ok(TrtDataType::kINT64),
             _ => Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Unsupported data type: {:?}", dtype),
@@ -116,6 +119,8 @@ impl TrtxConverter {
     ) -> Result<Vec<Vec<u8>>, GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor> = HashMap::new();
         let mut temp_weights: Vec<Vec<u8>> = Vec::new(); // Storage for temporary constants
+        let mut promoted_constants: HashSet<u32> = HashSet::new();
+        let mut constants_stored_flat: HashSet<u32> = HashSet::new();
 
         // Step 1: Add inputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
@@ -177,8 +182,47 @@ impl TrtxConverter {
                     });
                 }
 
-                let trt_dtype = Self::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let layer = network.add_constant(&dims, data, trt_dtype).map_err(|e| {
+                // TensorRT only allows int8/uint8 constants before DQ. For scalar (1-element) constants
+                // that may feed Cast to int32, promote to int32 to avoid DQ+Cast (which triggers TRT errors).
+                let elem_count: u32 = operand.descriptor.shape.iter().product();
+                let promote_scalar = elem_count <= 1
+                    && matches!(operand.descriptor.data_type, DataType::Int8 | DataType::Uint8);
+
+                // For int8/uint8 constants with rank > 1, store as 1D so Constant->DQ is accepted (no Shuffle before DQ).
+                let store_flat = !promote_scalar
+                    && operand.descriptor.shape.len() > 1
+                    && matches!(operand.descriptor.data_type, DataType::Int8 | DataType::Uint8);
+
+                let (trt_dtype, data_to_use, add_dims): (TrtDataType, &[u8], Vec<i32>) = if promote_scalar {
+                    let int32_bytes: Vec<u8> = match operand.descriptor.data_type {
+                        DataType::Int8 => (data[0] as i8 as i32).to_le_bytes().to_vec(),
+                        DataType::Uint8 => (data[0] as u32).to_le_bytes().to_vec(),
+                        _ => unreachable!(),
+                    };
+                    temp_weights.push(int32_bytes);
+                    promoted_constants.insert(operand_id as u32);
+                    (
+                        TrtDataType::kINT32,
+                        temp_weights.last().unwrap().as_slice(),
+                        dims.clone(),
+                    )
+                } else if store_flat {
+                    constants_stored_flat.insert(operand_id as u32);
+                    let flat_len: i32 = operand.descriptor.shape.iter().product::<u32>() as i32;
+                    (
+                        Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
+                        data,
+                        vec![flat_len],
+                    )
+                } else {
+                    (
+                        Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
+                        data,
+                        dims.clone(),
+                    )
+                };
+
+                let layer = network.add_constant(&add_dims, data_to_use, trt_dtype).map_err(|e| {
                     GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add constant (operand {}): {}", operand_id, e),
@@ -204,6 +248,8 @@ impl TrtxConverter {
                 network,
                 &mut tensor_map,
                 &mut temp_weights,
+                &promoted_constants,
+                &constants_stored_flat,
                 operation,
             )?;
         }
@@ -245,6 +291,8 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         temp_weights: &mut Vec<Vec<u8>>,
+        promoted_constants: &HashSet<u32>,
+        constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let op_type = operation.op_type.as_str();
@@ -365,7 +413,15 @@ impl TrtxConverter {
             "sign" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSIGN)?,
             "round" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kROUND)?,
             "identity" => Self::add_identity_op(network, tensor_map, operation)?,
-            "cast" => Self::add_identity_op(network, tensor_map, operation)?, // Cast uses identity for now
+            "cast" => Self::add_cast_op(
+                graph,
+                network,
+                tensor_map,
+                temp_weights,
+                promoted_constants,
+                constants_stored_flat,
+                operation,
+            )?,
             "quantizeLinear" => Self::add_quantize_linear_op(network, tensor_map, operation)?,
             "dequantizeLinear" => Self::add_dequantize_linear_op(network, tensor_map, operation)?,
 
@@ -1323,6 +1379,250 @@ impl TrtxConverter {
         Ok(())
     }
 
+    /// Add cast operation: convert input to the output operand's data type.
+    /// TensorRT does not allow INT8/UINT8 constants to feed a Cast (only DQ or plugin).
+    /// Scalar int8/uint8 constants are promoted to int32 when added; Cast then becomes identity.
+    /// For non-scalar int8/uint8 -> int32 we emulate via Dequantize(scale=1) -> Cast(INT32).
+    fn add_cast_op(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        temp_weights: &mut Vec<Vec<u8>>,
+        promoted_constants: &HashSet<u32>,
+        constants_stored_flat: &HashSet<u32>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_id = operation.input_operands[0];
+        let input = tensor_map.get(&input_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Cast input operand {} not found", input_id),
+        })?;
+
+        let output_id = operation
+            .output_operands_slice()
+            .first()
+            .copied()
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Cast operation has no output".to_string(),
+            })?;
+
+        let output_operand = graph.operand(output_id).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Cast output operand {} not found in graph", output_id),
+            }
+        })?;
+
+        let input_operand = graph.operand(input_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Cast input operand {} not found in graph", input_id),
+        })?;
+
+        let target_dtype = output_operand.descriptor.data_type;
+        let input_dtype = input_operand.descriptor.data_type;
+
+        // TensorRT: int8/uint8 tensors may only feed DQ or plugin, not Cast directly.
+        // int8/uint8 -> int32: scalar promoted => identity; else DQ+Cast.
+        // int8/uint8 -> float32: DQ(scale=1) only (output is already float).
+        let use_dq_then_cast_int32 = matches!(
+            (input_dtype, target_dtype),
+            (DataType::Int8, DataType::Int32) | (DataType::Uint8, DataType::Int32)
+        );
+        let use_dq_for_float32 = matches!(
+            (input_dtype, target_dtype),
+            (DataType::Int8, DataType::Float32) | (DataType::Uint8, DataType::Float32)
+        );
+
+        if use_dq_then_cast_int32 && promoted_constants.contains(&input_id) {
+            // Scalar constant was promoted to int32; cast is identity.
+            let identity_layer = network.add_identity(input).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add identity for promoted scalar cast: {}", e),
+                }
+            })?;
+            let output = identity_layer.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get identity output: {}", e),
+                }
+            })?;
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
+
+        // Helper: DQ(scale=1) with per-tensor (0D) scale. TensorRT only allows scalar or per-channel scale; 4D scale causes "ScaleMode is illegal".
+        let add_dq_scale_constant = |network: &mut trtx::NetworkDefinition,
+                                     temp_weights: &mut Vec<Vec<u8>>,
+                                     err_prefix: &str|
+         -> Result<trtx::Tensor, GraphError> {
+            let scale_one: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
+            temp_weights.push(scale_one);
+            let scale_ref = temp_weights.last().unwrap();
+            let scale_constant = network
+                .add_constant(&[], scale_ref, TrtDataType::kFLOAT)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{}: {}", err_prefix, e),
+                })?;
+            scale_constant.get_output(0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{}: get scale output: {}", err_prefix, e),
+            })
+        };
+
+        // Constant stored flat: 1D int8. Try 1D -> Reshape(4D) -> DQ so DQ sees Shuffle output not Constant.
+        let stored_flat = constants_stored_flat.contains(&input_id);
+        let _input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Cast: failed to get input dimensions: {}", e),
+        })?;
+        if use_dq_for_float32 {
+            // int8/uint8 -> float32: only supported when input is a constant (stored flat). Tensor inputs not supported by TRT-RTX.
+            if !stored_flat {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Cast int8/uint8 to float32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
+                });
+            }
+            {
+                let original_shape: Vec<i32> = input_operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|&d| d as i32)
+                    .collect();
+                let mut shuffle_to_4d = network
+                    .add_shuffle(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to add reshape shuffle: {}", e),
+                    })?;
+                let _ = shuffle_to_4d.set_layer_name("cast_flat_reshape_4d");
+                shuffle_to_4d
+                    .set_reshape_dimensions(&original_shape)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to set reshape dimensions: {}", e),
+                    })?;
+                let mut reshaped_4d = shuffle_to_4d.get_output(0).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to get reshape output: {}", e),
+                    }
+                })?;
+                let _ = reshaped_4d.set_name("cast_flat_reshape_4d");
+                let scale_tensor =
+                    add_dq_scale_constant(network, temp_weights, "int8->float32 cast")?;
+                let mut dq_layer = network
+                    .add_dequantize(&reshaped_4d, &scale_tensor, TrtDataType::kFLOAT)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add dequantize for int8->float32 cast: {}", e),
+                    })?;
+                let _ = dq_layer.set_layer_name("cast_flat_dq_f32");
+                let mut output = dq_layer.get_output(0).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get dequantize output: {}", e),
+                    }
+                })?;
+                let _ = output.set_name("cast_flat_dq_f32");
+                tensor_map.insert(output_id, output);
+                return Ok(());
+            }
+        }
+
+        if use_dq_then_cast_int32 {
+            // int8/uint8 -> int32: only supported when input is constant (stored flat) or promoted scalar. Tensor inputs not supported by TRT-RTX.
+            if !stored_flat {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Cast int8/uint8 to int32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
+                });
+            }
+            {
+                let original_shape: Vec<i32> = input_operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|&d| d as i32)
+                    .collect();
+                let mut shuffle_to_4d = network
+                    .add_shuffle(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to add reshape shuffle: {}", e),
+                    })?;
+                let _ = shuffle_to_4d.set_layer_name("cast_flat_reshape_4d_int32");
+                shuffle_to_4d
+                    .set_reshape_dimensions(&original_shape)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to set reshape dimensions: {}", e),
+                    })?;
+                let mut reshaped_4d = shuffle_to_4d.get_output(0).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Cast: failed to get reshape output: {}", e),
+                    }
+                })?;
+                let _ = reshaped_4d.set_name("cast_flat_reshape_4d");
+                let scale_tensor =
+                    add_dq_scale_constant(network, temp_weights, "int8->int32 cast")?;
+                let mut dq_layer = network
+                    .add_dequantize(&reshaped_4d, &scale_tensor, TrtDataType::kFLOAT)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add dequantize for int8->int32 cast: {}", e),
+                    })?;
+                let _ = dq_layer.set_layer_name("cast_flat_dq_int32");
+                let mut dq_out = dq_layer.get_output(0).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get dequantize output: {}", e),
+                    }
+                })?;
+                let _ = dq_out.set_name("cast_flat_dq_int32");
+                let mut cast_layer = network.add_cast(&dq_out, TrtDataType::kINT32).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add cast to INT32: {}", e),
+                    }
+                })?;
+                let _ = cast_layer.set_layer_name("cast_flat_cast_int32");
+                let mut output = cast_layer.get_output(0).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get cast output: {}", e),
+                    }
+                })?;
+                let _ = output.set_name("cast_flat_cast_int32");
+                tensor_map.insert(output_id, output);
+                return Ok(());
+            }
+        }
+
+        // Non-int8/uint8 or scalar promoted: direct cast.
+        let trt_dtype = Self::webnn_to_trt_dtype(target_dtype)?;
+
+        let layer = network.add_cast(input, trt_dtype).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add cast layer: {}", e),
+            }
+        })?;
+
+        let output = layer.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get cast output: {}", e),
+        })?;
+
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
     /// Add quantizeLinear operation (float to quantized integer)
     fn add_quantize_linear_op(
         network: &mut trtx::NetworkDefinition,
@@ -1515,6 +1815,52 @@ impl TrtxConverter {
     // Normalization Operations
     // ============================================================================
 
+    /// Reshape 1D batch-norm stats [C] to same rank as input with shape [1,...,1,C,1,...,1]
+    /// so that the channel dimension aligns with the input's axis. TensorRT then broadcasts correctly.
+    fn reshape_batch_norm_stats_for_broadcast(
+        network: &mut trtx::NetworkDefinition,
+        stats: &trtx::Tensor,
+        input: &trtx::Tensor,
+        axis: i64,
+        op_name: &str,
+    ) -> Result<trtx::Tensor, GraphError> {
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get input dims for {}: {}", op_name, e),
+        })?;
+        let stats_dims = stats.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get stats dims for {}: {}", op_name, e),
+        })?;
+        let rank = input_dims.len();
+        let mut axis_idx = axis;
+        if axis_idx < 0 {
+            axis_idx += rank as i64;
+        }
+        axis_idx = axis_idx.max(0).min((rank.saturating_sub(1)) as i64);
+        let c = *stats_dims.first().ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("{}: stats tensor has no dimensions", op_name),
+        })?;
+        let target_shape: Vec<i32> = (0..rank)
+            .map(|i| if i as i64 == axis_idx { c } else { 1 })
+            .collect();
+        let mut shuffle = network.add_shuffle(stats).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to add shuffle for {}: {}", op_name, e),
+        })?;
+        shuffle
+            .set_reshape_dimensions(&target_shape)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set reshape for {}: {}", op_name, e),
+            })?;
+        shuffle.get_output(0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to get shuffle output for {}: {}", op_name, e),
+        })
+    }
+
     /// Add batch normalization operation
     /// Formula: y = (x - mean) / sqrt(variance + epsilon) * scale + bias
     fn add_batch_normalization_op(
@@ -1545,6 +1891,13 @@ impl TrtxConverter {
                 reason: format!("Variance operand {} not found", operation.input_operands[2]),
             })?;
 
+        // Get axis from attributes (default 1 per WebNN)
+        let axis = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
+
         // Get epsilon from attributes (default: 1e-5)
         let _epsilon = operation
             .attributes
@@ -1552,9 +1905,18 @@ impl TrtxConverter {
             .and_then(|v| v.as_f64())
             .unwrap_or(1e-5) as f32;
 
+        // Reshape mean to [1,...,1,C,1,...,1] so it broadcasts with input (e.g. [2,3,4] and axis=1 -> [1,3,1]).
+        let mean_bc = Self::reshape_batch_norm_stats_for_broadcast(
+            network,
+            mean,
+            input,
+            axis,
+            "batch_norm_sub",
+        )?;
+
         // Step 1: x - mean
         let sub_layer = network
-            .add_elementwise(input, mean, ElementWiseOperation::kSUB)
+            .add_elementwise(input, &mean_bc, ElementWiseOperation::kSUB)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sub for batch norm: {}", e),
@@ -1572,9 +1934,17 @@ impl TrtxConverter {
         // This requires exposing IConstantLayer in trtx-rs
         // For now, we'll use the variance directly and note this limitation
 
+        let var_bc = Self::reshape_batch_norm_stats_for_broadcast(
+            network,
+            variance,
+            input,
+            axis,
+            "batch_norm_var",
+        )?;
+
         // Step 3: sqrt(variance + epsilon)
         let sqrt_var_layer = network
-            .add_unary(variance, UnaryOperation::kSQRT)
+            .add_unary(&var_bc, UnaryOperation::kSQRT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sqrt for batch norm: {}", e),
@@ -1612,8 +1982,16 @@ impl TrtxConverter {
                     reason: format!("Scale operand {} not found", operation.input_operands[3]),
                 })?;
 
+            let scale_bc = Self::reshape_batch_norm_stats_for_broadcast(
+                network,
+                scale,
+                &result,
+                axis,
+                "batch_norm_scale",
+            )?;
+
             let mul_layer = network
-                .add_elementwise(&result, scale, ElementWiseOperation::kPROD)
+                .add_elementwise(&result, &scale_bc, ElementWiseOperation::kPROD)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add mul for scale: {}", e),
@@ -1636,8 +2014,16 @@ impl TrtxConverter {
                     reason: format!("Bias operand {} not found", operation.input_operands[4]),
                 })?;
 
+            let bias_bc = Self::reshape_batch_norm_stats_for_broadcast(
+                network,
+                bias,
+                &result,
+                axis,
+                "batch_norm_bias",
+            )?;
+
             let add_layer = network
-                .add_elementwise(&result, bias, ElementWiseOperation::kSUM)
+                .add_elementwise(&result, &bias_bc, ElementWiseOperation::kSUM)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add bias: {}", e),
