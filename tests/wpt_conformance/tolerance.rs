@@ -16,6 +16,7 @@ pub struct ToleranceSpec {
 pub enum ToleranceKind {
     Ulp,
     Atol,
+    Rtol,
 }
 
 /// For ATOL we need a float value.
@@ -43,7 +44,8 @@ impl ToleranceSpec {
 }
 
 /// Default tolerances per operation (matches WPT/Python wpt_utils).
-fn default_tolerances() -> HashMap<String, (ToleranceKind, u32)> {
+/// Value: for Ulp = ULP count (u64); for Atol/Rtol = f64 bits (u64).
+fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     let mut m = HashMap::new();
     // Exact (no rounding)
     m.insert("relu".to_string(), (ToleranceKind::Ulp, 0));
@@ -66,9 +68,10 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u32)> {
     m.insert("reduce_log_sum".to_string(), (ToleranceKind::Ulp, 10));
     m.insert("reduce_log_sum_exp".to_string(), (ToleranceKind::Ulp, 100));
     m.insert("reduce_sum_square".to_string(), (ToleranceKind::Ulp, 2));
-    // Convolution / pooling (conv2d/conv_transpose2d: TensorRT can differ ~20k ULP), TODO evaluate rtol/atol instead of ULP.
-    m.insert("conv2d".to_string(), (ToleranceKind::Ulp, 20000));
-    m.insert("conv_transpose2d".to_string(), (ToleranceKind::Ulp, 20000));
+    // Convolution / pooling (conv2d/conv_transpose2d: use relative tolerance for TensorRT)
+    let rtol_1e3 = 1e-3_f64.to_bits();
+    m.insert("conv2d".to_string(), (ToleranceKind::Rtol, rtol_1e3));
+    m.insert("conv_transpose2d".to_string(), (ToleranceKind::Rtol, rtol_1e3));
     m.insert("average_pool2d".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("max_pool2d".to_string(), (ToleranceKind::Ulp, 0));
     m.insert("global_average_pool".to_string(), (ToleranceKind::Ulp, 2));
@@ -82,7 +85,7 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u32)> {
 }
 
 /// Get tolerance for an operation; test-case override takes precedence.
-/// Returns (kind, value): for Ulp, value is the ULP count; for Atol, value is f64 bits (use f64::from_bits).
+/// Returns (kind, value): for Ulp, value is the ULP count; for Atol/Rtol, value is f64 bits (use f64::from_bits).
 pub fn get_operation_tolerance(
     operation: &str,
     tolerance_override: Option<&super::wpt_types::WptTolerance>,
@@ -90,23 +93,25 @@ pub fn get_operation_tolerance(
     if let Some(t) = tolerance_override {
         let kind = if t.r#type.eq_ignore_ascii_case("atol") {
             ToleranceKind::Atol
+        } else if t.r#type.eq_ignore_ascii_case("rtol") {
+            ToleranceKind::Rtol
         } else {
             ToleranceKind::Ulp
         };
-        let value = if kind == ToleranceKind::Atol {
-            t.value.as_f64().unwrap_or(1e-5).to_bits()
-        } else {
-            t.value
+        let value = match kind {
+            ToleranceKind::Atol => t.value.as_f64().unwrap_or(1e-5).to_bits(),
+            ToleranceKind::Rtol => t.value.as_f64().unwrap_or(1e-3).to_bits(),
+            ToleranceKind::Ulp => t
+                .value
                 .as_u64()
                 .or_else(|| t.value.as_f64().map(|f| f as u64))
-                .unwrap_or(100)
+                .unwrap_or(100),
         };
         return (kind, value);
     }
     default_tolerances()
         .get(operation)
         .copied()
-        .map(|(k, v)| (k, v as u64))
         .unwrap_or((ToleranceKind::Ulp, 100u64))
 }
 
@@ -159,6 +164,58 @@ pub fn check_ulp_tolerance(
                 Some(format!(
                     "index {}: actual={} expected={} ulp={} tolerance={}",
                     i, a, e, ulp, tolerance
+                )),
+            );
+        }
+    }
+    (true, None)
+}
+
+/// Check relative tolerance: |actual - expected| / max(|expected|, 1e-6) <= rtol.
+pub fn check_rtol_tolerance(
+    actual: &[f32],
+    expected: &[f32],
+    rtol: f64,
+) -> (bool, Option<String>) {
+    if actual.len() != expected.len() {
+        return (
+            false,
+            Some(format!(
+                "shape mismatch: actual len {} expected len {}",
+                actual.len(),
+                expected.len()
+            )),
+        );
+    }
+    let rtol_f = rtol as f32;
+    let eps = 1e-6_f32;
+    for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        if e.is_nan() {
+            if !a.is_nan() {
+                return (
+                    false,
+                    Some(format!("index {}: actual={} expected=NaN", i, a)),
+                );
+            }
+            continue;
+        }
+        if e.is_infinite() {
+            if a != e {
+                return (
+                    false,
+                    Some(format!("index {}: actual={} expected={}", i, a, e)),
+                );
+            }
+            continue;
+        }
+        let denom = e.abs().max(eps);
+        let rel = (a - e).abs() / denom;
+        if rel > rtol_f {
+            return (
+                false,
+                Some(format!(
+                    "index {}: actual={} expected={} rel={} tolerance={}",
+                    i, a, e, rel, rtol_f
                 )),
             );
         }
@@ -232,8 +289,12 @@ pub fn validate_result(
     match kind {
         ToleranceKind::Ulp => check_ulp_tolerance(actual, expected, value),
         ToleranceKind::Atol => {
-            let atol_f = f64::from_bits(value as u64);
+            let atol_f = f64::from_bits(value);
             check_atol_tolerance(actual, expected, atol_f)
+        }
+        ToleranceKind::Rtol => {
+            let rtol_f = f64::from_bits(value);
+            check_rtol_tolerance(actual, expected, rtol_f)
         }
     }
 }
