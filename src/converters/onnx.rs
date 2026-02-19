@@ -134,6 +134,15 @@ impl OnnxConverter {
     }
 
     fn onnx_op_type(op_type: &str) -> String {
+        let normalized = op_type
+            .chars()
+            .filter(|c| *c != '_' && *c != '-')
+            .flat_map(|c| c.to_lowercase())
+            .collect::<String>();
+        if normalized == "roundeven" {
+            return "Round".to_string();
+        }
+
         // Use shared operation name mapper from webnn-onnx-utils
         if let Some(onnx_name) = mapper().webnn_to_onnx(op_type) {
             return onnx_name.to_string();
@@ -6289,6 +6298,13 @@ mod tests {
     fn test_data_type_code_float16() {
         let code = OnnxConverter::data_type_code(DataType::Float16);
         assert_eq!(code, ProtoDataType::Float16);
+    }
+
+    #[test]
+    fn test_round_even_op_maps_to_onnx_round() {
+        assert_eq!(OnnxConverter::onnx_op_type("roundEven"), "Round");
+        assert_eq!(OnnxConverter::onnx_op_type("roundeven"), "Round");
+        assert_eq!(OnnxConverter::onnx_op_type("round_even"), "Round");
     }
 
     #[test]

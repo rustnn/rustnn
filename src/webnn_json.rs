@@ -495,10 +495,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Unary element-wise operations (shape unchanged)
                 "abs" | "ceil" | "floor" | "neg" | "relu" | "sigmoid" | "tanh" | "exp" | "log"
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
-                | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
-                | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
-                | "reverse" | "logical_not" | "isnan" | "isinfinite" | "quantizelinear"
-                | "dequantizelinear" => input_shapes.first().cloned(),
+                | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "roundeven" | "round_even"
+                | "sign" | "reciprocal" | "softplus" | "softsign" | "softmax" | "gelu"
+                | "linear" | "identity" | "cast" | "reverse" | "logical_not" | "isnan"
+                | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
+                    input_shapes.first().cloned()
+                }
 
                 // Concat
                 "concat" => {
@@ -874,6 +876,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "acosh"
                     | "atanh"
                     | "round"
+                    | "roundeven"
+                    | "round_even"
                     | "sign"
                     | "reciprocal"
                     | "softplus"
@@ -1762,5 +1766,51 @@ mod tests {
         let out_desc = &graph_info.operands[out_id].descriptor;
         assert_eq!(out_desc.shape, vec![2, 3]);
         assert_eq!(out_desc.data_type, DataType::Uint8);
+    }
+
+    #[test]
+    fn test_round_even_infers_output_shape_and_dtype() {
+        use webnn_graph::ast::OperandDesc;
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(2),
+                    webnn_graph::ast::Dimension::Static(3),
+                ],
+            },
+        );
+
+        let nodes = vec![Node {
+            id: "round_even".to_string(),
+            op: "roundEven".to_string(),
+            inputs: vec!["x".to_string()],
+            options: serde_json::Map::new(),
+            outputs: None,
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), "round_even".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("round_even_test".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes,
+            outputs,
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+        let out_id = graph_info.output_operands[0] as usize;
+        let out_desc = &graph_info.operands[out_id].descriptor;
+
+        assert_eq!(out_desc.shape, vec![2, 3]);
+        assert_eq!(out_desc.data_type, DataType::Float32);
     }
 }

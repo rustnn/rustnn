@@ -892,6 +892,8 @@ impl CoremlMlProgramConverter {
             "ceil" => mil_ops::CEIL,
             "floor" => mil_ops::FLOOR,
             "round" => mil_ops::ROUND,
+            "roundeven" => mil_ops::ROUND,
+            "round_even" => mil_ops::ROUND,
             "neg" => mil_ops::NEG,
             "identity" => mil_ops::IDENTITY,
             "exp" => mil_ops::EXP,
@@ -1098,10 +1100,10 @@ impl CoremlMlProgramConverter {
             }
 
             // Unary operations: x
-            "relu" | "sigmoid" | "tanh" | "abs" | "ceil" | "floor" | "round" | "sign"
-            | "identity" | "exp" | "sqrt" | "reciprocal" | "sin" | "cos" | "tan" | "asin"
-            | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh" | "atanh" | "erf"
-            | "logicalnot" | "softplus" | "softsign" => {
+            "relu" | "sigmoid" | "tanh" | "abs" | "ceil" | "floor" | "round" | "roundeven"
+            | "round_even" | "sign" | "identity" | "exp" | "sqrt" | "reciprocal" | "sin"
+            | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh"
+            | "atanh" | "erf" | "logicalnot" | "softplus" | "softsign" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -3615,5 +3617,60 @@ mod tests {
             .expect("coreml linear float16 conversion should succeed");
         let model = Model::decode(converted.data.as_slice()).expect("decode coreml model");
         assert!(model.r#type.is_some(), "model type should be set");
+    }
+
+    #[test]
+    fn test_round_even_converts_to_round_op() {
+        let graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: vec![4],
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![Operation {
+                op_type: "roundEven".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: serde_json::json!({}),
+                label: None,
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("coreml roundEven conversion should succeed");
+        let model = Model::decode(converted.data.as_slice()).expect("decode coreml model");
+        let program = match model.r#type.expect("model type") {
+            crate::protos::coreml::specification::model::Type::MlProgram(program) => program,
+            _ => panic!("expected MLProgram model"),
+        };
+        let main_fn = program.functions.get("main").expect("main function");
+        let main_block = main_fn
+            .block_specializations
+            .get("CoreML7")
+            .expect("CoreML7 block");
+
+        assert!(main_block.operations.iter().any(|op| op.r#type == "round"));
     }
 }
