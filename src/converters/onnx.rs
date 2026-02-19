@@ -142,6 +142,9 @@ impl OnnxConverter {
         if normalized == "cumulativesum" {
             return "CumSum".to_string();
         }
+        if normalized == "grucell" {
+            return "GRU".to_string();
+        }
 
         // Use shared operation name mapper from webnn-onnx-utils
         if let Some(onnx_name) = mapper().webnn_to_onnx(op_type) {
@@ -3346,6 +3349,293 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     attribute: attributes,
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("grucell")
+                || op.op_type.eq_ignore_ascii_case("gru_cell")
+            {
+                if op.input_operands.len() < 4 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "gruCell requires at least 4 inputs (input, weight, recurrentWeight, hiddenState), got {}",
+                            op.input_operands.len()
+                        ),
+                    });
+                }
+
+                let input_id = op.input_operands[0];
+                let weight_id = op.input_operands[1];
+                let recurrent_weight_id = op.input_operands[2];
+                let hidden_state_id = op.input_operands[3];
+                let output_id = op.output_operand.expect("Single-output operation expected");
+
+                let input_name = operand_name(graph, input_id);
+                let weight_name = operand_name(graph, weight_id);
+                let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
+                let hidden_state_name = operand_name(graph, hidden_state_id);
+                let final_output_name = operand_name(graph, output_id);
+
+                let hidden_size = op
+                    .attributes
+                    .get("hiddenSize")
+                    .or_else(|| op.attributes.get("hidden_size"))
+                    .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|x| x as u64)))
+                    .or_else(|| {
+                        graph
+                            .operand(output_id)
+                            .and_then(|o| o.descriptor.shape.last().copied().map(|x| x as u64))
+                    })
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "gruCell missing hiddenSize/hidden_size attribute".to_string(),
+                    })?;
+
+                let hidden_state_operand = graph.operand(hidden_state_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "gruCell hiddenState lookup",
+                        hidden_state_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let input_dtype = Self::data_type_code(hidden_state_operand.descriptor.data_type);
+
+                let gate_layout = op
+                    .attributes
+                    .get("layout")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("zrn")
+                    .to_ascii_lowercase();
+                let needs_rzn_to_zrn = gate_layout == "rzn";
+
+                let axes0_name = format!("{}_axes0", op_name);
+                initializers.push(TensorProto {
+                    name: axes0_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![0],
+                    ..Default::default()
+                });
+
+                let make_slice_const =
+                    |suffix: &str, values: Vec<i64>, initializers: &mut Vec<TensorProto>| {
+                        let name = format!("{}_{}", op_name, suffix);
+                        initializers.push(TensorProto {
+                            name: name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![values.len() as i64],
+                            int64_data: values,
+                            ..Default::default()
+                        });
+                        name
+                    };
+
+                let reorder_rzn_gate_chunks = |base_name: &str,
+                                               tensor_name: String,
+                                               nodes: &mut Vec<NodeProto>,
+                                               initializers: &mut Vec<TensorProto>|
+                 -> String {
+                    let mut chunks = Vec::with_capacity(3);
+                    for gate_idx in 0..3 {
+                        let starts_name = make_slice_const(
+                            &format!("{}_slice{}_starts", base_name, gate_idx),
+                            vec![(gate_idx * hidden_size as usize) as i64],
+                            initializers,
+                        );
+                        let ends_name = make_slice_const(
+                            &format!("{}_slice{}_ends", base_name, gate_idx),
+                            vec![((gate_idx + 1) * hidden_size as usize) as i64],
+                            initializers,
+                        );
+                        let steps_name = make_slice_const(
+                            &format!("{}_slice{}_steps", base_name, gate_idx),
+                            vec![1],
+                            initializers,
+                        );
+                        let chunk_name = format!("{}_{}_chunk{}", op_name, base_name, gate_idx);
+                        nodes.push(NodeProto {
+                            input: vec![
+                                tensor_name.clone(),
+                                starts_name,
+                                ends_name,
+                                axes0_name.clone(),
+                                steps_name,
+                            ],
+                            output: vec![chunk_name.clone()],
+                            name: format!("{}_{}_slice{}", op_name, base_name, gate_idx),
+                            op_type: "Slice".to_string(),
+                            ..Default::default()
+                        });
+                        chunks.push(chunk_name);
+                    }
+
+                    let reordered_name = format!("{}_{}_zrn", op_name, base_name);
+                    nodes.push(NodeProto {
+                        input: vec![chunks[1].clone(), chunks[0].clone(), chunks[2].clone()],
+                        output: vec![reordered_name.clone()],
+                        name: format!("{}_{}_reorder", op_name, base_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 0,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    reordered_name
+                };
+
+                let w_for_gru = if needs_rzn_to_zrn {
+                    reorder_rzn_gate_chunks("w", weight_name, &mut nodes, &mut initializers)
+                } else {
+                    weight_name
+                };
+                let r_for_gru = if needs_rzn_to_zrn {
+                    reorder_rzn_gate_chunks(
+                        "r",
+                        recurrent_weight_name,
+                        &mut nodes,
+                        &mut initializers,
+                    )
+                } else {
+                    recurrent_weight_name
+                };
+
+                let mut bias_name = if op.input_operands.len() > 4 {
+                    operand_name(graph, op.input_operands[4])
+                } else {
+                    let name = format!("{}_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![3 * hidden_size as i64],
+                        0.0,
+                    ));
+                    name
+                };
+                let mut recurrent_bias_name = if op.input_operands.len() > 5 {
+                    operand_name(graph, op.input_operands[5])
+                } else {
+                    let name = format!("{}_recurrent_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![3 * hidden_size as i64],
+                        0.0,
+                    ));
+                    name
+                };
+                if needs_rzn_to_zrn {
+                    bias_name =
+                        reorder_rzn_gate_chunks("b", bias_name, &mut nodes, &mut initializers);
+                    recurrent_bias_name = reorder_rzn_gate_chunks(
+                        "rb",
+                        recurrent_bias_name,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                let combined_bias_name = format!("{}_combined_bias", op_name);
+                nodes.push(NodeProto {
+                    input: vec![bias_name, recurrent_bias_name],
+                    output: vec![combined_bias_name.clone()],
+                    name: format!("{}_combine_biases", op_name),
+                    op_type: "Concat".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                let x_seq_name = format!("{}_x_seq", op_name);
+                let w_3d_name = format!("{}_w_3d", op_name);
+                let r_3d_name = format!("{}_r_3d", op_name);
+                let b_2d_name = format!("{}_b_2d", op_name);
+                let h_3d_name = format!("{}_h_3d", op_name);
+
+                for (src, dst, label) in [
+                    (input_name, x_seq_name.clone(), "x"),
+                    (w_for_gru, w_3d_name.clone(), "w"),
+                    (r_for_gru, r_3d_name.clone(), "r"),
+                    (combined_bias_name, b_2d_name.clone(), "b"),
+                    (hidden_state_name, h_3d_name.clone(), "h"),
+                ] {
+                    nodes.push(NodeProto {
+                        input: vec![src, axes0_name.clone()],
+                        output: vec![dst],
+                        name: format!("{}_unsqueeze_{}", op_name, label),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                }
+
+                let gru_y_name = format!("{}_y", op_name);
+                let gru_y_h_name = format!("{}_y_h", op_name);
+                let reset_after = op
+                    .attributes
+                    .get("resetAfter")
+                    .or_else(|| op.attributes.get("reset_after"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let mut gru_attrs = vec![
+                    AttributeProto {
+                        name: "hidden_size".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: hidden_size as i64,
+                        ..Default::default()
+                    },
+                    AttributeProto {
+                        name: "linear_before_reset".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: if reset_after { 1 } else { 0 },
+                        ..Default::default()
+                    },
+                ];
+
+                if let Some(activations) =
+                    op.attributes.get("activations").and_then(|v| v.as_array())
+                {
+                    let strings: Vec<Vec<u8>> = activations
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .map(|s| s.into_bytes())
+                        .collect();
+                    if !strings.is_empty() {
+                        gru_attrs.push(AttributeProto {
+                            name: "activations".to_string(),
+                            r#type: AttributeType::Strings as i32,
+                            strings,
+                            ..Default::default()
+                        });
+                    }
+                }
+
+                nodes.push(NodeProto {
+                    input: vec![
+                        x_seq_name,
+                        w_3d_name,
+                        r_3d_name,
+                        b_2d_name,
+                        String::new(),
+                        h_3d_name,
+                    ],
+                    output: vec![gru_y_name, gru_y_h_name.clone()],
+                    name: op_name.clone(),
+                    op_type: "GRU".to_string(),
+                    attribute: gru_attrs,
+                    ..Default::default()
+                });
+
+                nodes.push(NodeProto {
+                    input: vec![gru_y_h_name, axes0_name.clone()],
+                    output: vec![final_output_name],
+                    name: format!("{}_squeeze_h", op_name),
+                    op_type: "Squeeze".to_string(),
+                    ..Default::default()
+                });
             } else if op.op_type.eq_ignore_ascii_case("tile") {
                 // ONNX Tile takes repeats as a second input tensor (INT64)
                 let data_input = if let Some(data_id) = op.input_operands.first() {
@@ -6392,6 +6682,12 @@ mod tests {
     }
 
     #[test]
+    fn test_gru_cell_op_maps_to_onnx_gru() {
+        assert_eq!(OnnxConverter::onnx_op_type("gruCell"), "GRU");
+        assert_eq!(OnnxConverter::onnx_op_type("gru_cell"), "GRU");
+    }
+
+    #[test]
     fn test_create_reshape_node() {
         let mut nodes = Vec::new();
         let mut initializers = Vec::new();
@@ -7682,5 +7978,138 @@ mod tests {
             .find(|a| a.name == "reverse")
             .expect("reverse attr");
         assert_eq!(reverse_attr.i, 1);
+    }
+
+    #[test]
+    fn test_gru_cell_lowers_to_gru_with_reordered_bias_for_rzn() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![3, 2],
+                    pending_permutation: vec![],
+                },
+                name: Some("x".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![12, 2],
+                    pending_permutation: vec![],
+                },
+                name: Some("w".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![12, 4],
+                    pending_permutation: vec![],
+                },
+                name: Some("r".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![3, 4],
+                    pending_permutation: vec![],
+                },
+                name: Some("h".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![12],
+                    pending_permutation: vec![],
+                },
+                name: Some("b".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![12],
+                    pending_permutation: vec![],
+                },
+                name: Some("rb".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![3, 4],
+                    pending_permutation: vec![],
+                },
+                name: Some("y".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "gruCell".to_string(),
+            input_operands: vec![0, 1, 2, 3, 4, 5],
+            output_operand: Some(6),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "hiddenSize": 4,
+                "layout": "rzn",
+                "resetAfter": false,
+                "activations": ["relu", "relu"]
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2, 3, 4, 5],
+            output_operands: vec![6],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("gruCell conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        let gru_node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "GRU")
+            .expect("GRU node");
+        assert_eq!(gru_node.input.len(), 6);
+        assert_eq!(gru_node.output.len(), 2);
+
+        let hidden_size_attr = gru_node
+            .attribute
+            .iter()
+            .find(|a| a.name == "hidden_size")
+            .expect("hidden_size attr");
+        assert_eq!(hidden_size_attr.i, 4);
+
+        let lbr_attr = gru_node
+            .attribute
+            .iter()
+            .find(|a| a.name == "linear_before_reset")
+            .expect("linear_before_reset attr");
+        assert_eq!(lbr_attr.i, 0);
+
+        let has_bias_reorder = graph_proto
+            .node
+            .iter()
+            .any(|n| n.name.contains("_b_reorder") && n.op_type == "Concat");
+        assert!(has_bias_reorder);
+
+        let has_output_squeeze = graph_proto
+            .node
+            .iter()
+            .any(|n| n.name.contains("_squeeze_h") && n.op_type == "Squeeze");
+        assert!(has_output_squeeze);
     }
 }

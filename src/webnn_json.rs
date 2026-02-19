@@ -501,6 +501,24 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
                     input_shapes.first().cloned()
                 }
+                "grucell" | "gru_cell" => {
+                    if let Some(hidden_state_shape) = input_shapes.get(3) {
+                        Some(hidden_state_shape.clone())
+                    } else if let Some(input_shape) = input_shapes.first() {
+                        let hidden_size = op
+                            .attributes
+                            .get("hiddenSize")
+                            .or_else(|| op.attributes.get("hidden_size"))
+                            .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|x| x as u64)));
+                        if input_shape.len() == 2 {
+                            hidden_size.map(|h| vec![input_shape[0], h as u32])
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
 
                 // Concat
                 "concat" => {
@@ -884,6 +902,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "gelu"
                     | "linear"
                     | "identity"
+                    | "grucell"
+                    | "gru_cell"
                     | "cumulativesum"
                     | "cumulative_sum"
                     | "hardsigmoid"
@@ -1819,6 +1839,93 @@ mod tests {
         let out_id = graph_info.output_operands[0] as usize;
         let out_desc = &graph_info.operands[out_id].descriptor;
         assert_eq!(out_desc.shape, vec![2, 3]);
+        assert_eq!(out_desc.data_type, DataType::Float32);
+    }
+
+    #[test]
+    fn test_gru_cell_infers_output_shape_and_dtype() {
+        use webnn_graph::ast::OperandDesc;
+
+        let mut inputs = BTreeMap::new();
+        inputs.insert(
+            "x".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(3),
+                    webnn_graph::ast::Dimension::Static(2),
+                ],
+            },
+        );
+        inputs.insert(
+            "w".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(12),
+                    webnn_graph::ast::Dimension::Static(2),
+                ],
+            },
+        );
+        inputs.insert(
+            "r".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(12),
+                    webnn_graph::ast::Dimension::Static(4),
+                ],
+            },
+        );
+        inputs.insert(
+            "h".to_string(),
+            OperandDesc {
+                data_type: webnn_graph::ast::DataType::Float32,
+                shape: vec![
+                    webnn_graph::ast::Dimension::Static(3),
+                    webnn_graph::ast::Dimension::Static(4),
+                ],
+            },
+        );
+
+        let mut options = serde_json::Map::new();
+        options.insert(
+            "hiddenSize".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(4)),
+        );
+
+        let nodes = vec![Node {
+            id: "gru".to_string(),
+            op: "gruCell".to_string(),
+            inputs: vec![
+                "x".to_string(),
+                "w".to_string(),
+                "r".to_string(),
+                "h".to_string(),
+            ],
+            options,
+            outputs: None,
+        }];
+
+        let mut outputs = BTreeMap::new();
+        outputs.insert("result".to_string(), "gru".to_string());
+
+        let graph_json = GraphJson {
+            name: Some("gru_test".to_string()),
+            format: "webnn-graph-json".to_string(),
+            version: 2,
+            quantized: false,
+            inputs,
+            consts: BTreeMap::new(),
+            nodes,
+            outputs,
+        };
+
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
+        let out_id = graph_info.output_operands[0] as usize;
+        let out_desc = &graph_info.operands[out_id].descriptor;
+        assert_eq!(out_desc.shape, vec![3, 4]);
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
 }
