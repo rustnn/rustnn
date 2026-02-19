@@ -70,8 +70,8 @@ Executor-level operator coverage follows converter coverage for this backend.
 
 - Converter source: `src/converters/coreml_mlprogram.rs`
 - Executor source: `src/executors/coreml.rs`
-- Converter operator count: **92**
-- Executor operator count: **92**
+- Converter operator count: **93**
+- Executor operator count: **93**
 
 ### Converter Operators
 
@@ -84,28 +84,28 @@ Executor-level operator coverage follows converter coverage for this backend.
 - `asin`, `identity`, `reshape`
 - `asinh`, `instanceNormalization`, `reverse`
 - `atan`, `layerNormalization`, `round`
-- `atanh`, `leakyRelu`, `scatterElements`
-- `averagePool2d`, `lesser`, `scatterND`
-- `batchNormalization`, `lesserOrEqual`, `sigmoid`
-- `cast`, `log`, `sign`
-- `ceil`, `logicalAnd`, `sin`
-- `clamp`, `logicalNot`, `sinh`
-- `concat`, `logicalOr`, `slice`
-- `conv2d`, `logicalXor`, `softmax`
-- `convTranspose2d`, `matmul`, `softplus`
-- `cos`, `maxPool2d`, `softsign`
-- `cosh`, `mul`, `split`
-- `dequantizeLinear`, `neg`, `sqrt`
-- `div`, `pad`, `squeeze`
-- `elu`, `pow`, `sub`
-- `equal`, `prelu`, `tan`
-- `erf`, `quantizeLinear`, `tanh`
-- `exp`, `reciprocal`, `tile`
-- `expand`, `reducel1`, `transpose`
-- `floor`, `reducel2`, `triangular`
-- `gather`, `reducelogsum`, `unsqueeze`
-- `gelu`, `reducelogsumexp`, `where`
-- `gemm`, `reducemax`
+- `atanh`, `leakyRelu`, `roundEven`
+- `averagePool2d`, `lesser`, `scatterElements`
+- `batchNormalization`, `lesserOrEqual`, `scatterND`
+- `cast`, `log`, `sigmoid`
+- `ceil`, `logicalAnd`, `sign`
+- `clamp`, `logicalNot`, `sin`
+- `concat`, `logicalOr`, `sinh`
+- `conv2d`, `logicalXor`, `slice`
+- `convTranspose2d`, `matmul`, `softmax`
+- `cos`, `maxPool2d`, `softplus`
+- `cosh`, `mul`, `softsign`
+- `dequantizeLinear`, `neg`, `split`
+- `div`, `pad`, `sqrt`
+- `elu`, `pow`, `squeeze`
+- `equal`, `prelu`, `sub`
+- `erf`, `quantizeLinear`, `tan`
+- `exp`, `reciprocal`, `tanh`
+- `expand`, `reducel1`, `tile`
+- `floor`, `reducel2`, `transpose`
+- `gather`, `reducelogsum`, `triangular`
+- `gelu`, `reducelogsumexp`, `unsqueeze`
+- `gemm`, `reducemax`, `where`
 
 ### Executor Operators
 
@@ -120,28 +120,28 @@ Executor-level operator coverage follows converter coverage for this backend.
 - `asin`, `identity`, `reshape`
 - `asinh`, `instanceNormalization`, `reverse`
 - `atan`, `layerNormalization`, `round`
-- `atanh`, `leakyRelu`, `scatterElements`
-- `averagePool2d`, `lesser`, `scatterND`
-- `batchNormalization`, `lesserOrEqual`, `sigmoid`
-- `cast`, `log`, `sign`
-- `ceil`, `logicalAnd`, `sin`
-- `clamp`, `logicalNot`, `sinh`
-- `concat`, `logicalOr`, `slice`
-- `conv2d`, `logicalXor`, `softmax`
-- `convTranspose2d`, `matmul`, `softplus`
-- `cos`, `maxPool2d`, `softsign`
-- `cosh`, `mul`, `split`
-- `dequantizeLinear`, `neg`, `sqrt`
-- `div`, `pad`, `squeeze`
-- `elu`, `pow`, `sub`
-- `equal`, `prelu`, `tan`
-- `erf`, `quantizeLinear`, `tanh`
-- `exp`, `reciprocal`, `tile`
-- `expand`, `reducel1`, `transpose`
-- `floor`, `reducel2`, `triangular`
-- `gather`, `reducelogsum`, `unsqueeze`
-- `gelu`, `reducelogsumexp`, `where`
-- `gemm`, `reducemax`
+- `atanh`, `leakyRelu`, `roundEven`
+- `averagePool2d`, `lesser`, `scatterElements`
+- `batchNormalization`, `lesserOrEqual`, `scatterND`
+- `cast`, `log`, `sigmoid`
+- `ceil`, `logicalAnd`, `sign`
+- `clamp`, `logicalNot`, `sin`
+- `concat`, `logicalOr`, `sinh`
+- `conv2d`, `logicalXor`, `slice`
+- `convTranspose2d`, `matmul`, `softmax`
+- `cos`, `maxPool2d`, `softplus`
+- `cosh`, `mul`, `softsign`
+- `dequantizeLinear`, `neg`, `split`
+- `div`, `pad`, `sqrt`
+- `elu`, `pow`, `squeeze`
+- `equal`, `prelu`, `sub`
+- `erf`, `quantizeLinear`, `tan`
+- `exp`, `reciprocal`, `tanh`
+- `expand`, `reducel1`, `tile`
+- `floor`, `reducel2`, `transpose`
+- `gather`, `reducelogsum`, `triangular`
+- `gelu`, `reducelogsumexp`, `unsqueeze`
+- `gemm`, `reducemax`, `where`
 
 ## TensorRT Backend
 
