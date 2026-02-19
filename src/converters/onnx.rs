@@ -142,6 +142,9 @@ impl OnnxConverter {
         if normalized == "cumulativesum" {
             return "CumSum".to_string();
         }
+        if normalized == "roundeven" {
+            return "Round".to_string();
+        }
         if normalized == "grucell" {
             return "GRU".to_string();
         }
@@ -6685,6 +6688,12 @@ mod tests {
     fn test_gru_cell_op_maps_to_onnx_gru() {
         assert_eq!(OnnxConverter::onnx_op_type("gruCell"), "GRU");
         assert_eq!(OnnxConverter::onnx_op_type("gru_cell"), "GRU");
+    }
+
+    #[test]
+    fn test_round_even_op_maps_to_onnx_round() {
+        assert_eq!(OnnxConverter::onnx_op_type("roundEven"), "Round");
+        assert_eq!(OnnxConverter::onnx_op_type("round_even"), "Round");
     }
 
     #[test]
