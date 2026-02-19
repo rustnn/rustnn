@@ -495,9 +495,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Unary element-wise operations (shape unchanged)
                 "abs" | "ceil" | "floor" | "neg" | "relu" | "sigmoid" | "tanh" | "exp" | "log"
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
-                | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "roundeven" | "round_even"
-                | "sign" | "reciprocal" | "softplus" | "softsign" | "softmax" | "gelu"
-                | "linear" | "identity" | "cast" | "reverse" | "logical_not" | "isnan"
+                | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
+                | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
+                | "reverse" | "cumulativesum" | "cumulative_sum" | "logical_not" | "isnan"
                 | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
                     input_shapes.first().cloned()
                 }
@@ -876,8 +876,6 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "acosh"
                     | "atanh"
                     | "round"
-                    | "roundeven"
-                    | "round_even"
                     | "sign"
                     | "reciprocal"
                     | "softplus"
@@ -886,6 +884,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "gelu"
                     | "linear"
                     | "identity"
+                    | "cumulativesum"
+                    | "cumulative_sum"
                     | "hardsigmoid"
                     | "hardswish"
                     | "elu"
@@ -1769,7 +1769,7 @@ mod tests {
     }
 
     #[test]
-    fn test_round_even_infers_output_shape_and_dtype() {
+    fn test_cumulative_sum_infers_output_shape_and_dtype() {
         use webnn_graph::ast::OperandDesc;
 
         let mut inputs = BTreeMap::new();
@@ -1784,19 +1784,27 @@ mod tests {
             },
         );
 
+        let mut options = serde_json::Map::new();
+        options.insert(
+            "axis".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(1)),
+        );
+        options.insert("exclusive".to_string(), serde_json::Value::Bool(true));
+        options.insert("reversed".to_string(), serde_json::Value::Bool(true));
+
         let nodes = vec![Node {
-            id: "round_even".to_string(),
-            op: "roundEven".to_string(),
+            id: "cumsum".to_string(),
+            op: "cumulativeSum".to_string(),
             inputs: vec!["x".to_string()],
-            options: serde_json::Map::new(),
+            options,
             outputs: None,
         }];
 
         let mut outputs = BTreeMap::new();
-        outputs.insert("result".to_string(), "round_even".to_string());
+        outputs.insert("result".to_string(), "cumsum".to_string());
 
         let graph_json = GraphJson {
-            name: Some("round_even_test".to_string()),
+            name: Some("cumsum_test".to_string()),
             format: "webnn-graph-json".to_string(),
             version: 2,
             quantized: false,
@@ -1807,9 +1815,9 @@ mod tests {
         };
 
         let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
         let out_id = graph_info.output_operands[0] as usize;
         let out_desc = &graph_info.operands[out_id].descriptor;
-
         assert_eq!(out_desc.shape, vec![2, 3]);
         assert_eq!(out_desc.data_type, DataType::Float32);
     }

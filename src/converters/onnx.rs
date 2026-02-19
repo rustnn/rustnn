@@ -139,8 +139,8 @@ impl OnnxConverter {
             .filter(|c| *c != '_' && *c != '-')
             .flat_map(|c| c.to_lowercase())
             .collect::<String>();
-        if normalized == "roundeven" {
-            return "Round".to_string();
+        if normalized == "cumulativesum" {
+            return "CumSum".to_string();
         }
 
         // Use shared operation name mapper from webnn-onnx-utils
@@ -3261,6 +3261,91 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     current_input = slice_output;
                 }
                 type_overrides.insert(output_id, input_operand.descriptor.data_type);
+            } else if op.op_type.eq_ignore_ascii_case("cumulativeSum")
+                || op.op_type.eq_ignore_ascii_case("cumulative_sum")
+            {
+                // ONNX CumSum requires axis as second input tensor.
+                let input_id = *op.input_operands.first().ok_or_else(|| {
+                    Self::invalid_operand(
+                        "cumulativeSum missing data input",
+                        idx as u32,
+                        Some((op, idx)),
+                    )
+                })?;
+                let input_name = operand_name(graph, input_id);
+                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_name = operand_name(graph, output_id);
+
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("cumulativeSum input lookup", input_id, Some((op, idx)))
+                })?;
+                let rank = input_operand.descriptor.shape.len() as i64;
+
+                let mut axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+                    .unwrap_or(0);
+                if rank > 0 && axis < 0 {
+                    axis += rank;
+                }
+                if rank > 0 && (axis < 0 || axis >= rank) {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "cumulativeSum axis {} out of bounds for rank {}",
+                            axis, rank
+                        ),
+                    });
+                }
+
+                let axis_name = format!("{}_axis", op_name);
+                initializers.push(TensorProto {
+                    name: axis_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![axis],
+                    ..Default::default()
+                });
+
+                let exclusive = op
+                    .attributes
+                    .get("exclusive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let reverse = op
+                    .attributes
+                    .get("reverse")
+                    .or_else(|| op.attributes.get("reversed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let mut attributes = Vec::new();
+                if exclusive {
+                    attributes.push(AttributeProto {
+                        name: "exclusive".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    });
+                }
+                if reverse {
+                    attributes.push(AttributeProto {
+                        name: "reverse".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    });
+                }
+
+                nodes.push(NodeProto {
+                    input: vec![input_name, axis_name],
+                    output: vec![output_name],
+                    name: op_name,
+                    op_type: "CumSum".to_string(),
+                    attribute: attributes,
+                    ..Default::default()
+                });
             } else if op.op_type.eq_ignore_ascii_case("tile") {
                 // ONNX Tile takes repeats as a second input tensor (INT64)
                 let data_input = if let Some(data_id) = op.input_operands.first() {
@@ -6301,10 +6386,9 @@ mod tests {
     }
 
     #[test]
-    fn test_round_even_op_maps_to_onnx_round() {
-        assert_eq!(OnnxConverter::onnx_op_type("roundEven"), "Round");
-        assert_eq!(OnnxConverter::onnx_op_type("roundeven"), "Round");
-        assert_eq!(OnnxConverter::onnx_op_type("round_even"), "Round");
+    fn test_cumulative_sum_op_maps_to_onnx_cumsum() {
+        assert_eq!(OnnxConverter::onnx_op_type("cumulativeSum"), "CumSum");
+        assert_eq!(OnnxConverter::onnx_op_type("cumulative_sum"), "CumSum");
     }
 
     #[test]
@@ -7517,5 +7601,86 @@ mod tests {
 
         assert_eq!(graph_proto.node.len(), 1);
         assert_eq!(graph_proto.node[0].op_type, "Identity");
+    }
+
+    #[test]
+    fn test_cumulative_sum_lowers_to_cumsum_with_axis_input() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![2, 3],
+                    pending_permutation: vec![],
+                },
+                name: Some("output".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation {
+            op_type: "cumulativeSum".to_string(),
+            input_operands: vec![0],
+            output_operand: Some(1),
+            output_operands: vec![],
+            attributes: serde_json::json!({
+                "axis": 1,
+                "exclusive": true,
+                "reversed": true
+            }),
+            label: None,
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = OnnxConverter
+            .convert(&graph)
+            .expect("cumulativeSum conversion should succeed");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode model");
+        let graph_proto = model.graph.expect("graph");
+
+        let node = graph_proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "CumSum")
+            .expect("CumSum node");
+        assert_eq!(node.input.len(), 2);
+
+        let axis_init = graph_proto
+            .initializer
+            .iter()
+            .find(|t| t.name == node.input[1])
+            .expect("axis initializer");
+        assert_eq!(axis_init.int64_data, vec![1]);
+
+        let exclusive_attr = node
+            .attribute
+            .iter()
+            .find(|a| a.name == "exclusive")
+            .expect("exclusive attr");
+        assert_eq!(exclusive_attr.i, 1);
+
+        let reverse_attr = node
+            .attribute
+            .iter()
+            .find(|a| a.name == "reverse")
+            .expect("reverse attr");
+        assert_eq!(reverse_attr.i, 1);
     }
 }

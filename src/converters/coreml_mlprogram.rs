@@ -142,6 +142,7 @@ mod mil_ops {
     // Tile operation
     pub const TILE: &str = "tile";
     pub const REVERSE: &str = "reverse";
+    pub const CUM_SUM: &str = "cumsum";
 
     // Triangular operation
     pub const TRIANGULAR: &str = "band_part";
@@ -892,8 +893,6 @@ impl CoremlMlProgramConverter {
             "ceil" => mil_ops::CEIL,
             "floor" => mil_ops::FLOOR,
             "round" => mil_ops::ROUND,
-            "roundeven" => mil_ops::ROUND,
-            "round_even" => mil_ops::ROUND,
             "neg" => mil_ops::NEG,
             "identity" => mil_ops::IDENTITY,
             "exp" => mil_ops::EXP,
@@ -941,6 +940,8 @@ impl CoremlMlProgramConverter {
             "split" => mil_ops::SPLIT,
             "where" => mil_ops::WHERE,
             "pad" => mil_ops::PAD,
+            "cumulativesum" => mil_ops::CUM_SUM,
+            "cumulative_sum" => mil_ops::CUM_SUM,
 
             // Advanced operations
             "gelu" => mil_ops::GELU,
@@ -1100,10 +1101,10 @@ impl CoremlMlProgramConverter {
             }
 
             // Unary operations: x
-            "relu" | "sigmoid" | "tanh" | "abs" | "ceil" | "floor" | "round" | "roundeven"
-            | "round_even" | "sign" | "identity" | "exp" | "sqrt" | "reciprocal" | "sin"
-            | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh"
-            | "atanh" | "erf" | "logicalnot" | "softplus" | "softsign" => {
+            "relu" | "sigmoid" | "tanh" | "abs" | "ceil" | "floor" | "round" | "sign"
+            | "identity" | "exp" | "sqrt" | "reciprocal" | "sin" | "cos" | "tan" | "asin"
+            | "acos" | "atan" | "sinh" | "cosh" | "asinh" | "acosh" | "atanh" | "erf"
+            | "logicalnot" | "softplus" | "softsign" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -2006,6 +2007,38 @@ impl CoremlMlProgramConverter {
                         );
                     }
                 }
+            }
+
+            "cumulativesum" | "cumulative_sum" => {
+                // cumsum: x, axis, exclusive, reverse
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+
+                let axis = op
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32;
+                inputs.insert("axis".to_string(), Self::create_int_argument(axis));
+
+                let exclusive = op
+                    .attributes
+                    .get("exclusive")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                inputs.insert(
+                    "exclusive".to_string(),
+                    Self::create_immediate_bool(exclusive),
+                );
+
+                let reverse = op
+                    .attributes
+                    .get("reverse")
+                    .or_else(|| op.attributes.get("reversed"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                inputs.insert("reverse".to_string(), Self::create_immediate_bool(reverse));
             }
 
             "reverse" => {
@@ -3620,7 +3653,7 @@ mod tests {
     }
 
     #[test]
-    fn test_round_even_converts_to_round_op() {
+    fn test_cumulative_sum_converts_to_cumsum_op() {
         let graph = GraphInfo {
             input_operands: vec![0],
             output_operands: vec![1],
@@ -3630,7 +3663,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![4],
+                        shape: vec![2, 3],
                         pending_permutation: vec![],
                     },
                 },
@@ -3639,17 +3672,21 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![4],
+                        shape: vec![2, 3],
                         pending_permutation: vec![],
                     },
                 },
             ],
             operations: vec![Operation {
-                op_type: "roundEven".to_string(),
+                op_type: "cumulativeSum".to_string(),
                 input_operands: vec![0],
                 output_operand: Some(1),
                 output_operands: vec![],
-                attributes: serde_json::json!({}),
+                attributes: serde_json::json!({
+                    "axis": 1,
+                    "exclusive": true,
+                    "reversed": true
+                }),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -3659,7 +3696,7 @@ mod tests {
 
         let converted = CoremlMlProgramConverter
             .convert(&graph)
-            .expect("coreml roundEven conversion should succeed");
+            .expect("coreml cumulativeSum conversion should succeed");
         let model = Model::decode(converted.data.as_slice()).expect("decode coreml model");
         let program = match model.r#type.expect("model type") {
             crate::protos::coreml::specification::model::Type::MlProgram(program) => program,
@@ -3671,6 +3708,6 @@ mod tests {
             .get("CoreML7")
             .expect("CoreML7 block");
 
-        assert!(main_block.operations.iter().any(|op| op.r#type == "round"));
+        assert!(main_block.operations.iter().any(|op| op.r#type == "cumsum"));
     }
 }

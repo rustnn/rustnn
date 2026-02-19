@@ -5458,6 +5458,7 @@ impl TrtxConverter {
         let reverse = operation
             .attributes
             .get("reverse")
+            .or_else(|| operation.attributes.get("reversed"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
