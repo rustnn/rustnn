@@ -3895,7 +3895,10 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![2, 3],
+                        shape: vec![
+                            crate::graph::Dimension::Static(2),
+                            crate::graph::Dimension::Static(3),
+                        ],
                         pending_permutation: vec![],
                     },
                 },
@@ -3904,7 +3907,10 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![2, 3],
+                        shape: vec![
+                            crate::graph::Dimension::Static(2),
+                            crate::graph::Dimension::Static(3),
+                        ],
                         pending_permutation: vec![],
                     },
                 },

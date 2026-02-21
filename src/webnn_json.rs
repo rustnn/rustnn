@@ -546,7 +546,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                             .or_else(|| op.attributes.get("hidden_size"))
                             .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|x| x as u64)));
                         if input_shape.len() == 2 {
-                            hidden_size.map(|h| vec![input_shape[0], h as u32])
+                            hidden_size
+                                .map(|h| vec![input_shape[0].clone(), Dimension::Static(h as u32)])
                         } else {
                             None
                         }
@@ -1829,7 +1830,10 @@ mod tests {
 
         let out_id = graph_info.output_operands[0] as usize;
         let out_desc = &graph_info.operands[out_id].descriptor;
-        assert_eq!(out_desc.shape, vec![2, 3]);
+        assert_eq!(
+            out_desc.shape,
+            vec![Dimension::Static(2), Dimension::Static(3)]
+        );
         assert_eq!(out_desc.data_type, DataType::Uint8);
     }
 
@@ -1883,7 +1887,10 @@ mod tests {
 
         let out_id = graph_info.output_operands[0] as usize;
         let out_desc = &graph_info.operands[out_id].descriptor;
-        assert_eq!(out_desc.shape, vec![2, 3]);
+        assert_eq!(
+            out_desc.shape,
+            vec![Dimension::Static(2), Dimension::Static(3)]
+        );
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
 
@@ -1970,7 +1977,10 @@ mod tests {
 
         let out_id = graph_info.output_operands[0] as usize;
         let out_desc = &graph_info.operands[out_id].descriptor;
-        assert_eq!(out_desc.shape, vec![3, 4]);
+        assert_eq!(
+            out_desc.shape,
+            vec![Dimension::Static(3), Dimension::Static(4)]
+        );
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
 

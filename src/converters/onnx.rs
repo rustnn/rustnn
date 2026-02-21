@@ -2656,9 +2656,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .or_else(|| op.attributes.get("hidden_size"))
                     .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|x| x as u64)))
                     .or_else(|| {
-                        graph
-                            .operand(output_id)
-                            .and_then(|o| o.descriptor.shape.last().copied().map(|x| x as u64))
+                        graph.operand(output_id).and_then(|o| {
+                            o.descriptor
+                                .shape
+                                .last()
+                                .map(|d| get_static_or_max_size(d) as u64)
+                        })
                     })
                     .ok_or_else(|| GraphError::ConversionFailed {
                         format: "onnx".to_string(),
@@ -5544,7 +5547,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![3, 2],
+                    shape: vec![Dimension::Static(3), Dimension::Static(2)],
                     pending_permutation: vec![],
                 },
                 name: Some("x".to_string()),
@@ -5553,7 +5556,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![12, 2],
+                    shape: vec![Dimension::Static(12), Dimension::Static(2)],
                     pending_permutation: vec![],
                 },
                 name: Some("w".to_string()),
@@ -5562,7 +5565,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![12, 4],
+                    shape: vec![Dimension::Static(12), Dimension::Static(4)],
                     pending_permutation: vec![],
                 },
                 name: Some("r".to_string()),
@@ -5571,7 +5574,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![3, 4],
+                    shape: vec![Dimension::Static(3), Dimension::Static(4)],
                     pending_permutation: vec![],
                 },
                 name: Some("h".to_string()),
@@ -5580,7 +5583,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![12],
+                    shape: vec![Dimension::Static(12)],
                     pending_permutation: vec![],
                 },
                 name: Some("b".to_string()),
@@ -5589,7 +5592,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![12],
+                    shape: vec![Dimension::Static(12)],
                     pending_permutation: vec![],
                 },
                 name: Some("rb".to_string()),
@@ -5598,7 +5601,7 @@ mod tests {
                 kind: OperandKind::Output,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![3, 4],
+                    shape: vec![Dimension::Static(3), Dimension::Static(4)],
                     pending_permutation: vec![],
                 },
                 name: Some("y".to_string()),
@@ -5670,6 +5673,7 @@ mod tests {
         assert!(has_output_squeeze);
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_reshape_dynamic_new_shape_builds_runtime_shape_tensor() {
         let operands = vec![
@@ -5739,6 +5743,7 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
     }
 
+    #[cfg(feature = "dynamic-inputs")]
     #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_expand_dynamic_new_shape_builds_runtime_shape_tensor() {
