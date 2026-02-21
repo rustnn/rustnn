@@ -103,13 +103,13 @@ jobs:
         run: |
           cargo update -p rustnn --precise "${{ github.event.pull_request.head.sha }}"
 
-      - name: Prepare ONNX Runtime dylib path for rustnnpt
-        working-directory: rustnnpt
+      - name: Download ONNX Runtime shared libraries
+        working-directory: rustnn
         run: |
-          npm run build:runner
-          ORT_LIB="$(find target -type f \( -name 'libonnxruntime.so' -o -name 'libonnxruntime.so.*' -o -name 'libonnxruntime.dylib' -o -name 'onnxruntime.dll' \) | head -n 1)"
+          make onnxruntime-download
+          ORT_LIB="$(find target/onnxruntime -type f \( -name 'libonnxruntime.so' -o -name 'libonnxruntime.so.*' -o -name 'libonnxruntime.dylib' -o -name 'onnxruntime.dll' \) | head -n 1)"
           if [ -z "$ORT_LIB" ]; then
-            echo "Failed to locate ONNX Runtime dynamic library under rustnnpt/target after building runner."
+            echo "Failed to locate ONNX Runtime dynamic library under rustnn/target/onnxruntime."
             exit 1
           fi
           ORT_DIR="$(dirname "$ORT_LIB")"
