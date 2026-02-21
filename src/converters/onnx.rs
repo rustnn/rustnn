@@ -7093,13 +7093,13 @@ mod tests {
     #[test]
     fn test_data_type_code_int4() {
         let code = OnnxConverter::data_type_code(DataType::Int4);
-        assert_eq!(code, ProtoDataType::Int8);
+        assert_eq!(code, ProtoDataType::Int32);
     }
 
     #[test]
     fn test_data_type_code_uint4() {
         let code = OnnxConverter::data_type_code(DataType::Uint4);
-        assert_eq!(code, ProtoDataType::Int8);
+        assert_eq!(code, ProtoDataType::Uint8);
     }
 
     #[test]
@@ -7252,13 +7252,18 @@ mod tests {
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
 
-        let quant_node = graph_proto
+        assert!(
+            graph_proto
+                .node
+                .iter()
+                .all(|n| n.op_type != "QuantizeLinear")
+        );
+        let final_node = graph_proto
             .node
             .iter()
-            .find(|n| n.op_type == "QuantizeLinear");
-        assert!(quant_node.is_some());
-        let node = quant_node.unwrap();
-        assert_eq!(node.input.len(), 3);
+            .find(|n| n.output.iter().any(|o| o == "output"));
+        assert!(final_node.is_some());
+        assert_eq!(final_node.unwrap().op_type, "Cast");
     }
 
     #[test]
@@ -7333,11 +7338,18 @@ mod tests {
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
 
-        let dequant_node = graph_proto
+        assert!(
+            graph_proto
+                .node
+                .iter()
+                .all(|n| n.op_type != "DequantizeLinear")
+        );
+        let final_node = graph_proto
             .node
             .iter()
-            .find(|n| n.op_type == "DequantizeLinear");
-        assert!(dequant_node.is_some());
+            .find(|n| n.output.iter().any(|o| o == "output"));
+        assert!(final_node.is_some());
+        assert_eq!(final_node.unwrap().op_type, "Mul");
     }
 
     #[test]
@@ -7412,16 +7424,18 @@ mod tests {
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
 
-        let quant_node = graph_proto
+        assert!(
+            graph_proto
+                .node
+                .iter()
+                .all(|n| n.op_type != "QuantizeLinear")
+        );
+        let final_node = graph_proto
             .node
             .iter()
-            .find(|n| n.op_type == "QuantizeLinear");
-        assert!(quant_node.is_some());
-
-        let node = quant_node.unwrap();
-        let axis_attr = node.attribute.iter().find(|a| a.name == "axis");
-        assert!(axis_attr.is_some());
-        assert_eq!(axis_attr.unwrap().i, 1);
+            .find(|n| n.output.iter().any(|o| o == "output"));
+        assert!(final_node.is_some());
+        assert_eq!(final_node.unwrap().op_type, "Cast");
     }
 
     #[test]

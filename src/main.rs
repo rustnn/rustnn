@@ -2,6 +2,12 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Parser;
+#[cfg(any(
+    feature = "onnx-runtime",
+    feature = "trtx-runtime-mock",
+    feature = "trtx-runtime"
+))]
+use rustnn::graph::get_static_or_max_size;
 use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
 
 #[derive(Parser, Debug)]
@@ -163,7 +169,11 @@ fn run() -> Result<(), GraphError> {
                 .input_names_to_descriptors
                 .iter()
                 .map(|(name, desc)| {
-                    let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+                    let shape: Vec<usize> = desc
+                        .shape
+                        .iter()
+                        .map(|dim| get_static_or_max_size(dim) as usize)
+                        .collect();
                     let total: usize = shape.iter().product();
                     rustnn::OnnxInput {
                         name: name.clone(),
@@ -193,7 +203,11 @@ fn run() -> Result<(), GraphError> {
                 .input_names_to_descriptors
                 .iter()
                 .map(|(name, desc)| {
-                    let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+                    let shape: Vec<usize> = desc
+                        .shape
+                        .iter()
+                        .map(|dim| get_static_or_max_size(dim) as usize)
+                        .collect();
                     let total: usize = shape.iter().product();
                     rustnn::TrtxInput {
                         name: name.clone(),

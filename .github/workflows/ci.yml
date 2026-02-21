@@ -110,6 +110,10 @@ jobs:
       - name: Enforce minimum pass rate
         working-directory: rustnnpt
         run: |
+          if [ ! -f reports/conformance.json ]; then
+            echo "reports/conformance.json missing after conformance run; rerunning with explicit report paths"
+            npm run test:wpt:report -- --variants cpu --report-json reports/conformance.json --report-html reports/conformance.html
+          fi
           PASS_RATE="$(jq -r '.summary.passRatePct // (if .summary.total > 0 then (.summary.passed * 100 / .summary.total) else 0 end)' reports/conformance.json)"
           echo "rustnnpt pass rate: ${PASS_RATE}%"
           awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 90) { exit 1 } }'
