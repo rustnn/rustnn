@@ -112,6 +112,7 @@ jobs:
             echo "Failed to locate ONNX Runtime dynamic library under rustnn/target/onnxruntime."
             exit 1
           fi
+          ORT_LIB="$(realpath "$ORT_LIB")"
           ORT_DIR="$(dirname "$ORT_LIB")"
           echo "ORT_DYLIB_PATH=$ORT_LIB" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$ORT_DIR:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
