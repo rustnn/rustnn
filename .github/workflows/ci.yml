@@ -44,6 +44,12 @@ jobs:
       - name: Run cargo check
         run: cargo check
 
+      - name: Run cargo check (explicitly without dynamic-inputs)
+        run: cargo check --no-default-features
+
+      - name: Run cargo check (onnx-runtime without dynamic-inputs)
+        run: cargo check --no-default-features --features onnx-runtime
+
       - name: Run cargo test (library only)
         run: cargo test --lib
 
@@ -57,6 +63,63 @@ jobs:
       - name: Run backend operator report parser tests
         run: |
           python3 -m unittest scripts/test_generate_backend_operator_report.py
+
+  rustnnpt-gate:
+    name: RustNNPT Conformance Gate (>=90%)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout rustnn
+        uses: actions/checkout@v4
+        with:
+          path: rustnn
+
+      - name: Checkout rustnnpt
+        uses: actions/checkout@v4
+        with:
+          repository: rustnn/rustnnpt
+          ref: main
+          path: rustnnpt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Refresh WPT cache
+        working-directory: rustnnpt
+        run: npm run test:wpt:fetch
+
+      - name: Pin rustnnpt to this PR rustnn SHA
+        working-directory: rustnnpt
+        run: |
+          cargo update -p rustnn --precise "${{ github.event.pull_request.head.sha }}"
+
+      - name: Run rustnnpt conformance (cpu)
+        working-directory: rustnnpt
+        run: npm run test:wpt:report -- --variants cpu
+
+      - name: Enforce minimum pass rate
+        working-directory: rustnnpt
+        run: |
+          PASS_RATE="$(jq -r '.summary.passRatePct // (if .summary.total > 0 then (.summary.passed * 100 / .summary.total) else 0 end)' reports/conformance.json)"
+          echo "rustnnpt pass rate: ${PASS_RATE}%"
+          awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 90) { exit 1 } }'
+
+      - name: Upload rustnnpt conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustnnpt-conformance-report
+          path: rustnnpt/reports/conformance.json
 
   # Documentation build test
   docs-test:
