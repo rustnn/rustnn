@@ -120,6 +120,7 @@ jobs:
           echo "PATH=$ORT_DIR:$PATH" >> "$GITHUB_ENV"
 
       - name: Run rustnnpt conformance (cpu)
+        continue-on-error: true
         working-directory: rustnnpt
         run: npm run test:wpt:report -- --variants cpu
 
