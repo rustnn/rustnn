@@ -15,23 +15,22 @@ use wpt_types::load_wpt_file;
 
 #[cfg(feature = "onnx-runtime")]
 use rustnn::converters::{GraphConverter, OnnxConverter};
-#[cfg(feature = "onnx-runtime")]
-use rustnn::run_onnx_with_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use rustnn::converters::{GraphConverter, TrtxConverter};
+#[cfg(feature = "onnx-runtime")]
+use rustnn::run_onnx_with_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use rustnn::run_trtx_with_inputs;
 
 use tolerance::validate_result;
-use wpt_to_graph::{
-    expected_output_to_f32, expected_output_to_i32, expected_output_to_i64, expected_output_to_i8,
-    expected_output_to_u8, expected_output_to_u32,
-    wpt_graph_to_graph_info,
-};
 #[cfg(feature = "onnx-runtime")]
 use wpt_to_graph::wpt_graph_to_onnx_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use wpt_to_graph::wpt_graph_to_trtx_inputs;
+use wpt_to_graph::{
+    expected_output_to_f32, expected_output_to_i8, expected_output_to_i32, expected_output_to_i64,
+    expected_output_to_u8, expected_output_to_u32, wpt_graph_to_graph_info,
+};
 use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
@@ -40,13 +39,25 @@ const FAILURE_DISPLAY_LEN: usize = 24;
 /// For 4D [N,H,W,C]: prints N*H lines, each line has W cells of C values as [a, b, ...].
 fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
     if shape.is_empty() {
-        return format!("[{}]", slice.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+        return format!(
+            "[{}]",
+            slice
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     let size: usize = shape.iter().map(|&d| d as usize).product();
     if size != slice.len() {
         return format!(
             "[{} ...] (len={}, shape={:?})",
-            slice.iter().take(24).map(|v| v.to_string()).collect::<Vec<_>>().join(", "),
+            slice
+                .iter()
+                .take(24)
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
             slice.len(),
             shape
         );
@@ -55,7 +66,14 @@ fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
     let rank = s.len();
     let mut lines = Vec::new();
     if rank == 1 {
-        lines.push(format!("[{}]", slice.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")));
+        lines.push(format!(
+            "[{}]",
+            slice
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     } else if rank == 4 {
         let [n, h, w, c] = [s[0], s[1], s[2], s[3]];
         let mut idx = 0;
@@ -63,7 +81,10 @@ fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
             for _i in 0..h {
                 let row: Vec<String> = (0..w)
                     .map(|_| {
-                        let cell: Vec<String> = slice[idx..idx + c].iter().map(|v| format!("{}", v)).collect();
+                        let cell: Vec<String> = slice[idx..idx + c]
+                            .iter()
+                            .map(|v| format!("{}", v))
+                            .collect();
                         idx += c;
                         format!("[{}]", cell.join(", "))
                     })
@@ -75,7 +96,10 @@ fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
         let (rows, cols) = (s[0], s[1]);
         let mut idx = 0;
         for _ in 0..rows {
-            let row: Vec<String> = slice[idx..idx + cols].iter().map(|v| format!("{}", v)).collect();
+            let row: Vec<String> = slice[idx..idx + cols]
+                .iter()
+                .map(|v| format!("{}", v))
+                .collect();
             idx += cols;
             lines.push(format!("  [{}]", row.join(", ")));
         }
@@ -128,7 +152,11 @@ fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
-    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
     let s = head.join(", ");
     if slice.len() <= max_show {
         format!("[{}]", s)
@@ -141,7 +169,11 @@ fn format_i32_slice_for_failure(slice: &[i32], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
-    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
     let s = head.join(", ");
     if slice.len() <= max_show {
         format!("[{}]", s)
@@ -154,7 +186,11 @@ fn format_i8_slice_for_failure(slice: &[i8], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
-    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
     let s = head.join(", ");
     if slice.len() <= max_show {
         format!("[{}]", s)
@@ -167,7 +203,11 @@ fn format_u8_slice_for_failure(slice: &[u8], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
-    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
     let s = head.join(", ");
     if slice.len() <= max_show {
         format!("[{}]", s)
@@ -180,7 +220,11 @@ fn format_u32_slice_for_failure(slice: &[u32], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
-    let head: Vec<String> = slice.iter().take(max_show).map(|v| format!("{}", v)).collect();
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
     let s = head.join(", ");
     if slice.len() <= max_show {
         format!("[{}]", s)
@@ -279,18 +323,11 @@ pub fn run_one_test_case(
             .find(|o| o.name == *out_name)
             .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
         let expected = expected_output_to_f32(expected_spec);
-        let (pass, msg) = validate_result(
-            &actual.data,
-            &expected,
-            tolerance_kind,
-            tolerance_value,
-        );
+        let (pass, msg) = validate_result(&actual.data, &expected, tolerance_kind, tolerance_value);
         if !pass {
             let inputs_str = format_inputs_for_failure(graph, &input_names);
-            let expected_str =
-                format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-            let actual_str =
-                format_f32_slice_for_failure(&actual.data, FAILURE_DISPLAY_LEN);
+            let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+            let actual_str = format_f32_slice_for_failure(&actual.data, FAILURE_DISPLAY_LEN);
             let shape = expected_spec.shape();
             let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
                 let expected_nd = format_f32_nd(&expected, shape);
@@ -360,8 +397,13 @@ pub fn run_one_test_case_trtx(
                     .chunks_exact(8)
                     .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
                     .collect();
-                let pass = actual_i64.len() == expected.len() && actual_i64.iter().eq(expected.iter());
-                let msg = if pass { None } else { Some("int64 output mismatch".to_string()) };
+                let pass =
+                    actual_i64.len() == expected.len() && actual_i64.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("int64 output mismatch".to_string())
+                };
                 let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
                 let actual_str = format_int_slice_for_failure(&actual_i64, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
@@ -373,8 +415,13 @@ pub fn run_one_test_case_trtx(
                     .chunks_exact(4)
                     .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
-                let pass = actual_i32.len() == expected.len() && actual_i32.iter().eq(expected.iter());
-                let msg = if pass { None } else { Some("int32 output mismatch".to_string()) };
+                let pass =
+                    actual_i32.len() == expected.len() && actual_i32.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("int32 output mismatch".to_string())
+                };
                 let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
                 let actual_str = format_i32_slice_for_failure(&actual_i32, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
@@ -382,8 +429,13 @@ pub fn run_one_test_case_trtx(
             "int8" => {
                 let expected = expected_output_to_i8(expected_spec);
                 let actual_i8: Vec<i8> = actual.data.iter().map(|&b| b as i8).collect();
-                let pass = actual_i8.len() == expected.len() && actual_i8.iter().eq(expected.iter());
-                let msg = if pass { None } else { Some("int8 output mismatch".to_string()) };
+                let pass =
+                    actual_i8.len() == expected.len() && actual_i8.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("int8 output mismatch".to_string())
+                };
                 let expected_str = format_i8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
                 let actual_str = format_i8_slice_for_failure(&actual_i8, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
@@ -391,8 +443,13 @@ pub fn run_one_test_case_trtx(
             "uint8" => {
                 let expected = expected_output_to_u8(expected_spec);
                 let actual_u8: Vec<u8> = actual.data.to_vec();
-                let pass = actual_u8.len() == expected.len() && actual_u8.iter().eq(expected.iter());
-                let msg = if pass { None } else { Some("uint8 output mismatch".to_string()) };
+                let pass =
+                    actual_u8.len() == expected.len() && actual_u8.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("uint8 output mismatch".to_string())
+                };
                 let expected_str = format_u8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
                 let actual_str = format_u8_slice_for_failure(&actual_u8, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
@@ -404,8 +461,13 @@ pub fn run_one_test_case_trtx(
                     .chunks_exact(4)
                     .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                     .collect();
-                let pass = actual_u32.len() == expected.len() && actual_u32.iter().eq(expected.iter());
-                let msg = if pass { None } else { Some("uint32 output mismatch".to_string()) };
+                let pass =
+                    actual_u32.len() == expected.len() && actual_u32.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("uint32 output mismatch".to_string())
+                };
                 let expected_str = format_u32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
                 let actual_str = format_u32_slice_for_failure(&actual_u32, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
@@ -458,7 +520,9 @@ pub fn run_one_test_case_trtx(
                         let act: Vec<i64> = actual
                             .data
                             .chunks_exact(8)
-                            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                            .map(|c| {
+                                i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
+                            })
                             .collect();
                         let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
                         format_f32_nd(&act_f, shape)
@@ -560,7 +624,8 @@ pub fn run_all_trtx() -> Result<(), String> {
 
     for op in &operations {
         let path = dir.join(format!("{}.json", op));
-        let json = fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let json =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
         let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
 
         let num_tests = file.tests.len();
@@ -589,7 +654,10 @@ pub fn run_all_trtx() -> Result<(), String> {
 
     println!(
         "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
-        passed, skipped, failed.len(), total_cases
+        passed,
+        skipped,
+        failed.len(),
+        total_cases
     );
 
     if failed.is_empty() {
@@ -608,7 +676,11 @@ pub fn run_all_trtx() -> Result<(), String> {
         };
         Err(format!(
             "WPT conformance (TRTX): {} passed, {} skipped, {} failed\n{}{}",
-            passed, skipped, failed.len(), msg, more
+            passed,
+            skipped,
+            failed.len(),
+            msg,
+            more
         ))
     }
 }
@@ -627,7 +699,11 @@ pub fn run_all() -> Result<(), String> {
     }
 
     println!("[WPT] data dir: {}", dir.display());
-    println!("[WPT] found {} operation(s): {}", operations.len(), operations.join(", "));
+    println!(
+        "[WPT] found {} operation(s): {}",
+        operations.len(),
+        operations.join(", ")
+    );
 
     let mut passed = 0usize;
     let mut skipped = 0usize;
@@ -636,7 +712,8 @@ pub fn run_all() -> Result<(), String> {
 
     for op in &operations {
         let path = dir.join(format!("{}.json", op));
-        let json = fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let json =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
         let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
 
         let num_tests = file.tests.len();
@@ -665,7 +742,10 @@ pub fn run_all() -> Result<(), String> {
 
     println!(
         "[WPT] total: {} passed, {} skipped, {} failed (of {} cases)",
-        passed, skipped, failed.len(), total_cases
+        passed,
+        skipped,
+        failed.len(),
+        total_cases
     );
 
     if failed.is_empty() {
@@ -684,7 +764,11 @@ pub fn run_all() -> Result<(), String> {
         };
         Err(format!(
             "WPT conformance: {} passed, {} skipped, {} failed\n{}{}",
-            passed, skipped, failed.len(), msg, more
+            passed,
+            skipped,
+            failed.len(),
+            msg,
+            more
         ))
     }
 }

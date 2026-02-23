@@ -129,7 +129,10 @@ fn parse_number(v: &serde_json::Value) -> Option<f64> {
         serde_json::Value::Number(n) => n.as_f64(),
         serde_json::Value::String(s) => {
             let t = s.trim_end_matches('n');
-            t.parse::<i64>().ok().map(|i| i as f64).or_else(|| t.parse::<f64>().ok())
+            t.parse::<i64>()
+                .ok()
+                .map(|i| i as f64)
+                .or_else(|| t.parse::<f64>().ok())
         }
         _ => None,
     }
@@ -167,7 +170,10 @@ fn flatten_args(op: &WptOperator) -> HashMap<String, serde_json::Value> {
             out.insert(k.clone(), v.clone());
         }
     }
-    if let Some(options) = out.get("options").and_then(|v: &serde_json::Value| v.as_object()) {
+    if let Some(options) = out
+        .get("options")
+        .and_then(|v: &serde_json::Value| v.as_object())
+    {
         let entries: Vec<(String, serde_json::Value)> = options
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
@@ -235,7 +241,11 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
                         buf[i] = x as i32;
                     }
                 }
-            } else if let Some(x) = spec.data.as_i64().or_else(|| parse_number(&spec.data).map(|f| f as i64)) {
+            } else if let Some(x) = spec
+                .data
+                .as_i64()
+                .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+            {
                 buf.fill(x as i32);
             }
             buf.iter().flat_map(|x| x.to_ne_bytes()).collect()
@@ -248,7 +258,11 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
                         buf[i] = x as u32;
                     }
                 }
-            } else if let Some(x) = spec.data.as_u64().or_else(|| parse_number(&spec.data).map(|f| f as u64)) {
+            } else if let Some(x) = spec
+                .data
+                .as_u64()
+                .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+            {
                 buf.fill(x as u32);
             }
             buf.iter().flat_map(|x| x.to_ne_bytes()).collect()
@@ -261,7 +275,11 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
                         buf[i] = x as i8;
                     }
                 }
-            } else if let Some(x) = spec.data.as_i64().or_else(|| parse_number(&spec.data).map(|f| f as i64)) {
+            } else if let Some(x) = spec
+                .data
+                .as_i64()
+                .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+            {
                 buf.fill(x as i8);
             }
             buf.iter().map(|&x| x as u8).collect()
@@ -274,7 +292,11 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
                         buf[i] = x as u8;
                     }
                 }
-            } else if let Some(x) = spec.data.as_u64().or_else(|| parse_number(&spec.data).map(|f| f as u64)) {
+            } else if let Some(x) = spec
+                .data
+                .as_u64()
+                .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+            {
                 buf.fill(x as u8);
             }
             buf
@@ -285,7 +307,10 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
                 for (i, v) in arr.iter().enumerate().take(n) {
                     if let Some(x) = v
                         .as_i64()
-                        .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                        .or_else(|| {
+                            v.as_str()
+                                .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                        })
                         .or_else(|| parse_number(v).map(|f| f as i64))
                     {
                         buf[i] = x;
@@ -294,7 +319,11 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
             } else if let Some(x) = spec
                 .data
                 .as_i64()
-                .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| {
+                    spec.data
+                        .as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                })
                 .or_else(|| parse_number(&spec.data).map(|f| f as i64))
             {
                 buf.fill(x);
@@ -305,16 +334,26 @@ fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
             let mut buf = vec![0u64; n];
             if let Some(arr) = arr_opt {
                 for (i, v) in arr.iter().enumerate().take(n) {
-                    if let Some(x) = v.as_u64()
+                    if let Some(x) = v
+                        .as_u64()
                         .or_else(|| parse_number(v).map(|f| f as u64))
-                        .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+                        .or_else(|| {
+                            v.as_str()
+                                .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+                        })
                     {
                         buf[i] = x;
                     }
                 }
-            } else if let Some(x) = spec.data.as_u64()
+            } else if let Some(x) = spec
+                .data
+                .as_u64()
                 .or_else(|| parse_number(&spec.data).map(|f| f as u64))
-                .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+                .or_else(|| {
+                    spec.data
+                        .as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+                })
             {
                 buf.fill(x);
             }
@@ -352,7 +391,13 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         let data_type = wpt_data_type(spec.data_type());
         let kind = if spec.constant {
             let bytes = tensor_spec_to_bytes(spec)?;
-            constant_data.insert(next_id, ConstantData { data: bytes, label: None });
+            constant_data.insert(
+                next_id,
+                ConstantData {
+                    data: bytes,
+                    label: None,
+                },
+            );
             OperandKind::Constant
         } else {
             input_operand_ids.push(next_id);
@@ -473,7 +518,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     } else {
                         "data_type".to_string()
                     }
-                },
+                }
                 "to" => "to".to_string(),
                 _ => key.clone(),
             };
@@ -491,7 +536,11 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 }
             }
             if input_ids.is_empty() {
-                if let Some(arr) = args.get("inputs").or_else(|| args.get("values")).and_then(|v| v.as_array()) {
+                if let Some(arr) = args
+                    .get("inputs")
+                    .or_else(|| args.get("values"))
+                    .and_then(|v| v.as_array())
+                {
                     for item in arr {
                         if let Some(name) = item.as_str() {
                             if let Some(&id) = name_to_id.get(name) {
@@ -511,7 +560,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             let ordered: Vec<u32> = order
                 .iter()
                 .filter_map(|key| {
-                    args.get(*key).and_then(|v| v.as_str()).and_then(|name| name_to_id.get(name).copied())
+                    args.get(*key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|name| name_to_id.get(name).copied())
                 })
                 .collect();
             if !ordered.is_empty() {
@@ -531,11 +582,21 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     if has_bias && !has_scale {
                         // Only bias provided: insert default scale (1.0) at index 3, then bias at 4
                         let scale_bytes: Vec<u8> = match data_type {
-                            DataType::Float32 => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
-                            DataType::Float16 => (0..n).flat_map(|_| half::f16::from_f32(1.0).to_bits().to_ne_bytes()).collect(),
+                            DataType::Float32 => {
+                                (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect()
+                            }
+                            DataType::Float16 => (0..n)
+                                .flat_map(|_| half::f16::from_f32(1.0).to_bits().to_ne_bytes())
+                                .collect(),
                             _ => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
                         };
-                        constant_data.insert(next_id, ConstantData { data: scale_bytes, label: None });
+                        constant_data.insert(
+                            next_id,
+                            ConstantData {
+                                data: scale_bytes,
+                                label: None,
+                            },
+                        );
                         operands.push(Operand {
                             kind: OperandKind::Constant,
                             descriptor: OperandDescriptor {
@@ -550,11 +611,21 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     } else if has_scale && !has_bias {
                         // Only scale provided: insert default bias (0.0) at index 4
                         let bias_bytes: Vec<u8> = match data_type {
-                            DataType::Float32 => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
-                            DataType::Float16 => (0..n).flat_map(|_| half::f16::from_f32(0.0).to_bits().to_ne_bytes()).collect(),
+                            DataType::Float32 => {
+                                (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect()
+                            }
+                            DataType::Float16 => (0..n)
+                                .flat_map(|_| half::f16::from_f32(0.0).to_bits().to_ne_bytes())
+                                .collect(),
                             _ => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
                         };
-                        constant_data.insert(next_id, ConstantData { data: bias_bytes, label: None });
+                        constant_data.insert(
+                            next_id,
+                            ConstantData {
+                                data: bias_bytes,
+                                label: None,
+                            },
+                        );
                         operands.push(Operand {
                             kind: OperandKind::Constant,
                             descriptor: OperandDescriptor {
@@ -580,7 +651,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             let ordered: Vec<u32> = order
                 .iter()
                 .filter_map(|key| {
-                    args.get(*key).and_then(|v| v.as_str()).and_then(|name| name_to_id.get(name).copied())
+                    args.get(*key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|name| name_to_id.get(name).copied())
                 })
                 .collect();
             if !ordered.is_empty() {
@@ -593,7 +666,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             let ordered: Vec<u32> = order
                 .iter()
                 .filter_map(|key| {
-                    args.get(*key).and_then(|v| v.as_str()).and_then(|name| name_to_id.get(name).copied())
+                    args.get(*key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|name| name_to_id.get(name).copied())
                 })
                 .collect();
             if !ordered.is_empty() {
@@ -603,12 +678,19 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
 
         let out_names = output_names(op);
         let first_input_id = input_ids.first().copied().unwrap_or(0);
-        let first_input_dtype = operands.get(first_input_id as usize).map(|o| o.descriptor.data_type).unwrap_or(DataType::Float32);
+        let first_input_dtype = operands
+            .get(first_input_id as usize)
+            .map(|o| o.descriptor.data_type)
+            .unwrap_or(DataType::Float32);
         let mut output_ids = Vec::new();
         for out_name in &out_names {
             let expected: Option<&WptTensorSpec> = graph.expected_outputs.get(out_name);
-            let out_shape: Vec<u32> = expected.map(|s: &WptTensorSpec| s.shape().to_vec()).unwrap_or_default();
-            let out_dtype = expected.map(|s: &WptTensorSpec| wpt_data_type(s.data_type())).unwrap_or(first_input_dtype);
+            let out_shape: Vec<u32> = expected
+                .map(|s: &WptTensorSpec| s.shape().to_vec())
+                .unwrap_or_default();
+            let out_dtype = expected
+                .map(|s: &WptTensorSpec| wpt_data_type(s.data_type()))
+                .unwrap_or(first_input_dtype);
             let desc = OperandDescriptor {
                 data_type: out_dtype,
                 shape: out_shape,
@@ -717,7 +799,10 @@ pub fn wpt_graph_to_onnx_inputs(
 ) -> Result<Vec<OnnxInput>, String> {
     let mut inputs = Vec::new();
     for name in input_names {
-        let spec = graph.inputs.get(name).ok_or_else(|| format!("input {} not found", name))?;
+        let spec = graph
+            .inputs
+            .get(name)
+            .ok_or_else(|| format!("input {} not found", name))?;
         let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
         let dtype = spec.data_type();
         let n: usize = shape.iter().product();
@@ -756,7 +841,11 @@ pub fn wpt_graph_to_onnx_inputs(
                             buf[i] = x as i32;
                         }
                     }
-                } else if let Some(x) = spec.data.as_i64().or_else(|| parse_number(&spec.data).map(|f| f as i64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_i64()
+                    .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+                {
                     buf.fill(x as i32);
                 }
                 TensorData::Int32(buf)
@@ -769,7 +858,11 @@ pub fn wpt_graph_to_onnx_inputs(
                             buf[i] = x as u32;
                         }
                     }
-                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_number(&spec.data).map(|f| f as u64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_u64()
+                    .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+                {
                     buf.fill(x as u32);
                 }
                 TensorData::Uint32(buf)
@@ -782,7 +875,11 @@ pub fn wpt_graph_to_onnx_inputs(
                             buf[i] = x as i8;
                         }
                     }
-                } else if let Some(x) = spec.data.as_i64().or_else(|| parse_number(&spec.data).map(|f| f as i64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_i64()
+                    .or_else(|| parse_number(&spec.data).map(|f| f as i64))
+                {
                     buf.fill(x as i8);
                 }
                 TensorData::Int8(buf)
@@ -795,7 +892,11 @@ pub fn wpt_graph_to_onnx_inputs(
                             buf[i] = x as u8;
                         }
                     }
-                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_number(&spec.data).map(|f| f as u64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_u64()
+                    .or_else(|| parse_number(&spec.data).map(|f| f as u64))
+                {
                     buf.fill(x as u8);
                 }
                 TensorData::Uint8(buf)
@@ -804,16 +905,26 @@ pub fn wpt_graph_to_onnx_inputs(
                 let mut buf = vec![0i64; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        if let Some(x) = v.as_i64()
+                        if let Some(x) = v
+                            .as_i64()
                             .or_else(|| parse_number(v).map(|f| f as i64))
-                            .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                            .or_else(|| {
+                                v.as_str()
+                                    .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                            })
                         {
                             buf[i] = x;
                         }
                     }
-                } else if let Some(x) = spec.data.as_i64()
+                } else if let Some(x) = spec
+                    .data
+                    .as_i64()
                     .or_else(|| parse_number(&spec.data).map(|f| f as i64))
-                    .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                    .or_else(|| {
+                        spec.data
+                            .as_str()
+                            .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                    })
                 {
                     buf.fill(x);
                 }
@@ -823,16 +934,26 @@ pub fn wpt_graph_to_onnx_inputs(
                 let mut buf = vec![0u64; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        if let Some(x) = v.as_u64()
+                        if let Some(x) = v
+                            .as_u64()
                             .or_else(|| parse_number(v).map(|f| f as u64))
-                            .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+                            .or_else(|| {
+                                v.as_str()
+                                    .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+                            })
                         {
                             buf[i] = x;
                         }
                     }
-                } else if let Some(x) = spec.data.as_u64()
+                } else if let Some(x) = spec
+                    .data
+                    .as_u64()
                     .or_else(|| parse_number(&spec.data).map(|f| f as u64))
-                    .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+                    .or_else(|| {
+                        spec.data
+                            .as_str()
+                            .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+                    })
                 {
                     buf.fill(x);
                 }
@@ -876,7 +997,10 @@ fn f32_to_f16_bytes(slice: &[f32]) -> Vec<u8> {
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
     v.as_i64()
-        .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| {
+            v.as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+        })
         .or_else(|| parse_number(v).map(|f| f as i64))
         .or_else(|| v.as_u64().map(|u| u as i64))
 }
@@ -889,7 +1013,10 @@ pub fn wpt_graph_to_trtx_inputs(
 ) -> Result<Vec<rustnn::TrtxInput>, String> {
     let mut inputs = Vec::new();
     for name in input_names {
-        let spec = graph.inputs.get(name).ok_or_else(|| format!("input {} not found", name))?;
+        let spec = graph
+            .inputs
+            .get(name)
+            .ok_or_else(|| format!("input {} not found", name))?;
         let dtype = spec.data_type();
         let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
         let n: usize = shape.iter().product();
@@ -936,11 +1063,18 @@ pub fn wpt_graph_to_trtx_inputs(
                 let mut buf = vec![0u8; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        if let Some(x) = v.as_u64().or_else(|| parse_int_for_tensor(v).map(|x| x as u64)) {
+                        if let Some(x) = v
+                            .as_u64()
+                            .or_else(|| parse_int_for_tensor(v).map(|x| x as u64))
+                        {
                             buf[i] = x as u8;
                         }
                     }
-                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_u64()
+                    .or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64))
+                {
                     buf.fill(x as u8);
                 }
                 buf
@@ -962,11 +1096,18 @@ pub fn wpt_graph_to_trtx_inputs(
                 let mut buf = vec![0u32; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        if let Some(x) = v.as_u64().or_else(|| parse_int_for_tensor(v).map(|x| x as u64)) {
+                        if let Some(x) = v
+                            .as_u64()
+                            .or_else(|| parse_int_for_tensor(v).map(|x| x as u64))
+                        {
                             buf[i] = x as u32;
                         }
                     }
-                } else if let Some(x) = spec.data.as_u64().or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64)) {
+                } else if let Some(x) = spec
+                    .data
+                    .as_u64()
+                    .or_else(|| parse_int_for_tensor(&spec.data).map(|x| x as u64))
+                {
                     buf.fill(x as u32);
                 }
                 buf.iter().flat_map(|x| x.to_le_bytes()).collect()
@@ -988,11 +1129,15 @@ pub fn wpt_graph_to_trtx_inputs(
                 let mut buf = vec![0.0f32; n];
                 if let Some(arr) = arr_opt {
                     for (i, v) in arr.iter().enumerate().take(n) {
-                        if let Some(f) = parse_float_for_tensor(v).or_else(|| v.as_f64().map(|f| f as f32)) {
+                        if let Some(f) =
+                            parse_float_for_tensor(v).or_else(|| v.as_f64().map(|f| f as f32))
+                        {
                             buf[i] = f;
                         }
                     }
-                } else if let Some(f) = parse_float_for_tensor(&spec.data).or_else(|| spec.data.as_f64().map(|f| f as f32)) {
+                } else if let Some(f) = parse_float_for_tensor(&spec.data)
+                    .or_else(|| spec.data.as_f64().map(|f| f as f32))
+                {
                     buf.fill(f);
                 }
                 buf.iter().flat_map(|f| f.to_le_bytes()).collect()
@@ -1034,16 +1179,26 @@ pub fn expected_output_to_i32(spec: &WptTensorSpec) -> Vec<i32> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_i64()
+            if let Some(x) = v
+                .as_i64()
                 .or_else(|| parse_number(v).map(|f| f as i64))
-                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| {
+                    v.as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                })
             {
                 buf[i] = x as i32;
             }
         }
-    } else if let Some(x) = spec.data.as_i64()
+    } else if let Some(x) = spec
+        .data
+        .as_i64()
         .or_else(|| parse_number(&spec.data).map(|f| f as i64))
-        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| {
+            spec.data
+                .as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+        })
     {
         buf.fill(x as i32);
     }
@@ -1059,7 +1214,8 @@ pub fn expected_output_to_u32(spec: &WptTensorSpec) -> Vec<u32> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_u64()
+            if let Some(x) = v
+                .as_u64()
                 .or_else(|| parse_number(v).map(|f| f as u64))
                 .or_else(|| v.as_i64().map(|i| i as u64))
             {
@@ -1086,7 +1242,8 @@ pub fn expected_output_to_u8(spec: &WptTensorSpec) -> Vec<u8> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_u64()
+            if let Some(x) = v
+                .as_u64()
                 .or_else(|| parse_number(v).map(|f| f as u64))
                 .or_else(|| v.as_i64().map(|i| i as u64))
             {
@@ -1113,16 +1270,26 @@ pub fn expected_output_to_i8(spec: &WptTensorSpec) -> Vec<i8> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_i64()
+            if let Some(x) = v
+                .as_i64()
                 .or_else(|| parse_number(v).map(|f| f as i64))
-                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| {
+                    v.as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                })
             {
                 buf[i] = x as i8;
             }
         }
-    } else if let Some(x) = spec.data.as_i64()
+    } else if let Some(x) = spec
+        .data
+        .as_i64()
         .or_else(|| parse_number(&spec.data).map(|f| f as i64))
-        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| {
+            spec.data
+                .as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+        })
     {
         buf.fill(x as i8);
     }
@@ -1142,7 +1309,10 @@ pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
         for (i, v) in arr.iter().enumerate().take(n) {
             if let Some(x) = v
                 .as_i64()
-                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+                .or_else(|| {
+                    v.as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+                })
                 .or_else(|| parse_number(v).map(|f| f as i64))
             {
                 buf[i] = x;
@@ -1151,7 +1321,11 @@ pub fn expected_output_to_i64(spec: &WptTensorSpec) -> Vec<i64> {
     } else if let Some(x) = spec
         .data
         .as_i64()
-        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<i64>().ok()))
+        .or_else(|| {
+            spec.data
+                .as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<i64>().ok())
+        })
         .or_else(|| parse_number(&spec.data).map(|f| f as i64))
     {
         buf.fill(x);
@@ -1169,16 +1343,26 @@ pub fn expected_output_to_u64(spec: &WptTensorSpec) -> Vec<u64> {
     let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
     if let Some(arr) = arr_opt {
         for (i, v) in arr.iter().enumerate().take(n) {
-            if let Some(x) = v.as_u64()
+            if let Some(x) = v
+                .as_u64()
                 .or_else(|| parse_number(v).map(|f| f as u64))
-                .or_else(|| v.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+                .or_else(|| {
+                    v.as_str()
+                        .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+                })
             {
                 buf[i] = x;
             }
         }
-    } else if let Some(x) = spec.data.as_u64()
+    } else if let Some(x) = spec
+        .data
+        .as_u64()
         .or_else(|| parse_number(&spec.data).map(|f| f as u64))
-        .or_else(|| spec.data.as_str().and_then(|s| s.trim_end_matches('n').parse::<u64>().ok()))
+        .or_else(|| {
+            spec.data
+                .as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+        })
     {
         buf.fill(x);
     }
@@ -1186,5 +1370,8 @@ pub fn expected_output_to_u64(spec: &WptTensorSpec) -> Vec<u64> {
 }
 
 pub fn wpt_data_dir() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("wpt_data").join("conformance")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("wpt_data")
+        .join("conformance")
 }

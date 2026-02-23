@@ -71,14 +71,20 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     // Convolution / pooling (conv2d/conv_transpose2d: use relative tolerance for TensorRT)
     let rtol_1e3 = 1e-3_f64.to_bits();
     m.insert("conv2d".to_string(), (ToleranceKind::Rtol, rtol_1e3));
-    m.insert("conv_transpose2d".to_string(), (ToleranceKind::Rtol, rtol_1e3));
+    m.insert(
+        "conv_transpose2d".to_string(),
+        (ToleranceKind::Rtol, rtol_1e3),
+    );
     m.insert("average_pool2d".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("max_pool2d".to_string(), (ToleranceKind::Ulp, 0));
     m.insert("global_average_pool".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("global_max_pool".to_string(), (ToleranceKind::Ulp, 0));
     // Normalization
     m.insert("batch_normalization".to_string(), (ToleranceKind::Ulp, 100));
-    m.insert("instance_normalization".to_string(), (ToleranceKind::Ulp, 100));
+    m.insert(
+        "instance_normalization".to_string(),
+        (ToleranceKind::Ulp, 100),
+    );
     m.insert("layer_normalization".to_string(), (ToleranceKind::Ulp, 100));
     m.insert("matmul".to_string(), (ToleranceKind::Ulp, 100));
     m
@@ -172,11 +178,7 @@ pub fn check_ulp_tolerance(
 }
 
 /// Check relative tolerance: |actual - expected| / max(|expected|, 1e-6) <= rtol.
-pub fn check_rtol_tolerance(
-    actual: &[f32],
-    expected: &[f32],
-    rtol: f64,
-) -> (bool, Option<String>) {
+pub fn check_rtol_tolerance(actual: &[f32], expected: &[f32], rtol: f64) -> (bool, Option<String>) {
     if actual.len() != expected.len() {
         return (
             false,
@@ -245,10 +247,7 @@ pub fn check_atol_tolerance(
             if !a.is_nan() {
                 return (
                     false,
-                    Some(format!(
-                        "index {}: actual={} expected=NaN",
-                        i, a
-                    )),
+                    Some(format!("index {}: actual={} expected=NaN", i, a)),
                 );
             }
             continue;
@@ -257,10 +256,7 @@ pub fn check_atol_tolerance(
             if a != e {
                 return (
                     false,
-                    Some(format!(
-                        "index {}: actual={} expected={}",
-                        i, a, e
-                    )),
+                    Some(format!("index {}: actual={} expected={}", i, a, e)),
                 );
             }
             continue;

@@ -153,9 +153,11 @@ pub fn run_trtx_zeroed(
                 data: vec![0f32; total.max(1)],
             });
         }
-        let outputs = trtx::executor::run_onnx_with_tensorrt(model_bytes, &input_tensors)
-            .map_err(|e| GraphError::TrtxRuntimeFailed {
-                reason: format!("TensorRT execution from ONNX failed: {e}"),
+        let outputs =
+            trtx::executor::run_onnx_with_tensorrt(model_bytes, &input_tensors).map_err(|e| {
+                GraphError::TrtxRuntimeFailed {
+                    reason: format!("TensorRT execution from ONNX failed: {e}"),
+                }
             })?;
         return Ok(outputs
             .into_iter()
@@ -294,7 +296,8 @@ pub fn run_trtx_with_inputs(
     ensure_trtx_loaded()?;
     if is_onnx_format(engine_bytes) {
         return Err(GraphError::TrtxRuntimeFailed {
-            reason: "run_trtx_with_inputs expects a serialized TensorRT engine, not ONNX bytes".to_string(),
+            reason: "run_trtx_with_inputs expects a serialized TensorRT engine, not ONNX bytes"
+                .to_string(),
         });
     }
     execute_trtx_engine(engine_bytes, &inputs).map_err(|e| GraphError::TrtxRuntimeFailed {
