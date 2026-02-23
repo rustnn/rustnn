@@ -36,6 +36,56 @@ use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
 
+/// Format a flat f32 slice as n-dimensional for failure output (full tensor, shape e.g. [1,6,6,2]).
+/// For 4D [N,H,W,C]: prints N*H lines, each line has W cells of C values as [a, b, ...].
+fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
+    if shape.is_empty() {
+        return format!("[{}]", slice.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+    }
+    let size: usize = shape.iter().map(|&d| d as usize).product();
+    if size != slice.len() {
+        return format!(
+            "[{} ...] (len={}, shape={:?})",
+            slice.iter().take(24).map(|v| v.to_string()).collect::<Vec<_>>().join(", "),
+            slice.len(),
+            shape
+        );
+    }
+    let s: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    let rank = s.len();
+    let mut lines = Vec::new();
+    if rank == 1 {
+        lines.push(format!("[{}]", slice.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")));
+    } else if rank == 4 {
+        let [n, h, w, c] = [s[0], s[1], s[2], s[3]];
+        let mut idx = 0;
+        for _n in 0..n {
+            for _i in 0..h {
+                let row: Vec<String> = (0..w)
+                    .map(|_| {
+                        let cell: Vec<String> = slice[idx..idx + c].iter().map(|v| format!("{}", v)).collect();
+                        idx += c;
+                        format!("[{}]", cell.join(", "))
+                    })
+                    .collect();
+                lines.push(format!("  {}", row.join(" ")));
+            }
+        }
+    } else if rank == 2 {
+        let (rows, cols) = (s[0], s[1]);
+        let mut idx = 0;
+        for _ in 0..rows {
+            let row: Vec<String> = slice[idx..idx + cols].iter().map(|v| format!("{}", v)).collect();
+            idx += cols;
+            lines.push(format!("  [{}]", row.join(", ")));
+        }
+    } else {
+        let flat: Vec<String> = slice.iter().map(|v| format!("{}", v)).collect();
+        lines.push(format!("[{}]", flat.join(", ")));
+    }
+    format!("(shape {:?})\n{}", shape, lines.join("\n"))
+}
+
 /// Decode TRTX output bytes to f32 for validation. Handles float32 and float16.
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn trtx_output_bytes_to_f32(data: &[u8], data_type: &str) -> Vec<f32> {
@@ -241,8 +291,20 @@ pub fn run_one_test_case(
                 format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
             let actual_str =
                 format_f32_slice_for_failure(&actual.data, FAILURE_DISPLAY_LEN);
+            let shape = expected_spec.shape();
+            let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
+                let expected_nd = format_f32_nd(&expected, shape);
+                let actual_f32: Vec<f32> = actual.data.iter().map(|&x| x as f32).collect();
+                let actual_nd = format_f32_nd(&actual_f32, shape);
+                format!(
+                    "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
+                    out_name, expected_nd, out_name, actual_nd
+                )
+            } else {
+                String::new()
+            };
             return Err(format!(
-                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}",
+                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
                 operation,
                 test_case.name,
                 msg.unwrap_or_else(|| "validation failed".to_string()),
@@ -250,7 +312,8 @@ pub fn run_one_test_case(
                 out_name,
                 expected_str,
                 out_name,
-                actual_str
+                actual_str,
+                nd_suffix
             ));
         }
     }
@@ -367,8 +430,71 @@ pub fn run_one_test_case_trtx(
 
         if !pass {
             let inputs_str = format_inputs_for_failure(graph, &input_names);
+            let shape = expected_spec.shape();
+            let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
+                let expected_nd = match expected_spec.data_type() {
+                    "int64" => {
+                        let exp = expected_output_to_i64(expected_spec);
+                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&exp_f, shape)
+                    }
+                    "int32" => {
+                        let exp = expected_output_to_i32(expected_spec);
+                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&exp_f, shape)
+                    }
+                    "uint32" => {
+                        let exp = expected_output_to_u32(expected_spec);
+                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&exp_f, shape)
+                    }
+                    _ => {
+                        let exp = expected_output_to_f32(expected_spec);
+                        format_f32_nd(&exp, shape)
+                    }
+                };
+                let actual_nd = match expected_spec.data_type() {
+                    "int64" => {
+                        let act: Vec<i64> = actual
+                            .data
+                            .chunks_exact(8)
+                            .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                            .collect();
+                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&act_f, shape)
+                    }
+                    "int32" => {
+                        let act: Vec<i32> = actual
+                            .data
+                            .chunks_exact(4)
+                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&act_f, shape)
+                    }
+                    "uint32" => {
+                        let act: Vec<u32> = actual
+                            .data
+                            .chunks_exact(4)
+                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&act_f, shape)
+                    }
+                    _ => {
+                        let act_f = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
+                        format_f32_nd(&act_f, shape)
+                    }
+                };
+                format!(
+                    "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
+                    out_name, expected_nd, out_name, actual_nd
+                )
+            } else {
+                String::new()
+            };
             return Err(format!(
-                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}",
+                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
                 operation,
                 test_case.name,
                 msg.unwrap_or_else(|| "validation failed".to_string()),
@@ -376,7 +502,8 @@ pub fn run_one_test_case_trtx(
                 out_name,
                 expected_str,
                 out_name,
-                actual_str
+                actual_str,
+                nd_suffix
             ));
         }
     }

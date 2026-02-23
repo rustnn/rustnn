@@ -439,12 +439,18 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 "keepDimensions" => "keepDimensions".to_string(),
                 "axes" => "axes".to_string(),
                 "axis" => "axis".to_string(),
-                "padding" | "pads" => "pads".to_string(),
+                "padding" | "pads" => {
+                    if op_type == "conv2d" || op_type == "conv_transpose2d" {
+                        "padding".to_string()
+                    } else {
+                        "pads".to_string()
+                    }
+                }
+                "outputPadding" => "outputPadding".to_string(),
+                "outputSizes" => "output_shape".to_string(),
                 "strides" => "strides".to_string(),
                 "dilations" => "dilations".to_string(),
                 "groups" => "groups".to_string(),
-                "outputPadding" => "output_padding".to_string(),
-                "outputSizes" => "output_shape".to_string(),
                 "minValue" => "minValue".to_string(),
                 "maxValue" => "maxValue".to_string(),
                 "mode" => "mode".to_string(),
@@ -630,11 +636,41 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             Vec::new()
         };
 
-        // ONNX converter expects camelCase for normalization ops
+        // ONNX/TRTX converters expect camelCase for these ops (WPT JSON uses camelCase; we store snake_case via wpt_op_name_to_rustnn, then map back here)
         let op_type_for_graph = match op_type.as_str() {
             "batch_normalization" => "batchNormalization",
             "instance_normalization" => "instanceNormalization",
             "layer_normalization" => "layerNormalization",
+            "conv_transpose2d" => "convTranspose2d",
+            "average_pool2d" => "averagePool2d",
+            "max_pool2d" => "maxPool2d",
+            "global_average_pool" => "globalAveragePool",
+            "global_max_pool" => "globalMaxPool",
+            "reduce_sum" => "reduceSum",
+            "reduce_mean" => "reduceMean",
+            "reduce_max" => "reduceMax",
+            "reduce_min" => "reduceMin",
+            "reduce_product" => "reduceProduct",
+            "reduce_l1" => "reduceL1",
+            "reduce_l2" => "reduceL2",
+            "reduce_log_sum" => "reduceLogSum",
+            "reduce_log_sum_exp" => "reduceLogSumExp",
+            "reduce_sum_square" => "reduceSumSquare",
+            "leaky_relu" => "leakyRelu",
+            "hard_sigmoid" => "hardSigmoid",
+            "hard_swish" => "hardSwish",
+            "greater_or_equal" => "greaterOrEqual",
+            "lesser_or_equal" => "lesserOrEqual",
+            "logical_and" => "logicalAnd",
+            "logical_or" => "logicalOr",
+            "logical_not" => "logicalNot",
+            "logical_xor" => "logicalXor",
+            "quantize_linear" => "quantizeLinear",
+            "dequantize_linear" => "dequantizeLinear",
+            "scatter_elements" => "scatterElements",
+            "scatter_nd" => "scatterND",
+            "arg_max" => "argMax",
+            "arg_min" => "argMin",
             _ => op_type.as_str(),
         };
         operations.push(Operation {
