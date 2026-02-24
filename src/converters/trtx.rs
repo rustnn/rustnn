@@ -336,8 +336,12 @@ impl TrtxConverter {
                         DataType::Int8 | DataType::Uint8
                     );
 
+                // TensorRT add_constant does not support kINT64; convert Int64 constants to Int32.
+                let promote_int64 = operand.descriptor.data_type == DataType::Int64;
+
                 // For int8/uint8 constants with rank > 1, store as 1D so Constant->DQ is accepted (no Shuffle before DQ).
                 let store_flat = !promote_scalar
+                    && !promote_int64
                     && operand.descriptor.shape.len() > 1
                     && matches!(
                         operand.descriptor.data_type,
@@ -353,6 +357,20 @@ impl TrtxConverter {
                         };
                         temp_weights.push(int32_bytes);
                         promoted_constants.insert(operand_id as u32);
+                        (
+                            TrtDataType::kINT32,
+                            temp_weights.last().unwrap().as_slice(),
+                            dims.clone(),
+                        )
+                    } else if promote_int64 {
+                        let int32_bytes: Vec<u8> = data
+                            .chunks_exact(8)
+                            .flat_map(|chunk| {
+                                (i64::from_le_bytes(chunk.try_into().unwrap()) as i32)
+                                    .to_le_bytes()
+                            })
+                            .collect();
+                        temp_weights.push(int32_bytes);
                         (
                             TrtDataType::kINT32,
                             temp_weights.last().unwrap().as_slice(),
@@ -691,7 +709,7 @@ impl TrtxConverter {
             "logicalNot" => Self::add_logical_not_op(network, tensor_map, operation)?,
 
             // Indexing/Gathering operations
-            "gather" => Self::add_gather_op(network, tensor_map, operation)?,
+            "gather" => Self::add_gather_op(graph, network, tensor_map, operation, temp_weights)?,
             "gatherND" => Self::add_gather_nd_op(network, tensor_map, operation)?,
             "scatterElements" => Self::add_scatter_elements_op(network, tensor_map, operation)?,
             "scatterND" => Self::add_scatter_nd_op(network, tensor_map, operation)?,
@@ -3864,9 +3882,12 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
+        let (bc_input0, bc_input1) =
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+
         // greaterOrEqual = greater OR equal
         let greater_layer = network
-            .add_elementwise(input0, input1, ElementWiseOperation::kGREATER)
+            .add_elementwise(&bc_input0, &bc_input1, ElementWiseOperation::kGREATER)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add greater layer: {}", e),
@@ -3881,7 +3902,7 @@ impl TrtxConverter {
                 })?;
 
         let equal_layer = network
-            .add_elementwise(input0, input1, ElementWiseOperation::kEQUAL)
+            .add_elementwise(&bc_input0, &bc_input1, ElementWiseOperation::kEQUAL)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add equal layer: {}", e),
@@ -3937,9 +3958,12 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
+        let (bc_input0, bc_input1) =
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+
         // lesserOrEqual = lesser OR equal
         let lesser_layer = network
-            .add_elementwise(input0, input1, ElementWiseOperation::kLESS)
+            .add_elementwise(&bc_input0, &bc_input1, ElementWiseOperation::kLESS)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add lesser layer: {}", e),
@@ -3954,7 +3978,7 @@ impl TrtxConverter {
                 })?;
 
         let equal_layer = network
-            .add_elementwise(input0, input1, ElementWiseOperation::kEQUAL)
+            .add_elementwise(&bc_input0, &bc_input1, ElementWiseOperation::kEQUAL)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add equal layer: {}", e),
@@ -4010,9 +4034,12 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
+        let (bc_input0, bc_input1) =
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+
         // notEqual = NOT equal
         let equal_layer = network
-            .add_elementwise(input0, input1, ElementWiseOperation::kEQUAL)
+            .add_elementwise(&bc_input0, &bc_input1, ElementWiseOperation::kEQUAL)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add equal layer: {}", e),
@@ -4052,11 +4079,14 @@ impl TrtxConverter {
     // Indexing/Gathering Operations (2026-01-29)
     // ============================================================================
 
-    /// Add gather operation (gather elements along an axis using indices)
+    /// Add gather operation (gather elements along an axis using indices).
+    /// Clamps indices to [-dim_size, dim_size - 1] to match WebNN/Chromium behavior and avoid TensorRT out-of-bounds.
     fn add_gather_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands[0])
@@ -4079,13 +4109,123 @@ impl TrtxConverter {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as i32;
 
-        let layer =
-            network
-                .add_gather(input, indices, axis)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to add gather layer: {}", e),
-                })?;
+        let data_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Data operand {} not found in graph",
+                    operation.input_operands[0]
+                ),
+            }
+        })?;
+        let axis_usize = axis as usize;
+        if axis_usize >= data_operand.descriptor.shape.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Gather axis {} out of bounds for shape with {} dimensions",
+                    axis,
+                    data_operand.descriptor.shape.len()
+                ),
+            });
+        }
+        let dim_size = data_operand.descriptor.shape[axis_usize] as i32;
+
+        let indices_operand = graph.operand(operation.input_operands[1]).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Indices operand {} not found in graph",
+                    operation.input_operands[1]
+                ),
+            }
+        })?;
+        let indices_shape: Vec<i32> = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|&d| d as i32)
+            .collect();
+
+        // Clamp indices to [-dim_size, dim_size - 1] (WebNN/conformance behavior).
+        // TensorRT elementwise requires same rank; repeat scalar to match indices shape.
+        let clamp_min_val = -dim_size;
+        let clamp_max_val = dim_size - 1;
+        let num_elements: usize = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .product::<u32>() as usize;
+        let min_data: Vec<u8> = (0..num_elements)
+            .flat_map(|_| clamp_min_val.to_le_bytes())
+            .collect();
+        let max_data: Vec<u8> = (0..num_elements)
+            .flat_map(|_| clamp_max_val.to_le_bytes())
+            .collect();
+        temp_weights.push(min_data);
+        temp_weights.push(max_data);
+        let idx = temp_weights.len();
+        let min_ref = temp_weights[idx - 2].as_slice();
+        let max_ref = temp_weights[idx - 1].as_slice();
+
+        let min_const = network
+            .add_constant(&indices_shape, min_ref, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gather clamp min constant: {}", e),
+            })?;
+        let max_const = network
+            .add_constant(&indices_shape, max_ref, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gather clamp max constant: {}", e),
+            })?;
+
+        let min_const_out = min_const.get_output(0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get clamp min output: {}", e),
+            }
+        })?;
+        let max_const_out = max_const.get_output(0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get clamp max output: {}", e),
+            }
+        })?;
+
+        let clamped_upper = network
+            .add_elementwise(indices, &max_const_out, ElementWiseOperation::kMIN)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gather indices clamp (min): {}", e),
+            })?;
+        let clamped_upper_out = clamped_upper.get_output(0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get gather clamp upper output: {}", e),
+            }
+        })?;
+
+        let clamped = network
+            .add_elementwise(&min_const_out, &clamped_upper_out, ElementWiseOperation::kMAX)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gather indices clamp (max): {}", e),
+            })?;
+        let clamped_indices = clamped.get_output(0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get gather clamped indices output: {}", e),
+            }
+        })?;
+
+        let layer = network
+            .add_gather(input, &clamped_indices, axis)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add gather layer: {}", e),
+            })?;
 
         let output = layer
             .get_output(0)
