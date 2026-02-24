@@ -511,7 +511,7 @@ impl TrtxConverter {
             "tanh" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kTANH)?
             }
-            "elu" => Self::add_activation_op(network, tensor_map, operation, ActivationType::kELU)?,
+            "elu" => Self::add_elu_op(graph, network, tensor_map, operation, temp_weights)?,
             "softsign" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kSOFTSIGN)?
             }
@@ -637,7 +637,7 @@ impl TrtxConverter {
             "split" => Self::add_split_op(network, tensor_map, operation)?,
             "squeeze" => Self::add_squeeze_op(network, tensor_map, operation)?,
             "unsqueeze" => Self::add_unsqueeze_op(network, tensor_map, operation)?,
-            "expand" => Self::add_expand_op(network, tensor_map, operation)?,
+            "expand" => Self::add_expand_op(graph, network, tensor_map, operation, temp_weights)?,
             "tile" => Self::add_tile_op(network, tensor_map, operation)?,
 
             // Comparison operations (return Float32 with 0.0/1.0 values)
@@ -1223,6 +1223,214 @@ impl TrtxConverter {
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
+            })?;
+
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add ELU activation: ELU(x) = x if x > 0, else alpha * (exp(x) - 1)
+    /// TensorRT kELU uses alpha=1; for custom alpha we decompose as:
+    /// relu(x) + alpha * min(0, exp(x) - 1)
+    fn add_elu_op(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition,
+        tensor_map: &mut HashMap<u32, trtx::Tensor>,
+        operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
+    ) -> Result<(), GraphError> {
+        let input = tensor_map
+            .get(&operation.input_operands[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found", operation.input_operands[0]),
+            })?;
+
+        let alpha = operation
+            .attributes
+            .get("alpha")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+
+        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Input operand {} not found in graph",
+                    operation.input_operands[0]
+                ),
+            }
+        })?;
+        let input_dtype = input_operand.descriptor.data_type;
+        // Use built-in kELU only for float32 with default alpha; float16 needs decomposition for correct precision.
+        if (alpha - 1.0).abs() <= f32::EPSILON && input_dtype != DataType::Float16 {
+            return Self::add_activation_op(network, tensor_map, operation, ActivationType::kELU);
+        }
+
+        let num_dims = input_operand.descriptor.shape.len();
+        let broadcast_shape: Vec<i32> = vec![1; num_dims];
+        let (trt_dtype, one_bytes, zero_bytes, alpha_bytes) = match input_dtype {
+            DataType::Float16 => {
+                let one: Vec<u8> = f16::from_f32(1.0).to_bits().to_le_bytes().to_vec();
+                let zero: Vec<u8> = f16::from_f32(0.0).to_bits().to_le_bytes().to_vec();
+                let alpha_f16: Vec<u8> = f16::from_f32(alpha).to_bits().to_le_bytes().to_vec();
+                (trtx::DataType::kHALF, one, zero, alpha_f16)
+            }
+            _ => {
+                let one: Vec<u8> = 1.0f32.to_le_bytes().to_vec();
+                let zero: Vec<u8> = 0.0f32.to_le_bytes().to_vec();
+                let alpha_f32: Vec<u8> = alpha.to_le_bytes().to_vec();
+                (trtx::DataType::kFLOAT, one, zero, alpha_f32)
+            }
+        };
+
+        // Decompose: ELU(x) = relu(x) + alpha * min(0, exp(x) - 1)
+        let relu_layer = network
+            .add_activation(input, ActivationType::kRELU)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add relu for elu: {}", e),
+            })?;
+        let relu_output = relu_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get relu output: {}", e),
+            })?;
+
+        let exp_layer = network
+            .add_unary(input, UnaryOperation::kEXP)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add exp for elu: {}", e),
+            })?;
+        let exp_output = exp_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get exp output: {}", e),
+            })?;
+
+        temp_weights.push(one_bytes);
+        let one_const = network
+            .add_constant(
+                &broadcast_shape,
+                temp_weights.last().unwrap(),
+                trt_dtype.clone(),
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create one constant for elu: {}", e),
+            })?;
+        let one_tensor = one_const
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get one constant output: {}", e),
+            })?;
+
+        let (bc_exp, bc_one) =
+            Self::ensure_broadcast_compatible(network, &exp_output, &one_tensor, "elu_exp_sub")?;
+
+        let exp_minus_1_layer = network
+            .add_elementwise(&bc_exp, &bc_one, ElementWiseOperation::kSUB)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to subtract 1 for elu: {}", e),
+            })?;
+        let exp_minus_1 =
+            exp_minus_1_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get exp-1 output: {}", e),
+                })?;
+
+        temp_weights.push(zero_bytes);
+        let zero_const = network
+            .add_constant(
+                &broadcast_shape,
+                temp_weights.last().unwrap(),
+                trt_dtype.clone(),
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create zero constant for elu: {}", e),
+            })?;
+        let zero_tensor = zero_const
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get zero constant output: {}", e),
+            })?;
+
+        let (bc_em1, bc_zero) =
+            Self::ensure_broadcast_compatible(network, &exp_minus_1, &zero_tensor, "elu_min")?;
+
+        let neg_part_layer = network
+            .add_elementwise(&bc_em1, &bc_zero, ElementWiseOperation::kMIN)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add min for elu: {}", e),
+            })?;
+        let neg_part = neg_part_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get neg part output: {}", e),
+            })?;
+
+        temp_weights.push(alpha_bytes);
+        let alpha_const = network
+            .add_constant(
+                &broadcast_shape,
+                temp_weights.last().unwrap(),
+                trt_dtype.clone(),
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to create alpha constant for elu: {}", e),
+            })?;
+        let alpha_tensor = alpha_const
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get alpha constant output: {}", e),
+            })?;
+
+        let (bc_neg, bc_alpha) =
+            Self::ensure_broadcast_compatible(network, &neg_part, &alpha_tensor, "elu_scale")?;
+
+        let scaled_neg_layer = network
+            .add_elementwise(&bc_neg, &bc_alpha, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to multiply by alpha for elu: {}", e),
+            })?;
+        let scaled_neg =
+            scaled_neg_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get scaled neg output: {}", e),
+                })?;
+
+        let (bc_relu, bc_scaled) =
+            Self::ensure_broadcast_compatible(network, &relu_output, &scaled_neg, "elu_add")?;
+
+        let final_layer = network
+            .add_elementwise(&bc_relu, &bc_scaled, ElementWiseOperation::kSUM)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add elu parts: {}", e),
+            })?;
+        let output = final_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get elu output: {}", e),
             })?;
 
         let output_ids = operation.output_operands_slice();
@@ -3410,10 +3618,13 @@ impl TrtxConverter {
     }
 
     /// Add expand operation (broadcast to new shape)
+    /// Implemented as input * ones(new_shape) so elementwise broadcast produces the expanded tensor.
     fn add_expand_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
+        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands[0])
@@ -3422,7 +3633,6 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get newShape from attributes
         let new_shape_value =
             operation
                 .attributes
@@ -3432,7 +3642,7 @@ impl TrtxConverter {
                     reason: "Expand operation missing 'newShape' attribute".to_string(),
                 })?;
 
-        let _new_shape: Vec<i32> = if let Some(arr) = new_shape_value.as_array() {
+        let new_shape: Vec<i32> = if let Some(arr) = new_shape_value.as_array() {
             arr.iter()
                 .filter_map(|v| v.as_i64().map(|i| i as i32))
                 .collect()
@@ -3443,25 +3653,72 @@ impl TrtxConverter {
             });
         };
 
-        // Expand broadcasts a tensor to a new shape
-        // TensorRT handles broadcasting implicitly in element-wise operations
-        // For explicit expand, we can use IShuffleLayer with reshape
-        // or use element-wise multiply by 1 to force broadcast
+        if new_shape.is_empty() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Expand newShape must be non-empty".to_string(),
+            });
+        }
 
-        // For now, use identity operation which TensorRT should optimize
-        // Full implementation requires IShuffleLayer.setReshapeDimensions()
-        let layer = network
-            .add_identity(input)
+        let num_elements: usize = new_shape
+            .iter()
+            .map(|&d| d.max(0) as usize)
+            .product::<usize>()
+            .max(1);
+
+        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Input operand {} not found in graph",
+                    operation.input_operands[0]
+                ),
+            }
+        })?;
+        let (ones_data, trt_dtype) = match input_operand.descriptor.data_type {
+            DataType::Float16 => {
+                let data: Vec<u8> = (0..num_elements)
+                    .flat_map(|_| f16::from_f32(1.0).to_bits().to_le_bytes())
+                    .collect();
+                (data, trtx::DataType::kHALF)
+            }
+            _ => {
+                let data: Vec<u8> = (0..num_elements)
+                    .flat_map(|_| 1.0f32.to_le_bytes())
+                    .collect();
+                (data, trtx::DataType::kFLOAT)
+            }
+        };
+        temp_weights.push(ones_data);
+        let ones_ref = temp_weights.last().unwrap().as_slice();
+
+        let ones_const = network
+            .add_constant(&new_shape, ones_ref, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add identity layer for expand: {}", e),
+                reason: format!("Failed to create ones constant for expand: {}", e),
             })?;
-
-        let output = layer
+        let ones_tensor = ones_const
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
+                reason: format!("Failed to get ones constant output: {}", e),
+            })?;
+
+        let (bc_input, bc_ones) =
+            Self::ensure_broadcast_compatible(network, input, &ones_tensor, "expand")?;
+
+        let mul_layer = network
+            .add_elementwise(&bc_input, &bc_ones, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add multiply for expand: {}", e),
+            })?;
+        let output = mul_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get expand output: {}", e),
             })?;
 
         let output_ids = operation.output_operands_slice();

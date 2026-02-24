@@ -442,7 +442,23 @@ pub fn run_one_test_case_trtx(
             }
             "uint8" => {
                 let expected = expected_output_to_u8(expected_spec);
-                let actual_u8: Vec<u8> = actual.data.to_vec();
+                // TensorRT comparison ops (equal, greater, etc.) cast output to float32 for
+                // WebNN compatibility; convert float32 bytes to uint8 (0 or 1) when needed.
+                let actual_u8: Vec<u8> = if actual.data_type == "float32"
+                    && actual.data.len() % 4 == 0
+                    && actual.data.len() / 4 == expected.len()
+                {
+                    actual
+                        .data
+                        .chunks_exact(4)
+                        .map(|c| {
+                            let f = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+                            if f > 0.5 { 1u8 } else { 0u8 }
+                        })
+                        .collect()
+                } else {
+                    actual.data.to_vec()
+                };
                 let pass =
                     actual_u8.len() == expected.len() && actual_u8.iter().eq(expected.iter());
                 let msg = if pass {

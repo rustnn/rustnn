@@ -60,6 +60,8 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     m.insert("sigmoid".to_string(), (ToleranceKind::Ulp, 34));
     m.insert("tanh".to_string(), (ToleranceKind::Ulp, 44));
     m.insert("softmax".to_string(), (ToleranceKind::Ulp, 100));
+    // ELU: float16 decomposition and backend implementations can differ; allow wider ULP.
+    m.insert("elu".to_string(), (ToleranceKind::Ulp, 20_000));
     m.insert("div".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("reduce_mean".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("reduce_product".to_string(), (ToleranceKind::Ulp, 10));

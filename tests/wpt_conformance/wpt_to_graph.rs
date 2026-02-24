@@ -552,6 +552,37 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             }
         }
 
+        // Apply canonical input ordering for all operators with named inputs.
+        // HashMap iteration order is non-deterministic; converters expect fixed operand order.
+        let canonical_order = match op_type.as_str() {
+            "add" | "sub" | "mul" | "div" | "pow" => Some(["a", "b"].as_slice()),
+            "equal" | "greater" | "greater_or_equal" | "lesser" | "lesser_or_equal"
+            | "logical_and" | "logical_or" | "logical_xor" => Some(["a", "b"].as_slice()),
+            "matmul" => Some(["a", "b"].as_slice()),
+            "gemm" => Some(["a", "b", "c"].as_slice()),
+            "where" => Some(["condition", "trueValue", "falseValue"].as_slice()),
+            "gather" => Some(["input", "indices"].as_slice()),
+            "scatter_elements" => Some(["data", "indices", "updates"].as_slice()),
+            "scatter_nd" => Some(["data", "indices", "updates"].as_slice()),
+            "quantize_linear" => Some(["input", "scale", "zeroPoint"].as_slice()),
+            "dequantize_linear" => Some(["input", "scale", "zeroPoint"].as_slice()),
+            "layer_normalization" => Some(["input", "scale", "bias"].as_slice()),
+            _ => None,
+        };
+        if let Some(order) = canonical_order {
+            let ordered: Vec<u32> = order
+                .iter()
+                .filter_map(|key| {
+                    args.get(*key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|name| name_to_id.get(name).copied())
+                })
+                .collect();
+            if !ordered.is_empty() {
+                input_ids = ordered;
+            }
+        }
+
         // batch_normalization: ONNX/TRTX expect fixed input_operands [input, mean, variance, scale?, bias?]
         // with scale at index 3 and bias at index 4. If only one of scale/bias is provided, insert
         // a default constant so converters always see 5 operands when scale or bias is used.
