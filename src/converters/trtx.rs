@@ -237,6 +237,25 @@ impl TrtxConverter {
             })
     }
 
+    /// Cast tensor to Float16 (e.g. after float32 reduction to avoid float16 overflow).
+    fn cast_to_float16(
+        network: &mut trtx::NetworkDefinition,
+        input: &trtx::Tensor,
+    ) -> Result<trtx::Tensor, GraphError> {
+        let layer = network.add_cast(input, TrtDataType::kHALF).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to cast to Float16: {}", e),
+            }
+        })?;
+        layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get cast output: {}", e),
+            })
+    }
+
     /// Cast INT32 tensor to Float32
     fn cast_int32_to_float32(
         network: &mut trtx::NetworkDefinition,
@@ -628,7 +647,7 @@ impl TrtxConverter {
                 Self::add_reduce_op(network, tensor_map, operation, ReduceOperation::kPROD)?
             }
             "reduceL1" => Self::add_reduce_l1_op(network, tensor_map, operation)?,
-            "reduceL2" => Self::add_reduce_l2_op(network, tensor_map, operation)?,
+            "reduceL2" => Self::add_reduce_l2_op(graph, network, tensor_map, operation)?,
             "reduceLogSum" => Self::add_reduce_log_sum_op(network, tensor_map, operation)?,
             "reduceLogSumExp" => Self::add_reduce_log_sum_exp_op(network, tensor_map, operation)?,
             "reduceSumSquare" => Self::add_reduce_sum_square_op(network, tensor_map, operation)?,
@@ -3865,7 +3884,8 @@ impl TrtxConverter {
     // Reduction Operations
     // ============================================================================
 
-    /// Add reduction operation (sum, mean, max, min, product)
+    /// Add reduction operation (sum, mean, max, min, product).
+    /// Axes optional: when missing, default to all axes (0..rank). Empty axes -> identity.
     fn add_reduce_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -3879,34 +3899,50 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axes from attributes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Reduce: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+            (0..rank).map(|i| i as u32).collect()
         };
 
-        // Convert axes to bitmask for TensorRT
+        if axes.is_empty() {
+            let id_layer = network.add_identity(input).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Reduce axes=[] identity: {}", e),
+                }
+            })?;
+            let output = id_layer.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Reduce axes=[] output: {}", e),
+                }
+            })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
+
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
             axes_mask |= 1 << axis;
         }
 
-        // Get keepDimensions from attributes (default: false)
         let keep_dims = operation
             .attributes
             .get("keepDimensions")
@@ -3933,7 +3969,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add reduceL1 operation: sum(abs(x))
+    /// Add reduceL1 operation: sum(abs(x)). Axes optional; empty axes -> output = abs(input).
     fn add_reduce_l1_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -3946,7 +3982,6 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // L1 = sum(abs(x)) - First apply abs
         let abs_layer = network
             .add_unary(input, UnaryOperation::kABS)
             .map_err(|e| GraphError::ConversionFailed {
@@ -3961,26 +3996,32 @@ impl TrtxConverter {
                 reason: format!("Failed to get abs output: {}", e),
             })?;
 
-        // Get axes and convert to bitmask
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("ReduceL1: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+            (0..rank).map(|i| i as u32).collect()
         };
+
+        if axes.is_empty() {
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, abs_output);
+            return Ok(());
+        }
 
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
@@ -3993,7 +4034,6 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Then sum
         let layer = network
             .add_reduce(&abs_output, ReduceOperation::kSUM, axes_mask, keep_dims)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4014,8 +4054,10 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add reduceL2 operation: sqrt(sum(x^2))
+    /// Add reduceL2 operation: sqrt(sum(x^2)). Axes optional; empty axes -> output = sqrt(x^2) = |x|.
+    /// For float16 input, sum of squares can overflow; do reduce in float32 then cast back.
     fn add_reduce_l2_op(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
@@ -4027,7 +4069,11 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // L2 = sqrt(sum(x^2)) - First square: x * x
+        let input_dtype = graph
+            .operand(operation.input_operands[0])
+            .map(|o| o.descriptor.data_type)
+            .unwrap_or(DataType::Float32);
+
         let square_layer = network
             .add_elementwise(input, input, ElementWiseOperation::kPROD)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4035,34 +4081,51 @@ impl TrtxConverter {
                 reason: format!("Failed to add square for L2: {}", e),
             })?;
 
-        let square_output =
-            square_layer
-                .get_output(0)
+        let square_output = square_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get square output: {}", e),
+            })?;
+
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("ReduceL2: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
+
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
+        } else {
+            (0..rank).map(|i| i as u32).collect()
+        };
+
+        if axes.is_empty() {
+            let sqrt_layer = network
+                .add_unary(&square_output, UnaryOperation::kSQRT)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Failed to get square output: {}", e),
+                    reason: format!("ReduceL2 axes=[] sqrt: {}", e),
                 })?;
-
-        // Get axes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
+            let output = sqrt_layer.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
-
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
-        };
+                    reason: format!("ReduceL2 axes=[] output: {}", e),
+                }
+            })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
 
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
@@ -4075,9 +4138,10 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Then sum
+        // Always reduce in float32 to avoid overflow (sum of squares can exceed float16 range).
+        let to_reduce = Self::cast_to_float32(network, &square_output)?;
         let sum_layer = network
-            .add_reduce(&square_output, ReduceOperation::kSUM, axes_mask, keep_dims)
+            .add_reduce(&to_reduce, ReduceOperation::kSUM, axes_mask, keep_dims)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add reduce for L2: {}", e),
@@ -4090,7 +4154,6 @@ impl TrtxConverter {
                 reason: format!("Failed to get sum output: {}", e),
             })?;
 
-        // Finally sqrt
         let sqrt_layer = network
             .add_unary(&sum_output, UnaryOperation::kSQRT)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4098,20 +4161,25 @@ impl TrtxConverter {
                 reason: format!("Failed to add sqrt for L2: {}", e),
             })?;
 
-        let output = sqrt_layer
+        let sqrt_output = sqrt_layer
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
             })?;
 
-        let output_ids = operation.output_operands_slice();
-        let output_id = output_ids[0];
+        let output = if input_dtype == DataType::Float16 {
+            Self::cast_to_float16(network, &sqrt_output)?
+        } else {
+            sqrt_output
+        };
+
+        let output_id = operation.output_operands_slice()[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
 
-    /// Add reduceLogSum operation: log(sum(x))
+    /// Add reduceLogSum operation: log(sum(x)). Axes optional; empty axes -> output = log(x).
     fn add_reduce_log_sum_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -4124,26 +4192,44 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("ReduceLogSum: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+            (0..rank).map(|i| i as u32).collect()
         };
+
+        if axes.is_empty() {
+            let log_layer = network
+                .add_unary(input, UnaryOperation::kLOG)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("ReduceLogSum axes=[] log: {}", e),
+                })?;
+            let output = log_layer.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("ReduceLogSum axes=[] output: {}", e),
+                }
+            })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
 
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
@@ -4156,7 +4242,6 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // First sum
         let sum_layer = network
             .add_reduce(input, ReduceOperation::kSUM, axes_mask, keep_dims)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4192,7 +4277,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add reduceLogSumExp operation: log(sum(exp(x)))
+    /// Add reduceLogSumExp operation: log(sum(exp(x))). Axes optional; empty axes -> output = x.
     fn add_reduce_log_sum_exp_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -4205,7 +4290,6 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // First exp
         let exp_layer = network
             .add_unary(input, UnaryOperation::kEXP)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4220,26 +4304,44 @@ impl TrtxConverter {
                 reason: format!("Failed to get exp output: {}", e),
             })?;
 
-        // Get axes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("ReduceLogSumExp: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+            (0..rank).map(|i| i as u32).collect()
         };
+
+        if axes.is_empty() {
+            let id_layer = network.add_identity(input).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("ReduceLogSumExp axes=[] identity: {}", e),
+                }
+            })?;
+            let output = id_layer.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("ReduceLogSumExp axes=[] output: {}", e),
+                }
+            })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
 
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
@@ -4252,7 +4354,6 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Then sum
         let sum_layer = network
             .add_reduce(&exp_output, ReduceOperation::kSUM, axes_mask, keep_dims)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4288,7 +4389,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add reduceSumSquare operation: sum(x^2)
+    /// Add reduceSumSquare operation: sum(x^2). Axes optional; empty axes -> output = x^2.
     fn add_reduce_sum_square_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -4301,7 +4402,6 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // SumSquare = sum(x^2) - First square: x * x
         let square_layer = network
             .add_elementwise(input, input, ElementWiseOperation::kPROD)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4309,34 +4409,39 @@ impl TrtxConverter {
                 reason: format!("Failed to add square for SumSquare: {}", e),
             })?;
 
-        let square_output =
-            square_layer
-                .get_output(0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get square output: {}", e),
-                })?;
-
-        // Get axes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Reduce operation missing 'axes' attribute".to_string(),
-                })?;
-
-        let axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
+        let square_output = square_layer
+            .get_output(0)
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+                reason: format!("Failed to get square output: {}", e),
+            })?;
+
+        let input_dims = input.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("ReduceSumSquare: input dimensions: {}", e),
+        })?;
+        let rank = input_dims.len();
+
+        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
+            if let Some(arr) = axes_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_u64().map(|u| u as u32))
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Invalid 'axes' attribute format".to_string(),
+                });
+            }
+        } else {
+            (0..rank).map(|i| i as u32).collect()
         };
+
+        if axes.is_empty() {
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, square_output);
+            return Ok(());
+        }
 
         let mut axes_mask: u32 = 0;
         for &axis in &axes {
@@ -4349,7 +4454,6 @@ impl TrtxConverter {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Then sum
         let layer = network
             .add_reduce(&square_output, ReduceOperation::kSUM, axes_mask, keep_dims)
             .map_err(|e| GraphError::ConversionFailed {

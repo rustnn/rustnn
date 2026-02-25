@@ -247,30 +247,47 @@ fn format_input_value(v: &serde_json::Value) -> String {
     format!("{:?}", v)
 }
 
-/// Format graph inputs for failure output (only non-constant, by input_names).
+/// Format graph inputs for failure output (non-constant and constant, so constants are visible in debug).
 fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String {
-    let parts: Vec<String> = input_names
-        .iter()
-        .filter_map(|name| {
-            graph.inputs.get(name).map(|spec| {
-                let data_str = if let Some(arr) = spec.data.as_array() {
-                    let head: Vec<String> = arr
-                        .iter()
-                        .take(FAILURE_DISPLAY_LEN)
-                        .map(format_input_value)
-                        .collect();
-                    if arr.len() <= FAILURE_DISPLAY_LEN {
-                        format!("[{}]", head.join(", "))
-                    } else {
-                        format!("[{} ...] (len={})", head.join(", "), arr.len())
-                    }
+    let mut parts: Vec<String> = Vec::new();
+    for name in input_names {
+        if let Some(spec) = graph.inputs.get(name) {
+            let data_str = if let Some(arr) = spec.data.as_array() {
+                let head: Vec<String> = arr
+                    .iter()
+                    .take(FAILURE_DISPLAY_LEN)
+                    .map(format_input_value)
+                    .collect();
+                if arr.len() <= FAILURE_DISPLAY_LEN {
+                    format!("[{}]", head.join(", "))
                 } else {
-                    format_input_value(&spec.data)
-                };
-                format!("{}: {}", name, data_str)
-            })
-        })
-        .collect();
+                    format!("[{} ...] (len={})", head.join(", "), arr.len())
+                }
+            } else {
+                format_input_value(&spec.data)
+            };
+            parts.push(format!("{}: {}", name, data_str));
+        }
+    }
+    for (name, spec) in &graph.inputs {
+        if spec.constant && !input_names.contains(name) {
+            let data_str = if let Some(arr) = spec.data.as_array() {
+                let head: Vec<String> = arr
+                    .iter()
+                    .take(FAILURE_DISPLAY_LEN)
+                    .map(format_input_value)
+                    .collect();
+                if arr.len() <= FAILURE_DISPLAY_LEN {
+                    format!("[{}]", head.join(", "))
+                } else {
+                    format!("[{} ...] (len={})", head.join(", "), arr.len())
+                }
+            } else {
+                format_input_value(&spec.data)
+            };
+            parts.push(format!("{}: {} (constant)", name, data_str));
+        }
+    }
     parts.join("; ")
 }
 
