@@ -827,11 +827,8 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         } else {
             None
         };
-        let output_operands = if output_ids.len() > 1 {
-            output_ids
-        } else {
-            Vec::new()
-        };
+        // Always set output_operands so converters can use output_operands_slice() safely
+        let output_operands = output_ids;
 
         // ONNX/TRTX converters expect camelCase for these ops (WPT JSON uses camelCase; we store snake_case via wpt_op_name_to_rustnn, then map back here)
         let op_type_for_graph = match op_type.as_str() {

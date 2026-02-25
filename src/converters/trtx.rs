@@ -7958,13 +7958,38 @@ impl TrtxConverter {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let layer =
+        let mut layer =
             network
                 .add_concatenation(&inputs)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add concatenation: {}", e),
                 })?;
+
+        // WebNN axis (default 0); TensorRT concat requires the axis to be set
+        let axis_raw = operation
+            .attributes
+            .get("axis")
+            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+            .unwrap_or(0);
+        let ndim = inputs[0]
+            .dimensions()
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Concat: failed to get input dimensions: {}", e),
+            })?
+            .len() as i32;
+        let mut axis_i32 = axis_raw as i32;
+        if axis_i32 < 0 {
+            axis_i32 += ndim;
+        }
+        axis_i32 = axis_i32.max(0).min(ndim.saturating_sub(1));
+        layer
+            .set_axis(axis_i32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set concat axis {}: {}", axis_i32, e),
+            })?;
 
         // Extract output tensor from layer
         let output = layer
@@ -7974,7 +7999,11 @@ impl TrtxConverter {
                 reason: format!("Failed to get layer output: {}", e),
             })?;
 
-        let output_id = operation.output_operands[0];
+        let output_ids = operation.output_operands_slice();
+        let output_id = *output_ids.first().ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: "Concat: operation has no output operand".to_string(),
+        })?;
         tensor_map.insert(output_id, output);
         Ok(())
     }
