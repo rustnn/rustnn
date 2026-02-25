@@ -2553,7 +2553,9 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add matrix multiply operation
+    /// Add matrix multiply operation.
+    /// TensorRT IMatrixMultiplyLayer requires both inputs to have the same number of dimensions;
+    /// if ranks differ, unsqueeze the lower-rank input by prepending 1s.
     fn add_matmul_op(
         network: &mut trtx::NetworkDefinition,
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
@@ -2573,15 +2575,74 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
-        // MatrixOperation: 0=NONE, 1=TRANSPOSE, 2=VECTOR
-        let layer = network
-            .add_matrix_multiply(input0, 0, input1, 0) // No transpose
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add matrix multiply: {}", e),
-            })?;
+        let dims0 = input0.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Matmul: input0 dimensions: {}", e),
+        })?;
+        let dims1 = input1.dimensions().map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Matmul: input1 dimensions: {}", e),
+        })?;
 
-        // Extract output tensor from layer
+        let rank0 = dims0.len();
+        let rank1 = dims1.len();
+
+        let layer = if rank0 == rank1 {
+            network.add_matrix_multiply(input0, 0, input1, 0)
+        } else if rank0 < rank1 {
+            let reshape_dims: Vec<i32> = dims0.iter().map(|&d| d as i32).collect();
+            let rank_diff = rank1 - rank0;
+            let mut new_shape: Vec<i32> = vec![1; rank_diff];
+            new_shape.extend(reshape_dims);
+            let mut shuffle = network.add_shuffle(input0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: unsqueeze shuffle: {}", e),
+                }
+            })?;
+            shuffle.set_reshape_dimensions(&new_shape).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: set reshape: {}", e),
+                }
+            })?;
+            let reshaped0 = shuffle.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: shuffle output: {}", e),
+                }
+            })?;
+            network.add_matrix_multiply(&reshaped0, 0, input1, 0)
+        } else {
+            let reshape_dims: Vec<i32> = dims1.iter().map(|&d| d as i32).collect();
+            let rank_diff = rank0 - rank1;
+            let mut new_shape: Vec<i32> = vec![1; rank_diff];
+            new_shape.extend(reshape_dims);
+            let mut shuffle = network.add_shuffle(input1).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: unsqueeze shuffle: {}", e),
+                }
+            })?;
+            shuffle.set_reshape_dimensions(&new_shape).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: set reshape: {}", e),
+                }
+            })?;
+            let reshaped1 = shuffle.get_output(0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Matmul: shuffle output: {}", e),
+                }
+            })?;
+            network.add_matrix_multiply(input0, 0, &reshaped1, 0)
+        }
+        .map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to add matrix multiply: {}", e),
+        })?;
+
         let output = layer
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {
