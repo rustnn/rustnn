@@ -28,6 +28,7 @@ impl TrtxConverter {
 
     /// Map WebNN DataType to TensorRT DataType enum.
     /// TensorRT has no kUINT32; we use kINT32 (same 4-byte layout, bit-identical for cast output).
+    /// TensorRT has no kUINT64; we use kINT64 (same 8-byte layout, bit-identical for elementwise).
     fn webnn_to_trt_dtype(dtype: DataType) -> Result<TrtDataType, GraphError> {
         match dtype {
             DataType::Float32 => Ok(TrtDataType::kFLOAT),
@@ -37,6 +38,7 @@ impl TrtxConverter {
             DataType::Uint8 => Ok(TrtDataType::kUINT8),
             DataType::Uint32 => Ok(TrtDataType::kINT32),
             DataType::Int64 => Ok(TrtDataType::kINT64),
+            DataType::Uint64 => Ok(TrtDataType::kINT64),
             _ => Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Unsupported data type: {:?}", dtype),
@@ -4545,8 +4547,25 @@ impl TrtxConverter {
             vec![1; starts.len()]
         };
 
+        // TensorRT Slice expects "size" = output dimensions. WebNN "sizes" are extents (range
+        // lengths); with stride != 1 the output length per axis is ceil(extent/stride).
+        let trt_sizes: Vec<i32> = sizes
+            .iter()
+            .zip(strides.iter())
+            .map(|(&sz, &st)| {
+                if st == 0 {
+                    0_i32 // avoid div-by-zero; validator should reject elsewhere
+                } else if st == 1 {
+                    sz
+                } else {
+                    // ceil(extent / stride) in integers
+                    (sz + st.abs() - 1) / st.abs()
+                }
+            })
+            .collect();
+
         let layer = network
-            .add_slice(input, &starts, &sizes, &strides)
+            .add_slice(input, &starts, &trt_sizes, &strides)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add slice layer: {}", e),
@@ -4571,22 +4590,31 @@ impl TrtxConverter {
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input = tensor_map
-            .get(&operation.input_operands[0])
+        let input_id = operation.input_operands[0];
+        let input_dims = tensor_map
+            .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", input_id),
+            })?
+            .dimensions()
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get input shape: {}", e),
             })?;
 
-        // Get axis and splits from attributes
-        let axis = operation
+        let ndim = input_dims.len();
+
+        // Axis: default 0 per WebNN when not specified (e.g. "default options" tests).
+        let axis_raw = operation
             .attributes
             .get("axis")
-            .and_then(|v| v.as_u64())
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Split operation missing or invalid 'axis' attribute".to_string(),
-            })? as i32;
+            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)));
+        let mut axis = axis_raw.unwrap_or(0) as i32;
+        if axis < 0 {
+            axis += ndim as i32;
+        }
+        axis = axis.max(0).min((ndim.saturating_sub(1)) as i32);
 
         let splits_value =
             operation
@@ -4601,53 +4629,71 @@ impl TrtxConverter {
             arr.iter()
                 .filter_map(|v| v.as_i64().map(|i| i as i32))
                 .collect()
+        } else if let Some(n) = splits_value.as_u64().or_else(|| splits_value.as_i64().map(|i| i as u64)) {
+            let n = n as usize;
+            if n == 0 {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Split operation 'splits' number must be positive".to_string(),
+                });
+            }
+            let dim = input_dims[axis as usize] as i32;
+            let base = dim / n as i32;
+            let rem = (dim % n as i32) as usize;
+            (0..n)
+                .map(|i| base + if i < rem { 1 } else { 0 })
+                .collect()
         } else {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'splits' attribute format".to_string(),
+                reason: "Invalid 'splits' attribute format (expected number or array)".to_string(),
             });
         };
 
-        // Split requires creating multiple slice operations
-        // Each split creates one output at a different position along the axis
-        // For now, we only support the first output (output_operands[0])
-        // Full multi-output support requires changes to the converter architecture
-
-        // Create slice for the first split only
-        let input_dims = input
-            .dimensions()
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get input shape: {}", e),
-            })?;
-
-        let ndim = input_dims.len();
-        let starts = vec![0i32; ndim];
-        let mut sizes = input_dims.clone();
-        sizes[axis as usize] = splits[0];
-        let strides = vec![1i32; ndim];
-
-        let layer = network
-            .add_slice(input, &starts, &sizes, &strides)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add slice layer for split: {}", e),
-            })?;
-
-        let output = layer
-            .get_output(0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
-            })?;
-
-        // Store only the first output
+        // One slice per split; start along axis advances by previous split sizes.
         let output_ids = operation.output_operands_slice();
-        let output_id = output_ids[0];
-        tensor_map.insert(output_id, output);
+        if output_ids.len() != splits.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Split: {} outputs expected, {} operands",
+                    splits.len(),
+                    output_ids.len()
+                ),
+            });
+        }
 
-        // Note: This is a partial implementation - full split requires
-        // generating all output slices and storing them in tensor_map
+        let mut offset = 0i32;
+        for (k, &size_k) in splits.iter().enumerate() {
+            let mut starts = vec![0i32; ndim];
+            starts[axis as usize] = offset;
+            let mut sizes = input_dims.clone();
+            sizes[axis as usize] = size_k;
+            let strides = vec![1i32; ndim];
+
+            let output = {
+                let input = tensor_map.get(&input_id).ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Input operand {} not found", input_id),
+                })?;
+                let layer = network
+                    .add_slice(input, &starts, &sizes, &strides)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add slice layer for split {}: {}", k, e),
+                    })?;
+                layer
+                    .get_output(0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to get layer output for split {}: {}", k, e),
+                    })?
+            };
+
+            tensor_map.insert(output_ids[k], output);
+            offset += size_k;
+        }
+
         Ok(())
     }
 
@@ -7842,15 +7888,56 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // For now, just use shuffle layer (transpose details would need more TensorRT API)
-        let layer = network
+        let input_dims = input
+            .dimensions()
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Transpose: failed to get input dimensions: {}", e),
+            })?;
+
+        let rank = input_dims.len();
+        // WebNN default: when permutation is omitted, reverse axes [rank-1, ..., 0].
+        let perm: Vec<i32> = if let Some(perm_value) = operation.attributes.get("permutation") {
+            if let Some(arr) = perm_value.as_array() {
+                arr.iter()
+                    .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+                    .map(|i| i as i32)
+                    .collect()
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Transpose: invalid 'permutation' attribute format".to_string(),
+                });
+            }
+        } else {
+            (0..rank).rev().map(|i| i as i32).collect()
+        };
+
+        if perm.len() != rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Transpose: permutation length {} does not match rank {}",
+                    perm.len(),
+                    rank
+                ),
+            });
+        }
+
+        let mut layer = network
             .add_shuffle(input)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add shuffle (transpose): {}", e),
             })?;
 
-        // Extract output tensor from layer
+        layer
+            .set_first_transpose(&perm)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set transpose permutation: {}", e),
+            })?;
+
         let output = layer
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {

@@ -29,7 +29,7 @@ use wpt_to_graph::wpt_graph_to_onnx_inputs;
 use wpt_to_graph::wpt_graph_to_trtx_inputs;
 use wpt_to_graph::{
     expected_output_to_f32, expected_output_to_i8, expected_output_to_i32, expected_output_to_i64,
-    expected_output_to_u8, expected_output_to_u32, wpt_graph_to_graph_info,
+    expected_output_to_u8, expected_output_to_u32, expected_output_to_u64, wpt_graph_to_graph_info,
 };
 use wpt_types::WptGraph;
 
@@ -149,6 +149,23 @@ fn format_f32_slice_for_failure(slice: &[f32], max_show: usize) -> String {
 }
 
 fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
+    if slice.is_empty() {
+        return "[]".to_string();
+    }
+    let head: Vec<String> = slice
+        .iter()
+        .take(max_show)
+        .map(|v| format!("{}", v))
+        .collect();
+    let s = head.join(", ");
+    if slice.len() <= max_show {
+        format!("[{}]", s)
+    } else {
+        format!("[{} ...] (len={})", s, slice.len())
+    }
+}
+
+fn format_u64_slice_for_failure(slice: &[u64], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
@@ -505,6 +522,25 @@ pub fn run_one_test_case_trtx(
                 let actual_str = format_u32_slice_for_failure(&actual_u32, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
             }
+            "uint64" => {
+                // TRTX maps Uint64 to kINT64; decode 8-byte chunks as u64 (same bit layout).
+                let expected = expected_output_to_u64(expected_spec);
+                let actual_u64: Vec<u64> = actual
+                    .data
+                    .chunks_exact(8)
+                    .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                    .collect();
+                let pass =
+                    actual_u64.len() == expected.len() && actual_u64.iter().eq(expected.iter());
+                let msg = if pass {
+                    None
+                } else {
+                    Some("uint64 output mismatch".to_string())
+                };
+                let expected_str = format_u64_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_u64_slice_for_failure(&actual_u64, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
             _ => {
                 let actual_f32 = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
                 let expected = expected_output_to_f32(expected_spec);
@@ -543,6 +579,11 @@ pub fn run_one_test_case_trtx(
                         let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
                         format_f32_nd(&exp_f, shape)
                     }
+                    "uint64" => {
+                        let exp = expected_output_to_u64(expected_spec);
+                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&exp_f, shape)
+                    }
                     _ => {
                         let exp = expected_output_to_f32(expected_spec);
                         format_f32_nd(&exp, shape)
@@ -574,6 +615,17 @@ pub fn run_one_test_case_trtx(
                             .data
                             .chunks_exact(4)
                             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect();
+                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
+                        format_f32_nd(&act_f, shape)
+                    }
+                    "uint64" => {
+                        let act: Vec<u64> = actual
+                            .data
+                            .chunks_exact(8)
+                            .map(|c| {
+                                u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
+                            })
                             .collect();
                         let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
                         format_f32_nd(&act_f, shape)
