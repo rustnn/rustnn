@@ -676,6 +676,90 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 }
             }
         }
+        // layer_normalization: TRTX/ONNX expect [input, scale, bias]. If only scale or only bias
+        // is provided, insert a default constant so converters always see three operands.
+        if op_type == "layer_normalization" {
+            let order = ["input", "scale", "bias"];
+            let ordered: Vec<u32> = order
+                .iter()
+                .filter_map(|key| {
+                    args.get(*key)
+                        .and_then(|v| v.as_str())
+                        .and_then(|name| name_to_id.get(name).copied())
+                })
+                .collect();
+            if !ordered.is_empty() && ordered.len() == 2 {
+                let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
+                let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
+                let shape_id = ordered[1];
+                let scale_bias_shape = operands
+                    .get(shape_id as usize)
+                    .map(|o| o.descriptor.shape.clone())
+                    .unwrap_or_default();
+                let data_type = operands
+                    .get(shape_id as usize)
+                    .map(|o| o.descriptor.data_type)
+                    .unwrap_or(DataType::Float32);
+                let n: usize = scale_bias_shape.iter().product::<u32>().max(1) as usize;
+                if has_bias && !has_scale {
+                    let scale_bytes: Vec<u8> = match data_type {
+                        DataType::Float32 => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
+                        DataType::Float16 => (0..n)
+                            .flat_map(|_| half::f16::from_f32(1.0).to_bits().to_ne_bytes())
+                            .collect(),
+                        _ => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
+                    };
+                    constant_data.insert(
+                        next_id,
+                        ConstantData {
+                            data: scale_bytes,
+                            label: None,
+                        },
+                    );
+                    operands.push(Operand {
+                        kind: OperandKind::Constant,
+                        descriptor: OperandDescriptor {
+                            data_type,
+                            shape: scale_bias_shape.clone(),
+                            pending_permutation: Vec::new(),
+                        },
+                        name: Some("layer_norm_default_scale".to_string()),
+                    });
+                    input_ids = vec![ordered[0], next_id, ordered[1]];
+                    next_id += 1;
+                } else if has_scale && !has_bias {
+                    let bias_bytes: Vec<u8> = match data_type {
+                        DataType::Float32 => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
+                        DataType::Float16 => (0..n)
+                            .flat_map(|_| half::f16::from_f32(0.0).to_bits().to_ne_bytes())
+                            .collect(),
+                        _ => (0..n).flat_map(|_| (0.0f32).to_ne_bytes()).collect(),
+                    };
+                    constant_data.insert(
+                        next_id,
+                        ConstantData {
+                            data: bias_bytes,
+                            label: None,
+                        },
+                    );
+                    operands.push(Operand {
+                        kind: OperandKind::Constant,
+                        descriptor: OperandDescriptor {
+                            data_type,
+                            shape: scale_bias_shape,
+                            pending_permutation: Vec::new(),
+                        },
+                        name: Some("layer_norm_default_bias".to_string()),
+                    });
+                    input_ids = vec![ordered[0], ordered[1], next_id];
+                    next_id += 1;
+                } else {
+                    input_ids = ordered;
+                }
+            } else if !ordered.is_empty() {
+                input_ids = ordered;
+            }
+        }
         // instance_normalization: ONNX expects [input, scale?, bias?]
         if op_type == "instance_normalization" {
             let order = ["input", "scale", "bias"];
