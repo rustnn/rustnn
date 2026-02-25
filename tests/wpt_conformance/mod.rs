@@ -35,6 +35,80 @@ use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
 
+/// Format a flat integer slice as n-dimensional for failure output (exact values, no f32 precision loss).
+fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
+    if shape.is_empty() {
+        return format!(
+            "[{}]",
+            slice
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    let size: usize = shape.iter().map(|&d| d as usize).product();
+    if size != slice.len() {
+        return format!(
+            "[{} ...] (len={}, shape={:?})",
+            slice
+                .iter()
+                .take(24)
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            slice.len(),
+            shape
+        );
+    }
+    let s: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+    let rank = s.len();
+    let mut lines = Vec::new();
+    if rank == 1 {
+        lines.push(format!(
+            "[{}]",
+            slice
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    } else if rank == 4 {
+        let [n, h, w, c] = [s[0], s[1], s[2], s[3]];
+        let mut idx = 0;
+        for _n in 0..n {
+            for _i in 0..h {
+                let row: Vec<String> = (0..w)
+                    .map(|_| {
+                        let cell: Vec<String> = slice[idx..idx + c]
+                            .iter()
+                            .map(|v| format!("{}", v))
+                            .collect();
+                        idx += c;
+                        format!("[{}]", cell.join(", "))
+                    })
+                    .collect();
+                lines.push(format!("  {}", row.join(" ")));
+            }
+        }
+    } else if rank == 2 {
+        let (rows, cols) = (s[0], s[1]);
+        let mut idx = 0;
+        for _ in 0..rows {
+            let row: Vec<String> = slice[idx..idx + cols]
+                .iter()
+                .map(|v| format!("{}", v))
+                .collect();
+            idx += cols;
+            lines.push(format!("  [{}]", row.join(", ")));
+        }
+    } else {
+        let flat: Vec<String> = slice.iter().map(|v| format!("{}", v)).collect();
+        lines.push(format!("[{}]", flat.join(", ")));
+    }
+    format!("(shape {:?})\n{}", shape, lines.join("\n"))
+}
+
 /// Format a flat f32 slice as n-dimensional for failure output (full tensor, shape e.g. [1,6,6,2]).
 /// For 4D [N,H,W,C]: prints N*H lines, each line has W cells of C values as [a, b, ...].
 fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
@@ -566,23 +640,19 @@ pub fn run_one_test_case_trtx(
                 let expected_nd = match expected_spec.data_type() {
                     "int64" => {
                         let exp = expected_output_to_i64(expected_spec);
-                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&exp_f, shape)
+                        format_int_nd(&exp, shape)
                     }
                     "int32" => {
                         let exp = expected_output_to_i32(expected_spec);
-                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&exp_f, shape)
+                        format_int_nd(&exp, shape)
                     }
                     "uint32" => {
                         let exp = expected_output_to_u32(expected_spec);
-                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&exp_f, shape)
+                        format_int_nd(&exp, shape)
                     }
                     "uint64" => {
                         let exp = expected_output_to_u64(expected_spec);
-                        let exp_f: Vec<f32> = exp.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&exp_f, shape)
+                        format_int_nd(&exp, shape)
                     }
                     _ => {
                         let exp = expected_output_to_f32(expected_spec);
@@ -598,8 +668,7 @@ pub fn run_one_test_case_trtx(
                                 i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
                             })
                             .collect();
-                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&act_f, shape)
+                        format_int_nd(&act, shape)
                     }
                     "int32" => {
                         let act: Vec<i32> = actual
@@ -607,8 +676,7 @@ pub fn run_one_test_case_trtx(
                             .chunks_exact(4)
                             .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                             .collect();
-                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&act_f, shape)
+                        format_int_nd(&act, shape)
                     }
                     "uint32" => {
                         let act: Vec<u32> = actual
@@ -616,8 +684,7 @@ pub fn run_one_test_case_trtx(
                             .chunks_exact(4)
                             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                             .collect();
-                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&act_f, shape)
+                        format_int_nd(&act, shape)
                     }
                     "uint64" => {
                         let act: Vec<u64> = actual
@@ -627,8 +694,7 @@ pub fn run_one_test_case_trtx(
                                 u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
                             })
                             .collect();
-                        let act_f: Vec<f32> = act.iter().map(|&i| i as f32).collect();
-                        format_f32_nd(&act_f, shape)
+                        format_int_nd(&act, shape)
                     }
                     _ => {
                         let act_f = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
@@ -675,6 +741,17 @@ fn trtx_skip_reason(test_case: &wpt_types::WptTestCase) -> Option<&'static str> 
     ];
     if TRTX_CAST_SKIP.contains(&test_case.name.as_str()) {
         return Some("TRT-RTX: int8/uint8 tensor input to cast not supported (constants only)");
+    }
+    // Clamp uint32: kINT32 elementwise uses signed comparison (maxValue >= 2^31 wrong). Clamp int64/uint64: add_constant does not support kINT64.
+    const TRTX_CLAMP_UNSUPPORTED: &[&str] = &[
+        "clamp int8 1D tensor",
+        "clamp uint32 1D tensor",
+        "clamp int64 1D tensor with bigint max",
+        "clamp uint64 1D tensor with Number min and max",
+        "clamp uint64 1D tensor with bigint max",
+    ];
+    if TRTX_CLAMP_UNSUPPORTED.contains(&test_case.name.as_str()) {
+        return Some("TRT-RTX: clamp unsupported (uint32 signed comparison; int64/uint64 no kINT64 constants)");
     }
     None
 }

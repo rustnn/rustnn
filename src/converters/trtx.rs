@@ -5742,30 +5742,137 @@ impl TrtxConverter {
             }
         })?;
         let num_dims = input_operand.descriptor.shape.len();
+        let input_dtype = input_operand.descriptor.data_type;
         // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
         let broadcast_shape: Vec<i32> = vec![1; num_dims];
 
-        // Get min and max values from attributes
+        // Get min and max values from attributes (handle "Infinity"/"-Infinity"/"NaN" strings from WPT).
+        let parse_clamp_bound_f32 = |v: &serde_json::Value| -> Option<f32> {
+            if let Some(s) = v.as_str() {
+                return match s {
+                    "Infinity" => Some(f32::INFINITY),
+                    "-Infinity" => Some(f32::NEG_INFINITY),
+                    "NaN" => Some(f32::NAN),
+                    _ => None,
+                };
+            }
+            v.as_f64().map(|f| f as f32)
+        };
+        // For integer types, parse bounds as integers to avoid f32 precision loss and overflow.
+        let parse_i64 = |v: &serde_json::Value| -> Option<i64> {
+            v.as_i64()
+                .or_else(|| v.as_u64().map(|u| u as i64))
+                .or_else(|| v.as_f64().and_then(|f| (f >= i64::MIN as f64 && f <= i64::MAX as f64).then_some(f as i64)))
+        };
+        let parse_u64 = |v: &serde_json::Value| -> Option<u64> {
+            v.as_u64()
+                .or_else(|| v.as_i64().and_then(|i| (i >= 0).then_some(i as u64)))
+                .or_else(|| v.as_f64().and_then(|f| (f >= 0.0 && f <= u64::MAX as f64).then_some(f as u64)))
+                .or_else(|| {
+                    v.as_str().and_then(|s| s.trim_end_matches('n').trim().parse::<u64>().ok())
+                })
+        };
+
+        // NaN as bound means "no bound" per WebNN: use -inf for min, +inf for max so only the other bound applies.
         let min_value = operation
             .attributes
             .get("minValue")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(f64::NEG_INFINITY) as f32;
-
+            .and_then(parse_clamp_bound_f32)
+            .unwrap_or(f32::NEG_INFINITY);
+        let min_value = if min_value.is_nan() {
+            f32::NEG_INFINITY
+        } else {
+            min_value
+        };
         let max_value = operation
             .attributes
             .get("maxValue")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(f64::INFINITY) as f32;
+            .and_then(parse_clamp_bound_f32)
+            .unwrap_or(f32::INFINITY);
+        let max_value = if max_value.is_nan() {
+            f32::INFINITY
+        } else {
+            max_value
+        };
+
+        // TensorRT ElementWise MIN/MAX require both inputs to have the same type. Use input type for constants.
+        let trt_dtype = Self::webnn_to_trt_dtype(input_dtype)?;
+        let (max_bytes, min_bytes) = match input_dtype {
+            DataType::Int8 => (
+                (max_value.clamp(i8::MIN as f32, i8::MAX as f32) as i8)
+                    .to_le_bytes()
+                    .to_vec(),
+                (min_value.clamp(i8::MIN as f32, i8::MAX as f32) as i8)
+                    .to_le_bytes()
+                    .to_vec(),
+            ),
+            DataType::Uint8 => (
+                (max_value.clamp(0.0, u8::MAX as f32) as u8)
+                    .to_le_bytes()
+                    .to_vec(),
+                (min_value.clamp(0.0, u8::MAX as f32) as u8)
+                    .to_le_bytes()
+                    .to_vec(),
+            ),
+            DataType::Int32 => {
+                let min_i = operation
+                    .attributes
+                    .get("minValue")
+                    .and_then(parse_i64)
+                    .unwrap_or(i64::from(i32::MIN))
+                    .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                let max_i = operation
+                    .attributes
+                    .get("maxValue")
+                    .and_then(parse_i64)
+                    .unwrap_or(i64::from(i32::MAX))
+                    .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+                (max_i.to_le_bytes().to_vec(), min_i.to_le_bytes().to_vec())
+            }
+            DataType::Uint32 => {
+                let min_u = operation
+                    .attributes
+                    .get("minValue")
+                    .and_then(parse_u64)
+                    .unwrap_or(0)
+                    .min(u64::from(u32::MAX)) as u32;
+                let max_u = operation
+                    .attributes
+                    .get("maxValue")
+                    .and_then(parse_u64)
+                    .unwrap_or(u64::from(u32::MAX))
+                    .min(u64::from(u32::MAX)) as u32;
+                (max_u.to_le_bytes().to_vec(), min_u.to_le_bytes().to_vec())
+            }
+            DataType::Int64 | DataType::Uint64 => {
+                let min_i64 = operation
+                    .attributes
+                    .get("minValue")
+                    .and_then(parse_i64)
+                    .unwrap_or(i64::MIN);
+                let max_i64 = operation
+                    .attributes
+                    .get("maxValue")
+                    .and_then(parse_i64)
+                    .unwrap_or(i64::MAX);
+                (max_i64.to_le_bytes().to_vec(), min_i64.to_le_bytes().to_vec())
+            }
+            DataType::Float16 => (
+                f16::from_f32(max_value).to_bits().to_le_bytes().to_vec(),
+                f16::from_f32(min_value).to_bits().to_le_bytes().to_vec(),
+            ),
+            _ => (
+                max_value.to_le_bytes().to_vec(),
+                min_value.to_le_bytes().to_vec(),
+            ),
+        };
 
         // Implement clamp as: max(min_value, min(input, max_value))
         // First: min(input, max_value)
-        // Store constant data in temp_weights to keep alive until engine is built
-        // Note: Use shape [1,1,...,1] matching input dimensions for TensorRT broadcasting
-        temp_weights.push(max_value.to_le_bytes().to_vec());
+        temp_weights.push(max_bytes);
         let max_const_data = temp_weights.last().unwrap();
         let max_const = network
-            .add_constant(&broadcast_shape, max_const_data, TrtDataType::kFLOAT)
+            .add_constant(&broadcast_shape, max_const_data, trt_dtype.clone())
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add max constant: {}", e),
@@ -5795,12 +5902,10 @@ impl TrtxConverter {
                 })?;
 
         // Second: max(min_value, clamped_upper)
-        // Store constant data in temp_weights to keep alive until engine is built
-        // Note: Use shape [1,1,...,1] matching input dimensions for TensorRT broadcasting
-        temp_weights.push(min_value.to_le_bytes().to_vec());
+        temp_weights.push(min_bytes);
         let min_const_data = temp_weights.last().unwrap();
         let min_const = network
-            .add_constant(&broadcast_shape, min_const_data, TrtDataType::kFLOAT)
+            .add_constant(&broadcast_shape, min_const_data, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add min constant: {}", e),
