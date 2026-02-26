@@ -80,7 +80,10 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     m.insert("reduce_log_sum".to_string(), (ToleranceKind::Ulp, 10));
     m.insert("reduce_log_sum_exp".to_string(), (ToleranceKind::Ulp, 100));
     // reduce_sum_square: float16 sum of squares can exceed 2 ULP.
-    m.insert("reduce_sum_square".to_string(), (ToleranceKind::Ulp, 12_000));
+    m.insert(
+        "reduce_sum_square".to_string(),
+        (ToleranceKind::Ulp, 12_000),
+    );
     // Convolution / pooling (conv2d/conv_transpose2d: use relative tolerance for TensorRT)
     let rtol_1e3 = 1e-3_f64.to_bits();
     m.insert("conv2d".to_string(), (ToleranceKind::Rtol, rtol_1e3));

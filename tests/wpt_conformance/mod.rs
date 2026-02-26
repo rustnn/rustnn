@@ -751,7 +751,9 @@ fn trtx_skip_reason(test_case: &wpt_types::WptTestCase) -> Option<&'static str> 
         "clamp uint64 1D tensor with bigint max",
     ];
     if TRTX_CLAMP_UNSUPPORTED.contains(&test_case.name.as_str()) {
-        return Some("TRT-RTX: clamp unsupported (uint32 signed comparison; int64/uint64 no kINT64 constants)");
+        return Some(
+            "TRT-RTX: clamp unsupported (uint32 signed comparison; int64/uint64 no kINT64 constants)",
+        );
     }
     None
 }
