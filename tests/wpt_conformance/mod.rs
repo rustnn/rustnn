@@ -27,15 +27,18 @@ use tolerance::validate_result;
 use wpt_to_graph::wpt_graph_to_onnx_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use wpt_to_graph::wpt_graph_to_trtx_inputs;
+use wpt_to_graph::{expected_output_to_f32, wpt_graph_to_graph_info};
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use wpt_to_graph::{
-    expected_output_to_f32, expected_output_to_i8, expected_output_to_i32, expected_output_to_i64,
-    expected_output_to_u8, expected_output_to_u32, expected_output_to_u64, wpt_graph_to_graph_info,
+    expected_output_to_i8, expected_output_to_i32, expected_output_to_i64, expected_output_to_u8,
+    expected_output_to_u32, expected_output_to_u64,
 };
 use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
 
 /// Format a flat integer slice as n-dimensional for failure output (exact values, no f32 precision loss).
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
     if shape.is_empty() {
         return format!(
@@ -222,6 +225,7 @@ fn format_f32_slice_for_failure(slice: &[f32], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -239,6 +243,7 @@ fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_u64_slice_for_failure(slice: &[u64], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -256,6 +261,7 @@ fn format_u64_slice_for_failure(slice: &[u64], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_i32_slice_for_failure(slice: &[i32], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -273,6 +279,7 @@ fn format_i32_slice_for_failure(slice: &[i32], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_i8_slice_for_failure(slice: &[i8], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -290,6 +297,7 @@ fn format_i8_slice_for_failure(slice: &[i8], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_u8_slice_for_failure(slice: &[u8], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -307,6 +315,7 @@ fn format_u8_slice_for_failure(slice: &[u8], max_show: usize) -> String {
     }
 }
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_u32_slice_for_failure(slice: &[u32], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -431,15 +440,15 @@ pub fn run_one_test_case(
             .find(|o| o.name == *out_name)
             .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
         let expected = expected_output_to_f32(expected_spec);
-        let (pass, msg) = validate_result(&actual.data, &expected, tolerance_kind, tolerance_value);
+        let actual_f32: Vec<f32> = actual.data.iter().map(|&x| x as f32).collect();
+        let (pass, msg) = validate_result(&actual_f32, &expected, tolerance_kind, tolerance_value);
         if !pass {
             let inputs_str = format_inputs_for_failure(graph, &input_names);
             let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-            let actual_str = format_f32_slice_for_failure(&actual.data, FAILURE_DISPLAY_LEN);
+            let actual_str = format_f32_slice_for_failure(&actual_f32, FAILURE_DISPLAY_LEN);
             let shape = expected_spec.shape();
             let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
                 let expected_nd = format_f32_nd(&expected, shape);
-                let actual_f32: Vec<f32> = actual.data.iter().map(|&x| x as f32).collect();
                 let actual_nd = format_f32_nd(&actual_f32, shape);
                 format!(
                     "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
