@@ -10,7 +10,7 @@ use half::f16;
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
 use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
-use crate::graph::{DataType, GraphInfo, OperandKind, Operation};
+use crate::graph::{DataType, GraphInfo, OperandKind, Operation, get_static_or_max_size};
 use trtx::network::Layer;
 use trtx::{
     ActivationType, DataType as TrtDataType, ElementWiseOperation, PoolingType, ReduceOperation,
@@ -292,7 +292,12 @@ impl TrtxConverter {
         for (operand_id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Input {
                 let dtype = Self::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let dims: Vec<i32> = operand.descriptor.shape.iter().map(|&d| d as i32).collect();
+                let dims: Vec<i32> = operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|d| get_static_or_max_size(d) as i32)
+                    .collect();
                 let name = operand.name.as_deref().unwrap_or("input");
 
                 let mut tensor = network.add_input(name, dtype, &dims).map_err(|e| {
@@ -316,7 +321,12 @@ impl TrtxConverter {
         // Step 2: Add constants
         for (operand_id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Constant {
-                let dims: Vec<i32> = operand.descriptor.shape.iter().map(|&d| d as i32).collect();
+                let dims: Vec<i32> = operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|d| get_static_or_max_size(d) as i32)
+                    .collect();
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
                 // Validate that data size matches expected size
@@ -324,7 +334,7 @@ impl TrtxConverter {
                     .descriptor
                     .shape
                     .iter()
-                    .map(|&d| d as usize)
+                    .map(|d| get_static_or_max_size(d) as usize)
                     .product();
                 let data_type_size = operand.descriptor.data_type.bytes_per_element();
                 let expected_bytes = expected_size * data_type_size;
@@ -1211,9 +1221,18 @@ impl TrtxConverter {
             match operand.descriptor.data_type {
                 DataType::Uint8 | DataType::Int8 => {
                     let data = Self::get_constant_data(graph, input_id)?;
-                    let shape: Vec<i32> =
-                        operand.descriptor.shape.iter().map(|&d| d as i32).collect();
-                    let n: usize = shape.iter().map(|&d| d as usize).product();
+                    let shape: Vec<i32> = operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| get_static_or_max_size(d) as i32)
+                        .collect();
+                    let n: usize = operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| get_static_or_max_size(d) as usize)
+                        .product();
                     let bool_bytes: Vec<u8> = data
                         .iter()
                         .take(n)
@@ -2285,7 +2304,7 @@ impl TrtxConverter {
                     .descriptor
                     .shape
                     .iter()
-                    .map(|&d| d as i32)
+                    .map(|d| get_static_or_max_size(d) as i32)
                     .collect();
                 let mut shuffle_to_4d =
                     network
@@ -2344,7 +2363,7 @@ impl TrtxConverter {
                     .descriptor
                     .shape
                     .iter()
-                    .map(|&d| d as i32)
+                    .map(|d| get_static_or_max_size(d) as i32)
                     .collect();
                 let mut shuffle_to_4d =
                     network
@@ -5319,7 +5338,7 @@ impl TrtxConverter {
                 ),
             });
         }
-        let dim_size = data_operand.descriptor.shape[axis_usize] as i32;
+        let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i32;
 
         let indices_operand = graph.operand(operation.input_operands[1]).ok_or_else(|| {
             GraphError::ConversionFailed {
@@ -5334,14 +5353,19 @@ impl TrtxConverter {
             .descriptor
             .shape
             .iter()
-            .map(|&d| d as i32)
+            .map(|d| get_static_or_max_size(d) as i32)
             .collect();
 
         // Clamp indices to [-dim_size, dim_size - 1] (WebNN/conformance behavior).
         // TensorRT elementwise requires same rank; repeat scalar to match indices shape.
         let clamp_min_val = -dim_size;
         let clamp_max_val = dim_size - 1;
-        let num_elements: usize = indices_operand.descriptor.shape.iter().product::<u32>() as usize;
+        let num_elements: usize = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(get_static_or_max_size)
+            .product::<u32>() as usize;
         let min_data: Vec<u8> = (0..num_elements)
             .flat_map(|_| clamp_min_val.to_le_bytes())
             .collect();
@@ -6721,42 +6745,18 @@ impl TrtxConverter {
                 reason: format!("Expected 4D filter shape, got {}D", filter_shape.len()),
             });
         }
+        let fs = filter_operand.descriptor.static_or_max_shape();
         let filter_layout = operation
             .attributes
             .get("filter_layout")
             .and_then(|v| v.as_str())
             .unwrap_or("oihw");
-        let (o, _i, h, w) = match filter_layout {
-            "oihw" => (
-                filter_shape[0],
-                filter_shape[1],
-                filter_shape[2],
-                filter_shape[3],
-            ),
-            "hwio" => (
-                filter_shape[3],
-                filter_shape[2],
-                filter_shape[0],
-                filter_shape[1],
-            ),
-            "ohwi" => (
-                filter_shape[0],
-                filter_shape[3],
-                filter_shape[1],
-                filter_shape[2],
-            ),
-            "ihwo" => (
-                filter_shape[3],
-                filter_shape[0],
-                filter_shape[1],
-                filter_shape[2],
-            ),
-            "hwoi" => (
-                filter_shape[2],
-                filter_shape[3],
-                filter_shape[0],
-                filter_shape[1],
-            ),
+        let (o, _i, h, w): (u32, u32, u32, u32) = match filter_layout {
+            "oihw" => (fs[0], fs[1], fs[2], fs[3]),
+            "hwio" => (fs[3], fs[2], fs[0], fs[1]),
+            "ohwi" => (fs[0], fs[3], fs[1], fs[2]),
+            "ihwo" => (fs[3], fs[0], fs[1], fs[2]),
+            "hwoi" => (fs[2], fs[3], fs[0], fs[1]),
             _ => {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
@@ -6773,6 +6773,7 @@ impl TrtxConverter {
 
         // When filter is non-constant we use ILayer::setInput(1, kernel) / setInput(2, bias); kernel/bias weights must be empty.
         let (filter_data_to_use, bias_data) = if filter_constant {
+            let filter_shape_u32 = filter_operand.descriptor.static_or_max_shape();
             let filter_data = Self::get_constant_data(graph, filter_id)?;
             // Get optional bias - operand 2 if present.
             let (bias_temp_index, bias_raw): (Option<usize>, Option<&[u8]>) = match bias_id {
@@ -6805,14 +6806,15 @@ impl TrtxConverter {
                     let oihw = if filter_layout == "oihw" {
                         f32_bytes
                     } else {
-                        Self::conv_filter_to_oihw(&f32_bytes, filter_layout, filter_shape)?
+                        Self::conv_filter_to_oihw(&f32_bytes, filter_layout, &filter_shape_u32)?
                     };
                     temp_weights.push(oihw);
                     Some(temp_weights.len() - 1)
                 }
                 (DataType::Float32, "oihw") => None,
                 (DataType::Float32, _) => {
-                    let oihw = Self::conv_filter_to_oihw(filter_data, filter_layout, filter_shape)?;
+                    let oihw =
+                        Self::conv_filter_to_oihw(filter_data, filter_layout, &filter_shape_u32)?;
                     temp_weights.push(oihw);
                     Some(temp_weights.len() - 1)
                 }
@@ -7247,48 +7249,19 @@ impl TrtxConverter {
                 ),
             });
         }
+        let fs = filter_operand.descriptor.static_or_max_shape();
         let filter_layout = operation
             .attributes
             .get("filter_layout")
             .and_then(|v| v.as_str())
             .unwrap_or("iohw");
-        let (_i, o, h, w) = match filter_layout {
-            "iohw" => (
-                filter_shape[0],
-                filter_shape[1],
-                filter_shape[2],
-                filter_shape[3],
-            ),
-            "oihw" => (
-                filter_shape[1],
-                filter_shape[0],
-                filter_shape[2],
-                filter_shape[3],
-            ),
-            "hwio" => (
-                filter_shape[2],
-                filter_shape[3],
-                filter_shape[0],
-                filter_shape[1],
-            ),
-            "ohwi" => (
-                filter_shape[3],
-                filter_shape[0],
-                filter_shape[1],
-                filter_shape[2],
-            ),
-            "ihwo" => (
-                filter_shape[0],
-                filter_shape[3],
-                filter_shape[1],
-                filter_shape[2],
-            ),
-            "hwoi" => (
-                filter_shape[3],
-                filter_shape[2],
-                filter_shape[0],
-                filter_shape[1],
-            ),
+        let (_i, o, h, w): (u32, u32, u32, u32) = match filter_layout {
+            "iohw" => (fs[0], fs[1], fs[2], fs[3]),
+            "oihw" => (fs[1], fs[0], fs[2], fs[3]),
+            "hwio" => (fs[2], fs[3], fs[0], fs[1]),
+            "ohwi" => (fs[3], fs[0], fs[1], fs[2]),
+            "ihwo" => (fs[0], fs[3], fs[1], fs[2]),
+            "hwoi" => (fs[3], fs[2], fs[0], fs[1]),
             _ => {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
@@ -7310,6 +7283,7 @@ impl TrtxConverter {
             .contains_key(&filter_id);
 
         let (filter_data_to_use, bias_data) = if filter_constant {
+            let filter_shape_u32 = filter_operand.descriptor.static_or_max_shape();
             let filter_data = Self::get_constant_data(graph, filter_id)?;
             let (bias_temp_index, bias_raw): (Option<usize>, Option<&[u8]>) = match bias_id {
                 Some(id) => {
@@ -7341,7 +7315,7 @@ impl TrtxConverter {
                     let iohw = if filter_layout == "iohw" {
                         f32_bytes
                     } else {
-                        Self::deconv_filter_to_iohw(&f32_bytes, filter_layout, filter_shape)?
+                        Self::deconv_filter_to_iohw(&f32_bytes, filter_layout, &filter_shape_u32)?
                     };
                     temp_weights.push(iohw);
                     Some(temp_weights.len() - 1)
@@ -7349,7 +7323,7 @@ impl TrtxConverter {
                 (DataType::Float32, "iohw") => None,
                 (DataType::Float32, _) => {
                     let iohw =
-                        Self::deconv_filter_to_iohw(filter_data, filter_layout, filter_shape)?;
+                        Self::deconv_filter_to_iohw(filter_data, filter_layout, &filter_shape_u32)?;
                     temp_weights.push(iohw);
                     Some(temp_weights.len() - 1)
                 }
@@ -7743,24 +7717,30 @@ impl TrtxConverter {
                     deconv_output
                 } else {
                     let (input_h, input_w): (i32, i32) = if input_layout == "nhwc" {
-                        (in_shape[1] as i32, in_shape[2] as i32)
+                        (
+                            get_static_or_max_size(&in_shape[1]) as i32,
+                            get_static_or_max_size(&in_shape[2]) as i32,
+                        )
                     } else {
-                        (in_shape[2] as i32, in_shape[3] as i32)
+                        (
+                            get_static_or_max_size(&in_shape[2]) as i32,
+                            get_static_or_max_size(&in_shape[3]) as i32,
+                        )
                     };
                     let (target_h, target_w, out_c): (i32, i32, i32) = if input_layout == "nhwc" {
                         (
-                            out_shape[1] as i32,
-                            out_shape[2] as i32,
-                            out_shape[3] as i32,
+                            get_static_or_max_size(&out_shape[1]) as i32,
+                            get_static_or_max_size(&out_shape[2]) as i32,
+                            get_static_or_max_size(&out_shape[3]) as i32,
                         )
                     } else {
                         (
-                            out_shape[2] as i32,
-                            out_shape[3] as i32,
-                            out_shape[1] as i32,
+                            get_static_or_max_size(&out_shape[2]) as i32,
+                            get_static_or_max_size(&out_shape[3]) as i32,
+                            get_static_or_max_size(&out_shape[1]) as i32,
                         )
                     };
-                    let out_batch = in_shape[0] as i32;
+                    let out_batch = get_static_or_max_size(&in_shape[0]) as i32;
                     if target_h <= 0 || target_w <= 0 {
                         deconv_output
                     } else {
@@ -8631,7 +8611,10 @@ impl TrtxConverter {
         //   stride = -1
         //   end_idx should be = (n-1) + (n-1)*(-1) = (n-1) - (n-1) = 0 ✓
         let mut starts: Vec<i32> = vec![0; rank];
-        let sizes: Vec<i32> = shape.iter().map(|&s| s as i32).collect();
+        let sizes: Vec<i32> = shape
+            .iter()
+            .map(|s| get_static_or_max_size(s) as i32)
+            .collect();
         let mut strides: Vec<i32> = vec![1; rank];
 
         for &axis in &axes_to_reverse {
@@ -8648,7 +8631,7 @@ impl TrtxConverter {
             // TensorRT will compute: indices = start + i*stride for i in 0..size
             // So: indices = (size-1) + i*(-1) = (size-1) - i
             // For i=0: size-1, i=1: size-2, ..., i=size-1: 0 ✓
-            starts[axis] = (shape[axis] - 1) as i32;
+            starts[axis] = (get_static_or_max_size(&shape[axis]) - 1) as i32;
             strides[axis] = -1;
         }
 
@@ -8818,12 +8801,15 @@ impl TrtxConverter {
             });
         }
 
-        let rows = shape[shape.len() - 2] as usize;
-        let cols = shape[shape.len() - 1] as usize;
+        let rows = get_static_or_max_size(&shape[shape.len() - 2]) as usize;
+        let cols = get_static_or_max_size(&shape[shape.len() - 1]) as usize;
 
         // Generate triangular mask (1.0 for keep, 0.0 for zero)
         // The mask is computed at build time based on the known shape
-        let total_elements: usize = shape.iter().map(|&s| s as usize).product();
+        let total_elements: usize = shape
+            .iter()
+            .map(|s| get_static_or_max_size(s) as usize)
+            .product();
         let matrix_elements = rows * cols;
         let num_matrices = total_elements / matrix_elements;
 
@@ -8852,7 +8838,10 @@ impl TrtxConverter {
         let mask_bytes_ref = temp_weights.last().unwrap();
 
         // Create constant layer with the mask
-        let dims: Vec<i32> = shape.iter().map(|&s| s as i32).collect();
+        let dims: Vec<i32> = shape
+            .iter()
+            .map(|s| get_static_or_max_size(s) as i32)
+            .collect();
         let mask_layer = network
             .add_constant(&dims, mask_bytes_ref, trtx::DataType::kFLOAT)
             .map_err(|e| GraphError::ConversionFailed {
@@ -8910,6 +8899,15 @@ impl GraphConverter for TrtxConverter {
             format: "trtx".to_string(),
             reason: e.to_string(),
         })?;
+
+        // TODO: TRTX converter does not support dynamic dimensions yet
+        if graph_info.has_dynamic_dimensions() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "TODO: TRTX converter does not support graphs with dynamic dimensions"
+                    .to_string(),
+            });
+        }
 
         // Create TensorRT logger, builder, and network
         let logger = create_trtx_logger().map_err(|e| GraphError::ConversionFailed {

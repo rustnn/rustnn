@@ -2,6 +2,7 @@
 
 use rustnn::graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+    get_static_or_max_size, to_dimension_vector,
 };
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
@@ -407,7 +408,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             kind,
             descriptor: OperandDescriptor {
                 data_type,
-                shape: shape.clone(),
+                shape: to_dimension_vector(&shape),
                 pending_permutation: Vec::new(),
             },
             name: Some(input_name.clone()),
@@ -607,7 +608,11 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                         .get(mean_id as usize)
                         .map(|o| o.descriptor.data_type)
                         .unwrap_or(DataType::Float32);
-                    let n: usize = mean_shape.iter().product::<u32>().max(1) as usize;
+                    let n: usize = mean_shape
+                        .iter()
+                        .map(get_static_or_max_size)
+                        .product::<u32>()
+                        .max(1) as usize;
                     let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
                     let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
                     if has_bias && !has_scale {
@@ -700,7 +705,11 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     .get(shape_id as usize)
                     .map(|o| o.descriptor.data_type)
                     .unwrap_or(DataType::Float32);
-                let n: usize = scale_bias_shape.iter().product::<u32>().max(1) as usize;
+                let n: usize = scale_bias_shape
+                    .iter()
+                    .map(get_static_or_max_size)
+                    .product::<u32>()
+                    .max(1) as usize;
                 if has_bias && !has_scale {
                     let scale_bytes: Vec<u8> = match data_type {
                         DataType::Float32 => (0..n).flat_map(|_| (1.0f32).to_ne_bytes()).collect(),
@@ -808,7 +817,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 .unwrap_or(first_input_dtype);
             let desc = OperandDescriptor {
                 data_type: out_dtype,
-                shape: out_shape,
+                shape: to_dimension_vector(&out_shape),
                 pending_permutation: Vec::new(),
             };
             operands.push(Operand {

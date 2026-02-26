@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Once;
 
 use crate::error::GraphError;
-use crate::graph::OperandDescriptor;
+use crate::graph::{OperandDescriptor, get_static_or_max_size};
 
 /// Bytes per element for TensorRT tensor data types (used for buffer sizing).
 fn trt_dtype_bytes_per_element(dtype: &trtx::DataType) -> usize {
@@ -145,7 +145,11 @@ pub fn run_trtx_zeroed(
         // ONNX path: trtx crate expects f32 inputs
         let mut input_tensors = Vec::new();
         for (name, desc) in inputs {
-            let shape: Vec<usize> = desc.shape.iter().map(|&s| s as usize).collect();
+            let shape: Vec<usize> = desc
+                .shape
+                .iter()
+                .map(|s| get_static_or_max_size(s) as usize)
+                .collect();
             let total: usize = shape.iter().product();
             input_tensors.push(trtx::executor::TensorInput {
                 name: name.clone(),
