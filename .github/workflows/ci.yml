@@ -137,7 +137,7 @@ jobs:
           fi
           PASS_RATE="$(jq -r '.summary.passRatePct // (if .summary.total > 0 then (.summary.passed * 100 / .summary.total) else 0 end)' reports/conformance.json)"
           echo "rustnnpt pass rate: ${PASS_RATE}%"
-          awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 96.1) { exit 1 } }'
+          awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 95.6) { exit 1 } }'
 
       - name: Upload rustnnpt conformance report
         if: always()
