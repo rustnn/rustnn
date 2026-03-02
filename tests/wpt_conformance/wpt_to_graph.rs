@@ -4,6 +4,7 @@ use rustnn::graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
     get_static_or_max_size, to_dimension_vector,
 };
+use rustnn::operator_options::OperatorOptions;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
@@ -511,8 +512,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 "beta" => "beta".to_string(),
                 "aTranspose" => "aTranspose".to_string(),
                 "bTranspose" => "bTranspose".to_string(),
-                "inputLayout" => "input_layout".to_string(),
-                "filterLayout" => "filter_layout".to_string(),
+                // Keep camelCase so OperatorOptions::from_json_with_op_type (MLConv2dOptions with rename_all = "camelCase") deserializes correctly.
+                "inputLayout" => "inputLayout".to_string(),
+                "filterLayout" => "filterLayout".to_string(),
                 "type" => {
                     if op_type == "cast" {
                         "to".to_string()
@@ -876,12 +878,16 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             "arg_min" => "argMin",
             _ => op_type.as_str(),
         };
+        let attrs_value = serde_json::Value::Object(attributes);
+        let attributes_opts =
+            OperatorOptions::from_json_with_op_type(&op_type_for_graph, &attrs_value)
+                .unwrap_or_default();
         operations.push(Operation {
             op_type: op_type_for_graph.to_string(),
             input_operands: input_ids,
             output_operand,
             output_operands,
-            attributes: serde_json::Value::Object(attributes),
+            attributes: attributes_opts,
             label: Some(format!("{}_op", op.name)),
         });
     }

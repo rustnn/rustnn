@@ -1335,9 +1335,9 @@ impl TrtxConverter {
 
         let alpha = operation
             .attributes
-            .get("alpha")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
+            .as_elu()
+            .map(|o| o.alpha as f32)
+            .unwrap_or(1.0);
 
         let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
@@ -1579,9 +1579,9 @@ impl TrtxConverter {
 
         let alpha = operation
             .attributes
-            .get("alpha")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.01) as f32;
+            .as_leaky_relu()
+            .map(|o| o.alpha as f32)
+            .unwrap_or(0.01);
 
         let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
@@ -1800,16 +1800,9 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        let alpha = operation
-            .attributes
-            .get("alpha")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.2) as f32;
-        let beta = operation
-            .attributes
-            .get("beta")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.5) as f32;
+        let opts = operation.attributes.as_hard_sigmoid();
+        let alpha = opts.map(|o| o.alpha as f32).unwrap_or(0.2);
+        let beta = opts.map(|o| o.beta as f32).unwrap_or(0.5);
 
         if (alpha - 0.2f32).abs() <= 1e-5 && (beta - 0.5f32).abs() <= 1e-5 {
             let layer = network
@@ -2733,15 +2726,53 @@ impl TrtxConverter {
             axis_idx += rank as i64;
         }
         axis_idx = axis_idx.max(0).min((rank.saturating_sub(1)) as i64);
-        let c = *stats_dims
-            .first()
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("{}: stats tensor has no dimensions", op_name),
+        // Channel count: stats may be 1D [C], 4D [C,1,1,1], or 4D [1,C,1,1]; use product so we get C in all cases.
+        let c: i32 = stats_dims
+            .iter()
+            .product::<i32>()
+            .max(1);
+        // When stats are 4D [C,1,1,1], use a transpose-only shuffle so TensorRT sees [1,C,1,1].
+        // (Transpose+reshape in one shuffle can leave logical shape as [C,1,1,1].)
+        let is_4d_channel_first = rank >= 2
+            && stats_dims.len() == rank
+            && stats_dims[0] == c
+            && (axis_idx as usize) < rank
+            && stats_dims[axis_idx as usize] != c
+            && stats_dims.iter().skip(1).all(|&d| d == 1);
+        if is_4d_channel_first {
+            let mut perm: Vec<i32> = (0..rank as i32).collect();
+            perm[0] = axis_idx as i32;
+            perm[axis_idx as usize] = 0;
+            let mut shuffle = network
+                .add_shuffle(stats)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add shuffle for {} (4D transpose): {}", op_name, e),
+                })?;
+            shuffle.set_first_transpose(&perm).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to set transpose for {}: {}", op_name, e),
+                }
             })?;
-        let target_shape: Vec<i32> = (0..rank)
-            .map(|i| if i as i64 == axis_idx { c } else { 1 })
-            .collect();
+            return shuffle
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get shuffle output for {}: {}", op_name, e),
+                });
+        }
+
+        // For 1D [C], reshape to [1,1,...,1,C] then transpose so C moves to axis_idx; avoids TensorRT giving [C,1,1,1].
+        let (target_shape, need_second_transpose) = if stats_dims.len() == 1 {
+            let shape_last: Vec<i32> = (0..rank).map(|i| if i == rank - 1 { c } else { 1 }).collect();
+            (shape_last, true)
+        } else {
+            let shape_axis: Vec<i32> = (0..rank)
+                .map(|i| if i as i64 == axis_idx { c } else { 1 })
+                .collect();
+            (shape_axis, false)
+        };
         let mut shuffle = network
             .add_shuffle(stats)
             .map_err(|e| GraphError::ConversionFailed {
@@ -2754,12 +2785,37 @@ impl TrtxConverter {
                 reason: format!("Failed to set reshape for {}: {}", op_name, e),
             }
         })?;
-        shuffle
+        let mut result = shuffle
             .get_output(0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get shuffle output for {}: {}", op_name, e),
-            })
+            })?;
+        if need_second_transpose {
+            // Move dimension (rank-1) to axis_idx: perm[axis_idx] = rank-1, perm[rank-1] = axis_idx.
+            let mut perm: Vec<i32> = (0..rank as i32).collect();
+            perm[axis_idx as usize] = (rank - 1) as i32;
+            perm[rank - 1] = axis_idx as i32;
+            let mut shuffle2 = network
+                .add_shuffle(&result)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add second shuffle for {}: {}", op_name, e),
+                })?;
+            shuffle2.set_first_transpose(&perm).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to set second transpose for {}: {}", op_name, e),
+                }
+            })?;
+            result = shuffle2
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get second shuffle output for {}: {}", op_name, e),
+                })?;
+        }
+        Ok(result)
     }
 
     /// Add batch normalization operation
@@ -2792,19 +2848,12 @@ impl TrtxConverter {
                 reason: format!("Variance operand {} not found", operation.input_operands[2]),
             })?;
 
-        // Get axis from attributes (default 1 per WebNN)
-        let axis = operation
+        // Read typed batchNormalization options (fallback keeps WebNN defaults).
+        let (axis, _epsilon) = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(1);
-
-        // Get epsilon from attributes (default: 1e-5)
-        let _epsilon = operation
-            .attributes
-            .get("epsilon")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1e-5) as f32;
+            .as_batch_normalization()
+            .map(|opts| (opts.axis as i64, opts.epsilon as f32))
+            .unwrap_or((1, 1e-5));
 
         // Reshape mean to [1,...,1,C,1,...,1] so it broadcasts with input (e.g. [2,3,4] and axis=1 -> [1,3,1]).
         let mean_bc = Self::reshape_batch_norm_stats_for_broadcast(
@@ -2816,12 +2865,13 @@ impl TrtxConverter {
         )?;
 
         // Step 1: x - mean
-        let sub_layer = network
+        let mut sub_layer = network
             .add_elementwise(input, &mean_bc, ElementWiseOperation::kSUB)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sub for batch norm: {}", e),
             })?;
+        let _ = sub_layer.set_layer_name("batch_norm_sub");
 
         let x_minus_mean = sub_layer
             .get_output(0)
@@ -2844,12 +2894,13 @@ impl TrtxConverter {
         )?;
 
         // Step 3: sqrt(variance + epsilon)
-        let sqrt_var_layer = network
+        let mut sqrt_var_layer = network
             .add_unary(&var_bc, UnaryOperation::kSQRT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sqrt for batch norm: {}", e),
             })?;
+        let _ = sqrt_var_layer.set_layer_name("batch_norm_sqrt_var");
 
         let sqrt_var = sqrt_var_layer
             .get_output(0)
@@ -2859,12 +2910,13 @@ impl TrtxConverter {
             })?;
 
         // Step 4: (x - mean) / sqrt(variance + epsilon)
-        let div_layer = network
+        let mut div_layer = network
             .add_elementwise(&x_minus_mean, &sqrt_var, ElementWiseOperation::kDIV)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add div for batch norm: {}", e),
             })?;
+        let _ = div_layer.set_layer_name("batch_norm_div");
 
         let normalized = div_layer
             .get_output(0)
@@ -2891,12 +2943,13 @@ impl TrtxConverter {
                 "batch_norm_scale",
             )?;
 
-            let mul_layer = network
+            let mut mul_layer = network
                 .add_elementwise(&result, &scale_bc, ElementWiseOperation::kPROD)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add mul for scale: {}", e),
                 })?;
+            let _ = mul_layer.set_layer_name("batch_norm_scale_mul");
 
             result = mul_layer
                 .get_output(0)
@@ -2923,12 +2976,13 @@ impl TrtxConverter {
                 "batch_norm_bias",
             )?;
 
-            let add_layer = network
+            let mut add_layer = network
                 .add_elementwise(&result, &bias_bc, ElementWiseOperation::kSUM)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add bias: {}", e),
                 })?;
+            let _ = add_layer.set_layer_name("batch_norm_bias_add");
 
             result = add_layer
                 .get_output(0)
@@ -2971,17 +3025,11 @@ impl TrtxConverter {
             })?;
 
         // Get epsilon from attributes (default: 1e-5), cast to input dtype per spec
-        let epsilon_f32 = operation
-            .attributes
-            .get("epsilon")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1e-5) as f32;
-
-        // Get layout (default: nchw)
-        let layout = operation
-            .attributes
-            .get("layout")
-            .and_then(|v| v.as_str())
+        let opts = operation.attributes.as_instance_normalization();
+        let epsilon_f32 = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
+        let layout = opts
+            .map(|o| o.layout.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
 
         // For NCHW: normalize over H, W (axes 2,3)
@@ -3384,35 +3432,19 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        // Get epsilon from attributes (default: 1e-5)
-        let _epsilon = operation
-            .attributes
-            .get("epsilon")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1e-5) as f32;
-
-        // Get axes from attributes. Spec: when not present, axes = [1..rank) if rank > 1 else [].
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                // Parsing failed; use spec default: all dimensions except first
+        // Get epsilon and axes from typed options. Spec: when axes not present, axes = [1..rank) if rank > 1 else [].
+        // Option<axes>: None = key omitted => default; Some(v) = use v (Some([]) = explicit no reduction).
+        let opts = operation.attributes.as_layer_normalization();
+        let _epsilon = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| {
                 if input_dims.len() > 1 {
                     (1..input_dims.len()).map(|i| i as u32).collect()
                 } else {
                     vec![]
                 }
-            }
-        } else {
-            // Spec: "range from 1 to input's rank, exclusive, if rank > 1, else empty list"
-            if input_dims.len() > 1 {
-                (1..input_dims.len()).map(|i| i as u32).collect()
-            } else {
-                vec![]
-            }
-        };
+            });
 
         // Spec: "If empty, no dimensions are reduced." TensorRT Reduce requires at least one dimension to reduce.
         // When axes=[], mean/variance reduce over nothing -> normalized = 0; output = 0*scale + bias = bias or 0.
@@ -3934,20 +3966,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let id_layer =
@@ -3973,11 +3995,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let layer = network
             .add_reduce(input, reduce_op, axes_mask, keep_dims)
@@ -4034,20 +4052,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let output_id = operation.output_operands_slice()[0];
@@ -4060,11 +4068,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let layer = network
             .add_reduce(&abs_output, ReduceOperation::kSUM, axes_mask, keep_dims)
@@ -4129,20 +4133,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let sqrt_layer = network
@@ -4167,11 +4161,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         // Always reduce in float32 to avoid overflow (sum of squares can exceed float16 range).
         let to_reduce = Self::cast_to_float32(network, &square_output)?;
@@ -4235,20 +4225,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let log_layer = network
@@ -4273,11 +4253,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let sum_layer = network
             .add_reduce(input, ReduceOperation::kSUM, axes_mask, keep_dims)
@@ -4349,20 +4325,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let id_layer =
@@ -4388,11 +4354,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let sum_layer = network
             .add_reduce(&exp_output, ReduceOperation::kSUM, axes_mask, keep_dims)
@@ -4465,20 +4427,10 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let axes: Vec<u32> = if let Some(axes_value) = operation.attributes.get("axes") {
-            if let Some(arr) = axes_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|u| u as u32))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).map(|i| i as u32).collect()
-        };
+        let opts = operation.attributes.as_reduce();
+        let axes: Vec<u32> = opts
+            .and_then(|o| o.axes.clone())
+            .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
 
         if axes.is_empty() {
             let output_id = operation.output_operands_slice()[0];
@@ -4491,11 +4443,7 @@ impl TrtxConverter {
             axes_mask |= 1 << axis;
         }
 
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let layer = network
             .add_reduce(&square_output, ReduceOperation::kSUM, axes_mask, keep_dims)
@@ -4534,58 +4482,37 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get starts, sizes, and optional strides from attributes
-        let starts_value =
-            operation
-                .attributes
-                .get("starts")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Slice operation missing 'starts' attribute".to_string(),
-                })?;
-
-        let sizes_value =
-            operation
-                .attributes
-                .get("sizes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Slice operation missing 'sizes' attribute".to_string(),
-                })?;
-
-        let starts: Vec<i32> = if let Some(arr) = starts_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
+        let opts = operation
+            .attributes
+            .as_slice()
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'starts' attribute format".to_string(),
-            });
-        };
-
-        let sizes: Vec<i32> = if let Some(arr) = sizes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'sizes' attribute format".to_string(),
-            });
-        };
-
-        // Strides default to 1 for all dimensions
-        let strides: Vec<i32> = if let Some(strides_value) = operation.attributes.get("strides") {
-            if let Some(arr) = strides_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_i64().map(|i| i as i32))
-                    .collect()
-            } else {
-                vec![1; starts.len()]
-            }
-        } else {
+                reason: "Slice operation missing options".to_string(),
+            })?;
+        // Empty starts/sizes: no-op (identity), e.g. 0D tensor with empty slices.
+        if opts.starts.is_empty() || opts.sizes.is_empty() {
+            let id_layer = network
+                .add_identity(input)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Slice no-op identity: {}", e),
+                })?;
+            let output = id_layer
+                .get_output(0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Slice no-op output: {}", e),
+                })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, output);
+            return Ok(());
+        }
+        let starts: Vec<i32> = opts.starts.iter().map(|&u| u as i32).collect();
+        let sizes: Vec<i32> = opts.sizes.iter().map(|&u| u as i32).collect();
+        let strides: Vec<i32> = if opts.strides.is_empty() {
             vec![1; starts.len()]
+        } else {
+            opts.strides.iter().map(|&u| u as i32).collect()
         };
 
         // TensorRT Slice expects "size" = output dimensions. WebNN "sizes" are extents (range
@@ -4646,39 +4573,25 @@ impl TrtxConverter {
 
         let ndim = input_dims.len();
 
-        // Axis: default 0 per WebNN when not specified (e.g. "default options" tests).
-        let axis_raw = operation
+        let opts = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)));
-        let mut axis = axis_raw.unwrap_or(0) as i32;
+            .as_split()
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Split operation missing options".to_string(),
+            })?;
+        let mut axis = opts.axis as i32;
         if axis < 0 {
             axis += ndim as i32;
         }
         axis = axis.max(0).min((ndim.saturating_sub(1)) as i32);
 
-        let splits_value =
-            operation
-                .attributes
-                .get("splits")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Split operation missing 'splits' attribute".to_string(),
-                })?;
-
-        let splits: Vec<i32> = if let Some(arr) = splits_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else if let Some(n) = splits_value
-            .as_u64()
-            .or_else(|| splits_value.as_i64().map(|i| i as u64))
-        {
-            let n = n as usize;
+        let splits: Vec<i32> = if opts.splits.is_empty() {
+            let n = operation.output_operands_slice().len();
             if n == 0 {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: "Split operation 'splits' number must be positive".to_string(),
+                    reason: "Split operation 'splits' missing and no outputs".to_string(),
                 });
             }
             let dim = input_dims[axis as usize] as i32;
@@ -4686,10 +4599,7 @@ impl TrtxConverter {
             let rem = (dim % n as i32) as usize;
             (0..n).map(|i| base + if i < rem { 1 } else { 0 }).collect()
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'splits' attribute format (expected number or array)".to_string(),
-            });
+            opts.splits.iter().map(|&u| u as i32).collect()
         };
 
         // One slice per split; start along axis advances by previous split sizes.
@@ -4799,14 +4709,12 @@ impl TrtxConverter {
             })?;
 
         // Get axes from attributes
-        let axes_value =
-            operation
-                .attributes
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
-                })?;
+        let axes_value = operation.attributes.get("axes").ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
+            }
+        })?;
 
         let _axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
             arr.iter()
@@ -4860,25 +4768,14 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        let new_shape_value =
-            operation
-                .attributes
-                .get("newShape")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Expand operation missing 'newShape' attribute".to_string(),
-                })?;
-
-        let new_shape: Vec<i32> = if let Some(arr) = new_shape_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
+        let opts = operation
+            .attributes
+            .as_expand()
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'newShape' attribute format".to_string(),
-            });
-        };
+                reason: "Expand operation missing options".to_string(),
+            })?;
+        let new_shape: Vec<i32> = opts.new_shape.iter().map(|&u| u as i32).collect();
 
         if new_shape.is_empty() {
             return Err(GraphError::ConversionFailed {
@@ -4960,24 +4857,20 @@ impl TrtxConverter {
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        // Get repetitions from attributes
-        let repetitions_value = operation.attributes.get("repetitions").ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let opts = operation
+            .attributes
+            .as_tile()
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Tile operation missing 'repetitions' attribute".to_string(),
-            }
-        })?;
-
-        let repetitions: Vec<u32> = if let Some(arr) = repetitions_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|i| i as u32))
-                .collect()
-        } else {
+                reason: "Tile operation missing options".to_string(),
+            })?;
+        let repetitions = opts.repetitions.clone();
+        if repetitions.is_empty() {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'repetitions' attribute format".to_string(),
+                reason: "Tile operation missing 'repetitions' attribute".to_string(),
             });
-        };
+        }
 
         // Tile by concatenating the tensor multiple times along each axis
         // We process each axis sequentially: tile axis 0, then axis 1, etc.
@@ -5314,9 +5207,9 @@ impl TrtxConverter {
         // Get axis attribute (default to 0)
         let axis = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as i32;
+            .as_gather()
+            .map(|o| o.axis as i32)
+            .unwrap_or(0);
 
         let data_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
@@ -5535,9 +5428,9 @@ impl TrtxConverter {
         // Get axis attribute (default to 0)
         let axis = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as i32;
+            .as_scatter_elements()
+            .map(|o| o.axis as i32)
+            .unwrap_or(0);
 
         // Create scatter layer with mode (kELEMENT for scatterElements)
         let mut layer = network
@@ -5629,19 +5522,9 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axis attribute (default to 0)
-        let axis = operation
-            .attributes
-            .get("axis")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-
-        // Get keepDimensions attribute (default to false)
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let opts = operation.attributes.as_arg_min_max();
+        let axis = opts.map(|o| o.axis).unwrap_or(0);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         // TopK operation: 0=kMAX, 1=kMIN
         let layer = network
@@ -5702,19 +5585,9 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axis attribute (default to 0)
-        let axis = operation
-            .attributes
-            .get("axis")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-
-        // Get keepDimensions attribute (default to false)
-        let keep_dims = operation
-            .attributes
-            .get("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let opts = operation.attributes.as_arg_min_max();
+        let axis = opts.map(|o| o.axis).unwrap_or(0);
+        let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         // TopK operation: 0=kMAX, 1=kMIN
         let layer = network
@@ -5831,10 +5704,9 @@ impl TrtxConverter {
                 })
         };
 
-        // NaN as bound means "no bound" per WebNN: use -inf for min, +inf for max so only the other bound applies.
-        let min_value = operation
-            .attributes
-            .get("minValue")
+        let clamp_opts = operation.attributes.as_clamp();
+        let min_value = clamp_opts
+            .and_then(|o| o.min_value.as_ref())
             .and_then(parse_clamp_bound_f32)
             .unwrap_or(f32::NEG_INFINITY);
         let min_value = if min_value.is_nan() {
@@ -5842,9 +5714,8 @@ impl TrtxConverter {
         } else {
             min_value
         };
-        let max_value = operation
-            .attributes
-            .get("maxValue")
+        let max_value = clamp_opts
+            .and_then(|o| o.max_value.as_ref())
             .and_then(parse_clamp_bound_f32)
             .unwrap_or(f32::INFINITY);
         let max_value = if max_value.is_nan() {
@@ -5873,16 +5744,14 @@ impl TrtxConverter {
                     .to_vec(),
             ),
             DataType::Int32 => {
-                let min_i = operation
-                    .attributes
-                    .get("minValue")
+                let min_i = clamp_opts
+                    .and_then(|o| o.min_value.as_ref())
                     .and_then(parse_i64)
                     .unwrap_or(i64::from(i32::MIN))
                     .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
                     as i32;
-                let max_i = operation
-                    .attributes
-                    .get("maxValue")
+                let max_i = clamp_opts
+                    .and_then(|o| o.max_value.as_ref())
                     .and_then(parse_i64)
                     .unwrap_or(i64::from(i32::MAX))
                     .clamp(i64::from(i32::MIN), i64::from(i32::MAX))
@@ -5890,29 +5759,25 @@ impl TrtxConverter {
                 (max_i.to_le_bytes().to_vec(), min_i.to_le_bytes().to_vec())
             }
             DataType::Uint32 => {
-                let min_u = operation
-                    .attributes
-                    .get("minValue")
+                let min_u = clamp_opts
+                    .and_then(|o| o.min_value.as_ref())
                     .and_then(parse_u64)
                     .unwrap_or(0)
                     .min(u64::from(u32::MAX)) as u32;
-                let max_u = operation
-                    .attributes
-                    .get("maxValue")
+                let max_u = clamp_opts
+                    .and_then(|o| o.max_value.as_ref())
                     .and_then(parse_u64)
                     .unwrap_or(u64::from(u32::MAX))
                     .min(u64::from(u32::MAX)) as u32;
                 (max_u.to_le_bytes().to_vec(), min_u.to_le_bytes().to_vec())
             }
             DataType::Int64 | DataType::Uint64 => {
-                let min_i64 = operation
-                    .attributes
-                    .get("minValue")
+                let min_i64 = clamp_opts
+                    .and_then(|o| o.min_value.as_ref())
                     .and_then(parse_i64)
                     .unwrap_or(i64::MIN);
-                let max_i64 = operation
-                    .attributes
-                    .get("maxValue")
+                let max_i64 = clamp_opts
+                    .and_then(|o| o.max_value.as_ref())
                     .and_then(parse_i64)
                     .unwrap_or(i64::MAX);
                 (
@@ -6094,18 +5959,9 @@ impl TrtxConverter {
         // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
         let broadcast_shape: Vec<i32> = vec![1; num_dims];
 
-        // Get alpha and beta from attributes
-        let alpha = operation
-            .attributes
-            .get("alpha")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
-
-        let beta = operation
-            .attributes
-            .get("beta")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0) as f32;
+        let linear_opts = operation.attributes.as_linear();
+        let alpha = linear_opts.map(|o| o.alpha as f32).unwrap_or(1.0);
+        let beta = linear_opts.map(|o| o.beta as f32).unwrap_or(0.0);
 
         // Implement as: y = alpha * x + beta using elementwise operations
         // Note: All scalar constants must use shape [1,1,...,1] matching input dims for TensorRT broadcasting
@@ -6234,44 +6090,21 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get padding parameters
-        let beginning_padding_value =
-            operation
-                .attributes
-                .get("beginningPadding")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Pad operation missing 'beginningPadding' attribute".to_string(),
-                })?;
-
-        let ending_padding_value = operation.attributes.get("endingPadding").ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let opts = operation
+            .attributes
+            .as_pad()
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Pad operation missing 'endingPadding' attribute".to_string(),
-            }
-        })?;
-
-        let pre_padding: Vec<i32> = if let Some(arr) = beginning_padding_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else {
+                reason: "Pad operation missing options".to_string(),
+            })?;
+        let pre_padding: Vec<i32> = opts.beginning_padding.iter().map(|&u| u as i32).collect();
+        let post_padding: Vec<i32> = opts.ending_padding.iter().map(|&u| u as i32).collect();
+        if pre_padding.is_empty() || post_padding.is_empty() {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'beginningPadding' format".to_string(),
+                reason: "Pad operation missing beginningPadding or endingPadding".to_string(),
             });
-        };
-
-        let post_padding: Vec<i32> = if let Some(arr) = ending_padding_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_i64().map(|i| i as i32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'endingPadding' format".to_string(),
-            });
-        };
+        }
 
         // Get input dimensions
         let input_dims = input
@@ -6466,30 +6299,11 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[1]),
             })?;
 
-        // Get optional parameters
-        let alpha = operation
-            .attributes
-            .get("alpha")
-            .and_then(|v: &serde_json::Value| v.as_f64())
-            .unwrap_or(1.0) as f32;
-
-        let beta = operation
-            .attributes
-            .get("beta")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(1.0) as f32;
-
-        let a_transpose = operation
-            .attributes
-            .get("aTranspose")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let b_transpose = operation
-            .attributes
-            .get("bTranspose")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let opts = operation.attributes.as_gemm();
+        let alpha = opts.map(|o| o.alpha as f32).unwrap_or(1.0);
+        let beta = opts.map(|o| o.beta as f32).unwrap_or(1.0);
+        let a_transpose = opts.map(|o| o.a_transpose).unwrap_or(false);
+        let b_transpose = opts.map(|o| o.b_transpose).unwrap_or(false);
 
         // Get actual dimensions for validation
         let _dims_a = input_a
@@ -6746,10 +6560,10 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let filter_layout = operation
-            .attributes
-            .get("filter_layout")
-            .and_then(|v| v.as_str())
+        let conv_opts = operation.attributes.as_conv2d();
+        let filter_layout = conv_opts
+            .map(|o| o.filter_layout.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("oihw");
         let (o, _i, h, w): (u32, u32, u32, u32) = match filter_layout {
             "oihw" => (fs[0], fs[1], fs[2], fs[3]),
@@ -6858,10 +6672,9 @@ impl TrtxConverter {
         };
 
         // Input layout: nchw (default) or nhwc. TensorRT conv is NCHW; we use IShuffleLayer::setFirstTranspose for NHWC.
-        let input_layout = operation
-            .attributes
-            .get("input_layout")
-            .and_then(|v| v.as_str())
+        let input_layout = conv_opts
+            .map(|o| o.input_layout.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
         let input_id = operation.input_operands[0];
         let input_dtype = graph
@@ -6924,76 +6737,35 @@ impl TrtxConverter {
         };
         let conv_input_source = half_cast_output.as_ref().unwrap_or(pre_conv_input);
 
-        // Parse attributes for stride, padding, dilation, groups
-        let strides = operation
-            .attributes
-            .get("strides")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                [
-                    arr[0].as_u64().unwrap_or(1) as i32,
-                    arr[1].as_u64().unwrap_or(1) as i32,
-                ]
+        // Stride, padding, dilation, groups from typed options
+        let strides: [i32; 2] = conv_opts
+            .and_then(|o| {
+                if o.strides.len() >= 2 {
+                    Some([o.strides[0] as i32, o.strides[1] as i32])
+                } else {
+                    None
+                }
             })
             .unwrap_or([1, 1]);
-
-        let dilations = operation
-            .attributes
-            .get("dilations")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                [
-                    arr[0].as_u64().unwrap_or(1) as i32,
-                    arr[1].as_u64().unwrap_or(1) as i32,
-                ]
+        let dilations: [i32; 2] = conv_opts
+            .and_then(|o| {
+                if o.dilations.len() >= 2 {
+                    Some([o.dilations[0] as i32, o.dilations[1] as i32])
+                } else {
+                    None
+                }
             })
             .unwrap_or([1, 1]);
-
-        let groups = operation
-            .attributes
-            .get("groups")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as i32;
-
-        // Parse padding: WebNN/ONNX use "pads" [begin_h, begin_w, end_h, end_w];
-        // WPT JSON and some tests use "padding" [top, bottom, left, right] = [begin_h, end_h, begin_w, end_w].
-        // Accept both for compatibility.
-        let (pre_padding, post_padding) = if let Some(v) = operation.attributes.get("pads") {
-            v.as_array()
-                .and_then(|arr| {
-                    if arr.len() >= 4 {
-                        let a: [i32; 4] = [
-                            arr[0].as_u64().unwrap_or(0) as i32,
-                            arr[1].as_u64().unwrap_or(0) as i32,
-                            arr[2].as_u64().unwrap_or(0) as i32,
-                            arr[3].as_u64().unwrap_or(0) as i32,
-                        ];
-                        Some((vec![a[0], a[1]], vec![a[2], a[3]])) // [begin_h, begin_w], [end_h, end_w]
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or((vec![0, 0], vec![0, 0]))
-        } else if let Some(v) = operation.attributes.get("padding") {
-            v.as_array()
-                .and_then(|arr| {
-                    if arr.len() >= 4 {
-                        let a: [i32; 4] = [
-                            arr[0].as_u64().unwrap_or(0) as i32,
-                            arr[1].as_u64().unwrap_or(0) as i32,
-                            arr[2].as_u64().unwrap_or(0) as i32,
-                            arr[3].as_u64().unwrap_or(0) as i32,
-                        ];
-                        // [top, bottom, left, right] -> pre=[top, left], post=[bottom, right]
-                        Some((vec![a[0], a[2]], vec![a[1], a[3]]))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or((vec![0, 0], vec![0, 0]))
-        } else {
-            (vec![0, 0], vec![0, 0])
-        };
+        let groups = conv_opts.map(|o| o.groups as i32).unwrap_or(1);
+        let (pre_padding, post_padding) = conv_opts
+            .map(|o| {
+                if o.padding.len() >= 4 {
+                    (vec![o.padding[0] as i32, o.padding[1] as i32], vec![o.padding[2] as i32, o.padding[3] as i32])
+                } else {
+                    (vec![0, 0], vec![0, 0])
+                }
+            })
+            .unwrap_or((vec![0, 0], vec![0, 0]));
 
         // Use explicit padding layer if any padding is specified
         let conv_input =
@@ -7250,10 +7022,10 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let filter_layout = operation
-            .attributes
-            .get("filter_layout")
-            .and_then(|v| v.as_str())
+        let deconv_opts = operation.attributes.as_conv_transpose2d();
+        let filter_layout = deconv_opts
+            .map(|o| o.filter_layout.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("iohw");
         let (_i, o, h, w): (u32, u32, u32, u32) = match filter_layout {
             "iohw" => (fs[0], fs[1], fs[2], fs[3]),
@@ -7269,11 +7041,7 @@ impl TrtxConverter {
                 });
             }
         };
-        let groups = operation
-            .attributes
-            .get("groups")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1) as i32;
+        let groups = deconv_opts.map(|o| o.groups as i32).unwrap_or(1);
         // WebNN filter shape is [inputChannels, outputChannels/groups, H, W]; TensorRT expects total output maps.
         let num_output_maps = (o as i32) * groups;
         let kernel_size: [i32; 2] = [h as i32, w as i32];
@@ -7366,10 +7134,9 @@ impl TrtxConverter {
             (None, None)
         };
 
-        let input_layout = operation
-            .attributes
-            .get("input_layout")
-            .and_then(|v| v.as_str())
+        let input_layout = deconv_opts
+            .map(|o| o.input_layout.as_str())
+            .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
         let input_id = operation.input_operands[0];
         let input_dtype = graph
@@ -7430,55 +7197,33 @@ impl TrtxConverter {
         };
         let deconv_input_source = half_cast_output.as_ref().unwrap_or(pre_deconv_input);
 
-        let strides = operation
-            .attributes
-            .get("strides")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                [
-                    arr[0].as_u64().unwrap_or(1) as i32,
-                    arr[1].as_u64().unwrap_or(1) as i32,
-                ]
+        let strides: [i32; 2] = deconv_opts
+            .and_then(|o| {
+                if o.strides.len() >= 2 {
+                    Some([o.strides[0] as i32, o.strides[1] as i32])
+                } else {
+                    None
+                }
             })
             .unwrap_or([1, 1]);
-
-        let dilations = operation
-            .attributes
-            .get("dilations")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                [
-                    arr[0].as_u64().unwrap_or(1) as i32,
-                    arr[1].as_u64().unwrap_or(1) as i32,
-                ]
+        let dilations: [i32; 2] = deconv_opts
+            .and_then(|o| {
+                if o.dilations.len() >= 2 {
+                    Some([o.dilations[0] as i32, o.dilations[1] as i32])
+                } else {
+                    None
+                }
             })
             .unwrap_or([1, 1]);
-
-        // WPT runner renames "padding" to "pads"; both must use WebNN order [beg_h, end_h, beg_w, end_w]
-        // and cross-map to TensorRT (height, width): pre=(a[0], a[2]), post=(a[1], a[3]).
-        let (pre_padding, post_padding) = if let Some(v) = operation
-            .attributes
-            .get("pads")
-            .or_else(|| operation.attributes.get("padding"))
-        {
-            v.as_array()
-                .and_then(|arr| {
-                    if arr.len() >= 4 {
-                        let a: [i32; 4] = [
-                            arr[0].as_u64().unwrap_or(0) as i32,
-                            arr[1].as_u64().unwrap_or(0) as i32,
-                            arr[2].as_u64().unwrap_or(0) as i32,
-                            arr[3].as_u64().unwrap_or(0) as i32,
-                        ];
-                        Some((vec![a[0], a[2]], vec![a[1], a[3]]))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or((vec![0, 0], vec![0, 0]))
-        } else {
-            (vec![0, 0], vec![0, 0])
-        };
+        let (pre_padding, post_padding) = deconv_opts
+            .map(|o| {
+                if o.padding.len() >= 4 {
+                    (vec![o.padding[0] as i32, o.padding[2] as i32], vec![o.padding[1] as i32, o.padding[3] as i32])
+                } else {
+                    (vec![0, 0], vec![0, 0])
+                }
+            })
+            .unwrap_or((vec![0, 0], vec![0, 0]));
 
         // Map WebNN padding to TensorRT IDeconvolutionLayer pre/post (trim); do not pad the input.
         let deconv_input = {
@@ -7625,16 +7370,13 @@ impl TrtxConverter {
         // outputPadding extends output size. Absorb by reducing padding when possible; otherwise add
         // IPaddingLayer for remainder. WebNN: out = (in-1)*stride + kernel - pre - post + outputPadding.
         // TensorRT: out = (in-1)*stride + kernel - pre - post. Reduce pre+post by outputPadding.
-        let output_padding = operation
-            .attributes
-            .get("outputPadding")
-            .and_then(|v| v.as_array())
-            .filter(|arr| arr.len() >= 2)
-            .map(|arr| {
-                [
-                    arr[0].as_u64().unwrap_or(0) as i32,
-                    arr[1].as_u64().unwrap_or(0) as i32,
-                ]
+        let output_padding: [i32; 2] = deconv_opts
+            .and_then(|o| {
+                if o.output_padding.len() >= 2 {
+                    Some([o.output_padding[0] as i32, o.output_padding[1] as i32])
+                } else {
+                    None
+                }
             })
             .unwrap_or([0, 0]);
         let post_effective: [i32; 2] = [
@@ -7869,19 +7611,25 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Extract window size from attributes
-        let window_size = operation
+        let pool_opts = operation
             .attributes
-            .get("windowDimensions")
-            .and_then(|v: &serde_json::Value| v.as_array())
+            .as_pool2d()
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Pool2d operation missing options".to_string(),
+            })?;
+        let window_size = pool_opts
+            .window_dimensions
+            .as_ref()
+            .filter(|w| !w.is_empty())
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: "Missing windowDimensions attribute".to_string(),
             })?;
 
         let window: [i32; 2] = [
-            window_size[0].as_i64().unwrap_or(2) as i32,
-            window_size[1].as_i64().unwrap_or(2) as i32,
+            window_size.get(0).copied().unwrap_or(2) as i32,
+            window_size.get(1).copied().unwrap_or(2) as i32,
         ];
 
         let layer = network
@@ -7922,8 +7670,9 @@ impl TrtxConverter {
         // TensorRT uses a bitmask where bit N represents axis N
         let axis = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_i64())
+            .as_softmax()
+            .map(|o| o.axis as i64)
+            .or_else(|| operation.attributes.get("axis").and_then(|v| v.as_i64()))
             .unwrap_or(-1); // Default to last axis
 
         // Handle negative axis (convert to positive)
@@ -7991,11 +7740,17 @@ impl TrtxConverter {
                     reason: format!("Failed to add concatenation: {}", e),
                 })?;
 
-        // WebNN axis (default 0); TensorRT concat requires the axis to be set
+        // WebNN axis (default 0 per spec); use typed options when available
         let axis_raw = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+            .as_concat()
+            .map(|opts| opts.axis as i64)
+            .or_else(|| {
+                operation
+                    .attributes
+                    .get("axis")
+                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+            })
             .unwrap_or(0);
         let ndim = inputs[0]
             .dimensions()
@@ -8058,21 +7813,12 @@ impl TrtxConverter {
 
         let rank = input_dims.len();
         // WebNN default: when permutation is omitted, reverse axes [rank-1, ..., 0].
-        let perm: Vec<i32> = if let Some(perm_value) = operation.attributes.get("permutation") {
-            if let Some(arr) = perm_value.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                    .map(|i| i as i32)
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Transpose: invalid 'permutation' attribute format".to_string(),
-                });
-            }
-        } else {
-            (0..rank).rev().map(|i| i as i32).collect()
-        };
+        let perm: Vec<i32> = operation
+            .attributes
+            .as_transpose()
+            .map(|o| o.permutation.iter().map(|&u| u as i32).collect())
+            .filter(|p: &Vec<i32>| !p.is_empty())
+            .unwrap_or_else(|| (0..rank).rev().map(|i| i as i32).collect());
 
         if perm.len() != rank {
             return Err(GraphError::ConversionFailed {
@@ -8130,7 +7876,7 @@ impl TrtxConverter {
         let new_shape = operation
             .attributes
             .get("newShape")
-            .and_then(|v| v.as_array())
+            .and_then(|v| v.as_array().cloned())
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: "reshape operation missing 'newShape' attribute".to_string(),
@@ -8188,11 +7934,11 @@ impl TrtxConverter {
         let mode_str = operation
             .attributes
             .get("mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("nearest-neighbor");
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_else(|| "nearest-neighbor".to_string());
 
         // Map WebNN mode to TensorRT ResizeMode (typedef for InterpolationMode)
-        let resize_mode = match mode_str {
+        let resize_mode = match mode_str.as_str() {
             "nearest-neighbor" => ResizeMode::kNEAREST,
             "linear" => ResizeMode::kLINEAR,
             _ => ResizeMode::kNEAREST, // Default to nearest
@@ -8203,7 +7949,7 @@ impl TrtxConverter {
         let sizes = operation
             .attributes
             .get("sizes")
-            .and_then(|v| v.as_array())
+            .and_then(|v| v.as_array().cloned())
             .map(|arr| {
                 arr.iter()
                     .filter_map(|v| v.as_i64().map(|i| i as i32))
@@ -8452,9 +8198,9 @@ impl TrtxConverter {
         // Get axis parameter (default to 0)
         let axis = operation
             .attributes
-            .get("axis")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32;
+            .as_gather()
+            .map(|o| o.axis as i32)
+            .unwrap_or(0);
 
         // Create gather layer with ELEMENT mode
         let mut layer = network
@@ -8517,7 +8263,7 @@ impl TrtxConverter {
         let window_size = operation
             .attributes
             .get("windowDimensions")
-            .and_then(|v| v.as_array())
+            .and_then(|v| v.as_array().cloned())
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: "Missing windowDimensions for l2Pool2d".to_string(),
@@ -8578,30 +8324,17 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axes to reverse from attributes (if not specified, reverse all axes)
-        let axes_value = operation.attributes.get("axes");
-
         // Get input shape from graph
         let input_operand = &graph.operands[operation.input_operands[0] as usize];
         let shape = &input_operand.descriptor.shape;
         let rank = shape.len();
 
-        // Determine which axes to reverse
-        let axes_to_reverse: Vec<usize> = if let Some(axes_val) = axes_value {
-            if let Some(arr) = axes_val.as_array() {
-                arr.iter()
-                    .filter_map(|v| v.as_u64().map(|i| i as usize))
-                    .collect()
-            } else {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Invalid 'axes' attribute format for reverse".to_string(),
-                });
-            }
-        } else {
-            // If no axes specified, reverse all axes
-            (0..rank).collect()
-        };
+        // Get axes to reverse from attributes (if not specified, reverse all axes)
+        let axes_to_reverse: Vec<usize> = operation
+            .attributes
+            .as_reverse()
+            .map(|o| o.axes.iter().map(|&x| x as usize).collect())
+            .unwrap_or_else(|| (0..rank).collect());
 
         // Build slice parameters for negative stride
         // With negative stride: end_idx = start + (size - 1) * stride
@@ -8673,12 +8406,10 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get axis from attributes
-        let axis = operation
-            .attributes
-            .get("axis")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
+        let cum_opts = operation.attributes.as_cumulative_sum();
+        let axis = cum_opts.map(|o| o.axis as usize).unwrap_or(0);
+        let exclusive = cum_opts.map(|o| o.exclusive).unwrap_or(false);
+        let reverse = cum_opts.map(|o| o.reversed).unwrap_or(false);
 
         // Get input shape
         let input_operand = &graph.operands[operation.input_operands[0] as usize];
@@ -8691,20 +8422,6 @@ impl TrtxConverter {
                 reason: format!("CumulativeSum axis {} out of range for rank {}", axis, rank),
             });
         }
-
-        // Get exclusive and reverse flags (WebNN doesn't have these, default to false)
-        let exclusive = operation
-            .attributes
-            .get("exclusive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let reverse = operation
-            .attributes
-            .get("reverse")
-            .or_else(|| operation.attributes.get("reversed"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
 
         // Create axis constant with proper lifetime management
         // Store bytes in temp_weights to keep them alive until engine is built
@@ -8773,18 +8490,9 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get parameters from attributes
-        let upper = operation
-            .attributes
-            .get("upper")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true); // Default to upper triangular
-
-        let diagonal = operation
-            .attributes
-            .get("diagonal")
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0) as i32; // Default diagonal offset is 0
+        let tri_opts = operation.attributes.as_triangular();
+        let upper = tri_opts.map(|o| o.upper).unwrap_or(true);
+        let diagonal = tri_opts.map(|o| o.diagonal).unwrap_or(0);
 
         // Get input shape from graph
         let input_operand = &graph.operands[operation.input_operands[0] as usize];

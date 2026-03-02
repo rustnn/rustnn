@@ -158,13 +158,13 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
             )
         };
 
-        // Convert attributes to JSON options
-        let options: serde_json::Map<String, serde_json::Value> =
-            if let serde_json::Value::Object(map) = &operation.attributes {
-                map.clone()
-            } else {
-                serde_json::Map::new()
-            };
+        // Convert attributes to JSON options (strip "kind" for plain-option format)
+        let mut options: serde_json::Map<String, serde_json::Value> = operation
+            .attributes_value()
+            .as_object()
+            .cloned()
+            .unwrap_or_else(serde_json::Map::new);
+        options.remove("kind");
 
         nodes.push(Node {
             id,
@@ -355,8 +355,13 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Convert options to attributes JSON value
-        let attributes = serde_json::Value::Object(node.options.clone());
+        // Convert options to attributes (tagged union)
+        let attrs_value = serde_json::Value::Object(node.options.clone());
+        let attributes = crate::operator_options::OperatorOptions::from_json_with_op_type(
+            &node.op,
+            &attrs_value,
+        )
+        .unwrap_or_default();
 
         operations.push(Operation {
             op_type: node.op.clone(),
@@ -481,8 +486,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     .attributes
                     .get("repetitions")
                     .or_else(|| op.attributes.get("repeats"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.len())
+                    .and_then(|v| v.as_array().map(|arr| arr.len()))
                 && let Some(input_id) = op.input_operands.first()
             {
                 let inp = &mut graph.operands[*input_id as usize];
@@ -594,7 +598,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Expand: use axes for unsqueeze-style or newShape for broadcast
                 "expand" => {
                     if input_shapes.len() == 1 {
-                        if let Some(axes) = op.attributes.get("axes").and_then(parse_i64_array) {
+                        if let Some(axes) = op.attributes.get("axes").and_then(|v| parse_i64_array(&v)) {
                             let rank = input_shapes[0].len() as i64;
                             let mut normalized = Vec::with_capacity(axes.len());
                             let mut valid = true;
@@ -617,7 +621,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         } else if let Some(new_shape) = op
                             .attributes
                             .get("newShape")
-                            .and_then(parse_dimension_array)
+                            .and_then(|v| parse_dimension_array(&v))
                         {
                             infer_expand_shape_dimensions(&input_shapes[0], &new_shape).ok()
                         } else {
@@ -632,13 +636,13 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "reshape" => op
                     .attributes
                     .get("newShape")
-                    .and_then(parse_dimension_array),
+                    .and_then(|v| parse_dimension_array(&v)),
 
                 // Transpose
                 "transpose" => {
                     if input_shapes.len() == 1 {
                         if let Some(perm_array) =
-                            op.attributes.get("permutation").and_then(|v| v.as_array())
+                            op.attributes.get("permutation").and_then(|v| v.as_array().map(|a| a.clone()))
                         {
                             let perm: Vec<u32> = perm_array
                                 .iter()
@@ -676,7 +680,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         let axes = op
                             .attributes
                             .get("axes")
-                            .and_then(parse_i64_array)
+                            .and_then(|v| parse_i64_array(&v))
                             .unwrap_or_default();
                         let mut normalized_axes = Vec::with_capacity(axes.len());
                         let mut valid = true;
@@ -713,7 +717,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Gather
                 "gather" => {
                     if let Some(shape_override) =
-                        op.attributes.get("shape").and_then(parse_dimension_array)
+                        op.attributes.get("shape").and_then(|v| parse_dimension_array(&v))
                     {
                         // Also try to back-propagate the implied indices shape when we know the data
                         // shape and axis. This helps downstream ops (e.g., Where) get proper ranks.
@@ -793,15 +797,15 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         let axes = op
                             .attributes
                             .get("axes")
-                            .and_then(parse_i64_array)
+                            .and_then(|v| parse_i64_array(&v))
                             .unwrap_or_else(|| (0..rank).collect());
-                        let starts = op.attributes.get("starts").and_then(parse_i64_array);
-                        let ends = op.attributes.get("ends").and_then(parse_i64_array);
+                        let starts = op.attributes.get("starts").and_then(|v| parse_i64_array(&v));
+                        let ends = op.attributes.get("ends").and_then(|v| parse_i64_array(&v));
                         if let (Some(starts), Some(ends)) = (starts, ends) {
                             let steps = op
                                 .attributes
                                 .get("steps")
-                                .and_then(parse_i64_array)
+                                .and_then(|v| parse_i64_array(&v))
                                 .unwrap_or_else(|| vec![1; axes.len()]);
                             if axes.len() == starts.len()
                                 && axes.len() == ends.len()
@@ -822,7 +826,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     let dim = get_static_or_max_size(&output[axis]) as i64;
                                     let mut start = starts[i];
                                     let mut end = ends[i];
-                                    let step = steps[i];
+                                    let step: i64 = steps[i];
                                     if step == 0 {
                                         valid = false;
                                         break;
@@ -868,7 +872,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "constant" => op
                     .attributes
                     .get("shape")
-                    .and_then(parse_dimension_array)
+                    .and_then(|v| parse_dimension_array(&v))
                     .or_else(|| Some(Vec::new())),
 
                 // For other operations, leave shape empty (will be handled later or is dynamic)
@@ -887,15 +891,15 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             if let Some(output_id) = op.output_operand {
                 let output_type = match op_type.as_str() {
                     "shape" => Some(DataType::Int64),
-                    "constant" => op.attributes.get("dataType").and_then(parse_dtype),
-                    "cast" => op.attributes.get("to").and_then(parse_dtype),
+                    "constant" => op.attributes.get("dataType").and_then(|v| parse_dtype(&v)),
+                    "cast" => op.attributes.get("to").and_then(|v| parse_dtype(&v)),
                     "dequantizelinear" => input_types.get(1).cloned().or(Some(DataType::Float32)),
                     "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
                     "argmax" | "argmin" => op
                         .attributes
                         .get("outputDataType")
                         .or_else(|| op.attributes.get("output_data_type"))
-                        .and_then(parse_dtype)
+                        .and_then(|v| parse_dtype(&v))
                         .or(Some(DataType::Int32)),
                     "expand"
                     | "gather"
@@ -1210,7 +1214,10 @@ mod tests {
                 input_operands: vec![0],
                 output_operand: None,
                 output_operands: vec![1],
-                attributes: serde_json::Value::Object(attrs),
+                attributes: crate::operator_options::OperatorOptions::from_json_with_op_type(
+                    "leakyRelu",
+                    &serde_json::Value::Object(attrs),
+                ),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
