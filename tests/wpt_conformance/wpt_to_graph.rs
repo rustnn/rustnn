@@ -494,7 +494,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     }
                 }
                 "outputPadding" => "outputPadding".to_string(),
-                "outputSizes" => "output_shape".to_string(),
+                "outputSizes" => "outputSizes".to_string(),
                 "strides" => "strides".to_string(),
                 "dilations" => "dilations".to_string(),
                 "groups" => "groups".to_string(),
@@ -519,7 +519,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                     if op_type == "cast" {
                         "to".to_string()
                     } else {
-                        "data_type".to_string()
+                        "dataType".to_string()
                     }
                 }
                 "to" => "to".to_string(),
@@ -771,7 +771,8 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 input_ids = ordered;
             }
         }
-        // instance_normalization: ONNX expects [input, scale?, bias?]
+        // instance_normalization: canonical order [input, scale?, bias?]. When only one optional
+        // is provided (2 operands), set hasScale/hasBias so the ONNX converter can disambiguate.
         if op_type == "instance_normalization" {
             let order = ["input", "scale", "bias"];
             let ordered: Vec<u32> = order
@@ -783,7 +784,19 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 })
                 .collect();
             if !ordered.is_empty() {
-                input_ids = ordered;
+                input_ids = ordered.clone();
+                if ordered.len() == 2 {
+                    let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
+                    let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
+                    attributes.insert(
+                        "hasScale".to_string(),
+                        serde_json::Value::Bool(has_scale),
+                    );
+                    attributes.insert(
+                        "hasBias".to_string(),
+                        serde_json::Value::Bool(has_bias),
+                    );
+                }
             }
         }
         // conv2d / conv_transpose2d: ONNX expects [input, filter, bias?]

@@ -1,3 +1,20 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <jane.doe@example.com>
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
@@ -5552,34 +5569,103 @@ op.get_attr("repetitions")
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Handle splits parameter - either count or sizes
-                // ONNX Split opset 13+ takes split sizes as an optional input tensor
-                if let Some(splits_val) = op.get_attr("splits") {
+                // Handle splits parameter - either count or sizes. ONNX Split opset 13+ requires
+                // the split sizes as second input when used; empty splits cause ShapeInferenceError.
+                // When splits are omitted, a number (equal count), or empty array, compute sizes
+                // from input shape and output count so we never pass 0 splits.
+                let axis = op
+                    .get_attr("axis")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                let num_outputs = op.output_operands.len();
+                let input_id = op.input_operands.first().copied().ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "Split has no input operand".to_string(),
+                    }
+                })?;
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("split input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let dim_at_axis: i64 = input_shape
+                    .get(axis)
+                    .copied()
+                    .unwrap_or(0) as i64;
+
+                let split_sizes: Vec<i64> = if let Some(splits_val) = op.get_attr("splits") {
                     if let Some(_count) = splits_val.as_u64() {
-                        // Equal splits - ONNX Split without split input divides evenly
-                        // based on the number of outputs. No input needed.
+                        // Equal splits (stored as number in options) -> compute sizes
+                        (0..num_outputs)
+                            .map(|i| {
+                                let base = dim_at_axis / num_outputs as i64;
+                                let rem = dim_at_axis % num_outputs as i64;
+                                if (i as i64) < rem {
+                                    base + 1
+                                } else {
+                                    base
+                                }
+                            })
+                            .collect()
                     } else if let Some(sizes) = splits_val.as_array() {
-                        // Explicit split sizes - create initializer
-                        let split_sizes: Vec<i64> = sizes
+                        let explicit: Vec<i64> = sizes
                             .iter()
                             .filter_map(|v| v.as_u64().map(|n| n as i64))
                             .collect();
-
-                        let splits_name = format!("{}_splits", op_name);
-
-                        // Create initializer for split sizes
-                        let splits_tensor = TensorProto {
-                            name: splits_name.clone(),
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![split_sizes.len() as i64],
-                            int64_data: split_sizes,
-                            ..Default::default()
-                        };
-                        initializers.push(splits_tensor);
-
-                        // Add splits as second input
-                        inputs.push(splits_name);
+                        if !explicit.is_empty() {
+                            explicit
+                        } else {
+                            // Empty array (default/equal splits) -> compute sizes
+                            (0..num_outputs)
+                                .map(|i| {
+                                    let base = dim_at_axis / num_outputs as i64;
+                                    let rem = dim_at_axis % num_outputs as i64;
+                                    if (i as i64) < rem {
+                                        base + 1
+                                    } else {
+                                        base
+                                    }
+                                })
+                                .collect()
+                        }
+                    } else {
+                        (0..num_outputs)
+                            .map(|i| {
+                                let base = dim_at_axis / num_outputs as i64;
+                                let rem = dim_at_axis % num_outputs as i64;
+                                if (i as i64) < rem {
+                                    base + 1
+                                } else {
+                                    base
+                                }
+                            })
+                            .collect()
                     }
+                } else {
+                    // No splits attr (default options) -> equal split sizes
+                    (0..num_outputs)
+                        .map(|i| {
+                            let base = dim_at_axis / num_outputs as i64;
+                            let rem = dim_at_axis % num_outputs as i64;
+                            if (i as i64) < rem {
+                                base + 1
+                            } else {
+                                base
+                            }
+                        })
+                        .collect()
+                };
+
+                if !split_sizes.is_empty() {
+                    let splits_name = format!("{}_splits", op_name);
+                    initializers.push(TensorProto {
+                        name: splits_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![split_sizes.len() as i64],
+                        int64_data: split_sizes,
+                        ..Default::default()
+                    });
+                    inputs.push(splits_name);
                 }
 
                 nodes.push(NodeProto {
@@ -5951,15 +6037,34 @@ op.get_attr("repetitions")
 
                 let mut inputs: Vec<String> = vec![normalized_input_name.clone()];
 
-                // Check if scale and bias are provided via attributes (WebNN camelCase)
-                let has_scale = op
-                    .get_attr("hasScale")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let has_bias = op
-                    .get_attr("hasBias")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                // Scale/bias presence: use hasScale/hasBias from options when present (disambiguates
+                // 2-operand case: only scale vs only bias). Else infer from operand count.
+                let (has_scale, has_bias) = if op.op_type == "batchNormalization" {
+                    (
+                        op.input_operands.len() > 3,
+                        op.input_operands.len() > 4,
+                    )
+                } else if op.op_type == "instanceNormalization"
+                    || op.op_type == "layerNormalization"
+                {
+                    let from_attr_scale = op.get_attr("hasScale").and_then(|v| v.as_bool());
+                    let from_attr_bias = op.get_attr("hasBias").and_then(|v| v.as_bool());
+                    (
+                        from_attr_scale
+                            .unwrap_or_else(|| op.input_operands.len() > 1),
+                        from_attr_bias
+                            .unwrap_or_else(|| op.input_operands.len() > 2),
+                    )
+                } else {
+                    (
+                        op.get_attr("hasScale")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                        op.get_attr("hasBias")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false),
+                    )
+                };
 
                 if op.op_type == "layerNormalization" {
                     let rank = input_shape.len();
@@ -6832,6 +6937,85 @@ op.get_attr("repetitions")
                     && has_float_inputs
                     && matches!(op.op_type.as_str(), "mul" | "add");
 
+                // Integer Relu: Max(0, x) in integer domain to avoid float rounding and cast overflow near 2^31
+                if op.op_type.eq_ignore_ascii_case("relu")
+                    && has_integer_inputs
+                    && !has_float_inputs
+                {
+                    let input_id = op.input_operands[0];
+                    let input_name = operand_name(graph, input_id);
+                    let output_id = op
+                        .output_operand
+                        .expect("Single-output operation expected");
+                    let output_name = operand_name(graph, output_id);
+                    let input_operand = graph.operand(input_id).ok_or_else(|| {
+                        Self::invalid_operand(
+                            "relu integer input lookup",
+                            input_id,
+                            Some((op, idx)),
+                        )
+                    })?;
+                    let dtype = type_overrides
+                        .get(&input_id)
+                        .copied()
+                        .unwrap_or(input_operand.descriptor.data_type);
+                    let zero_name = format!("{}_relu_zero", op_name);
+                    let zero_tensor = match dtype {
+                        DataType::Int32 => TensorProto {
+                            name: zero_name.clone(),
+                            data_type: ProtoDataType::Int32 as i32,
+                            dims: vec![],
+                            int32_data: vec![0],
+                            ..Default::default()
+                        },
+                        DataType::Int64 => TensorProto {
+                            name: zero_name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![],
+                            int64_data: vec![0i64],
+                            ..Default::default()
+                        },
+                        DataType::Uint64 => TensorProto {
+                            name: zero_name.clone(),
+                            data_type: ProtoDataType::Uint64 as i32,
+                            dims: vec![],
+                            uint64_data: vec![0u64],
+                            ..Default::default()
+                        },
+                        DataType::Uint32 => TensorProto {
+                            name: zero_name.clone(),
+                            data_type: ProtoDataType::Uint32 as i32,
+                            dims: vec![],
+                            raw_data: 0u32.to_le_bytes().to_vec(),
+                            ..Default::default()
+                        },
+                        DataType::Int8 | DataType::Uint8 => TensorProto {
+                            name: zero_name.clone(),
+                            data_type: Self::data_type_code(dtype) as i32,
+                            dims: vec![],
+                            raw_data: vec![0u8],
+                            ..Default::default()
+                        },
+                        _ => {
+                            return Err(Self::invalid_operand(
+                                "relu integer dtype",
+                                input_id,
+                                Some((op, idx)),
+                            ));
+                        }
+                    };
+                    initializers.push(zero_tensor);
+                    nodes.push(NodeProto {
+                        input: vec![zero_name, input_name],
+                        output: vec![output_name],
+                        name: op_name,
+                        op_type: "Max".to_string(),
+                        ..Default::default()
+                    });
+                    type_overrides.insert(output_id, dtype);
+                    continue;
+                }
+
                 if (requires_float && has_integer_inputs) || mixed_numeric_inputs {
                     // Cast inputs to float32, execute operation, cast output back
                     let mut cast_inputs = Vec::new();
@@ -6917,7 +7101,48 @@ op.get_attr("repetitions")
                     }
                 } else {
                     // Regular operation - no Cast nodes needed
-                    let attributes = Self::create_operation_attributes(op);
+                    // Cast requires "to" attribute; derive from output operand when typed options don't provide it
+                    let attributes = if op.op_type.eq_ignore_ascii_case("cast") {
+                        let output_id = op
+                            .output_operand
+                            .expect("Single-output operation expected");
+                        let type_code: i64 = match op
+                            .get_attr("to")
+                            .and_then(|v| v.as_str().map(String::from))
+                        {
+                            Some(s) => match s.to_ascii_lowercase().as_str() {
+                                "float32" => ProtoDataType::Float as i64,
+                                "float16" => ProtoDataType::Float16 as i64,
+                                "int32" => ProtoDataType::Int32 as i64,
+                                "uint32" => ProtoDataType::Uint32 as i64,
+                                "int8" => ProtoDataType::Int8 as i64,
+                                "uint8" => ProtoDataType::Uint8 as i64,
+                                "int64" => ProtoDataType::Int64 as i64,
+                                _ => {
+                                    let output_dtype = graph
+                                        .operand(output_id)
+                                        .map(|o| o.descriptor.data_type)
+                                        .unwrap_or(DataType::Float32);
+                                    Self::data_type_code(output_dtype) as i64
+                                }
+                            },
+                            None => {
+                                let output_dtype = graph
+                                    .operand(output_id)
+                                    .map(|o| o.descriptor.data_type)
+                                    .unwrap_or(DataType::Float32);
+                                Self::data_type_code(output_dtype) as i64
+                            }
+                        };
+                        vec![AttributeProto {
+                            name: "to".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: type_code,
+                            ..Default::default()
+                        }]
+                    } else {
+                        Self::create_operation_attributes(op)
+                    };
 
                     nodes.push(NodeProto {
                         input: op

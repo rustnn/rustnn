@@ -156,6 +156,7 @@ pub struct MLConvTranspose2dOptions {
     pub dilations: Vec<u32>,
     #[serde(default)]
     pub output_padding: Vec<u32>,
+    /// Output spatial shape [H, W]. WebNN camelCase: outputSizes.
     pub output_sizes: Option<Vec<u32>>,
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
@@ -365,6 +366,12 @@ pub struct MLInstanceNormalizationOptions {
     pub label: String,
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
+    /// When exactly one of scale/bias is provided (2 operands), disambiguates so converters
+    /// know which optional is present. Omitted when 1 or 3 operands.
+    #[serde(default)]
+    pub has_scale: Option<bool>,
+    #[serde(default)]
+    pub has_bias: Option<bool>,
     #[serde(default = "default_instance_norm_epsilon")]
     pub epsilon: f64,
     #[serde(default)]
@@ -377,6 +384,8 @@ impl Default for MLInstanceNormalizationOptions {
             label: String::new(),
             scale: None,
             bias: None,
+            has_scale: None,
+            has_bias: None,
             epsilon: default_instance_norm_epsilon(),
             layout: String::new(),
         }
@@ -396,6 +405,11 @@ pub struct MLLayerNormalizationOptions {
     pub label: String,
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
+    /// When exactly one of scale/bias is provided (2 operands), disambiguates for converters.
+    #[serde(default)]
+    pub has_scale: Option<bool>,
+    #[serde(default)]
+    pub has_bias: Option<bool>,
     /// Omitted in JSON => None => use spec default [1..rank). Present (including []) => use as-is.
     pub axes: Option<Vec<u32>>,
     #[serde(default = "default_layer_norm_epsilon")]
@@ -408,6 +422,8 @@ impl Default for MLLayerNormalizationOptions {
             label: String::new(),
             scale: None,
             bias: None,
+            has_scale: None,
+            has_bias: None,
             axes: None,
             epsilon: default_layer_norm_epsilon(),
         }
