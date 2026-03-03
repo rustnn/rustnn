@@ -92,6 +92,17 @@ impl Default for MLBatchNormalizationOptions {
     }
 }
 
+/// MLCastOptions. cast.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLCastOptions {
+    #[serde(default)]
+    pub label: String,
+    /// Target data type (e.g. "float32", "int32").
+    #[serde(default)]
+    pub to: String,
+}
+
 /// MLClampOptions. clamp.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +195,20 @@ impl Default for MLConvTranspose2dOptions {
     }
 }
 
+/// MLConstantOptions. constant (interchange: init, data, dataType, shape).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLConstantOptions {
+    #[serde(default)]
+    pub label: String,
+    pub init: Option<String>,
+    pub data: Option<String>, // base64
+    #[serde(default, rename = "dataType")]
+    pub data_type: String,
+    #[serde(default)]
+    pub shape: Vec<u32>,
+}
+
 /// MLConcatOptions. concat.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -208,7 +233,7 @@ pub struct MLCumulativeSumOptions {
     pub reversed: bool,
 }
 
-/// MLExpandOptions. expand (newShape from attributes for interchange).
+/// MLExpandOptions. expand (newShape or axes from attributes for interchange).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLExpandOptions {
@@ -216,6 +241,8 @@ pub struct MLExpandOptions {
     pub label: String,
     #[serde(default, rename = "newShape")]
     pub new_shape: Vec<u32>,
+    #[serde(default)]
+    pub axes: Vec<u32>,
 }
 
 fn default_elu_alpha() -> f64 {
@@ -249,6 +276,8 @@ pub struct MLGatherOptions {
     pub label: String,
     #[serde(default)]
     pub axis: u32,
+    /// gatherElements: batchDimensions (optional).
+    pub batch_dimensions: Option<u32>,
 }
 
 fn default_gemm_alpha() -> f64 {
@@ -307,6 +336,7 @@ pub struct MLGruOptions {
     #[serde(default)]
     pub layout: String,   // "zrn" | "rzn"
     pub activations: Option<Vec<String>>, // MLRecurrentNetworkActivation
+    pub hidden_size: Option<u32>,
 }
 
 /// MLGruCellOptions. gruCell.
@@ -322,6 +352,7 @@ pub struct MLGruCellOptions {
     #[serde(default)]
     pub layout: String,
     pub activations: Option<Vec<String>>,
+    pub hidden_size: Option<u32>,
 }
 
 fn default_hard_sigmoid_alpha() -> f64 {
@@ -350,6 +381,36 @@ impl Default for MLHardSigmoidOptions {
             label: String::new(),
             alpha: default_hard_sigmoid_alpha(),
             beta: default_hard_sigmoid_beta(),
+        }
+    }
+}
+
+fn default_hard_swish_alpha() -> f64 {
+    1.0 / 6.0
+}
+
+fn default_hard_swish_beta() -> f64 {
+    0.5
+}
+
+/// MLHardSwishOptions. hardSwish (optional alpha/beta for interchange).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLHardSwishOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_hard_swish_alpha")]
+    pub alpha: f64,
+    #[serde(default = "default_hard_swish_beta")]
+    pub beta: f64,
+}
+
+impl Default for MLHardSwishOptions {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            alpha: default_hard_swish_alpha(),
+            beta: default_hard_swish_beta(),
         }
     }
 }
@@ -699,6 +760,16 @@ pub struct MLTransposeOptions {
     pub permutation: Vec<u32>,
 }
 
+/// MLUnsqueezeOptions. unsqueeze.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLUnsqueezeOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub axes: Vec<u32>,
+}
+
 /// MLTileOptions. tile (repetitions from attributes for interchange).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -741,8 +812,14 @@ pub enum OperatorOptions {
     /// MLBatchNormalizationOptions.
     BatchNormalization(MLBatchNormalizationOptions),
 
+    /// MLCastOptions.
+    Cast(MLCastOptions),
+
     /// MLClampOptions.
     Clamp(MLClampOptions),
+
+    /// MLConstantOptions.
+    Constant(MLConstantOptions),
 
     /// MLConv2dOptions.
     Conv2d(MLConv2dOptions),
@@ -776,6 +853,9 @@ pub enum OperatorOptions {
 
     /// MLHardSigmoidOptions.
     HardSigmoid(MLHardSigmoidOptions),
+
+    /// MLHardSwishOptions.
+    HardSwish(MLHardSwishOptions),
 
     /// MLInstanceNormalizationOptions.
     InstanceNormalization(MLInstanceNormalizationOptions),
@@ -828,6 +908,9 @@ pub enum OperatorOptions {
     /// MLTransposeOptions.
     Transpose(MLTransposeOptions),
 
+    /// MLUnsqueezeOptions.
+    Unsqueeze(MLUnsqueezeOptions),
+
     /// MLTileOptions.
     Tile(MLTileOptions),
 
@@ -861,10 +944,12 @@ impl OperatorOptions {
             match normalized {
                 "argMin" | "argMax" => try_opt!(MLArgMinMaxOptions, ArgMinMax),
                 "batchNormalization" => try_opt!(MLBatchNormalizationOptions, BatchNormalization),
+                "cast" => try_opt!(MLCastOptions, Cast),
                 "clamp" => try_opt!(MLClampOptions, Clamp),
                 "conv2d" => try_opt!(MLConv2dOptions, Conv2d),
                 "convTranspose2d" => try_opt!(MLConvTranspose2dOptions, ConvTranspose2d),
                 "concat" => try_opt!(MLConcatOptions, Concat),
+                "constant" => try_opt!(MLConstantOptions, Constant),
                 "cumulativeSum" => try_opt!(MLCumulativeSumOptions, CumulativeSum),
                 "expand" => try_opt!(MLExpandOptions, Expand),
                 "elu" => try_opt!(MLEluOptions, Elu),
@@ -873,6 +958,7 @@ impl OperatorOptions {
                 "gru" => try_opt!(MLGruOptions, Gru),
                 "gruCell" => try_opt!(MLGruCellOptions, GruCell),
                 "hardSigmoid" => try_opt!(MLHardSigmoidOptions, HardSigmoid),
+                "hardSwish" => try_opt!(MLHardSwishOptions, HardSwish),
                 "instanceNormalization" => try_opt!(MLInstanceNormalizationOptions, InstanceNormalization),
                 "layerNormalization" => try_opt!(MLLayerNormalizationOptions, LayerNormalization),
                 "leakyRelu" => try_opt!(MLLeakyReluOptions, LeakyRelu),
@@ -893,6 +979,7 @@ impl OperatorOptions {
                 "slice" => try_opt!(MLSliceOptions, Slice),
                 "split" => try_opt!(MLSplitOptions, Split),
                 "transpose" => try_opt!(MLTransposeOptions, Transpose),
+                "unsqueeze" => try_opt!(MLUnsqueezeOptions, Unsqueeze),
                 "tile" => try_opt!(MLTileOptions, Tile),
                 "triangular" => try_opt!(MLTriangularOptions, Triangular),
                 _ => {}
@@ -933,6 +1020,12 @@ impl OperatorOptions {
             _ => None,
         }
     }
+    pub fn as_cast(&self) -> Option<&MLCastOptions> {
+        match self {
+            OperatorOptions::Cast(o) => Some(o),
+            _ => None,
+        }
+    }
     pub fn as_clamp(&self) -> Option<&MLClampOptions> {
         match self {
             OperatorOptions::Clamp(o) => Some(o),
@@ -948,6 +1041,12 @@ impl OperatorOptions {
     pub fn as_concat(&self) -> Option<&MLConcatOptions> {
         match self {
             OperatorOptions::Concat(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_constant(&self) -> Option<&MLConstantOptions> {
+        match self {
+            OperatorOptions::Constant(o) => Some(o),
             _ => None,
         }
     }
@@ -981,9 +1080,27 @@ impl OperatorOptions {
             _ => None,
         }
     }
+    pub fn as_gru(&self) -> Option<&MLGruOptions> {
+        match self {
+            OperatorOptions::Gru(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_gru_cell(&self) -> Option<&MLGruCellOptions> {
+        match self {
+            OperatorOptions::GruCell(o) => Some(o),
+            _ => None,
+        }
+    }
     pub fn as_hard_sigmoid(&self) -> Option<&MLHardSigmoidOptions> {
         match self {
             OperatorOptions::HardSigmoid(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_hard_swish(&self) -> Option<&MLHardSwishOptions> {
+        match self {
+            OperatorOptions::HardSwish(o) => Some(o),
             _ => None,
         }
     }
@@ -1008,6 +1125,18 @@ impl OperatorOptions {
     pub fn as_linear(&self) -> Option<&MLLinearOptions> {
         match self {
             OperatorOptions::Linear(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_lstm(&self) -> Option<&MLLstmOptions> {
+        match self {
+            OperatorOptions::Lstm(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_lstm_cell(&self) -> Option<&MLLstmCellOptions> {
+        match self {
+            OperatorOptions::LstmCell(o) => Some(o),
             _ => None,
         }
     }
@@ -1074,6 +1203,12 @@ impl OperatorOptions {
     pub fn as_transpose(&self) -> Option<&MLTransposeOptions> {
         match self {
             OperatorOptions::Transpose(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_unsqueeze(&self) -> Option<&MLUnsqueezeOptions> {
+        match self {
+            OperatorOptions::Unsqueeze(o) => Some(o),
             _ => None,
         }
     }

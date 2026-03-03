@@ -512,36 +512,9 @@ impl OnnxConverter {
         }
     }
 
-    /// Helper: Parse a JSON array attribute as Vec<i64>
-    fn parse_i64_array(op: &Operation, json_key: &str) -> Option<Vec<i64>> {
-        // Use shared library's parse_json_ints
-        webnn_onnx_utils::attributes::parse_json_ints(&op.attributes_value(), json_key)
-    }
-
-    fn parse_i64_array_any(op: &Operation, keys: &[&str]) -> Option<Vec<i64>> {
-        for key in keys {
-            if let Some(values) = Self::parse_i64_array(op, key) {
-                return Some(values);
-            }
-        }
-        None
-    }
-
-    fn parse_pads_attr(op: &Operation) -> Option<Vec<i64>> {
-        if let Some(pads) = Self::parse_i64_array_any(op, &["pads", "paddings"]) {
-            return Some(pads);
-        }
-        let padding = Self::parse_i64_array(op, "padding")?;
-        if padding.len() == 4 {
-            // WebNN padding is [top, bottom, left, right]
-            // ONNX pads is [top, left, bottom, right]
-            return Some(vec![padding[0], padding[2], padding[1], padding[3]]);
-        }
-        Some(padding)
-    }
-
     fn infer_pool_ceil_mode_from_output_sizes(op: &Operation, graph: &GraphInfo) -> Option<i64> {
-        let target = Self::parse_i64_array_any(op, &["outputSizes", "output_sizes"])?;
+        let opts = op.attributes.as_pool2d()?;
+        let target: Vec<i64> = opts.output_sizes.as_ref()?.iter().map(|&u| u as i64).collect();
         if target.len() != 2 {
             return None;
         }
@@ -551,10 +524,7 @@ impl OnnxConverter {
         if input_shape.len() != 4 {
             return None;
         }
-        let layout = op
-            .get_attr("layout")
-            .and_then(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-            .unwrap_or_else(|| "nchw".to_ascii_lowercase());
+        let layout = opts.layout.to_ascii_lowercase();
         let (input_h, input_w) = if layout == "nhwc" {
             (
                 get_static_or_max_size(&input_shape[1]) as i64,
@@ -567,7 +537,10 @@ impl OnnxConverter {
             )
         };
 
-        let kernel = Self::parse_i64_array_any(op, &["windowDimensions", "window_dimensions"]) // WebNN
+        let kernel: Vec<i64> = opts
+            .window_dimensions
+            .as_ref()
+            .map(|v| v.iter().map(|&u| u as i64).collect())
             .or_else(|| {
                 if layout == "nhwc" {
                     Some(vec![
@@ -584,9 +557,28 @@ impl OnnxConverter {
         if kernel.len() != 2 {
             return None;
         }
-        let strides = Self::parse_i64_array(op, "strides").unwrap_or_else(|| vec![1, 1]);
-        let dilations = Self::parse_i64_array(op, "dilations").unwrap_or_else(|| vec![1, 1]);
-        let pads = Self::parse_pads_attr(op).unwrap_or_else(|| vec![0, 0, 0, 0]);
+        let strides: Vec<i64> = if opts.strides.is_empty() {
+            vec![1, 1]
+        } else {
+            opts.strides.iter().map(|&u| u as i64).collect()
+        };
+        let dilations: Vec<i64> = if opts.dilations.is_empty() {
+            vec![1, 1]
+        } else {
+            opts.dilations.iter().map(|&u| u as i64).collect()
+        };
+        let pads: Vec<i64> = if opts.padding.len() == 4 {
+            vec![
+                opts.padding[0] as i64,
+                opts.padding[2] as i64,
+                opts.padding[1] as i64,
+                opts.padding[3] as i64,
+            ]
+        } else if opts.padding.is_empty() {
+            vec![0, 0, 0, 0]
+        } else {
+            opts.padding.iter().map(|&u| u as i64).collect()
+        };
         if strides.len() != 2 || dilations.len() != 2 || pads.len() != 4 {
             return None;
         }
@@ -617,51 +609,47 @@ impl OnnxConverter {
         graph: &GraphInfo,
     ) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
+        let opts = match op.attributes.as_pool2d() {
+            Some(o) => o,
+            None => return attributes,
+        };
 
-        let mut kernel_shape = Self::parse_i64_array_any(
-            op,
-            &[
-                "windowDimensions",
-                "window_dimensions",
-                "windowdimensions",
-                "kernelShape",
-                "kernel_shape",
-            ],
-        )
-        .or_else(|| {
-            let input_id = *op.input_operands.first()?;
-            let input_shape = &graph.operand(input_id)?.descriptor.shape;
-            if input_shape.len() != 4 {
-                return None;
-            }
-            let layout = op
-                .get_attr("layout")
-                .and_then(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-                .unwrap_or_else(|| "nchw".to_ascii_lowercase());
-            let (h, w) = if layout == "nhwc" {
-                (
-                    get_static_or_max_size(&input_shape[1]) as i64,
-                    get_static_or_max_size(&input_shape[2]) as i64,
-                )
-            } else {
-                (
-                    get_static_or_max_size(&input_shape[2]) as i64,
-                    get_static_or_max_size(&input_shape[3]) as i64,
-                )
-            };
-            Some(vec![h, w])
-        });
+        let layout = opts.layout.to_ascii_lowercase();
+        let mut kernel_shape: Option<Vec<i64>> = opts
+            .window_dimensions
+            .as_ref()
+            .map(|v| v.iter().map(|&u| u as i64).collect());
+        if kernel_shape.is_none() {
+            kernel_shape = op
+                .input_operands
+                .first()
+                .and_then(|&id| graph.operand(id))
+                .and_then(|in_op| {
+                    let input_shape = &in_op.descriptor.shape;
+                    if input_shape.len() != 4 {
+                        return None;
+                    }
+                    let (h, w) = if layout == "nhwc" {
+                        (
+                            get_static_or_max_size(&input_shape[1]) as i64,
+                            get_static_or_max_size(&input_shape[2]) as i64,
+                        )
+                    } else {
+                        (
+                            get_static_or_max_size(&input_shape[2]) as i64,
+                            get_static_or_max_size(&input_shape[3]) as i64,
+                        )
+                    };
+                    Some(vec![h, w])
+                });
+        }
         // WebNN averagePool2d defaults windowDimensions to full spatial extent.
         // Some front-end paths materialize [1,1] with dilations set, which yields
         // incorrect no-op pooling. If output spatial dims indicate reduction, repair
         // to full input window for averagePool.
-        let has_explicit_window = op.get_attr("windowDimensions").is_some()
-            || op.get_attr("window_dimensions").is_some()
-            || op.get_attr("windowdimensions").is_some()
-            || op.get_attr("kernelShape").is_some()
-            || op.get_attr("kernel_shape").is_some();
+        let has_explicit_window = opts.window_dimensions.is_some();
         if op.op_type.eq_ignore_ascii_case("averagepool2d")
-            && op.get_attr("dilations").is_some()
+            && !opts.dilations.is_empty()
             && !has_explicit_window
             && let (Some(&in_id), Some(out_id)) = (op.input_operands.first(), op.output_operand)
             && let (Some(in_operand), Some(out_operand)) =
@@ -669,11 +657,7 @@ impl OnnxConverter {
             && in_operand.descriptor.shape.len() == 4
             && out_operand.descriptor.shape.len() == 4
         {
-            let layout = op
-                .get_attr("layout")
-                .and_then(|v| v.as_str().map(|s| s.to_ascii_lowercase()))
-                .unwrap_or_else(|| "nchw".to_ascii_lowercase());
-            let (in_h, in_w, out_h, out_w) = if layout == "nhwc" {
+            let (in_h, in_w, _out_h, _out_w) = if layout == "nhwc" {
                 (
                     get_static_or_max_size(&in_operand.descriptor.shape[1]),
                     get_static_or_max_size(&in_operand.descriptor.shape[2]),
@@ -688,40 +672,51 @@ impl OnnxConverter {
                     get_static_or_max_size(&out_operand.descriptor.shape[3]),
                 )
             };
-            let _ = (out_h, out_w); // output hints may be unreliable for dynamic shapes
             kernel_shape = Some(vec![in_h as i64, in_w as i64]);
         }
 
-        if let Some(kernel_shape) = kernel_shape {
-            Self::add_ints_attribute(&mut attributes, "kernel_shape", kernel_shape);
+        if let Some(ks) = kernel_shape {
+            Self::add_ints_attribute(&mut attributes, "kernel_shape", ks);
         }
-        if let Some(strides) = Self::parse_i64_array(op, "strides") {
-            Self::add_ints_attribute(&mut attributes, "strides", strides);
+        if !opts.strides.is_empty() {
+            Self::add_ints_attribute(
+                &mut attributes,
+                "strides",
+                opts.strides.iter().map(|&u| u as i64).collect(),
+            );
         }
-        // ONNX AveragePool does not accept dilations (ORT rejects it).
         let is_max_pool = op.op_type.eq_ignore_ascii_case("maxpool2d");
-        if is_max_pool && let Some(dilations) = Self::parse_i64_array(op, "dilations") {
-            Self::add_ints_attribute(&mut attributes, "dilations", dilations);
+        if is_max_pool && !opts.dilations.is_empty() {
+            Self::add_ints_attribute(
+                &mut attributes,
+                "dilations",
+                opts.dilations.iter().map(|&u| u as i64).collect(),
+            );
         }
-        if let Some(pads) = Self::parse_pads_attr(op) {
+        if !opts.padding.is_empty() {
+            let pads: Vec<i64> = if opts.padding.len() == 4 {
+                vec![
+                    opts.padding[0] as i64,
+                    opts.padding[2] as i64,
+                    opts.padding[1] as i64,
+                    opts.padding[3] as i64,
+                ]
+            } else {
+                opts.padding.iter().map(|&u| u as i64).collect()
+            };
             Self::add_ints_attribute(&mut attributes, "pads", pads);
         }
-        if let Some(ceil_mode) = if op.get_attr("outputSizes").is_some()
-            || op.get_attr("output_sizes").is_some()
-        {
+        let ceil_mode = if opts.output_sizes.is_some() {
             Self::infer_pool_ceil_mode_from_output_sizes(op, graph)
         } else {
-            op.get_attr("roundingType")
-                .and_then(|v| v.as_str().map(String::from))
-                .map(|rounding_type| {
-                    if rounding_type.eq_ignore_ascii_case("ceil") {
-                        1
-                    } else {
-                        0
-                    }
-                })
-        } {
-            Self::add_int_attribute(&mut attributes, "ceil_mode", ceil_mode);
+            if opts.output_shape_rounding.eq_ignore_ascii_case("ceil") {
+                Some(1)
+            } else {
+                Some(0)
+            }
+        };
+        if let Some(cm) = ceil_mode {
+            Self::add_int_attribute(&mut attributes, "ceil_mode", cm);
         }
 
         attributes
@@ -745,18 +740,37 @@ impl OnnxConverter {
     fn create_conv2d_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Parse attributes from JSON using helpers
-        if let Some(strides) = Self::parse_i64_array_any(op, &["strides", "stride"]) {
-            Self::add_ints_attribute(&mut attributes, "strides", strides);
-        }
-        if let Some(dilations) = Self::parse_i64_array_any(op, &["dilations", "dilation"]) {
-            Self::add_ints_attribute(&mut attributes, "dilations", dilations);
-        }
-        if let Some(pads) = Self::parse_pads_attr(op) {
-            Self::add_ints_attribute(&mut attributes, "pads", pads);
-        }
-        if let Some(groups) = op.get_attr("groups").and_then(|v| v.as_u64()) {
-            Self::add_int_attribute(&mut attributes, "group", groups as i64); // Note: ONNX uses "group" not "groups"
+        if let Some(opts) = op.attributes.as_conv2d() {
+            if !opts.strides.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "strides",
+                    opts.strides.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if !opts.dilations.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "dilations",
+                    opts.dilations.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if !opts.padding.is_empty() {
+                let pads: Vec<i64> = if opts.padding.len() == 4 {
+                    vec![
+                        opts.padding[0] as i64,
+                        opts.padding[2] as i64,
+                        opts.padding[1] as i64,
+                        opts.padding[3] as i64,
+                    ]
+                } else {
+                    opts.padding.iter().map(|&u| u as i64).collect()
+                };
+                Self::add_ints_attribute(&mut attributes, "pads", pads);
+            }
+            Self::add_int_attribute(&mut attributes, "group", opts.groups as i64);
+        } else {
+            Self::add_int_attribute(&mut attributes, "group", 1);
         }
 
         attributes
@@ -766,69 +780,104 @@ impl OnnxConverter {
     fn create_conv_transpose2d_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Parse attributes from JSON using helpers
-        if let Some(strides) = Self::parse_i64_array_any(op, &["strides", "stride"]) {
-            Self::add_ints_attribute(&mut attributes, "strides", strides);
-        }
-        if let Some(dilations) = Self::parse_i64_array_any(op, &["dilations", "dilation"]) {
-            Self::add_ints_attribute(&mut attributes, "dilations", dilations);
-        }
-        let pads_for_output_shape = Self::parse_pads_attr(op);
-        if let Some(pads) = pads_for_output_shape.clone() {
-            Self::add_ints_attribute(&mut attributes, "pads", pads);
-        }
-        if let Some(output_padding) =
-            Self::parse_i64_array_any(op, &["outputPadding", "output_padding"])
-        {
-            Self::add_ints_attribute(&mut attributes, "output_padding", output_padding);
-        }
-        if let Some(output_shape) = Self::parse_i64_array_any(op, &["outputSizes", "output_shape"])
-        {
-            // ONNX ConvTranspose with both asymmetric pads and output_shape can choose
-            // a different side-alignment than WebNN's same-upper behavior.
-            // In that case, rely on pads/strides/kernel formula to determine output size.
-            let has_asymmetric_pads = pads_for_output_shape
-                .as_ref()
-                .map(|p| p.len() == 4 && (p[0] != p[2] || p[1] != p[3]))
-                .unwrap_or(false);
-            if !has_asymmetric_pads {
-                Self::add_ints_attribute(&mut attributes, "output_shape", output_shape);
+        if let Some(opts) = op.attributes.as_conv_transpose2d() {
+            if !opts.strides.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "strides",
+                    opts.strides.iter().map(|&u| u as i64).collect(),
+                );
             }
-        }
-        if let Some(groups) = op.get_attr("groups").and_then(|v| v.as_u64()) {
-            Self::add_int_attribute(&mut attributes, "group", groups as i64); // Note: ONNX uses "group" not "groups"
+            if !opts.dilations.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "dilations",
+                    opts.dilations.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            let pads_for_output_shape: Option<Vec<i64>> = if opts.padding.is_empty() {
+                None
+            } else if opts.padding.len() == 4 {
+                Some(vec![
+                    opts.padding[0] as i64,
+                    opts.padding[2] as i64,
+                    opts.padding[1] as i64,
+                    opts.padding[3] as i64,
+                ])
+            } else {
+                Some(opts.padding.iter().map(|&u| u as i64).collect())
+            };
+            if let Some(ref pads) = pads_for_output_shape {
+                Self::add_ints_attribute(&mut attributes, "pads", pads.clone());
+            }
+            if !opts.output_padding.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "output_padding",
+                    opts.output_padding.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if let Some(ref output_sizes) = opts.output_sizes {
+                let has_asymmetric_pads = pads_for_output_shape
+                    .as_ref()
+                    .map(|p| p.len() == 4 && (p[0] != p[2] || p[1] != p[3]))
+                    .unwrap_or(false);
+                if !has_asymmetric_pads && !output_sizes.is_empty() {
+                    Self::add_ints_attribute(
+                        &mut attributes,
+                        "output_shape",
+                        output_sizes.iter().map(|&u| u as i64).collect(),
+                    );
+                }
+            }
+            Self::add_int_attribute(&mut attributes, "group", opts.groups as i64);
+        } else {
+            // Typed options required; attributes deprecated.
+            Self::add_int_attribute(&mut attributes, "group", 1);
         }
 
         attributes
     }
 
-    /// Create ONNX attributes for pool2d operations
+    /// Create ONNX attributes for pool2d operations (no graph; used when graph not available).
     fn create_pool2d_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-
-        // Parse attributes from JSON using helpers
-        if let Some(kernel_shape) = Self::parse_i64_array_any(
-            op,
-            &[
-                "windowDimensions",
-                "window_dimensions",
-                "windowdimensions",
-                "kernelShape",
-                "kernel_shape",
-            ],
-        ) {
-            Self::add_ints_attribute(&mut attributes, "kernel_shape", kernel_shape);
+        if let Some(opts) = op.attributes.as_pool2d() {
+            if let Some(ref wd) = opts.window_dimensions {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "kernel_shape",
+                    wd.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if !opts.strides.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "strides",
+                    opts.strides.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if !opts.dilations.is_empty() {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "dilations",
+                    opts.dilations.iter().map(|&u| u as i64).collect(),
+                );
+            }
+            if !opts.padding.is_empty() {
+                let pads: Vec<i64> = if opts.padding.len() == 4 {
+                    vec![
+                        opts.padding[0] as i64,
+                        opts.padding[2] as i64,
+                        opts.padding[1] as i64,
+                        opts.padding[3] as i64,
+                    ]
+                } else {
+                    opts.padding.iter().map(|&u| u as i64).collect()
+                };
+                Self::add_ints_attribute(&mut attributes, "pads", pads);
+            }
         }
-        if let Some(strides) = Self::parse_i64_array_any(op, &["strides", "stride"]) {
-            Self::add_ints_attribute(&mut attributes, "strides", strides);
-        }
-        if let Some(dilations) = Self::parse_i64_array_any(op, &["dilations", "dilation"]) {
-            Self::add_ints_attribute(&mut attributes, "dilations", dilations);
-        }
-        if let Some(pads) = Self::parse_pads_attr(op) {
-            Self::add_ints_attribute(&mut attributes, "pads", pads);
-        }
-
         attributes
     }
 
@@ -836,15 +885,23 @@ impl OnnxConverter {
     fn create_reduce_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Parse attributes from JSON using helpers
-        if let Some(axes) = Self::parse_i64_array(op, "axes") {
-            Self::add_ints_attribute(&mut attributes, "axes", axes);
-        }
-        if let Some(keep_dims) = op
-            .get_attr("keepDimensions")
-            .and_then(|v| v.as_bool())
-        {
-            Self::add_int_attribute(&mut attributes, "keepdims", if keep_dims { 1 } else { 0 });
+        if let Some(opts) = op.attributes.as_reduce() {
+            if let Some(ref axes) = opts.axes {
+                if !axes.is_empty() {
+                    Self::add_ints_attribute(
+                        &mut attributes,
+                        "axes",
+                        axes.iter().map(|&u| u as i64).collect(),
+                    );
+                }
+            }
+            Self::add_int_attribute(
+                &mut attributes,
+                "keepdims",
+                if opts.keep_dimensions { 1 } else { 0 },
+            );
+        } else {
+            Self::add_int_attribute(&mut attributes, "keepdims", 0);
         }
 
         attributes
@@ -875,7 +932,12 @@ impl OnnxConverter {
     fn create_squeeze_unsqueeze_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(axes) = Self::parse_i64_array(op, "axes") {
+        let axes = op
+            .attributes
+            .as_unsqueeze()
+            .filter(|o| !o.axes.is_empty())
+            .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>());
+        if let Some(axes) = axes {
             Self::add_ints_attribute(&mut attributes, "axes", axes);
         }
 
@@ -886,10 +948,13 @@ impl OnnxConverter {
     fn create_arg_reduce_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(axis) = op
-            .get_attr("axis")
-            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-        {
+        let (axis_opt, keep_dims) = op
+            .attributes
+            .as_arg_min_max()
+            .map(|opts| (Some(opts.axis as i64), opts.keep_dimensions))
+            .unwrap_or((Some(0), false));
+
+        if let Some(axis) = axis_opt {
             attributes.push(AttributeProto {
                 name: "axis".to_string(),
                 r#type: AttributeType::Int as i32,
@@ -898,18 +963,12 @@ impl OnnxConverter {
             });
         }
 
-        let keep_dims = op
-            .get_attr("keepDimensions")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
         attributes.push(AttributeProto {
-            name: "keepdims".to_string(), // ONNX uses "keepdims" not "keepDimensions"
+            name: "keepdims".to_string(),
             r#type: AttributeType::Int as i32,
             i: if keep_dims { 1 } else { 0 },
             ..Default::default()
         });
-
-        // Note: outputDataType is handled by the output tensor's data type, not as an attribute
 
         attributes
     }
@@ -918,15 +977,13 @@ impl OnnxConverter {
     fn create_concat_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Concat requires an axis attribute in ONNX
-        if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_i64()) {
-            attributes.push(AttributeProto {
-                name: "axis".to_string(),
-                r#type: AttributeType::Int as i32,
-                i: axis,
-                ..Default::default()
-            });
-        }
+        let axis = op.attributes.as_concat().map(|o| o.axis as i64).unwrap_or(0);
+        attributes.push(AttributeProto {
+            name: "axis".to_string(),
+            r#type: AttributeType::Int as i32,
+            i: axis,
+            ..Default::default()
+        });
 
         attributes
     }
@@ -934,8 +991,9 @@ impl OnnxConverter {
     fn create_softmax_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
         let axis = op
-            .get_attr("axis")
-            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+            .attributes
+            .as_softmax()
+            .map(|o| o.axis as i64)
             .unwrap_or(-1);
         attributes.push(AttributeProto {
             name: "axis".to_string(),
@@ -949,17 +1007,13 @@ impl OnnxConverter {
     /// Create ONNX attributes for gather operation
     fn create_gather_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-        if let Some(axis) = op
-            .get_attr("axis")
-            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-        {
-            attributes.push(AttributeProto {
-                name: "axis".to_string(),
-                r#type: AttributeType::Int as i32,
-                i: axis,
-                ..Default::default()
-            });
-        }
+        let axis = op.attributes.as_gather().map(|o| o.axis as i64).unwrap_or(0);
+        attributes.push(AttributeProto {
+            name: "axis".to_string(),
+            r#type: AttributeType::Int as i32,
+            i: axis,
+            ..Default::default()
+        });
         attributes
     }
 
@@ -967,7 +1021,12 @@ impl OnnxConverter {
     fn create_transpose_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(perm) = Self::parse_i64_array(op, "permutation") {
+        let perm = op
+            .attributes
+            .as_transpose()
+            .filter(|o| !o.permutation.is_empty())
+            .map(|o| o.permutation.iter().map(|&u| u as i64).collect::<Vec<i64>>());
+        if let Some(perm) = perm {
             Self::add_ints_attribute(&mut attributes, "perm", perm);
         }
 
@@ -977,10 +1036,9 @@ impl OnnxConverter {
     /// Create ONNX attributes for cast operation
     fn create_cast_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-
-        if let Some(to_type) = op.get_attr("to").and_then(|v| v.as_str().map(String::from)) {
-            // Convert string data type to ONNX data type code
-            let type_code = match to_type.to_ascii_lowercase().as_str() {
+        if let Some(opts) = op.attributes.as_cast() {
+            let to_type = opts.to.to_ascii_lowercase();
+            let type_code = match to_type.as_str() {
                 "float32" => ProtoDataType::Float as i64,
                 "float16" => ProtoDataType::Float16 as i64,
                 "int32" => ProtoDataType::Int32 as i64,
@@ -991,7 +1049,6 @@ impl OnnxConverter {
                 "int4" | "uint4" => ProtoDataType::Undefined as i64,
                 _ => ProtoDataType::Undefined as i64,
             };
-
             attributes.push(AttributeProto {
                 name: "to".to_string(),
                 r#type: AttributeType::Int as i32,
@@ -999,7 +1056,6 @@ impl OnnxConverter {
                 ..Default::default()
             });
         }
-
         attributes
     }
 
@@ -1007,15 +1063,17 @@ impl OnnxConverter {
     fn create_scatter_elements_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_i64()) {
-            attributes.push(AttributeProto {
-                name: "axis".to_string(),
-                r#type: AttributeType::Int as i32,
-                i: axis,
-                ..Default::default()
-            });
-        }
-
+        let axis = op
+            .attributes
+            .as_scatter_elements()
+            .map(|o| o.axis as i64)
+            .unwrap_or(0);
+        attributes.push(AttributeProto {
+            name: "axis".to_string(),
+            r#type: AttributeType::Int as i32,
+            i: axis,
+            ..Default::default()
+        });
         attributes
     }
 
@@ -1029,24 +1087,24 @@ impl OnnxConverter {
     /// Create ONNX attributes for triangular operation
     fn create_triangular_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
+        let (upper, diagonal) = op
+            .attributes
+            .as_triangular()
+            .map(|opts| (opts.upper, opts.diagonal as i64))
+            .unwrap_or((false, 0));
 
-        if let Some(upper) = op.get_attr("upper").and_then(|v| v.as_bool()) {
-            attributes.push(AttributeProto {
-                name: "upper".to_string(),
-                r#type: AttributeType::Int as i32,
-                i: if upper { 1 } else { 0 },
-                ..Default::default()
-            });
-        }
-
-        if let Some(diagonal) = op.get_attr("diagonal").and_then(|v| v.as_i64()) {
-            attributes.push(AttributeProto {
-                name: "k".to_string(), // ONNX uses "k" for diagonal offset
-                r#type: AttributeType::Int as i32,
-                i: diagonal,
-                ..Default::default()
-            });
-        }
+        attributes.push(AttributeProto {
+            name: "upper".to_string(),
+            r#type: AttributeType::Int as i32,
+            i: if upper { 1 } else { 0 },
+            ..Default::default()
+        });
+        attributes.push(AttributeProto {
+            name: "k".to_string(),
+            r#type: AttributeType::Int as i32,
+            i: diagonal,
+            ..Default::default()
+        });
 
         attributes
     }
@@ -1055,49 +1113,45 @@ impl OnnxConverter {
     fn create_hardsigmoid_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
-            attributes.push(AttributeProto {
-                name: "alpha".to_string(),
-                r#type: AttributeType::Float as i32,
-                f: alpha as f32,
-                ..Default::default()
-            });
-        }
+        let (alpha, beta) = op
+            .attributes
+            .as_hard_sigmoid()
+            .map(|opts| (opts.alpha as f32, opts.beta as f32))
+            .unwrap_or((0.2, 0.5));
 
-        if let Some(beta) = op.get_attr("beta").and_then(|v| v.as_f64()) {
-            attributes.push(AttributeProto {
-                name: "beta".to_string(),
-                r#type: AttributeType::Float as i32,
-                f: beta as f32,
-                ..Default::default()
-            });
-        }
+        attributes.push(AttributeProto {
+            name: "alpha".to_string(),
+            r#type: AttributeType::Float as i32,
+            f: alpha,
+            ..Default::default()
+        });
+        attributes.push(AttributeProto {
+            name: "beta".to_string(),
+            r#type: AttributeType::Float as i32,
+            f: beta,
+            ..Default::default()
+        });
 
         attributes
     }
 
-    /// Create ONNX attributes for hardSwish operation
+    /// Create ONNX attributes for hardSwish operation.
     fn create_hardswish_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-
-        if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
+        if let Some(opts) = op.attributes.as_hard_swish() {
             attributes.push(AttributeProto {
                 name: "alpha".to_string(),
                 r#type: AttributeType::Float as i32,
-                f: alpha as f32,
+                f: opts.alpha as f32,
                 ..Default::default()
             });
-        }
-
-        if let Some(beta) = op.get_attr("beta").and_then(|v| v.as_f64()) {
             attributes.push(AttributeProto {
                 name: "beta".to_string(),
                 r#type: AttributeType::Float as i32,
-                f: beta as f32,
+                f: opts.beta as f32,
                 ..Default::default()
             });
         }
-
         attributes
     }
 
@@ -1105,15 +1159,17 @@ impl OnnxConverter {
     fn create_elu_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
-            attributes.push(AttributeProto {
-                name: "alpha".to_string(),
-                r#type: AttributeType::Float as i32,
-                f: alpha as f32,
-                ..Default::default()
-            });
-        }
-
+        let alpha = op
+            .attributes
+            .as_elu()
+            .map(|o| o.alpha as f32)
+            .unwrap_or(1.0);
+        attributes.push(AttributeProto {
+            name: "alpha".to_string(),
+            r#type: AttributeType::Float as i32,
+            f: alpha,
+            ..Default::default()
+        });
         attributes
     }
 
@@ -1121,15 +1177,17 @@ impl OnnxConverter {
     fn create_leakyrelu_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
-            attributes.push(AttributeProto {
-                name: "alpha".to_string(),
-                r#type: AttributeType::Float as i32,
-                f: alpha as f32,
-                ..Default::default()
-            });
-        }
-
+        let alpha = op
+            .attributes
+            .as_leaky_relu()
+            .map(|o| o.alpha as f32)
+            .unwrap_or(0.01);
+        attributes.push(AttributeProto {
+            name: "alpha".to_string(),
+            r#type: AttributeType::Float as i32,
+            f: alpha,
+            ..Default::default()
+        });
         attributes
     }
 
@@ -1140,38 +1198,54 @@ impl OnnxConverter {
     fn create_gemm_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
+        if let Some(opts) = op.attributes.as_gemm() {
             attributes.push(AttributeProto {
                 name: "alpha".to_string(),
                 r#type: AttributeType::Float as i32,
-                f: alpha as f32,
+                f: opts.alpha as f32,
                 ..Default::default()
             });
-        }
-
-        if let Some(beta) = op.get_attr("beta").and_then(|v| v.as_f64()) {
             attributes.push(AttributeProto {
                 name: "beta".to_string(),
                 r#type: AttributeType::Float as i32,
-                f: beta as f32,
+                f: opts.beta as f32,
                 ..Default::default()
             });
-        }
-
-        if let Some(a_transpose) = op.get_attr("aTranspose").and_then(|v| v.as_bool()) {
             attributes.push(AttributeProto {
                 name: "transA".to_string(),
                 r#type: AttributeType::Int as i32,
-                i: if a_transpose { 1 } else { 0 },
+                i: if opts.a_transpose { 1 } else { 0 },
                 ..Default::default()
             });
-        }
-
-        if let Some(b_transpose) = op.get_attr("bTranspose").and_then(|v| v.as_bool()) {
             attributes.push(AttributeProto {
                 name: "transB".to_string(),
                 r#type: AttributeType::Int as i32,
-                i: if b_transpose { 1 } else { 0 },
+                i: if opts.b_transpose { 1 } else { 0 },
+                ..Default::default()
+            });
+        } else {
+            attributes.push(AttributeProto {
+                name: "alpha".to_string(),
+                r#type: AttributeType::Float as i32,
+                f: 1.0,
+                ..Default::default()
+            });
+            attributes.push(AttributeProto {
+                name: "beta".to_string(),
+                r#type: AttributeType::Float as i32,
+                f: 1.0,
+                ..Default::default()
+            });
+            attributes.push(AttributeProto {
+                name: "transA".to_string(),
+                r#type: AttributeType::Int as i32,
+                i: 0,
+                ..Default::default()
+            });
+            attributes.push(AttributeProto {
+                name: "transB".to_string(),
+                r#type: AttributeType::Int as i32,
+                i: 0,
                 ..Default::default()
             });
         }
@@ -1183,31 +1257,25 @@ impl OnnxConverter {
     fn create_layernorm_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Add epsilon attribute
         let epsilon = op
-            .get_attr("epsilon")
-            .and_then(|v| v.as_f64())
+            .attributes
+            .as_layer_normalization()
+            .map(|o| o.epsilon as f32)
             .unwrap_or(1e-5);
         attributes.push(AttributeProto {
             name: "epsilon".to_string(),
             r#type: AttributeType::Float as i32,
-            f: epsilon as f32,
+            f: epsilon,
             ..Default::default()
         });
 
-        // Add axis attribute
-        // ONNX LayerNormalization normalizes from axis to the end (consecutive dimensions)
-        // WebNN allows arbitrary axes, so we need to check compatibility
-        let axes = op
-            .get_attr("axes")
-            .and_then(|v| {
-                v.as_array().map(|arr| arr.iter().filter_map(|e| e.as_i64()).collect::<Vec<i64>>())
-            })
+        let axes: Vec<i64> = op
+            .attributes
+            .as_layer_normalization()
+            .and_then(|o| o.axes.as_ref())
+            .map(|v| v.iter().map(|&u| u as i64).collect())
             .unwrap_or_else(|| vec![-1]);
 
-        // For now, use the first axis (or -1 for last dimension)
-        // TODO: Validate that axes are consecutive and end at last dimension
-        // If not, we should emulate using primitive operations (like Chromium does)
         let axis = axes.first().copied().unwrap_or(-1);
         attributes.push(AttributeProto {
             name: "axis".to_string(),
@@ -1223,15 +1291,16 @@ impl OnnxConverter {
     fn create_normalization_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        // Add epsilon attribute
         let epsilon = op
-            .get_attr("epsilon")
-            .and_then(|v| v.as_f64())
+            .attributes
+            .as_batch_normalization()
+            .map(|o| o.epsilon as f32)
+            .or_else(|| op.attributes.as_instance_normalization().map(|o| o.epsilon as f32))
             .unwrap_or(1e-5);
         attributes.push(AttributeProto {
             name: "epsilon".to_string(),
             r#type: AttributeType::Float as i32,
-            f: epsilon as f32,
+            f: epsilon,
             ..Default::default()
         });
 
@@ -1450,15 +1519,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 {
                     type_overrides.insert(output_id, input_operand.descriptor.data_type);
 
-                    // Check for newShape attribute first
-                    if let Some(new_shape_attr) = op.get_attr("newShape") {
-                        if let Some(shape_dims) = Self::parse_dimension_array(&new_shape_attr) {
-                            let shape: Vec<u32> =
-                                shape_dims.iter().map(get_static_or_max_size).collect();
-                            if !shape.is_empty() {
-                                shape_overrides.insert(output_id, shape.clone());
-                                operand_shapes.insert(output_id, shape);
-                            }
+                    // Check for newShape from typed options first
+                    if let Some(opts) = op.attributes.as_expand() {
+                        if !opts.new_shape.is_empty() {
+                            let shape = opts.new_shape.clone();
+                            shape_overrides.insert(output_id, shape.clone());
+                            operand_shapes.insert(output_id, shape);
                         }
                     }
                     // Fall back to shape from second input operand (if present)
@@ -1484,30 +1550,31 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if let (Some(&input_id), Some(output_id)) =
                     (op.input_operands.first(), op.output_operand)
                     && let Some(mut in_shape) = operand_shapes.get(&input_id).cloned()
+                    && let Some(opts) = op.attributes.as_slice()
                 {
                     // Preserve input dtype for the slice output
                     if let Some(input_operand) = graph.operand(input_id) {
                         type_overrides.insert(output_id, input_operand.descriptor.data_type);
                     }
-                    let axes: Option<Vec<i64>> = op
-                        .get_attr("axes")
-                        .and_then(|v| v.as_str().map(String::from))
-                        .and_then(|s| get_const_i64(s.as_str()));
-                    let starts: Option<Vec<i64>> = op
-                        .get_attr("starts")
-                        .and_then(|v| v.as_str().map(String::from))
-                        .and_then(|s| get_const_i64(s.as_str()));
-                    let ends: Option<Vec<i64>> = op
-                        .get_attr("ends")
-                        .and_then(|v| v.as_str().map(String::from))
-                        .and_then(|s| get_const_i64(s.as_str()));
-                    let steps: Option<Vec<i64>> = op
-                        .get_attr("steps")
-                        .and_then(|v| v.as_str().map(String::from))
-                        .and_then(|s| get_const_i64(s.as_str()));
+                    // WebNN slice has starts, sizes, strides; derive ends as starts[i] + sizes[i] for default stride 1
+                    let starts: Vec<i64> = opts.starts.iter().map(|&u| u as i64).collect();
+                    let sizes: Vec<i64> = opts.sizes.iter().map(|&u| u as i64).collect();
+                    let strides: Vec<i64> = if opts.strides.is_empty() {
+                        vec![1; starts.len()]
+                    } else {
+                        opts.strides.iter().map(|&u| u as i64).collect()
+                    };
+                    let ends: Vec<i64> = (0..starts.len())
+                        .map(|i| {
+                            let step = strides.get(i).copied().unwrap_or(1);
+                            let sz = sizes.get(i).copied().unwrap_or(0);
+                            starts[i] + sz * step
+                        })
+                        .collect();
+                    let axes: Vec<i64> = (0..starts.len() as i64).collect();
 
-                    if let (Some(axes), Some(starts), Some(ends)) = (axes, starts, ends) {
-                        let steps_vec = steps.unwrap_or_else(|| vec![1; axes.len()]);
+                    if !axes.is_empty() && axes.len() == starts.len() && starts.len() == ends.len() {
+                        let steps_vec = strides;
                         let len = axes
                             .len()
                             .min(starts.len())
@@ -1694,10 +1761,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .map(|s| s.as_str())
                         .unwrap_or("unknown");
 
-                    // Get axis attribute
                     let axis = op
-                        .get_attr("axis")
-                        .and_then(|v| v.as_i64())
+                        .attributes
+                        .as_concat()
+                        .map(|o| o.axis as i64)
                         .unwrap_or(0);
 
                     // Get input shapes
@@ -1757,13 +1824,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if let Some(output_id) = op.output_operand
                     && let Some(&input_id) = op.input_operands.first()
                     && let Some(input_shape) = operand_shapes.get(&input_id)
-                    && let Some(axes_val) = op.get_attr("axes")
+                    && let Some(axes_opts) = op.attributes.as_unsqueeze()
                 {
-                    let axes_i64: Vec<i64> = if let Some(arr) = axes_val.as_array() {
-                        arr.iter().filter_map(|v| v.as_i64()).collect()
-                    } else {
-                        vec![]
-                    };
+                    let axes_i64: Vec<i64> = axes_opts.axes.iter().map(|&u| u as i64).collect();
 
                     if !axes_i64.is_empty() {
                         use crate::shape_inference::infer_unsqueeze_shape;
@@ -1794,14 +1857,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
             // Reshape: if newShape is static, set output shape
             else if op.op_type.eq_ignore_ascii_case("reshape") {
                 if let Some(output_id) = op.output_operand
-                    && let Some(new_shape_val) = op.get_attr("newShape")
-                    && let Some(shape_dims) = Self::parse_dimension_array(&new_shape_val)
+                    && let Some(opts) = op.attributes.as_reshape()
+                    && !opts.new_shape.is_empty()
                 {
-                    let shape: Vec<u32> = shape_dims.iter().map(get_static_or_max_size).collect();
-                    if !shape.is_empty() {
-                        shape_overrides.insert(output_id, shape.clone());
-                        operand_shapes.insert(output_id, shape);
-                    }
+                    let shape = opts.new_shape.clone();
+                    shape_overrides.insert(output_id, shape.clone());
+                    operand_shapes.insert(output_id, shape);
                 }
             }
             // Transpose: derive output shape from permutation (default reverse)
@@ -1811,17 +1872,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     && let Some(input_shape) = operand_shapes.get(&input_id).cloned()
                 {
                     let perm: Option<Vec<u32>> = op
-                        .get_attr("permutation")
-                        .and_then(|v| v.as_array().cloned())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| {
-                                    v.as_i64()
-                                        .or_else(|| v.as_u64().map(|u| u as i64))
-                                        .map(|n| n as u32)
-                                })
-                                .collect()
-                        });
+                        .attributes
+                        .as_transpose()
+                        .filter(|o| !o.permutation.is_empty())
+                        .map(|o| o.permutation.clone());
 
                     if let Ok(out_shape) = infer_transpose_shape(&input_shape, perm.as_deref()) {
                         shape_overrides.insert(output_id, out_shape.clone());
@@ -1837,8 +1891,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let data_shape = operand_shapes.get(&op.input_operands[0]);
                 let indices_shape = operand_shapes.get(&op.input_operands[1]);
                 let axis = op
-                    .get_attr("axis")
-                    .and_then(|v| v.as_i64())
+                    .attributes
+                    .as_gather()
+                    .map(|o| o.axis as i64)
                     .unwrap_or(0);
                 if let (Some(data_shape), Some(indices_shape)) = (data_shape, indices_shape) {
                     let rank = data_shape.len() as i64;
@@ -2104,11 +2159,29 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     Self::invalid_operand("constant output", idx as u32, Some((op, idx)))
                 })?;
 
-                // Get constant data: try 'init' attribute first (reference to named constant),
-                // then fall back to 'data' attribute (inline base64)
-                let data = if let Some(init_ref) =
-                    op.get_attr("init").and_then(|v| v.as_str().map(String::from))
-                {
+                // Get constant data: try 'init' from typed options first, then 'data' (inline base64).
+                let (init_opt, data_opt, dtype_str_opt, shape_opt) = op
+                    .attributes
+                    .as_constant()
+                    .map(|o| {
+                        (
+                            o.init.clone(),
+                            o.data.clone(),
+                            if o.data_type.is_empty() {
+                                None
+                            } else {
+                                Some(o.data_type.clone())
+                            },
+                            if o.shape.is_empty() {
+                                None
+                            } else {
+                                Some(o.shape.iter().map(|&u| u as i64).collect::<Vec<i64>>())
+                            },
+                        )
+                    })
+                    .unwrap_or((None, None, None, None));
+
+                let data = if let Some(init_ref) = init_opt {
                     // 'init' attribute references a named constant declaration (e.g., "$_name")
                     // The operand name in the graph keeps the '$' prefix
                     debug_print!("[DEBUG] Constant operation with 'init' reference:");
@@ -2156,7 +2229,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 init_ref, const_operand_id
                             ),
                         })?
-                } else if let Some(data_b64) = op.get_attr("data").and_then(|v| v.as_str().map(String::from)) {
+                } else if let Some(data_b64) = data_opt {
                     // 'data' attribute contains inline base64-encoded data
                     STANDARD
                         .decode(data_b64)
@@ -2165,29 +2238,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             reason: format!("Constant op base64 decode failed: {}", e),
                         })?
                 } else {
-                    // Neither 'init' nor 'data' found
                     debug_print!("[DEBUG] Constant operation missing 'data' or 'init' attribute:");
                     debug_print!("  Operation index: {}", idx);
                     debug_print!("  Output operand: {}", output_id);
-                    if let Some(obj) = op.attributes_value().as_object() {
-                        debug_print!(
-                            "  Available attributes: {:?}",
-                            obj.keys().collect::<Vec<_>>()
-                        );
-                    } else {
-                        debug_print!("  Attributes: {:?}", op.attributes_value());
-                    }
-                    debug_print!("  Label: {:?}", op.label);
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
-                        reason: "Constant op missing both 'data' and 'init' attributes".to_string(),
+                        reason: "Constant op missing both 'data' and 'init' attributes (use typed options)".to_string(),
                     });
                 };
 
-                let dtype_str = op
-                    .get_attr("dataType")
-                    .and_then(|v| v.as_str().map(String::from))
-                    .ok_or_else(|| GraphError::ConversionFailed {
+                let dtype_str = dtype_str_opt.ok_or_else(|| GraphError::ConversionFailed {
                         format: "onnx".to_string(),
                         reason: "Constant op missing 'dataType' attribute".to_string(),
                     })?;
@@ -2210,15 +2270,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 };
 
-                let shape: Vec<i64> = op
-                    .get_attr("shape")
-                    .and_then(|v| v.as_array().cloned())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let shape: Vec<i64> = shape_opt.unwrap_or_default();
 
                 initializers.push(TensorProto {
                     name: operand_name(graph, output_id),
@@ -3012,29 +3064,45 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op.output_operand.expect("Single-output operation expected"),
                 );
                 let layout = op
-                    .get_attr("layout")
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "nchw".to_string())
-                    .to_ascii_lowercase();
+                    .attributes
+                    .as_pool2d()
+                    .map(|o| o.layout.to_ascii_lowercase())
+                    .unwrap_or_else(|| "nchw".to_string());
 
                 // ONNX AveragePool does not support dilations. Emulate dilated average pool
                 // (for no-padding cases) with depthwise Conv using sparse kernel taps.
                 let is_avg_pool = op.op_type.eq_ignore_ascii_case("averagepool2d");
-                let dilations = Self::parse_i64_array_any(op, &["dilations", "dilation"])
+                let dilations: Vec<i64> = op
+                    .attributes
+                    .as_pool2d()
+                    .filter(|o| !o.dilations.is_empty())
+                    .map(|o| o.dilations.iter().map(|&u| u as i64).collect())
                     .unwrap_or_else(|| vec![1, 1]);
-                let strides = Self::parse_i64_array_any(op, &["strides", "stride"])
+                let strides: Vec<i64> = op
+                    .attributes
+                    .as_pool2d()
+                    .filter(|o| !o.strides.is_empty())
+                    .map(|o| o.strides.iter().map(|&u| u as i64).collect())
                     .unwrap_or_else(|| vec![1, 1]);
-                let pads = Self::parse_pads_attr(op).unwrap_or_else(|| vec![0, 0, 0, 0]);
-                let kernel_shape = Self::parse_i64_array_any(
-                    op,
-                    &[
-                        "windowDimensions",
-                        "window_dimensions",
-                        "windowdimensions",
-                        "kernelShape",
-                        "kernel_shape",
-                    ],
-                );
+                let pads: Vec<i64> = op.attributes.as_pool2d().map(|o| {
+                    if o.padding.len() == 4 {
+                        vec![
+                            o.padding[0] as i64,
+                            o.padding[2] as i64,
+                            o.padding[1] as i64,
+                            o.padding[3] as i64,
+                        ]
+                    } else if o.padding.is_empty() {
+                        vec![0, 0, 0, 0]
+                    } else {
+                        o.padding.iter().map(|&u| u as i64).collect()
+                    }
+                }).unwrap_or_else(|| vec![0, 0, 0, 0]);
+                let kernel_shape = op
+                    .attributes
+                    .as_pool2d()
+                    .and_then(|o| o.window_dimensions.as_ref())
+                    .map(|v| v.iter().map(|&u| u as i64).collect());
                 let can_emulate_dilated_avg = is_avg_pool
                     && dilations.len() == 2
                     && (dilations[0] > 1 || dilations[1] > 1)
@@ -3043,7 +3111,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     && pads.iter().all(|&p| p == 0)
                     && kernel_shape
                         .as_ref()
-                        .map(|k| k.len() == 2 && k[0] > 0 && k[1] > 0)
+                        .map(|k: &Vec<i64>| k.len() == 2 && k[0] > 0 && k[1] > 0)
                         .unwrap_or(false);
 
                 if can_emulate_dilated_avg {
@@ -3532,8 +3600,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op.output_operand.expect("Single-output operation expected"),
                 );
 
-                let alpha = Self::parse_f64_attr(op.get_attr("alpha").as_ref()).unwrap_or(1.0) as f32;
-                let beta = Self::parse_f64_attr(op.get_attr("beta").as_ref()).unwrap_or(0.0) as f32;
+                let (alpha, beta) = op
+                    .attributes
+                    .as_linear()
+                    .map(|o| (o.alpha as f32, o.beta as f32))
+                    .unwrap_or((1.0, 0.0));
 
                 // Compute in float32 for float16 inputs, then cast back.
                 let (compute_input, needs_cast_back) =
@@ -3627,30 +3698,28 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     operand_name(graph, input_id)
                 };
 
+                let (upper, diagonal) = op
+                    .attributes
+                    .as_triangular()
+                    .map(|o| (o.upper, o.diagonal as i64))
+                    .unwrap_or((false, 0));
                 let mut inputs = vec![input_name];
                 let mut attributes = Vec::new();
-                if let Some(upper) = op.get_attr("upper").and_then(|v| v.as_bool()) {
-                    attributes.push(AttributeProto {
-                        name: "upper".to_string(),
-                        r#type: AttributeType::Int as i32,
-                        i: if upper { 1 } else { 0 },
-                        ..Default::default()
-                    });
-                }
-                if let Some(k) = op
-                    .get_attr("diagonal")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                {
-                    let k_name = format!("{}_k", op_name);
-                    initializers.push(TensorProto {
-                        name: k_name.clone(),
-                        data_type: ProtoDataType::Int64 as i32,
-                        dims: vec![],
-                        int64_data: vec![k],
-                        ..Default::default()
-                    });
-                    inputs.push(k_name);
-                }
+                attributes.push(AttributeProto {
+                    name: "upper".to_string(),
+                    r#type: AttributeType::Int as i32,
+                    i: if upper { 1 } else { 0 },
+                    ..Default::default()
+                });
+                let k_name = format!("{}_k", op_name);
+                initializers.push(TensorProto {
+                    name: k_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![],
+                    int64_data: vec![diagonal],
+                    ..Default::default()
+                });
+                inputs.push(k_name);
 
                 nodes.push(NodeProto {
                     input: inputs,
@@ -3761,25 +3830,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let rank = input_operand.descriptor.shape.len();
                 let rank_i64 = rank as i64;
 
-                let axes = if let Some(axes_val) = op.get_attr("axes") {
-                    let arr = axes_val
-                        .as_array()
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "onnx".to_string(),
-                            reason: "reverse axes must be an array".to_string(),
-                        })?;
-                    let mut parsed = Vec::with_capacity(arr.len());
-                    for value in arr {
-                        let axis = value.as_i64().ok_or_else(|| GraphError::ConversionFailed {
-                            format: "onnx".to_string(),
-                            reason: format!("reverse axis must be integer, got {value}"),
-                        })?;
-                        parsed.push(axis);
-                    }
-                    parsed
-                } else {
-                    (0..rank_i64).collect()
-                };
+                let axes: Vec<i64> = op
+                    .attributes
+                    .as_reverse()
+                    .filter(|o| !o.axes.is_empty())
+                    .map(|o| o.axes.iter().map(|&u| u as i64).collect())
+                    .unwrap_or_else(|| (0..rank_i64).collect());
 
                 let mut normalized_axes = Vec::with_capacity(axes.len());
                 for axis in axes {
@@ -3890,10 +3946,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 })?;
                 let rank = input_operand.descriptor.shape.len() as i64;
 
-                let mut axis = op
-                    .get_attr("axis")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-                    .unwrap_or(0);
+                let opts = op.attributes.as_cumulative_sum();
+                let mut axis = opts.map(|o| o.axis as i64).unwrap_or(0);
                 if rank > 0 && axis < 0 {
                     axis += rank;
                 }
@@ -3916,15 +3970,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                let exclusive = op
-                    .get_attr("exclusive")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let reverse = op
-                    .get_attr("reverse")
-                    .or_else(|| op.get_attr("reversed"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let exclusive = opts.map(|o| o.exclusive).unwrap_or(false);
+                let reverse = opts.map(|o| o.reversed).unwrap_or(false);
 
                 let mut attributes = Vec::new();
                 if exclusive {
@@ -3978,9 +4025,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let final_output_name = operand_name(graph, output_id);
 
                 let hidden_size = op
-                    .get_attr("hiddenSize")
-                    .or_else(|| op.get_attr("hidden_size"))
-                    .and_then(|v| v.as_u64().or_else(|| v.as_i64().map(|x| x as u64)))
+                    .attributes
+                    .as_gru_cell()
+                    .and_then(|o| o.hidden_size.map(|u| u as u64))
                     .or_else(|| {
                         graph.operand(output_id).and_then(|o| {
                             o.descriptor
@@ -4004,10 +4051,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_dtype = Self::data_type_code(hidden_state_operand.descriptor.data_type);
 
                 let gate_layout = op
-                    .get_attr("layout")
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "zrn".to_string())
-                    .to_ascii_lowercase();
+                    .attributes
+                    .as_gru_cell()
+                    .map(|o| o.layout.to_ascii_lowercase())
+                    .unwrap_or_else(|| "zrn".to_string());
                 let needs_rzn_to_zrn = gate_layout == "rzn";
 
                 let axes0_name = format!("{}_axes0", op_name);
@@ -4179,9 +4226,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let gru_y_name = format!("{}_y", op_name);
                 let gru_y_h_name = format!("{}_y_h", op_name);
                 let reset_after = op
-                    .get_attr("resetAfter")
-                    .or_else(|| op.get_attr("reset_after"))
-                    .and_then(|v| v.as_bool())
+                    .attributes
+                    .as_gru_cell()
+                    .map(|o| o.reset_after)
                     .unwrap_or(true);
                 let mut gru_attrs = vec![
                     AttributeProto {
@@ -4198,14 +4245,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     },
                 ];
 
-                if let Some(activations) =
-                    op.get_attr("activations").and_then(|v| v.as_array().cloned())
+                if let Some(activations) = op
+                    .attributes
+                    .as_gru_cell()
+                    .and_then(|o| o.activations.clone())
                 {
-                    let strings: Vec<Vec<u8>> = activations
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .map(|s| s.into_bytes())
-                        .collect();
+                    let strings: Vec<Vec<u8>> =
+                        activations.iter().map(|s| s.clone().into_bytes()).collect();
                     if !strings.is_empty() {
                         gru_attrs.push(AttributeProto {
                             name: "activations".to_string(),
@@ -4251,13 +4297,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                 };
 
-                // Repeats come from attribute; ignore missing second operand and synthesize.
-                let repeats: Vec<i64> =
-op.get_attr("repetitions")
-                        .or_else(|| op.get_attr("repeats"))
-                        .and_then(|v| v.as_array().cloned())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
-                        .ok_or_else(|| {
+                // Repeats come from typed options or attribute.
+                let repeats: Vec<i64> = op
+                    .attributes
+                    .as_tile()
+                    .filter(|o| !o.repetitions.is_empty())
+                    .map(|o| o.repetitions.iter().map(|&u| u as i64).collect())
+                    .ok_or_else(|| {
                             let operand_id =
                                 op.input_operands.get(1).copied().unwrap_or_else(|| {
                                     op.input_operands.first().copied().unwrap_or(0)
@@ -4333,8 +4379,16 @@ op.get_attr("repetitions")
                 let input_dtype = input_operand.descriptor.data_type;
                 let onnx_dtype = Self::data_type_code(input_dtype);
 
-                let min_value_raw = Self::parse_f64_attr(op.get_attr("minValue").as_ref());
-                let max_value_raw = Self::parse_f64_attr(op.get_attr("maxValue").as_ref());
+                let (min_value_raw, max_value_raw) = op
+                    .attributes
+                    .as_clamp()
+                    .map(|o| {
+                        (
+                            Self::parse_f64_attr(o.min_value.as_ref()),
+                            Self::parse_f64_attr(o.max_value.as_ref()),
+                        )
+                    })
+                    .unwrap_or((None, None));
                 let min_value = min_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
                 let max_value = max_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
                 let is_float_input = matches!(input_dtype, DataType::Float32 | DataType::Float16);
@@ -4456,8 +4510,13 @@ op.get_attr("repetitions")
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Handle newShape attribute - can be array (static), string (operand reference), or missing
-                if let Some(new_shape_attr) = op.get_attr("newShape") {
+                // Handle newShape from typed options - can be array (static), string (operand reference), or missing
+                let new_shape_attr = op
+                    .attributes
+                    .as_reshape()
+                    .filter(|o| !o.new_shape.is_empty())
+                    .and_then(|o| serde_json::to_value(o.new_shape.clone()).ok());
+                if let Some(new_shape_attr) = new_shape_attr {
                     if let Some(shape_dims) = Self::parse_dimension_array(&new_shape_attr) {
                         // Case 1: newShape is an array (static or dynamic)
                         let has_dynamic = shape_dims
@@ -4561,15 +4620,14 @@ op.get_attr("repetitions")
 
                 debug_print!("[DEBUG] Processing WebNN expand operation:");
                 debug_print!("  Op name: {}", op_name);
-                if let Some(obj) = op.attributes_value().as_object() {
-                    debug_print!("  Attributes: {:?}", obj.keys().collect::<Vec<_>>());
+                if let Some(o) = op.attributes.as_expand() {
+                    debug_print!("  axes: {:?}, new_shape: {:?}", o.axes, o.new_shape);
                 }
 
-                if let Some(axes_val) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
+                if let Some(opts) = op.attributes.as_expand().filter(|o| !o.axes.is_empty()) {
                     // WebNN expand with axes -> ONNX Unsqueeze
                     // In ONNX opset 13+, axes must be provided as an input tensor, not attribute
-                    let axes_values: Vec<i64> =
-                        axes_val.iter().filter_map(|v| v.as_i64()).collect();
+                    let axes_values: Vec<i64> = opts.axes.iter().map(|&u| u as i64).collect();
 
                     let mut inputs: Vec<String> = op
                         .input_operands
@@ -4601,8 +4659,16 @@ op.get_attr("repetitions")
                         attribute: vec![], // No attributes for Unsqueeze in opset 13+
                         ..Default::default()
                     });
-                } else if let Some(new_shape) =
-                    op.get_attr("newShape").and_then(|v| v.as_array().cloned())
+                } else if let Some(new_shape) = op
+                    .attributes
+                    .as_expand()
+                    .filter(|o| !o.new_shape.is_empty())
+                    .map(|o| {
+                        o.new_shape
+                            .iter()
+                            .map(|&u| serde_json::Value::Number(serde_json::Number::from(u as u64)))
+                            .collect::<Vec<_>>()
+                    })
                 {
                     // WebNN expand with newShape can be either:
                     // 1. ONNX Expand (broadcasting-compatible shapes)
@@ -4805,7 +4871,11 @@ op.get_attr("repetitions")
                     graph,
                     op.output_operand.expect("Single-output operation expected"),
                 );
-                let axes_i64 = Self::parse_i64_array(op, "axes");
+                let axes_i64 = op
+                    .attributes
+                    .as_reduce()
+                    .and_then(|o| o.axes.as_ref())
+                    .map(|v| v.iter().map(|&u| u as i64).collect::<Vec<i64>>());
 
                 // Match existing WPT behavior for empty axes handling.
                 if axes_i64.as_ref().is_some_and(|axes| axes.is_empty()) {
@@ -4889,8 +4959,9 @@ op.get_attr("repetitions")
                 // WebNN default is keepDimensions=false; ONNX default is keepdims=1.
                 // Always set it explicitly to avoid scalar-shape mismatches.
                 let keep_dims = op
-                    .get_attr("keepDimensions")
-                    .and_then(|v| v.as_bool())
+                    .attributes
+                    .as_reduce()
+                    .map(|o| o.keep_dimensions)
                     .unwrap_or(false);
                 attributes.push(AttributeProto {
                     name: "keepdims".to_string(),
@@ -4956,19 +5027,19 @@ op.get_attr("repetitions")
                     });
                     continue;
                 }
-                let pads_data: Vec<i64> = if let (Some(begin), Some(end)) = (
-                    Self::parse_i64_array_any(op, &["beginningPadding", "beginning_padding"]),
-                    Self::parse_i64_array_any(op, &["endingPadding", "ending_padding"]),
-                ) {
-                    let mut combined = begin;
-                    combined.extend(end);
-                    combined
-                } else if let Some(p) =
-                    Self::parse_i64_array_any(op, &["padding", "pads", "paddings"])
-                {
-                    p
-                } else {
-                    vec![0; input_rank.saturating_mul(2)]
+                let pads_data: Vec<i64> = {
+                    let p = op.attributes.as_pad().ok_or_else(|| GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "pad operation requires typed options".to_string(),
+                    })?;
+                    if !p.beginning_padding.is_empty() && !p.ending_padding.is_empty() {
+                        let mut combined: Vec<i64> =
+                            p.beginning_padding.iter().map(|&u| u as i64).collect();
+                        combined.extend(p.ending_padding.iter().map(|&u| u as i64));
+                        combined
+                    } else {
+                        vec![0; input_rank.saturating_mul(2)]
+                    }
                 };
 
                 let pads_name = format!("{}_pads", op_name);
@@ -4982,10 +5053,10 @@ op.get_attr("repetitions")
 
                 let mut inputs = vec![data_input_name, pads_name];
                 let mode = op
-                    .get_attr("mode")
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "constant".to_string())
-                    .to_ascii_lowercase();
+                    .attributes
+                    .as_pad()
+                    .map(|o| o.mode.to_ascii_lowercase())
+                    .unwrap_or_else(|| "constant".to_string());
                 let onnx_mode = match mode.as_str() {
                     "edge" => "edge",
                     "reflection" => "reflect",
@@ -4996,7 +5067,11 @@ op.get_attr("repetitions")
                         .operand(data_input_id)
                         .map(|operand| Self::data_type_code(operand.descriptor.data_type))
                         .unwrap_or(ProtoDataType::Float);
-                    let value = Self::parse_f64_attr(op.get_attr("value").as_ref()).unwrap_or(0.0);
+                    let value = op
+                        .attributes
+                        .as_pad()
+                        .and_then(|o| Self::parse_f64_attr(o.value.as_ref()))
+                        .unwrap_or(0.0);
                     let value_name = format!("{}_pad_value", op_name);
                     let value_tensor = match data_dtype {
                         ProtoDataType::Float => TensorProto {
@@ -5079,7 +5154,11 @@ op.get_attr("repetitions")
                     continue;
                 }
 
-                let axes: Vec<usize> = Self::parse_i64_array(op, "axes")
+                let axes: Vec<usize> = op
+                    .attributes
+                    .as_resample2d()
+                    .filter(|o| o.axes.len() == 2)
+                    .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>())
                     .unwrap_or_else(|| vec![rank as i64 - 2, rank as i64 - 1])
                     .into_iter()
                     .map(|a| {
@@ -5100,20 +5179,16 @@ op.get_attr("repetitions")
                     });
                 }
 
-                let sizes_attr: Option<Vec<i64>> = op.get_attr("sizes").and_then(|v| {
-                    v.as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.as_i64().or_else(|| x.as_u64().map(|u| u as i64)))
-                            .collect::<Vec<_>>()
-                    })
-                });
-                let scales_attr: Option<Vec<f64>> = op.get_attr("scales").and_then(|v| {
-                    v.as_array().map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| Self::parse_f64_attr(Some(x)))
-                            .collect::<Vec<_>>()
-                    })
-                });
+                let sizes_attr: Option<Vec<i64>> = op
+                    .attributes
+                    .as_resample2d()
+                    .and_then(|o| o.sizes.as_ref())
+                    .map(|v| v.iter().map(|&u| u as i64).collect());
+                let scales_attr: Option<Vec<f64>> = op
+                    .attributes
+                    .as_resample2d()
+                    .filter(|o| !o.scales.is_empty())
+                    .map(|o| o.scales.iter().map(|&f| f as f64).collect());
 
                 // sizes takes precedence over scales, matching WebNN expectation.
                 let spatial_sizes = if let Some(sizes) = sizes_attr {
@@ -5168,10 +5243,10 @@ op.get_attr("repetitions")
                 });
 
                 let mode = op
-                    .get_attr("mode")
-                    .and_then(|v| v.as_str().map(String::from))
-                    .unwrap_or_else(|| "nearest-neighbor".to_string())
-                    .to_ascii_lowercase();
+                    .attributes
+                    .as_resample2d()
+                    .map(|o| o.mode.to_ascii_lowercase())
+                    .unwrap_or_else(|| "nearest-neighbor".to_string());
                 let onnx_mode = if mode == "linear" {
                     "linear"
                 } else {
@@ -5236,8 +5311,9 @@ op.get_attr("repetitions")
                         });
                     }
                     let mut axis = op
-                        .get_attr("axis")
-                        .and_then(|v| v.as_i64())
+                        .attributes
+                        .as_gather()
+                        .map(|o| o.axis as i64)
                         .unwrap_or(0);
                     if axis < 0 {
                         axis += rank as i64;
@@ -5390,14 +5466,11 @@ op.get_attr("repetitions")
                     });
 
                     let mut attrs = Vec::new();
-                    if let Some(batch_dims) = op
-                        .get_attr("batchDimensions")
-                        .and_then(|v| v.as_i64())
-                    {
+                    if let Some(batch_dims) = op.attributes.as_gather().and_then(|o| o.batch_dimensions) {
                         attrs.push(AttributeProto {
                             name: "batch_dims".to_string(),
                             r#type: AttributeType::Int as i32,
-                            i: batch_dims,
+                            i: batch_dims as i64,
                             ..Default::default()
                         });
                     }
@@ -5431,24 +5504,24 @@ op.get_attr("repetitions")
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Extract starts, sizes/ends, axes, and steps from attributes
-                let parse_attr_i64 = |key: &str| -> Option<Vec<i64>> {
-                    op.get_attr(key).and_then(|v| {
-                        if let Some(arr) = v.as_array() {
-                            let vals: Vec<i64> = arr.iter().filter_map(|v| v.as_i64()).collect();
-                            if !vals.is_empty() { Some(vals) } else { None }
-                        } else if let Some(name) = v.as_str() {
-                            get_const_i64(name)
-                        } else {
-                            None
-                        }
-                    })
+                // Slice requires typed options (attributes deprecated).
+                let o = op.attributes.as_slice().ok_or_else(|| GraphError::ConversionFailed {
+                    format: "onnx".to_string(),
+                    reason: "slice operation requires typed options".to_string(),
+                })?;
+                let starts: Vec<i64> = o.starts.iter().map(|&u| u as i64).collect();
+                let sizes: Vec<i64> = o.sizes.iter().map(|&u| u as i64).collect();
+                let ends: Vec<i64> = starts
+                    .iter()
+                    .zip(sizes.iter())
+                    .map(|(s, z)| s + z)
+                    .collect();
+                let steps: Option<Vec<i64>> = if o.strides.is_empty() {
+                    None
+                } else {
+                    Some(o.strides.iter().map(|&u| u as i64).collect())
                 };
-
-                let starts = parse_attr_i64("starts").unwrap_or_default();
-                // Prefer explicit ends attribute; fall back to sizes (ONNX/WebNN use sizes)
-                let mut ends = parse_attr_i64("ends").unwrap_or_default();
-                let sizes = parse_attr_i64("sizes").unwrap_or_default();
+                let axes: Option<Vec<i64>> = None;
 
                 // Special case: 0D tensor (scalar) cannot be sliced
                 // Use Identity node instead (ONNX Runtime doesn't support slicing scalars)
@@ -5465,19 +5538,6 @@ op.get_attr("repetitions")
                         ..Default::default()
                     });
                     continue; // Skip the rest of the slice handling
-                }
-
-                let axes = parse_attr_i64("axes");
-
-                let steps = parse_attr_i64("strides");
-
-                // Convert sizes to ends when explicit ends are not provided: ends[i] = starts[i] + sizes[i]
-                if ends.is_empty() {
-                    ends = starts
-                        .iter()
-                        .zip(sizes.iter())
-                        .map(|(start, size)| start + size)
-                        .collect();
                 }
 
                 // Capture length before moving starts
@@ -5544,39 +5604,29 @@ op.get_attr("repetitions")
                     ..Default::default()
                 });
             } else if op.op_type == "split" {
-                // Split operation - multi-output operation
                 let outputs: Vec<String> = op
                     .output_operands
                     .iter()
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Get axis attribute
-                let mut attributes = Vec::new();
-                if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_u64()) {
-                    attributes.push(AttributeProto {
-                        name: "axis".to_string(),
-                        r#type: AttributeType::Int as i32,
-                        i: axis as i64,
-                        ..Default::default()
-                    });
-                }
+                let axis_attr = op.attributes.as_split().map(|o| o.axis as u64).unwrap_or(0);
 
-                // Collect inputs
+                let mut attributes = Vec::new();
+                attributes.push(AttributeProto {
+                    name: "axis".to_string(),
+                    r#type: AttributeType::Int as i32,
+                    i: axis_attr as i64,
+                    ..Default::default()
+                });
+
                 let mut inputs: Vec<String> = op
                     .input_operands
                     .iter()
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Handle splits parameter - either count or sizes. ONNX Split opset 13+ requires
-                // the split sizes as second input when used; empty splits cause ShapeInferenceError.
-                // When splits are omitted, a number (equal count), or empty array, compute sizes
-                // from input shape and output count so we never pass 0 splits.
-                let axis = op
-                    .get_attr("axis")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as usize;
+                let axis = axis_attr as usize;
                 let num_outputs = op.output_operands.len();
                 let input_id = op.input_operands.first().copied().ok_or_else(|| {
                     GraphError::ConversionFailed {
@@ -5593,56 +5643,7 @@ op.get_attr("repetitions")
                     .copied()
                     .unwrap_or(0) as i64;
 
-                let split_sizes: Vec<i64> = if let Some(splits_val) = op.get_attr("splits") {
-                    if let Some(_count) = splits_val.as_u64() {
-                        // Equal splits (stored as number in options) -> compute sizes
-                        (0..num_outputs)
-                            .map(|i| {
-                                let base = dim_at_axis / num_outputs as i64;
-                                let rem = dim_at_axis % num_outputs as i64;
-                                if (i as i64) < rem {
-                                    base + 1
-                                } else {
-                                    base
-                                }
-                            })
-                            .collect()
-                    } else if let Some(sizes) = splits_val.as_array() {
-                        let explicit: Vec<i64> = sizes
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as i64))
-                            .collect();
-                        if !explicit.is_empty() {
-                            explicit
-                        } else {
-                            // Empty array (default/equal splits) -> compute sizes
-                            (0..num_outputs)
-                                .map(|i| {
-                                    let base = dim_at_axis / num_outputs as i64;
-                                    let rem = dim_at_axis % num_outputs as i64;
-                                    if (i as i64) < rem {
-                                        base + 1
-                                    } else {
-                                        base
-                                    }
-                                })
-                                .collect()
-                        }
-                    } else {
-                        (0..num_outputs)
-                            .map(|i| {
-                                let base = dim_at_axis / num_outputs as i64;
-                                let rem = dim_at_axis % num_outputs as i64;
-                                if (i as i64) < rem {
-                                    base + 1
-                                } else {
-                                    base
-                                }
-                            })
-                            .collect()
-                    }
-                } else {
-                    // No splits attr (default options) -> equal split sizes
+                let equal_sizes = || {
                     (0..num_outputs)
                         .map(|i| {
                             let base = dim_at_axis / num_outputs as i64;
@@ -5653,7 +5654,17 @@ op.get_attr("repetitions")
                                 base
                             }
                         })
-                        .collect()
+                        .collect::<Vec<i64>>()
+                };
+
+                let split_sizes: Vec<i64> = if let Some(opts) = op.attributes.as_split() {
+                    if opts.splits.is_empty() {
+                        equal_sizes()
+                    } else {
+                        opts.splits.iter().map(|&u| u as i64).collect()
+                    }
+                } else {
+                    equal_sizes()
                 };
 
                 if !split_sizes.is_empty() {
@@ -5687,8 +5698,9 @@ op.get_attr("repetitions")
 
                 // Get axis parameter (default is 0)
                 let axis = op
-                    .get_attr("axis")
-                    .and_then(|v| v.as_i64())
+                    .attributes
+                    .as_gather()
+                    .map(|o| o.axis as i64)
                     .unwrap_or(0) as usize;
 
                 // Get input shape and dimension size at axis
@@ -5791,14 +5803,20 @@ op.get_attr("repetitions")
                 // Conv2d/ConvTranspose2d operations - handle layout transformations
                 let mut conv_inputs: Vec<String> = Vec::new();
 
-                // Handle input layout (NHWC → NCHW if needed)
-                let input_name = operand_name(graph, op.input_operands[0]);
                 let input_layout = op
-                    .get_attr("inputLayout")
-                    .and_then(|v| v.as_str().map(String::from))
+                    .attributes
+                    .as_conv2d()
+                    .map(|o| o.input_layout.clone())
+                    .or_else(|| {
+                        op.attributes
+                            .as_conv_transpose2d()
+                            .map(|o| o.input_layout.clone())
+                    })
+                    .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "nchw".to_string());
 
-                let transposed_input = if input_layout == "nhwc" {
+                let input_name = operand_name(graph, op.input_operands[0]);
+                let transposed_input = if input_layout.eq_ignore_ascii_case("nhwc") {
                     // Insert Transpose node: NHWC → NCHW
                     let transpose_output = format!("{}_input_transposed", op_name);
                     nodes.push(NodeProto {
@@ -5820,11 +5838,16 @@ op.get_attr("repetitions")
                 };
                 conv_inputs.push(transposed_input);
 
-                // Handle filter layout transformation
-                let filter_name = operand_name(graph, op.input_operands[1]);
                 let filter_layout = op
-                    .get_attr("filterLayout")
-                    .and_then(|v| v.as_str().map(String::from))
+                    .attributes
+                    .as_conv2d()
+                    .map(|o| o.filter_layout.clone())
+                    .or_else(|| {
+                        op.attributes
+                            .as_conv_transpose2d()
+                            .map(|o| o.filter_layout.clone())
+                    })
+                    .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| {
                         if op.op_type == "convTranspose2d" {
                             "iohw".to_string()
@@ -5832,6 +5855,8 @@ op.get_attr("repetitions")
                             "oihw".to_string()
                         }
                     });
+
+                let filter_name = operand_name(graph, op.input_operands[1]);
 
                 let is_transpose = op.op_type == "convTranspose2d";
                 let needs_transpose = if is_transpose {
@@ -5952,8 +5977,8 @@ op.get_attr("repetitions")
                     if rank > 0 {
                         let axis = op
                             .attributes
-                            .get("axis")
-                            .and_then(|v| v.as_i64())
+                            .as_batch_normalization()
+                            .map(|o| o.axis as i64)
                             .unwrap_or(1);
                         let normalized_axis = if axis < 0 {
                             (rank as i64 + axis).max(0) as usize
@@ -6007,9 +6032,16 @@ op.get_attr("repetitions")
                 if op.op_type == "instanceNormalization" {
                     let rank = input_shape.len();
                     let layout = op
-                        .get_attr("layout")
-                        .and_then(|v| v.as_str().map(String::from))
-                        .unwrap_or_else(|| "nchw".to_string())
+                        .attributes
+                        .as_instance_normalization()
+                        .map(|o| {
+                            if o.layout.is_empty() {
+                                "nchw"
+                            } else {
+                                o.layout.as_str()
+                            }
+                        })
+                        .unwrap_or("nchw")
                         .to_ascii_lowercase();
                     if layout == "nhwc" && rank == 4 {
                         let perm = vec![0, 3, 1, 2];
@@ -6037,38 +6069,45 @@ op.get_attr("repetitions")
 
                 let mut inputs: Vec<String> = vec![normalized_input_name.clone()];
 
-                // Scale/bias presence: use hasScale/hasBias from options when present (disambiguates
-                // 2-operand case: only scale vs only bias). Else infer from operand count.
+                // Scale/bias presence: prefer typed options (has_scale/has_bias) when present;
+                // else get_attr; else infer from operand count.
                 let (has_scale, has_bias) = if op.op_type == "batchNormalization" {
                     (
                         op.input_operands.len() > 3,
                         op.input_operands.len() > 4,
                     )
-                } else if op.op_type == "instanceNormalization"
-                    || op.op_type == "layerNormalization"
-                {
-                    let from_attr_scale = op.get_attr("hasScale").and_then(|v| v.as_bool());
-                    let from_attr_bias = op.get_attr("hasBias").and_then(|v| v.as_bool());
+                } else if op.op_type == "instanceNormalization" {
+                    let opts = op.attributes.as_instance_normalization();
                     (
-                        from_attr_scale
+                        opts.and_then(|o| o.has_scale)
                             .unwrap_or_else(|| op.input_operands.len() > 1),
-                        from_attr_bias
+                        opts.and_then(|o| o.has_bias)
+                            .unwrap_or_else(|| op.input_operands.len() > 2),
+                    )
+                } else if op.op_type == "layerNormalization" {
+                    let opts = op.attributes.as_layer_normalization();
+                    (
+                        opts.and_then(|o| o.has_scale)
+                            .unwrap_or_else(|| op.input_operands.len() > 1),
+                        opts.and_then(|o| o.has_bias)
                             .unwrap_or_else(|| op.input_operands.len() > 2),
                     )
                 } else {
-                    (
-                        op.get_attr("hasScale")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                        op.get_attr("hasBias")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false),
-                    )
+                    (false, false)
                 };
 
                 if op.op_type == "layerNormalization" {
                     let rank = input_shape.len();
-                    let axes_raw = op.get_attr("axes").and_then(|v| v.as_array().cloned());
+                    let axes_raw: Option<Vec<serde_json::Value>> = op
+                        .attributes
+                        .as_layer_normalization()
+                        .and_then(|o| o.axes.as_ref().map(|ax| {
+                            ax.iter()
+                                .map(|&u| serde_json::Value::Number(
+                                    serde_json::Number::from(u as u64),
+                                ))
+                                .collect()
+                        }));
                     if rank == 0 {
                         let output_name = operand_name(
                             graph,
@@ -6235,14 +6274,13 @@ op.get_attr("repetitions")
                     // For layer norm, ONNX LayerNormalization expects scale/bias shape to match
                     // X.shape[axis:], i.e., all dimensions from axis to the end
                     let axes = op
-                        .get_attr("axes")
-                        .and_then(|v| v.as_array().cloned())
-                        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect::<Vec<i64>>())
-                        .unwrap_or_else(|| vec![-1]);
+                        .attributes
+                        .as_layer_normalization()
+                        .and_then(|o| o.axes.as_ref().map(|v| v.iter().map(|&u| u as i64).collect::<Vec<_>>()));
 
                     // Get the first axis (ONNX only supports a single axis parameter)
                     let first_axis = layernorm_axis_override
-                        .or_else(|| axes.first().copied())
+                        .or_else(|| axes.and_then(|a| a.first().copied()))
                         .unwrap_or(-1);
                     let actual_axis = if first_axis < 0 {
                         ((normalized_input_shape.len() as i64 + first_axis) as usize)
@@ -6590,8 +6628,13 @@ op.get_attr("repetitions")
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Get axes from attributes and create as input tensor
-                if let Some(axes_i64) = Self::parse_i64_array(op, "axes") {
+                // Get axes from typed options (unsqueeze). Typed options required.
+                let axes_i64 = op
+                    .attributes
+                    .as_unsqueeze()
+                    .filter(|o| !o.axes.is_empty())
+                    .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>());
+                if let Some(axes_i64) = axes_i64 {
                     let axes_name = format!("{}_axes", op_name);
                     inputs.push(axes_name.clone());
 
@@ -7107,10 +7150,12 @@ op.get_attr("repetitions")
                             .output_operand
                             .expect("Single-output operation expected");
                         let type_code: i64 = match op
-                            .get_attr("to")
-                            .and_then(|v| v.as_str().map(String::from))
+                            .attributes
+                            .as_cast()
+                            .map(|o| o.to.to_ascii_lowercase())
+                            .filter(|s| !s.is_empty())
                         {
-                            Some(s) => match s.to_ascii_lowercase().as_str() {
+                            Some(s) => match s.as_str() {
                                 "float32" => ProtoDataType::Float as i64,
                                 "float16" => ProtoDataType::Float16 as i64,
                                 "int32" => ProtoDataType::Int32 as i64,
