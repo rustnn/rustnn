@@ -398,6 +398,23 @@ impl OnnxConverter {
         utils_data_types::webnn_to_onnx(utils_dtype)
     }
 
+    /// Map DataType to ONNX TensorProto.DataType (i32) for graph output value_info.
+    /// Uses explicit ONNX enum values so graph output types match runtime expectations.
+    fn data_type_to_onnx_elem_type(data_type: DataType) -> i32 {
+        match data_type {
+            DataType::Float32 => 1,
+            DataType::Uint8 => 2,
+            DataType::Int8 => 3,
+            DataType::Float16 => 10,
+            DataType::Int32 => 6,
+            DataType::Int64 => 7,
+            DataType::Uint32 => 12,
+            DataType::Uint64 => 13,
+            DataType::Int4 => 22,
+            DataType::Uint4 => 21,
+        }
+    }
+
     fn create_scalar_initializer(name: String, dtype: ProtoDataType, value: f32) -> TensorProto {
         // Convert ProtoDataType to utils DataType
         let utils_dtype = utils_data_types::onnx_proto_to_webnn(dtype)
@@ -481,6 +498,9 @@ impl OnnxConverter {
         }
         if normalized == "maxpool2d" {
             return "MaxPool".to_string();
+        }
+        if normalized == "l2pool2d" {
+            return "LpPool".to_string();
         }
         if normalized == "batchnormalization" {
             return "BatchNormalization".to_string();
@@ -697,12 +717,17 @@ impl OnnxConverter {
             );
         }
         let is_max_pool = op.op_type.eq_ignore_ascii_case("maxpool2d");
-        if is_max_pool && !opts.dilations.is_empty() {
+        let is_l2_pool = op.op_type.eq_ignore_ascii_case("l2pool2d");
+        // MaxPool and LpPool (opset 18+) support dilations
+        if (is_max_pool || is_l2_pool) && !opts.dilations.is_empty() {
             Self::add_ints_attribute(
                 &mut attributes,
                 "dilations",
                 opts.dilations.iter().map(|&u| u as i64).collect(),
             );
+        }
+        if is_l2_pool {
+            Self::add_int_attribute(&mut attributes, "p", 2);
         }
         if !opts.padding.is_empty() {
             let pads: Vec<i64> = if opts.padding.len() == 4 {
@@ -726,6 +751,7 @@ impl OnnxConverter {
                 Some(0)
             }
         };
+        // ceil_mode supported by AveragePool, MaxPool, and LpPool (opset 18+)
         if let Some(cm) = ceil_mode {
             Self::add_int_attribute(&mut attributes, "ceil_mode", cm);
         }
@@ -888,6 +914,9 @@ impl OnnxConverter {
                 };
                 Self::add_ints_attribute(&mut attributes, "pads", pads);
             }
+            if op.op_type.eq_ignore_ascii_case("l2pool2d") {
+                Self::add_int_attribute(&mut attributes, "p", 2);
+            }
         }
         attributes
     }
@@ -924,6 +953,19 @@ impl OnnxConverter {
         output: String,
         to_data_type: ProtoDataType,
     ) -> NodeProto {
+        // Use ONNX TensorProto.DataType enum values so runtimes infer output type correctly.
+        let to_onnx: i64 = match to_data_type {
+            ProtoDataType::Float => 1,
+            ProtoDataType::Uint8 => 2,
+            ProtoDataType::Int8 => 3,
+            ProtoDataType::Float16 => 10,
+            ProtoDataType::Int32 => 6,
+            ProtoDataType::Int64 => 7,
+            ProtoDataType::Uint32 => 12,
+            ProtoDataType::Uint64 => 13,
+            ProtoDataType::Bool => 9,
+            _ => to_data_type as i64,
+        };
         NodeProto {
             input: vec![input],
             output: vec![output],
@@ -932,7 +974,7 @@ impl OnnxConverter {
             attribute: vec![AttributeProto {
                 name: "to".to_string(),
                 r#type: AttributeType::Int as i32,
-                i: to_data_type as i64,
+                i: to_onnx,
                 ..Default::default()
             }],
             ..Default::default()
@@ -1101,8 +1143,8 @@ impl OnnxConverter {
         let (upper, diagonal) = op
             .attributes
             .as_triangular()
-            .map(|opts| (opts.upper, opts.diagonal as i64))
-            .unwrap_or((false, 0));
+            .map(|opts| (opts.upper.unwrap_or(true), opts.diagonal as i64))
+            .unwrap_or((true, 0));
 
         attributes.push(AttributeProto {
             name: "upper".to_string(),
@@ -1324,7 +1366,7 @@ impl OnnxConverter {
             Self::create_conv2d_attributes(op)
         } else if op_type == "convtranspose2d" {
             Self::create_conv_transpose2d_attributes(op)
-        } else if op_type == "averagepool2d" || op_type == "maxpool2d" {
+        } else if op_type == "averagepool2d" || op_type == "maxpool2d" || op_type.eq_ignore_ascii_case("l2pool2d") {
             Self::create_pool2d_attributes(op)
         } else if op_type.starts_with("reduce") {
             Self::create_reduce_attributes(op)
@@ -1393,7 +1435,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
         let mut initializers = Vec::new();
         let mut inputs_val = Vec::new();
         let mut outputs_val = Vec::new();
-        let value_infos = Vec::new();
+        let mut value_infos = Vec::new();
+        // Output operand ids for which we emitted a Cast to float16; graph output type must be float16.
+        let mut output_ids_cast_to_float16 = std::collections::HashSet::new();
         let mut skipped_inputs = std::collections::HashSet::new(); // Track skipped empty KV inputs
         let operand_remapping: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::new(); // Map skipped outputs to replacements
@@ -2606,7 +2650,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let output_name = operand_name(graph, output_id);
                 let onnx_output_dtype = Self::data_type_code(output_dtype);
-                if onnx_output_dtype == ProtoDataType::Int32 {
+                // ORT does not accept native int4/uint4 tensor outputs; keep int32 and set graph output type to int32.
+                let use_identity = onnx_output_dtype == ProtoDataType::Int32
+                    || output_dtype == DataType::Int4
+                    || output_dtype == DataType::Uint4;
+                if use_identity {
                     nodes.push(NodeProto {
                         input: vec![quantized_i32_name],
                         output: vec![output_name],
@@ -2614,6 +2662,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         op_type: "Identity".to_string(),
                         ..Default::default()
                     });
+                    if output_dtype == DataType::Int4 || output_dtype == DataType::Uint4 {
+                        type_overrides.insert(output_id, DataType::Int32);
+                    }
                 } else {
                     nodes.push(NodeProto {
                         input: vec![quantized_i32_name],
@@ -3046,13 +3097,33 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
             if op.op_type.eq_ignore_ascii_case("averagepool2d")
                 || op.op_type.eq_ignore_ascii_case("maxpool2d")
+                || op.op_type.eq_ignore_ascii_case("l2pool2d")
             {
                 let input_id = op.input_operands[0];
+                let output_operand_id =
+                    op.output_operand.expect("Single-output operation expected");
                 let input_name = operand_name(graph, input_id);
-                let output_name = operand_name(
-                    graph,
-                    op.output_operand.expect("Single-output operation expected"),
-                );
+                let output_name = operand_name(graph, output_operand_id);
+                let input_is_float16 = graph
+                    .operand(input_id)
+                    .map(|o| o.descriptor.data_type == DataType::Float16)
+                    .unwrap_or(false);
+                let output_is_float16 = graph
+                    .operand(output_operand_id)
+                    .map(|o| o.descriptor.data_type == DataType::Float16)
+                    .unwrap_or(false)
+                    || input_is_float16;
+                // For float16 output: add explicit Cast (LpPool -> float32 -> Cast -> float16) so the graph
+                // shows a conversion. Mark this output so final pass sets graph output type to float16.
+                let is_l2_pool = op.op_type.eq_ignore_ascii_case("l2pool2d");
+                let l2pool_needs_cast_f16 = is_l2_pool && output_is_float16;
+                if l2pool_needs_cast_f16 {
+                    output_ids_cast_to_float16.insert(output_operand_id);
+                }
+                // When not adding Cast, declare output as float32 so ORT accepts the model
+                if is_l2_pool && output_is_float16 && !l2pool_needs_cast_f16 {
+                    type_overrides.insert(output_operand_id, DataType::Float32);
+                }
                 let layout = op
                     .attributes
                     .as_pool2d()
@@ -3269,8 +3340,20 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     });
 
+                    let transpose_input = if l2pool_needs_cast_f16 {
+                        let nchw_f16 = format!("{}_nchw_f16", op_name);
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_l2pool_cast_f16", op_name),
+                            nchw_output,
+                            nchw_f16.clone(),
+                            ProtoDataType::Float16,
+                        ));
+                        nchw_f16
+                    } else {
+                        nchw_output
+                    };
                     nodes.push(NodeProto {
-                        input: vec![nchw_output],
+                        input: vec![transpose_input],
                         output: vec![output_name],
                         name: format!("{}_to_nhwc", op_name),
                         op_type: "Transpose".to_string(),
@@ -3283,14 +3366,32 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     });
                 } else {
-                    nodes.push(NodeProto {
-                        input: vec![input_name],
-                        output: vec![output_name],
-                        name: op_name.clone(),
-                        op_type: Self::onnx_op_type(&op.op_type),
-                        attribute: attributes,
-                        ..Default::default()
-                    });
+                    if l2pool_needs_cast_f16 {
+                        let l2pool_f32 = format!("{}_l2pool_f32", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![input_name],
+                            output: vec![l2pool_f32.clone()],
+                            name: op_name.clone(),
+                            op_type: Self::onnx_op_type(&op.op_type),
+                            attribute: attributes,
+                            ..Default::default()
+                        });
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_l2pool_cast_f16", op_name),
+                            l2pool_f32,
+                            output_name,
+                            ProtoDataType::Float16,
+                        ));
+                    } else {
+                        nodes.push(NodeProto {
+                            input: vec![input_name],
+                            output: vec![output_name],
+                            name: op_name.clone(),
+                            op_type: Self::onnx_op_type(&op.op_type),
+                            attribute: attributes,
+                            ..Default::default()
+                        });
+                    }
                 }
                 continue;
             }
@@ -3688,13 +3789,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     operand_name(graph, input_id)
                 };
 
+                // WebNN default (options absent or upper not present): upper triangular.
                 let (upper, diagonal) = op
                     .attributes
                     .as_triangular()
-                    .map(|o| (o.upper, o.diagonal as i64))
-                    .unwrap_or((false, 0));
+                    .map(|o| (o.upper.unwrap_or(true), o.diagonal as i64))
+                    .unwrap_or((true, 0));
                 let mut inputs = vec![input_name];
                 let mut attributes = Vec::new();
+                // ONNX Trilu: upper=1 => keep upper triangular, upper=0 => keep lower.
                 attributes.push(AttributeProto {
                     name: "upper".to_string(),
                     r#type: AttributeType::Int as i32,
@@ -3820,11 +3923,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let rank = input_operand.descriptor.shape.len();
                 let rank_i64 = rank as i64;
 
+                // WebNN: axes not present => reverse all; axes=[] => reverse none (identity); axes=[..] => reverse those.
                 let axes: Vec<i64> = op
                     .attributes
                     .as_reverse()
-                    .filter(|o| !o.axes.is_empty())
-                    .map(|o| o.axes.iter().map(|&u| u as i64).collect())
+                    .and_then(|o| {
+                        o.axes.as_ref().map(|ax| ax.iter().map(|&u| u as i64).collect())
+                    })
                     .unwrap_or_else(|| (0..rank_i64).collect());
 
                 let mut normalized_axes = Vec::with_capacity(axes.len());
@@ -4652,6 +4757,764 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ));
                     }
                 }
+            } else if op.op_type.eq_ignore_ascii_case("lstm") {
+                // Full LSTM: input, weight, recurrentWeight, [bias], [recurrentBias], [initialHiddenState], [initialCellState]
+                // ONNX LSTM expects X, W, R, B ([1, 8*hidden_size]), sequence_lens?, initial_h?, initial_c?, P?
+                if op.input_operands.len() < 3 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "lstm requires at least 3 inputs (input, weight, recurrentWeight), got {}",
+                            op.input_operands.len()
+                        ),
+                    });
+                }
+                let input_id = op.input_operands[0];
+                let weight_id = op.input_operands[1];
+                let recurrent_weight_id = op.input_operands[2];
+                let output_ids = op.output_operands_slice();
+                if output_ids.is_empty() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "lstm requires at least one output".to_string(),
+                    });
+                }
+                let input_name = operand_name(graph, input_id);
+                let weight_name = operand_name(graph, weight_id);
+                let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
+                let weight_operand = graph.operand(weight_id).ok_or_else(|| {
+                    Self::invalid_operand("lstm weight lookup", weight_id, Some((op, idx)))
+                })?;
+                let hidden_size = {
+                    let shape = &weight_operand.descriptor.static_or_max_shape();
+                    if shape.len() >= 2 {
+                        let dim = get_static_or_max_size(&weight_operand.descriptor.shape[1]);
+                        if dim > 0 && dim % 4 == 0 {
+                            Some((dim / 4) as u64)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "onnx".to_string(),
+                    reason: "lstm weight shape must be [?, 4*hidden_size, ?]".to_string(),
+                })?;
+                let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
+                let direction = op
+                    .attributes
+                    .as_lstm()
+                    .map(|o| o.direction.to_ascii_lowercase())
+                    .unwrap_or_else(|| "forward".to_string());
+                let direction_str = match direction.as_str() {
+                    "both" | "bidirectional" => "bidirectional",
+                    "backward" => "reverse",
+                    _ => "forward",
+                };
+                let axes0_name = format!("{}_axes0", op_name);
+                initializers.push(TensorProto {
+                    name: axes0_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![0],
+                    ..Default::default()
+                });
+                // Identify optional inputs by name (bias, recurrentBias, initialHiddenState, initialCellState)
+                let mut bias_name = String::new();
+                let mut recurrent_bias_name = String::new();
+                let mut initial_h_operand_id: Option<u32> = None;
+                let mut initial_c_operand_id: Option<u32> = None;
+                for &id in op.input_operands.get(3..).unwrap_or(&[]) {
+                    let name = operand_name(graph, id);
+                    let lower = name.to_lowercase();
+                    if lower.contains("initial") && lower.contains("cell") {
+                        initial_c_operand_id = Some(id);
+                    } else if lower.contains("initial") && lower.contains("hidden") {
+                        initial_h_operand_id = Some(id);
+                    } else if lower.contains("recurrent") && lower.contains("bias") {
+                        recurrent_bias_name = name;
+                    } else if lower.contains("bias") {
+                        bias_name = name;
+                    }
+                }
+                // Zero bias initializers must be [1, 4*H] so Concat(axis=1) with [1,4*H] graph inputs yields [1, 8*H].
+                if bias_name.is_empty() {
+                    let name = format!("{}_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![1, 4 * hidden_size as i64],
+                        0.0,
+                    ));
+                    bias_name = name;
+                }
+                if recurrent_bias_name.is_empty() {
+                    let name = format!("{}_recurrent_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![1, 4 * hidden_size as i64],
+                        0.0,
+                    ));
+                    recurrent_bias_name = name;
+                }
+                // ONNX LSTM B: [num_directions, 8*hidden_size]. WebNN gives bias [1,4*H] and recurrentBias [1,4*H].
+                // Concat on axis 1 -> [1, 8*H] directly (no Reshape -1 to avoid viewer/runtime confusion).
+                let b_2d_name = format!("{}_b_2d", op_name);
+                nodes.push(NodeProto {
+                    input: vec![bias_name.clone(), recurrent_bias_name.clone()],
+                    output: vec![b_2d_name.clone()],
+                    name: format!("{}_combine_biases", op_name),
+                    op_type: "Concat".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("lstm input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let input_rank = input_shape.len();
+                let batch_size = if input_rank == 2 {
+                    input_shape[0] as i64
+                } else {
+                    input_shape.get(1).copied().unwrap_or(1) as i64
+                };
+                let x_seq_name = format!("{}_x_seq", op_name);
+                let w_3d_name = format!("{}_w_3d", op_name);
+                let r_3d_name = format!("{}_r_3d", op_name);
+                let h_3d_name = format!("{}_h_3d", op_name);
+                let c_3d_name = format!("{}_c_3d", op_name);
+                if input_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![input_name.clone(), axes0_name.clone()],
+                        output: vec![x_seq_name.clone()],
+                        name: format!("{}_unsqueeze_x", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![input_name.clone()],
+                        output: vec![x_seq_name.clone()],
+                        name: format!("{}_identity_x", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                }
+                let weight_rank = weight_operand.descriptor.shape.len();
+                let recurrent_operand = graph.operand(recurrent_weight_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "lstm recurrent weight lookup",
+                        recurrent_weight_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let recurrent_rank = recurrent_operand.descriptor.shape.len();
+                let w_3d_final = if weight_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![weight_name.clone(), axes0_name.clone()],
+                        output: vec![w_3d_name.clone()],
+                        name: format!("{}_unsqueeze_w", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    w_3d_name.clone()
+                } else {
+                    weight_name.clone()
+                };
+                let r_3d_final = if recurrent_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![recurrent_weight_name.clone(), axes0_name.clone()],
+                        output: vec![r_3d_name.clone()],
+                        name: format!("{}_unsqueeze_r", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    r_3d_name.clone()
+                } else {
+                    recurrent_weight_name.clone()
+                };
+                // ONNX LSTM initial_h / initial_c must be 3D [num_directions, batch_size, hidden_size] = [1, 2, 2].
+                let (h_3d_final_name, c_3d_final_name) = {
+                    let zero_h = format!("{}_initial_h_zero", op_name);
+                    let zero_c = format!("{}_initial_c_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        zero_h.clone(),
+                        input_dtype,
+                        vec![batch_size, hidden_size as i64],
+                        0.0,
+                    ));
+                    initializers.push(Self::create_vector_initializer(
+                        zero_c.clone(),
+                        input_dtype,
+                        vec![batch_size, hidden_size as i64],
+                        0.0,
+                    ));
+                    let h_name = if let Some(id) = initial_h_operand_id {
+                        operand_name(graph, id)
+                    } else {
+                        zero_h
+                    };
+                    let c_name = if let Some(id) = initial_c_operand_id {
+                        operand_name(graph, id)
+                    } else {
+                        zero_c
+                    };
+                    let h_rank = initial_h_operand_id
+                        .and_then(|id| graph.operand(id))
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(2);
+                    let c_rank = initial_c_operand_id
+                        .and_then(|id| graph.operand(id))
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(2);
+                    if h_rank == 3 {
+                        nodes.push(NodeProto {
+                            input: vec![h_name.clone()],
+                            output: vec![h_3d_name.clone()],
+                            name: format!("{}_identity_h_3d", op_name),
+                            op_type: "Identity".to_string(),
+                            ..Default::default()
+                        });
+                    } else {
+                        nodes.push(NodeProto {
+                            input: vec![h_name.clone(), axes0_name.clone()],
+                            output: vec![h_3d_name.clone()],
+                            name: format!("{}_unsqueeze_h", op_name),
+                            op_type: "Unsqueeze".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                    if c_rank == 3 {
+                        nodes.push(NodeProto {
+                            input: vec![c_name],
+                            output: vec![c_3d_name.clone()],
+                            name: format!("{}_identity_c_3d", op_name),
+                            op_type: "Identity".to_string(),
+                            ..Default::default()
+                        });
+                    } else {
+                        nodes.push(NodeProto {
+                            input: vec![c_name, axes0_name.clone()],
+                            output: vec![c_3d_name.clone()],
+                            name: format!("{}_unsqueeze_c", op_name),
+                            op_type: "Unsqueeze".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                    (h_3d_name.clone(), c_3d_name.clone())
+                };
+                // For bidirectional, ONNX initial_h/initial_c must be [2, batch, hidden]. WebNN sends [1, batch, hidden]; duplicate on axis 0.
+                let (lstm_initial_h_name, lstm_initial_c_name) =
+                    if direction == "both" || direction == "bidirectional" {
+                        let h_bidi = format!("{}_initial_h_bidi", op_name);
+                        let c_bidi = format!("{}_initial_c_bidi", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![h_3d_final_name.clone(), h_3d_final_name.clone()],
+                            output: vec![h_bidi.clone()],
+                            name: format!("{}_concat_initial_h", op_name),
+                            op_type: "Concat".to_string(),
+                            attribute: vec![AttributeProto {
+                                name: "axis".to_string(),
+                                r#type: AttributeType::Int as i32,
+                                i: 0,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        });
+                        nodes.push(NodeProto {
+                            input: vec![c_3d_final_name.clone(), c_3d_final_name.clone()],
+                            output: vec![c_bidi.clone()],
+                            name: format!("{}_concat_initial_c", op_name),
+                            op_type: "Concat".to_string(),
+                            attribute: vec![AttributeProto {
+                                name: "axis".to_string(),
+                                r#type: AttributeType::Int as i32,
+                                i: 0,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        });
+                        (h_bidi, c_bidi)
+                    } else {
+                        (h_3d_final_name, c_3d_final_name)
+                    };
+                let lstm_y_name = format!("{}_y", op_name);
+                let lstm_y_h_name = format!("{}_y_h", op_name);
+                let lstm_y_c_name = format!("{}_y_c", op_name);
+                let mut lstm_attrs = vec![
+                    AttributeProto {
+                        name: "hidden_size".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: hidden_size as i64,
+                        ..Default::default()
+                    },
+                    AttributeProto {
+                        name: "direction".to_string(),
+                        r#type: AttributeType::String as i32,
+                        s: direction_str.as_bytes().to_vec(),
+                        ..Default::default()
+                    },
+                ];
+                if let Some(activations) = op.attributes.as_lstm().and_then(|o| o.activations.clone()) {
+                    let strings: Vec<Vec<u8>> = activations
+                        .iter()
+                        .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
+                        .collect();
+                    if !strings.is_empty() {
+                        let num_directions = if direction == "both" || direction == "bidirectional" {
+                            2
+                        } else {
+                            1
+                        };
+                        let strings: Vec<Vec<u8>> = (0..num_directions)
+                            .flat_map(|_| strings.iter().cloned())
+                            .collect();
+                        lstm_attrs.push(AttributeProto {
+                            name: "activations".to_string(),
+                            r#type: AttributeType::Strings as i32,
+                            strings,
+                            ..Default::default()
+                        });
+                    }
+                }
+                let lstm_inputs = vec![
+                    x_seq_name,
+                    w_3d_final,
+                    r_3d_final,
+                    b_2d_name,
+                    String::new(),
+                    lstm_initial_h_name,
+                    lstm_initial_c_name,
+                ];
+                nodes.push(NodeProto {
+                    input: lstm_inputs,
+                    output: vec![
+                        lstm_y_name.clone(),
+                        lstm_y_h_name.clone(),
+                        lstm_y_c_name.clone(),
+                    ],
+                    name: op_name.clone(),
+                    op_type: "LSTM".to_string(),
+                    attribute: lstm_attrs,
+                    ..Default::default()
+                });
+                // Wire by name: outputs[0]=Y_h, outputs[1]=Y_c, outputs[2]=sequence when returnSequence.
+                let unidirectional = direction != "both" && direction != "bidirectional";
+                let axes1_name = format!("{}_lstm_axes1", op_name);
+                initializers.push(TensorProto {
+                    name: axes1_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![1],
+                    ..Default::default()
+                });
+                let seq_source = if unidirectional {
+                    let seq_after_squeeze = format!("{}_y_squeezed", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![lstm_y_name.clone(), axes1_name.clone()],
+                        output: vec![seq_after_squeeze.clone()],
+                        name: format!("{}_squeeze_y", op_name),
+                        op_type: "Squeeze".to_string(),
+                        ..Default::default()
+                    });
+                    seq_after_squeeze
+                } else {
+                    lstm_y_name.clone()
+                };
+                if output_ids.len() == 1 {
+                    let out_id = output_ids[0];
+                    let out_name = operand_name(graph, out_id);
+                    // Graph JSON often leaves output types as Float32 default; use LSTM weight type when output is float.
+                    let expected_dtype = graph
+                        .operand(out_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    if expected_dtype == ProtoDataType::Float16 {
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_y_h_out", op_name),
+                            lstm_y_h_name,
+                            out_name,
+                            ProtoDataType::Float16,
+                        ));
+                    } else if lstm_y_h_name != out_name {
+                        nodes.push(NodeProto {
+                            input: vec![lstm_y_h_name],
+                            output: vec![out_name],
+                            name: format!("{}_identity_y_h", op_name),
+                            op_type: "Identity".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                } else {
+                    // WPT: lstmOutput1 = sequence (Y), lstmOutput2 = cell state (Y_c), lstmOutput3 = hidden state (Y_h).
+                    // Use out_id in node name so each Identity has a unique name.
+                    for &out_id in output_ids.iter().take(3) {
+                        let out_name = operand_name(graph, out_id);
+                        let (src_name, label) = if out_name.contains("Output1") {
+                            // WebNN LSTM: outputs[0] is always the hidden state from the last time step (Y_h) [1, batch, hidden].
+                            (lstm_y_h_name.clone(), "y")
+                        } else if out_name.contains("Output2") {
+                            // outputs[1] is always the cell state (Y_c).
+                            (lstm_y_c_name.clone(), "y_c")
+                        } else if out_name.contains("Output3") || (output_ids.len() >= 3 && out_id == output_ids[2]) {
+                            // outputs[2] when returnSequence: sequence.
+                            // Unidirectional: seq_source is [steps, batch, hidden]; Unsqueeze(axis=1) → [steps, 1, batch, hidden].
+                            // Bidirectional: seq_source is already [steps, num_directions, batch, hidden]; use as-is (no Unsqueeze).
+                            if unidirectional {
+                                let seq_4d_name = format!("{}_y_seq_4d", op_name);
+                                nodes.push(NodeProto {
+                                    input: vec![seq_source.clone(), axes1_name.clone()],
+                                    output: vec![seq_4d_name.clone()],
+                                    name: format!("{}_unsqueeze_seq_out", op_name),
+                                    op_type: "Unsqueeze".to_string(),
+                                    ..Default::default()
+                                });
+                                (seq_4d_name, "y_seq")
+                            } else {
+                                (seq_source.clone(), "y_seq")
+                            }
+                        } else {
+                            continue;
+                        };
+                        // Graph JSON often leaves output types as Float32 default; use LSTM weight type when output is float.
+                        let expected_dtype = graph
+                            .operand(out_id)
+                            .map(|o| Self::data_type_code(o.descriptor.data_type))
+                            .unwrap_or(input_dtype);
+                        if expected_dtype == ProtoDataType::Float16 {
+                            nodes.push(Self::create_cast_node(
+                                &format!("{}_cast_{}_{}", op_name, label, out_id),
+                                src_name,
+                                out_name,
+                                ProtoDataType::Float16,
+                            ));
+                        } else if src_name != out_name {
+                            nodes.push(NodeProto {
+                                input: vec![src_name],
+                                output: vec![out_name],
+                                name: format!("{}_identity_{}_{}", op_name, label, out_id),
+                                op_type: "Identity".to_string(),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            } else if op.op_type.eq_ignore_ascii_case("lstmcell")
+                || op.op_type.eq_ignore_ascii_case("lstm_cell")
+            {
+                // WebNN lstmCell: input, weight, recurrentWeight, hiddenState, [bias], [recurrentBias], [cellState].
+                // ONNX LSTM: X, W, R, B, sequence_lens?, initial_h?, initial_c? (all 3D where needed).
+                if op.input_operands.len() < 4 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "lstmCell requires at least 4 inputs (input, weight, recurrentWeight, hiddenState), got {}",
+                            op.input_operands.len()
+                        ),
+                    });
+                }
+                let input_id = op.input_operands[0];
+                let weight_id = op.input_operands[1];
+                let recurrent_weight_id = op.input_operands[2];
+                let hidden_state_id = op.input_operands[3];
+                let output_ids = op.output_operands_slice();
+                if output_ids.is_empty() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "lstmCell requires at least one output".to_string(),
+                    });
+                }
+                let input_name = operand_name(graph, input_id);
+                let weight_name = operand_name(graph, weight_id);
+                let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
+                let hidden_state_name = operand_name(graph, hidden_state_id);
+                let output_hidden_name = operand_name(graph, output_ids[0]);
+                let output_cell_name = output_ids.get(1).map(|&id| operand_name(graph, id));
+                let weight_operand = graph.operand(weight_id).ok_or_else(|| {
+                    Self::invalid_operand("lstmCell weight lookup", weight_id, Some((op, idx)))
+                })?;
+                let hidden_size = {
+                    let shape = &weight_operand.descriptor.static_or_max_shape();
+                    if shape.len() >= 2 {
+                        let dim = get_static_or_max_size(&weight_operand.descriptor.shape[1]);
+                        if dim > 0 && dim % 4 == 0 {
+                            Some((dim / 4) as u64)
+                        } else {
+                            let dim0 = get_static_or_max_size(&weight_operand.descriptor.shape[0]);
+                            if dim0 > 0 && dim0 % 4 == 0 {
+                                Some((dim0 / 4) as u64)
+                            } else {
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                }
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "onnx".to_string(),
+                    reason: "lstmCell weight shape must be [?, 4*hidden_size, ?] or [4*hidden_size, ?]".to_string(),
+                })?;
+                let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("lstmCell input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let batch_size = input_shape.first().copied().unwrap_or(1) as i64;
+                // Identify optional inputs by name (bias, recurrentBias, cellState)
+                let mut bias_name = String::new();
+                let mut recurrent_bias_name = String::new();
+                let mut bias_operand_id: Option<u32> = None;
+                let mut recurrent_bias_operand_id: Option<u32> = None;
+                let mut cell_state_operand_id: Option<u32> = None;
+                for &id in op.input_operands.get(4..).unwrap_or(&[]) {
+                    let name = operand_name(graph, id);
+                    let lower = name.to_lowercase();
+                    if lower.contains("cell") && (lower.contains("state") || lower.contains("initial")) {
+                        cell_state_operand_id = Some(id);
+                    } else if lower.contains("recurrent") && lower.contains("bias") {
+                        recurrent_bias_name = name;
+                        recurrent_bias_operand_id = Some(id);
+                    } else if lower.contains("bias") {
+                        bias_name = name;
+                        bias_operand_id = Some(id);
+                    }
+                }
+                let axes0_name = format!("{}_axes0", op_name);
+                initializers.push(TensorProto {
+                    name: axes0_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![0],
+                    ..Default::default()
+                });
+                if bias_name.is_empty() {
+                    let name = format!("{}_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![1, 4 * hidden_size as i64],
+                        0.0,
+                    ));
+                    bias_name = name;
+                }
+                if recurrent_bias_name.is_empty() {
+                    let name = format!("{}_recurrent_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![1, 4 * hidden_size as i64],
+                        0.0,
+                    ));
+                    recurrent_bias_name = name;
+                }
+                // Ensure 2D [1, 4*H] for Concat(axis=1). Graph may give 1D [4*H].
+                let bias_2d = if bias_operand_id.and_then(|id| graph.operand(id)).map(|o| o.descriptor.shape.len()) == Some(1) {
+                    let name = format!("{}_bias_2d", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![bias_name.clone(), axes0_name.clone()],
+                        output: vec![name.clone()],
+                        name: format!("{}_unsqueeze_bias", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    name
+                } else {
+                    bias_name
+                };
+                let recurrent_bias_2d = if recurrent_bias_operand_id.and_then(|id| graph.operand(id)).map(|o| o.descriptor.shape.len()) == Some(1) {
+                    let name = format!("{}_rbias_2d", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![recurrent_bias_name.clone(), axes0_name.clone()],
+                        output: vec![name.clone()],
+                        name: format!("{}_unsqueeze_rbias", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    name
+                } else {
+                    recurrent_bias_name
+                };
+                let b_2d_name = format!("{}_b_2d", op_name);
+                nodes.push(NodeProto {
+                    input: vec![bias_2d, recurrent_bias_2d],
+                    output: vec![b_2d_name.clone()],
+                    name: format!("{}_combine_biases", op_name),
+                    op_type: "Concat".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+                initializers.push(TensorProto {
+                    name: axes0_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![0],
+                    ..Default::default()
+                });
+                let x_seq_name = format!("{}_x_seq", op_name);
+                let w_3d_name = format!("{}_w_3d", op_name);
+                let r_3d_name = format!("{}_r_3d", op_name);
+                let h_3d_name = format!("{}_h_3d", op_name);
+                let c_3d_name = format!("{}_c_3d", op_name);
+                nodes.push(NodeProto {
+                    input: vec![input_name.clone(), axes0_name.clone()],
+                    output: vec![x_seq_name.clone()],
+                    name: format!("{}_unsqueeze_x", op_name),
+                    op_type: "Unsqueeze".to_string(),
+                    ..Default::default()
+                });
+                let weight_rank = weight_operand.descriptor.shape.len();
+                let recurrent_operand = graph.operand(recurrent_weight_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "lstmCell recurrent weight lookup",
+                        recurrent_weight_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let recurrent_rank = recurrent_operand.descriptor.shape.len();
+                if weight_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![weight_name.clone(), axes0_name.clone()],
+                        output: vec![w_3d_name.clone()],
+                        name: format!("{}_unsqueeze_w", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![weight_name.clone()],
+                        output: vec![w_3d_name.clone()],
+                        name: format!("{}_identity_w", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                }
+                if recurrent_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![recurrent_weight_name.clone(), axes0_name.clone()],
+                        output: vec![r_3d_name.clone()],
+                        name: format!("{}_unsqueeze_r", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![recurrent_weight_name.clone()],
+                        output: vec![r_3d_name.clone()],
+                        name: format!("{}_identity_r", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                }
+                // initial_h: hiddenState 2D -> Unsqueeze(axis=0) -> [1, batch, hidden]
+                nodes.push(NodeProto {
+                    input: vec![hidden_state_name.clone(), axes0_name.clone()],
+                    output: vec![h_3d_name.clone()],
+                    name: format!("{}_unsqueeze_h", op_name),
+                    op_type: "Unsqueeze".to_string(),
+                    ..Default::default()
+                });
+                // initial_c: cellState if present else zero; then Unsqueeze(axis=0) -> [1, batch, hidden]
+                let zero_c = format!("{}_initial_c_zero", op_name);
+                initializers.push(Self::create_vector_initializer(
+                    zero_c.clone(),
+                    input_dtype,
+                    vec![batch_size, hidden_size as i64],
+                    0.0,
+                ));
+                let c_source = if let Some(id) = cell_state_operand_id {
+                    operand_name(graph, id)
+                } else {
+                    zero_c
+                };
+                nodes.push(NodeProto {
+                    input: vec![c_source, axes0_name.clone()],
+                    output: vec![c_3d_name.clone()],
+                    name: format!("{}_unsqueeze_c", op_name),
+                    op_type: "Unsqueeze".to_string(),
+                    ..Default::default()
+                });
+                let lstm_y_name = format!("{}_y", op_name);
+                let lstm_y_h_name = format!("{}_y_h", op_name);
+                let lstm_y_c_name = format!("{}_y_c", op_name);
+                let mut lstm_attrs = vec![
+                    AttributeProto {
+                        name: "hidden_size".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: hidden_size as i64,
+                        ..Default::default()
+                    },
+                    AttributeProto {
+                        name: "direction".to_string(),
+                        r#type: AttributeType::String as i32,
+                        s: b"forward".to_vec(),
+                        ..Default::default()
+                    },
+                ];
+                if let Some(activations) = op.attributes.as_lstm_cell().and_then(|o| o.activations.clone()) {
+                    let strings: Vec<Vec<u8>> = activations
+                        .iter()
+                        .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
+                        .collect();
+                    if !strings.is_empty() {
+                        lstm_attrs.push(AttributeProto {
+                            name: "activations".to_string(),
+                            r#type: AttributeType::Strings as i32,
+                            strings,
+                            ..Default::default()
+                        });
+                    }
+                }
+                nodes.push(NodeProto {
+                    input: vec![
+                        x_seq_name,
+                        w_3d_name.clone(),
+                        r_3d_name.clone(),
+                        b_2d_name,
+                        String::new(),
+                        h_3d_name.clone(),
+                        c_3d_name.clone(),
+                    ],
+                    output: vec![
+                        lstm_y_name,
+                        lstm_y_h_name.clone(),
+                        lstm_y_c_name.clone(),
+                    ],
+                    name: op_name.clone(),
+                    op_type: "LSTM".to_string(),
+                    attribute: lstm_attrs,
+                    ..Default::default()
+                });
+                // Single step: squeeze axis 0 from Y_h [1, batch, hidden] -> [batch, hidden]
+                nodes.push(NodeProto {
+                    input: vec![lstm_y_h_name.clone(), axes0_name.clone()],
+                    output: vec![output_hidden_name.clone()],
+                    name: format!("{}_squeeze_h", op_name),
+                    op_type: "Squeeze".to_string(),
+                    ..Default::default()
+                });
+                if let Some(cell_out_name) = output_cell_name {
+                    nodes.push(NodeProto {
+                        input: vec![lstm_y_c_name.clone(), axes0_name.clone()],
+                        output: vec![cell_out_name],
+                        name: format!("{}_squeeze_c", op_name),
+                        op_type: "Squeeze".to_string(),
+                        ..Default::default()
+                    });
+                }
             } else if op.op_type.eq_ignore_ascii_case("grucell")
                 || op.op_type.eq_ignore_ascii_case("gru_cell")
             {
@@ -5032,25 +5895,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                 };
 
-                // Repeats come from typed options or attribute.
+                // Repeats come from typed options or attribute. repetitions=[] or all 1s => no-op (Identity).
                 let repeats: Vec<i64> = op
                     .attributes
                     .as_tile()
-                    .filter(|o| !o.repetitions.is_empty())
                     .map(|o| o.repetitions.iter().map(|&u| u as i64).collect())
-                    .ok_or_else(|| {
-                            let operand_id =
-                                op.input_operands.get(1).copied().unwrap_or_else(|| {
-                                    op.input_operands.first().copied().unwrap_or(0)
-                                });
-                            Self::invalid_operand(
-                                "tile repeats/repetitions attribute",
-                                operand_id,
-                                Some((op, idx)),
-                            )
-                        })?;
+                    .unwrap_or_default();
 
-                // If all repeats are 1, Tile is a no-op. Emit Identity to avoid shape issues.
+                // If no repeats, empty, or all repeats are 1, Tile is a no-op. Emit Identity.
                 if repeats.is_empty() || repeats.iter().all(|&r| r == 1) {
                     nodes.push(NodeProto {
                         input: vec![data_input],
@@ -5592,8 +6444,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
             } else if op.op_type.starts_with("reduce") {
-                // In ONNX opset 13, only ReduceSum supports axes as input tensor.
-                let supports_axes_as_input = matches!(op.op_type.as_str(), "reduceSum");
+                // In ONNX opset 18, reduction ops (ReduceMax, ReduceMin, ReduceMean, etc.) take axes as input, not attribute.
+                let supports_axes_as_input = true;
 
                 // Check if input needs casting (uint32 not supported by ONNX Runtime for some reductions)
                 let input_id = op.input_operands[0];
@@ -6339,12 +7191,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
             } else if op.op_type == "split" {
-                let outputs: Vec<String> = op
-                    .output_operands
-                    .iter()
-                    .map(|id| operand_name(graph, *id))
-                    .collect();
-
                 let axis_attr = op.attributes.as_split().map(|o| o.axis as u64).unwrap_or(0);
 
                 let mut attributes = Vec::new();
@@ -6372,6 +7218,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
                     Self::invalid_operand("split input lookup", input_id, Some((op, idx)))
                 })?;
+                let input_dtype = Self::data_type_code(input_operand.descriptor.data_type);
                 let input_shape = input_operand.descriptor.static_or_max_shape();
                 let dim_at_axis: i64 = input_shape
                     .get(axis)
@@ -6414,14 +7261,45 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     inputs.push(splits_name);
                 }
 
+                // ONNX Split may return float; wire Cast to float16 when graph expects float16.
+                let split_output_names: Vec<String> = (0..num_outputs)
+                    .map(|i| format!("{}_out_{}", op_name, i))
+                    .collect();
                 nodes.push(NodeProto {
                     input: inputs,
-                    output: outputs,
-                    name: op_name,
+                    output: split_output_names.clone(),
+                    name: op_name.clone(),
                     op_type: "Split".to_string(),
                     attribute: attributes,
                     ..Default::default()
                 });
+                // ONNX Split returns float; if input is float16, we must cast every output.
+                let need_cast = input_dtype == ProtoDataType::Float16;
+                for (i, &out_id) in op.output_operands.iter().enumerate() {
+                    let out_name = operand_name(graph, out_id);
+                    let expected_dtype = graph
+                        .operand(out_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    let src = split_output_names[i].clone();
+                    if need_cast || expected_dtype == ProtoDataType::Float16 {
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_{}", op_name, i),
+                            src,
+                            out_name,
+                            ProtoDataType::Float16,
+                        ));
+                        output_ids_cast_to_float16.insert(out_id);
+                    } else if src != out_name {
+                        nodes.push(NodeProto {
+                            input: vec![src],
+                            output: vec![out_name],
+                            name: format!("{}_identity_{}", op_name, i),
+                            op_type: "Identity".to_string(),
+                            ..Default::default()
+                        });
+                    }
+                }
             } else if op.op_type == "gather" {
                 // Gather operation - ONNX only supports int32/int64 indices, need to cast uint32/uint8
                 // Also need to clamp indices to prevent out-of-bounds errors (following Chromium's approach)
@@ -6813,19 +7691,23 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     )
                 } else if op.op_type == "instanceNormalization" {
                     let opts = op.attributes.as_instance_normalization();
+                    // Optional inputs order: [scale?, bias?]. With 2 operands we have [input, bias] or [input, scale];
+                    // infer so that single optional is bias (common for "options.bias" tests).
                     (
                         opts.and_then(|o| o.has_scale)
-                            .unwrap_or_else(|| op.input_operands.len() > 1),
-                        opts.and_then(|o| o.has_bias)
                             .unwrap_or_else(|| op.input_operands.len() > 2),
+                        opts.and_then(|o| o.has_bias)
+                            .unwrap_or_else(|| op.input_operands.len() > 1),
                     )
                 } else if op.op_type == "layerNormalization" {
                     let opts = op.attributes.as_layer_normalization();
+                    // Optional inputs order: [scale?, bias?]. With 2 operands we have [input, bias] or [input, scale];
+                    // infer so that single optional is bias (consistent with instanceNormalization "options.bias" tests).
                     (
                         opts.and_then(|o| o.has_scale)
-                            .unwrap_or_else(|| op.input_operands.len() > 1),
-                        opts.and_then(|o| o.has_bias)
                             .unwrap_or_else(|| op.input_operands.len() > 2),
+                        opts.and_then(|o| o.has_bias)
+                            .unwrap_or_else(|| op.input_operands.len() > 1),
                     )
                 } else {
                     (false, false)
@@ -7581,17 +8463,76 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     inputs.push(operand_name(graph, updates_id));
                 }
 
-                nodes.push(NodeProto {
-                    input: inputs,
-                    output: vec![operand_name(
-                        graph,
-                        op.output_operand.expect("Single-output operation expected"),
-                    )],
-                    name: op_name,
-                    op_type: "ScatterND".to_string(),
-                    attribute: vec![],
-                    ..Default::default()
-                });
+                let output_operand_id =
+                    op.output_operand.expect("ScatterND has single output");
+                let output_name = operand_name(graph, output_operand_id);
+                let data_id = op.input_operands[0];
+                let input_dtype = graph
+                    .operand(data_id)
+                    .map(|o| Self::data_type_code(o.descriptor.data_type))
+                    .unwrap_or(ProtoDataType::Float);
+                let expected_dtype = graph
+                    .operand(output_operand_id)
+                    .map(|o| Self::data_type_code(o.descriptor.data_type))
+                    .unwrap_or(input_dtype);
+                // ONNX ScatterND may output float; cast whenever data or expected output is non-float.
+                let need_cast =
+                    input_dtype != ProtoDataType::Float || expected_dtype != ProtoDataType::Float;
+                let cast_to = if expected_dtype != ProtoDataType::Float {
+                    expected_dtype
+                } else {
+                    input_dtype
+                };
+
+                if need_cast {
+                    let tmp = format!("{}_out", op_name);
+                    nodes.push(NodeProto {
+                        input: inputs,
+                        output: vec![tmp.clone()],
+                        name: op_name.clone(),
+                        op_type: "ScatterND".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_output", op_name),
+                        tmp,
+                        output_name,
+                        cast_to,
+                    ));
+                    // Ensure final pass sets graph output type: float16 uses dedicated set; other types use type_overrides.
+                    if cast_to == ProtoDataType::Float16 {
+                        output_ids_cast_to_float16.insert(output_operand_id);
+                    } else if cast_to != ProtoDataType::Float {
+                        // Use cast target so graph output type matches Cast node output (descriptor may be float32 default).
+                        let dtype = match cast_to {
+                            ProtoDataType::Float16 => DataType::Float16,
+                            ProtoDataType::Int8 => DataType::Int8,
+                            ProtoDataType::Uint8 => DataType::Uint8,
+                            ProtoDataType::Int32 => DataType::Int32,
+                            ProtoDataType::Uint32 => DataType::Uint32,
+                            ProtoDataType::Int64 => DataType::Int64,
+                            ProtoDataType::Uint64 => DataType::Uint64,
+                            _ => DataType::Float32,
+                        };
+                        type_overrides.insert(output_operand_id, dtype);
+                        debug_print!(
+                            "[DEBUG] ScatterND type_override: output_operand_id={} output_name={:?} dtype={:?}",
+                            output_operand_id,
+                            operand_name(graph, output_operand_id),
+                            dtype
+                        );
+                    }
+                } else {
+                    nodes.push(NodeProto {
+                        input: inputs,
+                        output: vec![output_name],
+                        name: op_name,
+                        op_type: "ScatterND".to_string(),
+                        attribute: vec![],
+                        ..Default::default()
+                    });
+                }
             } else {
                 if op.op_type.eq_ignore_ascii_case("where") {
                     let mut inputs: Vec<String> = Vec::with_capacity(3);
@@ -7656,6 +8597,128 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         attribute: Self::create_operation_attributes(op),
                         ..Default::default()
                     });
+                    continue;
+                }
+
+                if op.op_type.eq_ignore_ascii_case("scatterelements") {
+                    // ONNX ScatterElements may output float; cast when data or expected output is non-float.
+                    let output_operand_id =
+                        op.output_operand.expect("ScatterElements has single output");
+                    let output_name = operand_name(graph, output_operand_id);
+                    let data_id = op.input_operands[0];
+                    let input_dtype = graph
+                        .operand(data_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(ProtoDataType::Float);
+                    let expected_dtype = graph
+                        .operand(output_operand_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    let need_cast =
+                        input_dtype != ProtoDataType::Float || expected_dtype != ProtoDataType::Float;
+                    let cast_to = if expected_dtype != ProtoDataType::Float {
+                        expected_dtype
+                    } else {
+                        input_dtype
+                    };
+
+                    let inputs: Vec<String> = op
+                        .input_operands
+                        .iter()
+                        .map(|&id| operand_name(graph, id))
+                        .collect();
+                    let attributes = Self::create_operation_attributes(op);
+
+                    if need_cast {
+                        let tmp = format!("{}_out", op_name);
+                        nodes.push(NodeProto {
+                            input: inputs,
+                            output: vec![tmp.clone()],
+                            name: op_name.clone(),
+                            op_type: Self::onnx_op_type(&op.op_type),
+                            attribute: attributes,
+                            ..Default::default()
+                        });
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_output", op_name),
+                            tmp,
+                            output_name,
+                            cast_to,
+                        ));
+                        if cast_to == ProtoDataType::Float16 {
+                            output_ids_cast_to_float16.insert(output_operand_id);
+                        } else if cast_to != ProtoDataType::Float {
+                            let dtype = match cast_to {
+                                ProtoDataType::Float16 => DataType::Float16,
+                                ProtoDataType::Int8 => DataType::Int8,
+                                ProtoDataType::Uint8 => DataType::Uint8,
+                                ProtoDataType::Int32 => DataType::Int32,
+                                ProtoDataType::Uint32 => DataType::Uint32,
+                                ProtoDataType::Int64 => DataType::Int64,
+                                ProtoDataType::Uint64 => DataType::Uint64,
+                                _ => DataType::Float32,
+                            };
+                            type_overrides.insert(output_operand_id, dtype);
+                        }
+                    } else {
+                        nodes.push(NodeProto {
+                            input: inputs,
+                            output: vec![output_name],
+                            name: op_name,
+                            op_type: Self::onnx_op_type(&op.op_type),
+                            attribute: attributes,
+                            ..Default::default()
+                        });
+                    }
+                    continue;
+                }
+
+                if op.op_type.eq_ignore_ascii_case("roundeven") {
+                    // ONNX Round outputs float; cast to float16 when input or expected output is float16.
+                    let output_operand_id =
+                        op.output_operand.expect("roundEven has single output");
+                    let output_name = operand_name(graph, output_operand_id);
+                    let input_id = op.input_operands[0];
+                    let input_dtype = graph
+                        .operand(input_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(ProtoDataType::Float);
+                    let expected_dtype = graph
+                        .operand(output_operand_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    let need_cast = input_dtype == ProtoDataType::Float16
+                        || expected_dtype == ProtoDataType::Float16;
+
+                    let input_name = operand_name(graph, input_id);
+
+                    if need_cast {
+                        let tmp = format!("{}_out", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![input_name],
+                            output: vec![tmp.clone()],
+                            name: op_name.clone(),
+                            op_type: "Round".to_string(),
+                            attribute: vec![],
+                            ..Default::default()
+                        });
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_output", op_name),
+                            tmp,
+                            output_name,
+                            ProtoDataType::Float16,
+                        ));
+                        output_ids_cast_to_float16.insert(output_operand_id);
+                    } else {
+                        nodes.push(NodeProto {
+                            input: vec![input_name],
+                            output: vec![output_name],
+                            name: op_name,
+                            op_type: "Round".to_string(),
+                            attribute: vec![],
+                            ..Default::default()
+                        });
+                    }
                     continue;
                 }
 
@@ -7924,6 +8987,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         Self::create_operation_attributes(op)
                     };
 
+                    let output_names: Vec<String> = op
+                        .output_operands_slice()
+                        .iter()
+                        .map(|&id| operand_name(graph, id))
+                        .collect();
+                    if output_names.is_empty() {
+                        return Err(Self::invalid_operand(
+                            "operation has no outputs",
+                            idx as u32,
+                            Some((op, idx)),
+                        ));
+                    }
                     nodes.push(NodeProto {
                         input: op
                             .input_operands
@@ -7934,10 +9009,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 operand_name(graph, resolved_id)
                             })
                             .collect(),
-                        output: vec![operand_name(
-                            graph,
-                            op.output_operand.expect("Single-output operation expected"),
-                        )],
+                        output: output_names,
                         name: op_name,
                         op_type: Self::onnx_op_type(&op.op_type),
                         attribute: attributes,
@@ -7945,6 +9017,48 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
             }
+        }
+
+        // Final pass: set each graph output's type so ONNX output ValueInfo matches what we emit.
+        // Prefer: (1) output produced by our Cast-to-float16 -> float16, (2) type_override (e.g. ScatterND Cast to int8), (3) operand descriptor.
+        use crate::protos::onnx::type_proto::Value as TypeProtoValue;
+        for (i, &id) in sorted_outputs.iter().enumerate() {
+            let (desired_type, source) = if output_ids_cast_to_float16.contains(&id) {
+                (DataType::Float16, "output_ids_cast_to_float16")
+            } else if let Some(&dtype) = type_overrides.get(&id) {
+                (dtype, "type_overrides")
+            } else {
+                let t = graph
+                    .operand(id)
+                    .map(|o| o.descriptor.data_type)
+                    .unwrap_or(DataType::Float32);
+                (t, "operand_descriptor")
+            };
+            let elem_type = Self::data_type_to_onnx_elem_type(desired_type);
+            if let Some(vi) = outputs_val.get_mut(i) {
+                let out_name = vi.name.clone();
+                if let Some(tp) = vi.r#type.as_mut() {
+                    if let Some(TypeProtoValue::TensorType(tt)) = tp.value.as_mut() {
+                        tt.elem_type = elem_type;
+                        debug_print!(
+                            "[DEBUG] output type propagation: i={} id={} name={:?} desired_type={:?} elem_type={} source={}",
+                            i,
+                            id,
+                            out_name,
+                            desired_type,
+                            elem_type,
+                            source
+                        );
+                    }
+                }
+            }
+        }
+
+        // Add explicit value_info for every graph output so runtimes (e.g. ORT) see the
+        // declared type for the producer node's output (e.g. Cast -> float16); otherwise
+        // type inference may mark the node output as float and fail against graph.output.
+        for vi in &outputs_val {
+            value_infos.push(vi.clone());
         }
 
         // Add value_info ONLY for operands where we have explicit shape/type tracking
@@ -7985,7 +9099,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             producer_version: "0.1.0".to_string(),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
-                version: 14,            // Opset 14 adds Trilu support
+                version: 18, // Opset 18: LpPool gains ceil_mode and dilations (for l2pool2d)
                 domain: "".to_string(), // Empty string = default ONNX domain
             }],
             ..Default::default()

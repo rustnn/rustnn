@@ -8329,11 +8329,11 @@ impl TrtxConverter {
         let shape = &input_operand.descriptor.shape;
         let rank = shape.len();
 
-        // Get axes to reverse from attributes (if not specified, reverse all axes)
+        // Get axes to reverse: axes not present => all; axes=[] => none; axes=[..] => those.
         let axes_to_reverse: Vec<usize> = operation
             .attributes
             .as_reverse()
-            .map(|o| o.axes.iter().map(|&x| x as usize).collect())
+            .and_then(|o| o.axes.as_ref().map(|ax| ax.iter().map(|&x| x as usize).collect()))
             .unwrap_or_else(|| (0..rank).collect());
 
         // Build slice parameters for negative stride
@@ -8491,7 +8491,7 @@ impl TrtxConverter {
             })?;
 
         let tri_opts = operation.attributes.as_triangular();
-        let upper = tri_opts.map(|o| o.upper).unwrap_or(true);
+        let upper = tri_opts.and_then(|o| o.upper).unwrap_or(true);
         let diagonal = tri_opts.map(|o| o.diagonal).unwrap_or(0);
 
         // Get input shape from graph

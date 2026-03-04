@@ -655,13 +655,14 @@ pub struct MLResample2dOptions {
 }
 
 /// MLReverseOptions. reverse.
+/// axes: omitted => reverse all dimensions; present and [] => reverse none (identity); present and [..] => reverse those axes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReverseOptions {
     #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub axes: Vec<u32>,
+    /// None = not present in JSON => reverse all. Some([]) => axes: [] => identity. Some([..]) => reverse those axes.
+    pub axes: Option<Vec<u32>>,
 }
 
 /// MLSoftmaxOptions. softmax.
@@ -782,13 +783,14 @@ pub struct MLTileOptions {
 }
 
 /// MLTriangularOptions. triangular.
+/// WebNN: when "upper" is not present, default is true (keep upper triangular).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTriangularOptions {
     #[serde(default)]
     pub label: String,
-    #[serde(default)]
-    pub upper: bool,
+    /// None = not present => default true (upper). Some(b) => use b.
+    pub upper: Option<bool>,
     #[serde(default)]
     pub diagonal: i32,
 }

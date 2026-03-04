@@ -951,6 +951,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "gru"
                     | "grucell"
                     | "gru_cell"
+                    | "lstm"
+                    | "lstmcell"
+                    | "lstm_cell"
                     | "cumulativesum"
                     | "cumulative_sum"
                     | "hardsigmoid"
@@ -995,6 +998,14 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 };
                 if let Some(dtype) = output_type {
                     graph.operands[output_id as usize].descriptor.data_type = dtype;
+                    // LSTM has multiple outputs (Y_h, Y_c, optional sequence); all match input type.
+                    if matches!(op_type.as_str(), "lstm" | "lstmcell" | "lstm_cell") {
+                        for &oid in &op.output_operands {
+                            if oid != output_id {
+                                graph.operands[oid as usize].descriptor.data_type = dtype;
+                            }
+                        }
+                    }
                 }
             }
         }
