@@ -948,6 +948,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "gelu"
                     | "linear"
                     | "identity"
+                    | "gru"
                     | "grucell"
                     | "gru_cell"
                     | "cumulativesum"

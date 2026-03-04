@@ -610,8 +610,9 @@ pub struct MLPool2dOptions {
     pub dilations: Vec<u32>,
     #[serde(default)]
     pub layout: String,
-    #[serde(default)]
-    pub output_shape_rounding: String, // "floor" | "ceil"
+    /// "floor" | "ceil". WebNN spec and WPT use "roundingType"; we accept both keys.
+    #[serde(default, alias = "roundingType")]
+    pub output_shape_rounding: String,
     pub output_sizes: Option<Vec<u32>>,
 }
 

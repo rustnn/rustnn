@@ -39,6 +39,17 @@ use webnn_onnx_utils::{
 pub struct OnnxConverter;
 
 impl OnnxConverter {
+    /// Map WebNN recurrent activation name (e.g. "sigmoid", "tanh", "relu") to ONNX GRU/LSTM
+    /// attribute string (e.g. "Sigmoid", "Tanh", "Relu").
+    fn recurrent_activation_to_onnx(name: &str) -> String {
+        match name.to_lowercase().as_str() {
+            "sigmoid" => "Sigmoid".to_string(),
+            "tanh" => "Tanh".to_string(),
+            "relu" => "Relu".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     fn parse_f64_attr(value: Option<&serde_json::Value>) -> Option<f64> {
         let v = value?;
         if let Some(n) = v.as_f64() {
@@ -1387,7 +1398,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
         let operand_remapping: std::collections::HashMap<u32, u32> =
             std::collections::HashMap::new(); // Map skipped outputs to replacements
 
-        for &id in &graph.input_operands {
+        // Sort input operands by name so ONNX model input order is deterministic (alphabetical).
+        // This matches runners that send inputs in key order (e.g. BTreeMap) and executor name-based lookup.
+        let mut sorted_input_operands: Vec<u32> = graph.input_operands.iter().copied().collect();
+        sorted_input_operands.sort_by_key(|&id| {
+            graph
+                .operand(id)
+                .and_then(|o| o.name.as_deref())
+                .unwrap_or("")
+                .to_string()
+        });
+
+        for &id in &sorted_input_operands {
             let operand = graph.operand(id).ok_or_else(|| {
                 debug_print!(
                     "[DEBUG] Missing input operand {} while building ONNX graph",
@@ -1465,34 +1487,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
             std::collections::HashSet::new();
         let mut operand_shapes: std::collections::HashMap<u32, Vec<u32>> =
             std::collections::HashMap::new();
-        let mut name_to_id: std::collections::HashMap<String, u32> =
-            std::collections::HashMap::new();
 
         // Seed operand_shapes with known operand descriptors
         for (idx, operand) in graph.operands.iter().enumerate() {
             if !operand.descriptor.shape.is_empty() {
                 operand_shapes.insert(idx as u32, operand.descriptor.static_or_max_shape());
             }
-            if let Some(name) = &operand.name {
-                name_to_id.insert(name.clone(), idx as u32);
-            }
         }
-
-        // Helper to read constant int64 values by operand name
-        let get_const_i64 = |name: &str| -> Option<Vec<i64>> {
-            let id = name_to_id.get(name)?;
-            let handle = graph.constant_operand_ids_to_handles.get(id)?;
-            let bytes = &handle.data;
-            if bytes.len() % 8 != 0 {
-                return None;
-            }
-            Some(
-                bytes
-                    .chunks(8)
-                    .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-                    .collect(),
-            )
-        };
 
         for op in &graph.operations {
             // Preserve input type for shape-only transforms regardless of shape inference success.
@@ -2023,17 +2024,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
         // Generate nodes, inserting Cast nodes for logic operations
         let mut nodes = Vec::new();
         let mut cast_counter = 0;
-
-        if let Some(opd) = graph.operands.get(34) {
-            debug_print!(
-                "[DEBUG] Operand 34 name={:?} dtype={:?} shape={:?}",
-                opd.name,
-                opd.descriptor.data_type,
-                opd.descriptor.shape
-            );
-        } else {
-            debug_print!("[DEBUG] Operand 34 not present in operands table");
-        }
 
         for (idx, op) in graph.operations.iter().enumerate() {
             // Debug guard: ensure all input operands exist
@@ -3999,6 +3989,669 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     attribute: attributes,
                     ..Default::default()
                 });
+            } else if op.op_type.eq_ignore_ascii_case("gru")
+                && !op.op_type.eq_ignore_ascii_case("grucell")
+                && !op.op_type.eq_ignore_ascii_case("gru_cell")
+            {
+                // Full GRU (multi-step): input, weight, recurrentWeight, [bias], [recurrentBias], [initialHiddenState]
+                // ONNX GRU expects X, W, R, B ([1,6*H]), sequence_lens?, initial_h?
+                if op.input_operands.len() < 3 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "gru requires at least 3 inputs (input, weight, recurrentWeight), got {}",
+                            op.input_operands.len()
+                        ),
+                    });
+                }
+
+                let input_id = op.input_operands[0];
+                let weight_id = op.input_operands[1];
+                let recurrent_weight_id = op.input_operands[2];
+                let output_ids = op.output_operands_slice();
+                let output_id = output_ids.first().copied().ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "gru requires at least one output".to_string(),
+                    }
+                })?;
+                let final_output_name = operand_name(graph, output_id);
+
+                let input_name = operand_name(graph, input_id);
+                let weight_name = operand_name(graph, weight_id);
+                let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
+
+                let weight_operand = graph.operand(weight_id).ok_or_else(|| {
+                    Self::invalid_operand("gru weight lookup", weight_id, Some((op, idx)))
+                })?;
+                let hidden_size = op
+                    .attributes
+                    .as_gru()
+                    .and_then(|o| o.hidden_size.map(|u| u as u64))
+                    .or_else(|| {
+                        let shape = &weight_operand.descriptor.static_or_max_shape();
+                        if shape.len() >= 1 {
+                            let dim = get_static_or_max_size(&weight_operand.descriptor.shape[0]);
+                            if dim > 0 && dim % 3 == 0 {
+                                Some((dim / 3) as u64)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "gru missing hiddenSize or weight shape not [3*hidden_size, ...]".to_string(),
+                    })?;
+
+                let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
+                let gate_layout = op
+                    .attributes
+                    .as_gru()
+                    .map(|o| o.layout.to_ascii_lowercase())
+                    .unwrap_or_else(|| "zrn".to_string());
+                let needs_rzn_to_zrn = gate_layout == "rzn";
+                let direction = op
+                    .attributes
+                    .as_gru()
+                    .map(|o| o.direction.to_ascii_lowercase())
+                    .unwrap_or_else(|| "forward".to_string());
+
+                let axes0_name = format!("{}_axes0", op_name);
+                initializers.push(TensorProto {
+                    name: axes0_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![0],
+                    ..Default::default()
+                });
+                // Gate dimension is axis 1 for W [1,3*H,in], R [1,3*H,H], B [1,3*H].
+                let gate_axis_name = format!("{}_gate_axis", op_name);
+                initializers.push(TensorProto {
+                    name: gate_axis_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![1],
+                    ..Default::default()
+                });
+
+                let make_slice_const =
+                    |suffix: &str, values: Vec<i64>, initializers: &mut Vec<TensorProto>| {
+                        let name = format!("{}_{}", op_name, suffix);
+                        initializers.push(TensorProto {
+                            name: name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![values.len() as i64],
+                            int64_data: values,
+                            ..Default::default()
+                        });
+                        name
+                    };
+
+                let reorder_rzn_gate_chunks = |base_name: &str,
+                                               tensor_name: String,
+                                               nodes: &mut Vec<NodeProto>,
+                                               initializers: &mut Vec<TensorProto>|
+                 -> String {
+                    let mut chunks = Vec::with_capacity(3);
+                    for gate_idx in 0..3 {
+                        let starts_name = make_slice_const(
+                            &format!("{}_slice{}_starts", base_name, gate_idx),
+                            vec![(gate_idx * hidden_size as usize) as i64],
+                            initializers,
+                        );
+                        let ends_name = make_slice_const(
+                            &format!("{}_slice{}_ends", base_name, gate_idx),
+                            vec![((gate_idx + 1) * hidden_size as usize) as i64],
+                            initializers,
+                        );
+                        let steps_name = make_slice_const(
+                            &format!("{}_slice{}_steps", base_name, gate_idx),
+                            vec![1],
+                            initializers,
+                        );
+                        let chunk_name = format!("{}_{}_chunk{}", op_name, base_name, gate_idx);
+                        nodes.push(NodeProto {
+                            input: vec![
+                                tensor_name.clone(),
+                                starts_name,
+                                ends_name,
+                                gate_axis_name.clone(),
+                                steps_name,
+                            ],
+                            output: vec![chunk_name.clone()],
+                            name: format!("{}_{}_slice{}", op_name, base_name, gate_idx),
+                            op_type: "Slice".to_string(),
+                            ..Default::default()
+                        });
+                        chunks.push(chunk_name);
+                    }
+
+                    let reordered_name = format!("{}_{}_zrn", op_name, base_name);
+                    nodes.push(NodeProto {
+                        input: vec![chunks[1].clone(), chunks[0].clone(), chunks[2].clone()],
+                        output: vec![reordered_name.clone()],
+                        name: format!("{}_{}_reorder", op_name, base_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 1,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    reordered_name
+                };
+
+                let w_for_gru = if needs_rzn_to_zrn {
+                    reorder_rzn_gate_chunks("w", weight_name, &mut nodes, &mut initializers)
+                } else {
+                    weight_name
+                };
+                let r_for_gru = if needs_rzn_to_zrn {
+                    reorder_rzn_gate_chunks(
+                        "r",
+                        recurrent_weight_name,
+                        &mut nodes,
+                        &mut initializers,
+                    )
+                } else {
+                    recurrent_weight_name
+                };
+
+                // Optional GRU inputs (indices 3,4,5) may be serialized in any order (e.g. by options key order).
+                // Identify bias, recurrentBias, initialHiddenState by name so we never mix initial_h into the bias Concat.
+                let mut bias_name = String::new();
+                let mut recurrent_bias_name = String::new();
+                let mut initial_h_operand_id: Option<u32> = None;
+                for &id in op.input_operands.get(3..).unwrap_or(&[]) {
+                    let name = operand_name(graph, id);
+                    let lower = name.to_lowercase();
+                    if lower.contains("initial") && lower.contains("hidden") {
+                        initial_h_operand_id = Some(id);
+                    } else if lower.contains("recurrent") && lower.contains("bias") {
+                        recurrent_bias_name = name;
+                    } else if lower.contains("bias") {
+                        bias_name = name;
+                    }
+                }
+                if bias_name.is_empty() {
+                    let name = format!("{}_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![3 * hidden_size as i64],
+                        0.0,
+                    ));
+                    bias_name = name;
+                }
+                if recurrent_bias_name.is_empty() {
+                    let name = format!("{}_recurrent_bias_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![3 * hidden_size as i64],
+                        0.0,
+                    ));
+                    recurrent_bias_name = name;
+                }
+                if needs_rzn_to_zrn {
+                    bias_name =
+                        reorder_rzn_gate_chunks("b", bias_name, &mut nodes, &mut initializers);
+                    recurrent_bias_name = reorder_rzn_gate_chunks(
+                        "rb",
+                        recurrent_bias_name,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                }
+
+                // ONNX GRU expects B with shape [num_directions, 6*hidden_size] = [1, 24].
+                // WebNN may send bias/recurrentBias as 2D (e.g. [1, 12]); flatten to 1D before Concat so result is [24], then Unsqueeze -> [1, 24].
+                let bias_1d_name = format!("{}_bias_1d", op_name);
+                let recurrent_bias_1d_name = format!("{}_recurrent_bias_1d", op_name);
+                let shape_neg1_name = format!("{}_shape_neg1", op_name);
+                initializers.push(TensorProto {
+                    name: shape_neg1_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![-1],
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![bias_name.clone(), shape_neg1_name.clone()],
+                    output: vec![bias_1d_name.clone()],
+                    name: format!("{}_flatten_bias", op_name),
+                    op_type: "Reshape".to_string(),
+                    ..Default::default()
+                });
+                nodes.push(NodeProto {
+                    input: vec![recurrent_bias_name.clone(), shape_neg1_name],
+                    output: vec![recurrent_bias_1d_name.clone()],
+                    name: format!("{}_flatten_recurrent_bias", op_name),
+                    op_type: "Reshape".to_string(),
+                    ..Default::default()
+                });
+
+                let combined_bias_name = format!("{}_combined_bias", op_name);
+                nodes.push(NodeProto {
+                    input: vec![bias_1d_name, recurrent_bias_1d_name],
+                    output: vec![combined_bias_name.clone()],
+                    name: format!("{}_combine_biases", op_name),
+                    op_type: "Concat".to_string(),
+                    attribute: vec![AttributeProto {
+                        name: "axis".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: 0,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                });
+
+                let input_operand = graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("gru input lookup", input_id, Some((op, idx)))
+                })?;
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let input_rank = input_shape.len();
+                // WebNN GRU input: rank 2 [batchSize, inputSize] or rank 3 [steps, batchSize, inputSize].
+                let batch_size = if input_rank == 2 {
+                    input_shape[0] as i64
+                } else {
+                    input_shape.get(1).copied().unwrap_or(1) as i64
+                };
+
+                let x_seq_name = format!("{}_x_seq", op_name);
+                let w_3d_name = format!("{}_w_3d", op_name);
+                let r_3d_name = format!("{}_r_3d", op_name);
+                let b_2d_name = format!("{}_b_2d", op_name);
+                let h_3d_name = format!("{}_h_3d", op_name);
+
+                let weight_rank = weight_operand.descriptor.shape.len();
+                let recurrent_operand = graph.operand(recurrent_weight_id).ok_or_else(|| {
+                    Self::invalid_operand(
+                        "gru recurrent weight lookup",
+                        recurrent_weight_id,
+                        Some((op, idx)),
+                    )
+                })?;
+                let recurrent_rank = recurrent_operand.descriptor.shape.len();
+
+                // ONNX GRU expects X with rank 3: [seq_length, batch_size, input_size].
+                // WebNN GRU input is [steps, batchSize, inputSize] (same as ONNX) or rank 2 [batchSize, inputSize] (single step).
+                if input_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![input_name.clone(), axes0_name.clone()],
+                        output: vec![x_seq_name.clone()],
+                        name: format!("{}_unsqueeze_x", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                } else if input_rank == 3 {
+                    // WebNN already [steps, batch_size, input_size] = ONNX layout; use as-is.
+                    nodes.push(NodeProto {
+                        input: vec![input_name.clone()],
+                        output: vec![x_seq_name.clone()],
+                        name: format!("{}_identity_x", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "gru input must have rank 2 or 3, got {}",
+                            input_rank
+                        ),
+                    });
+                }
+
+                // ONNX GRU expects W and R with rank 3: [num_directions, 3*hidden_size, input_size] or [num_directions, 3*hidden_size, hidden_size].
+                // WebNN may send 2D [3*H, input_size] or already 3D [1, 3*H, input_size]; only Unsqueeze(0) when 2D.
+                let w_3d_final = if weight_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![w_for_gru.clone(), axes0_name.clone()],
+                        output: vec![w_3d_name.clone()],
+                        name: format!("{}_unsqueeze_w", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    w_3d_name.clone()
+                } else {
+                    w_for_gru.clone()
+                };
+                let r_3d_final = if recurrent_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![r_for_gru.clone(), axes0_name.clone()],
+                        output: vec![r_3d_name.clone()],
+                        name: format!("{}_unsqueeze_r", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                    r_3d_name.clone()
+                } else {
+                    r_for_gru.clone()
+                };
+
+                // ONNX GRU B: unidirectional [1, 6*hidden_size], bidirectional [2, 6*hidden_size].
+                // WebNN gives concatenated bias (direction-first or single); we already have combined_bias 1D.
+                if direction == "both" {
+                    let b_shape_name = format!("{}_b_shape_2d", op_name);
+                    initializers.push(TensorProto {
+                        name: b_shape_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![2],
+                        int64_data: vec![2, 6 * hidden_size as i64],
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![combined_bias_name.clone(), b_shape_name],
+                        output: vec![b_2d_name.clone()],
+                        name: format!("{}_reshape_b_2d", op_name),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![combined_bias_name.clone(), axes0_name.clone()],
+                        output: vec![b_2d_name.clone()],
+                        name: format!("{}_unsqueeze_b", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                }
+
+                let (hidden_state_name, hidden_state_rank, hidden_state_needs_reshape, hidden_state_shape_ok_3d) =
+                    if let Some(id) = initial_h_operand_id {
+                        let desc = graph.operand(id);
+                        let rank = desc.map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                        let shape = desc
+                            .map(|o| o.descriptor.static_or_max_shape())
+                            .unwrap_or_default();
+                        // WebNN may serialize initialHiddenState as [1, batch*hidden]; reshape to [1, batch, hidden].
+                        let needs_reshape = rank == 2
+                            && shape.len() >= 2
+                            && shape[0] == 1
+                            && shape[1] as i64 == batch_size * hidden_size as i64;
+                        // Already [1, batch_size, hidden_size] -> use as-is (Identity), no Reshape.
+                        let shape_ok_3d = rank == 3
+                            && shape.len() >= 3
+                            && shape[0] == 1
+                            && shape[1] as i64 == batch_size
+                            && shape[2] as i64 == hidden_size as i64;
+                        (operand_name(graph, id), rank, needs_reshape, shape_ok_3d)
+                    } else {
+                        let name = format!("{}_initial_h_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![batch_size, hidden_size as i64],
+                            0.0,
+                        ));
+                        (name, 2, false, false)
+                    };
+
+                // ONNX initial_h must be 3D [num_directions, batch_size, hidden_size].
+                if hidden_state_needs_reshape {
+                    let shape_1_3_4_name = format!("{}_initial_h_shape", op_name);
+                    initializers.push(TensorProto {
+                        name: shape_1_3_4_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![3],
+                        int64_data: vec![1, batch_size, hidden_size as i64],
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![hidden_state_name.clone(), shape_1_3_4_name],
+                        output: vec![h_3d_name.clone()],
+                        name: format!("{}_reshape_h", op_name),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+                } else if hidden_state_rank == 2 {
+                    nodes.push(NodeProto {
+                        input: vec![hidden_state_name.clone(), axes0_name.clone()],
+                        output: vec![h_3d_name.clone()],
+                        name: format!("{}_unsqueeze_h", op_name),
+                        op_type: "Unsqueeze".to_string(),
+                        ..Default::default()
+                    });
+                } else if hidden_state_shape_ok_3d {
+                    // Rank 3 and already [1, batch_size, hidden_size]: pass through unchanged.
+                    nodes.push(NodeProto {
+                        input: vec![hidden_state_name.clone()],
+                        output: vec![h_3d_name.clone()],
+                        name: format!("{}_identity_h_3d", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    // Rank 3 but wrong layout: Reshape to [1, batch_size, hidden_size].
+                    let shape_h_3d_name = format!("{}_initial_h_shape_3d", op_name);
+                    initializers.push(TensorProto {
+                        name: shape_h_3d_name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![3],
+                        int64_data: vec![1, batch_size, hidden_size as i64],
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![hidden_state_name.clone(), shape_h_3d_name],
+                        output: vec![h_3d_name.clone()],
+                        name: format!("{}_reshape_h_3d", op_name),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+                }
+
+                // For bidirectional, ONNX initial_h must be [2, batch, hidden]. WebNN sends [1, batch, hidden]; duplicate on axis 0.
+                let h_3d_final_name = if direction == "both" {
+                    let h_3d_bidi_name = format!("{}_h_3d_bidi", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![h_3d_name.clone(), h_3d_name.clone()],
+                        output: vec![h_3d_bidi_name.clone()],
+                        name: format!("{}_concat_initial_h", op_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 0,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                    h_3d_bidi_name
+                } else {
+                    h_3d_name.clone()
+                };
+
+                let gru_y_name = format!("{}_y", op_name);
+                let gru_y_h_name = format!("{}_y_h", op_name);
+                // Use explicit returnSequence only. Default false so we output Y_h [1, batch, hidden]; avoid inferring from
+                // shape (e.g. [2,3,4] can be wrong if shape inference assumed sequence).
+                let return_sequence = op
+                    .attributes
+                    .as_gru()
+                    .map(|o| o.return_sequence)
+                    .unwrap_or(false);
+                let reset_after = op
+                    .attributes
+                    .as_gru()
+                    .map(|o| o.reset_after)
+                    .unwrap_or(true);
+                let direction_str = match direction.as_str() {
+                        "backward" => "reverse",
+                        "both" => "bidirectional",
+                        _ => "forward",
+                    };
+
+                let mut gru_attrs = vec![
+                    AttributeProto {
+                        name: "hidden_size".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: hidden_size as i64,
+                        ..Default::default()
+                    },
+                    AttributeProto {
+                        name: "linear_before_reset".to_string(),
+                        r#type: AttributeType::Int as i32,
+                        i: if reset_after { 1 } else { 0 },
+                        ..Default::default()
+                    },
+                    AttributeProto {
+                        name: "direction".to_string(),
+                        r#type: AttributeType::String as i32,
+                        s: direction_str.as_bytes().to_vec(),
+                        ..Default::default()
+                    },
+                ];
+
+                if let Some(activations) = op
+                    .attributes
+                    .as_gru()
+                    .and_then(|o| o.activations.clone())
+                {
+                    let strings: Vec<Vec<u8>> = activations
+                        .iter()
+                        .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
+                        .collect();
+                    if !strings.is_empty() {
+                        // ONNX Runtime expects activations.size() == num_directions * 2 (two gates per direction).
+                        // WebNN gives 2 activations; for bidirectional duplicate them so we have 4.
+                        let num_directions = if direction == "both" { 2 } else { 1 };
+                        let strings: Vec<Vec<u8>> = (0..num_directions)
+                            .flat_map(|_| strings.iter().cloned())
+                            .collect();
+                        gru_attrs.push(AttributeProto {
+                            name: "activations".to_string(),
+                            r#type: AttributeType::Strings as i32,
+                            strings,
+                            ..Default::default()
+                        });
+                    }
+                }
+
+                nodes.push(NodeProto {
+                    input: vec![
+                        x_seq_name,
+                        w_3d_final,
+                        r_3d_final,
+                        b_2d_name,
+                        String::new(),
+                        h_3d_final_name,
+                    ],
+                    output: vec![gru_y_name.clone(), gru_y_h_name.clone()],
+                    name: op_name.clone(),
+                    op_type: "GRU".to_string(),
+                    attribute: gru_attrs,
+                    ..Default::default()
+                });
+
+                // When two outputs and returnSequence: WPT uses gruOutput1 = hidden state (Y_h), gruOutput2 = sequence (Y).
+                // If the first output name ends with '1' (e.g. gruOutput1), wire Y_h -> output_ids[0], Y -> output_ids[1].
+                // Otherwise assume first = sequence, second = last state (WebNN spec order).
+                let (seq_output_id, last_state_output_id) = if return_sequence && output_ids.len() >= 2 {
+                    let name0 = operand_name(graph, output_ids[0]);
+                    if name0.ends_with('1') {
+                        (output_ids[1], output_ids[0])
+                    } else {
+                        (output_ids[0], output_ids[1])
+                    }
+                } else {
+                    (output_id, output_ids.get(1).copied().unwrap_or(output_id))
+                };
+
+                if return_sequence {
+                    let seq_output_name = operand_name(graph, seq_output_id);
+                    let seq_expected_dtype = graph
+                        .operand(seq_output_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    // ONNX GRU Y shape: [seq_len, num_directions, batch, hidden]. When unidirectional and graph expects 3D, squeeze axis 1 to [seq, batch, hidden].
+                    // When graph expects 4D (e.g. [1,1,3,4] or [2,1,3,4]) keep Identity. For direction='both' never squeeze.
+                    let unidirectional = direction != "both";
+                    let seq_rank = graph.operand(seq_output_id).map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                    let squeeze_seq = unidirectional && seq_rank == 3;
+                    let seq_source_name = if squeeze_seq {
+                        let seq_after_squeeze = format!("{}_y_squeezed", op_name);
+                        let axes1_name = format!("{}_axes1", op_name);
+                        initializers.push(TensorProto {
+                            name: axes1_name.clone(),
+                            data_type: ProtoDataType::Int64 as i32,
+                            dims: vec![1],
+                            int64_data: vec![1],
+                            ..Default::default()
+                        });
+                        nodes.push(NodeProto {
+                            input: vec![gru_y_name, axes1_name],
+                            output: vec![seq_after_squeeze.clone()],
+                            name: format!("{}_squeeze_y", op_name),
+                            op_type: "Squeeze".to_string(),
+                            ..Default::default()
+                        });
+                        seq_after_squeeze
+                    } else {
+                        let seq_after_id = format!("{}_y_identity", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![gru_y_name],
+                            output: vec![seq_after_id.clone()],
+                            name: format!("{}_identity_y", op_name),
+                            op_type: "Identity".to_string(),
+                            ..Default::default()
+                        });
+                        seq_after_id
+                    };
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_cast_y_out", op_name),
+                        seq_source_name,
+                        seq_output_name,
+                        seq_expected_dtype,
+                    ));
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![gru_y_h_name.clone()],
+                        output: vec![final_output_name],
+                        name: format!("{}_identity_h", op_name),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                }
+                // Second output: last hidden state Y_h. Only Unsqueeze to [1, 1, batch, hidden] when graph explicitly expects rank 4; otherwise keep Y_h as 3D [num_directions, batch, hidden].
+                // Use Cast to expected output type so float16 graph output is satisfied even when ONNX GRU yields float.
+                if output_ids.len() >= 2 {
+                    let last_state_name = operand_name(graph, last_state_output_id);
+                    let expected_dtype = graph
+                        .operand(last_state_output_id)
+                        .map(|o| Self::data_type_code(o.descriptor.data_type))
+                        .unwrap_or(input_dtype);
+                    let rank = graph.operand(last_state_output_id).map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                    let need_unsqueeze = rank == 4;
+                    if need_unsqueeze {
+                        let y_h_4d_name = format!("{}_y_h_4d", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![gru_y_h_name, axes0_name.clone()],
+                            output: vec![y_h_4d_name.clone()],
+                            name: format!("{}_unsqueeze_y_h_out", op_name),
+                            op_type: "Unsqueeze".to_string(),
+                            ..Default::default()
+                        });
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_y_h_out", op_name),
+                            y_h_4d_name,
+                            last_state_name,
+                            expected_dtype,
+                        ));
+                    } else {
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_y_h_out", op_name),
+                            gru_y_h_name,
+                            last_state_name,
+                            expected_dtype,
+                        ));
+                    }
+                }
             } else if op.op_type.eq_ignore_ascii_case("grucell")
                 || op.op_type.eq_ignore_ascii_case("gru_cell")
             {
@@ -4065,6 +4718,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     int64_data: vec![0],
                     ..Default::default()
                 });
+                let gate_axis_name = format!("{}_gate_axis", op_name);
+                initializers.push(TensorProto {
+                    name: gate_axis_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![1],
+                    int64_data: vec![1],
+                    ..Default::default()
+                });
 
                 let make_slice_const =
                     |suffix: &str, values: Vec<i64>, initializers: &mut Vec<TensorProto>| {
@@ -4107,7 +4768,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 tensor_name.clone(),
                                 starts_name,
                                 ends_name,
-                                axes0_name.clone(),
+                                gate_axis_name.clone(),
                                 steps_name,
                             ],
                             output: vec![chunk_name.clone()],
@@ -4127,7 +4788,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         attribute: vec![AttributeProto {
                             name: "axis".to_string(),
                             r#type: AttributeType::Int as i32,
-                            i: 0,
+                            i: 1,
                             ..Default::default()
                         }],
                         ..Default::default()
@@ -4149,6 +4810,23 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     )
                 } else {
                     recurrent_weight_name
+                };
+
+                let bias_rank = if op.input_operands.len() > 4 {
+                    graph
+                        .operand(op.input_operands[4])
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(1)
+                } else {
+                    1
+                };
+                let recurrent_bias_rank = if op.input_operands.len() > 5 {
+                    graph
+                        .operand(op.input_operands[5])
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(1)
+                } else {
+                    1
                 };
 
                 let mut bias_name = if op.input_operands.len() > 4 {
@@ -4175,7 +4853,30 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                     name
                 };
+
                 if needs_rzn_to_zrn {
+                    if bias_rank == 1 {
+                        let b_2d = format!("{}_b_unsqueeze", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![bias_name.clone(), axes0_name.clone()],
+                            output: vec![b_2d.clone()],
+                            name: format!("{}_unsqueeze_bias_1d", op_name),
+                            op_type: "Unsqueeze".to_string(),
+                            ..Default::default()
+                        });
+                        bias_name = b_2d;
+                    }
+                    if recurrent_bias_rank == 1 {
+                        let rb_2d = format!("{}_rb_unsqueeze", op_name);
+                        nodes.push(NodeProto {
+                            input: vec![recurrent_bias_name.clone(), axes0_name.clone()],
+                            output: vec![rb_2d.clone()],
+                            name: format!("{}_unsqueeze_rb", op_name),
+                            op_type: "Unsqueeze".to_string(),
+                            ..Default::default()
+                        });
+                        recurrent_bias_name = rb_2d;
+                    }
                     bias_name =
                         reorder_rzn_gate_chunks("b", bias_name, &mut nodes, &mut initializers);
                     recurrent_bias_name = reorder_rzn_gate_chunks(
@@ -4187,19 +4888,51 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 let combined_bias_name = format!("{}_combined_bias", op_name);
-                nodes.push(NodeProto {
-                    input: vec![bias_name, recurrent_bias_name],
-                    output: vec![combined_bias_name.clone()],
-                    name: format!("{}_combine_biases", op_name),
-                    op_type: "Concat".to_string(),
-                    attribute: vec![AttributeProto {
-                        name: "axis".to_string(),
-                        r#type: AttributeType::Int as i32,
-                        i: 0,
+                if needs_rzn_to_zrn {
+                    let concat_1_24 = format!("{}_b_concat", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![bias_name, recurrent_bias_name],
+                        output: vec![concat_1_24.clone()],
+                        name: format!("{}_combine_biases", op_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 1,
+                            ..Default::default()
+                        }],
                         ..Default::default()
-                    }],
-                    ..Default::default()
-                });
+                    });
+                    let shape_neg1 = format!("{}_b_flat_shape", op_name);
+                    initializers.push(TensorProto {
+                        name: shape_neg1.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![-1],
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![concat_1_24, shape_neg1],
+                        output: vec![combined_bias_name.clone()],
+                        name: format!("{}_flatten_b", op_name),
+                        op_type: "Reshape".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    nodes.push(NodeProto {
+                        input: vec![bias_name, recurrent_bias_name],
+                        output: vec![combined_bias_name.clone()],
+                        name: format!("{}_combine_biases", op_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 0,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    });
+                }
 
                 let x_seq_name = format!("{}_x_seq", op_name);
                 let w_3d_name = format!("{}_w_3d", op_name);
@@ -4250,8 +4983,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .as_gru_cell()
                     .and_then(|o| o.activations.clone())
                 {
-                    let strings: Vec<Vec<u8>> =
-                        activations.iter().map(|s| s.clone().into_bytes()).collect();
+                    let strings: Vec<Vec<u8>> = activations
+                        .iter()
+                        .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
+                        .collect();
                     if !strings.is_empty() {
                         gru_attrs.push(AttributeProto {
                             name: "activations".to_string(),
@@ -7257,6 +7992,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
         };
 
         let data = model.encode_to_vec();
+
+        let rustnn_debug = std::env::var("RUSTNN_DEBUG").unwrap_or_default();
+        if rustnn_debug == "2" {
+            let out_dir = std::env::var("RUSTNN_DEBUG_ONNX_DIR")
+                .ok()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            let out_path = out_dir.join("debug_webnn_onnx.onnx");
+            let _ = std::fs::create_dir_all(&out_dir);
+            let _ = std::fs::write(&out_path, &data);
+            eprintln!("[DEBUG] Wrote ONNX model to {}", out_path.display());
+        }
 
         Ok(ConvertedGraph {
             format: "onnx",

@@ -243,14 +243,39 @@ fn run_onnx_with_inputs_impl(
         )?;
     }
 
-    // Build input tensors from provided inputs
+    // Build input tensors in the order the ONNX model expects (session.inputs()), looking up by name.
+    // Callers may pass inputs in any order (e.g. alphabetical); matching by name avoids wrong mapping.
+    let inputs_by_name: HashMap<String, OnnxInput> =
+        inputs.into_iter().map(|i| (i.name.clone(), i)).collect();
+    let debug_onnx = std::env::var("RUSTNN_DEBUG").as_deref() == Ok("1");
+    if debug_onnx {
+        eprintln!("[ONNX] session.inputs() order (feed order to runtime):");
+        for (idx, input_info) in session.inputs().iter().enumerate() {
+            eprintln!("  {}: {}", idx, input_info.name());
+        }
+    }
     let mut input_session_values: Vec<SessionInputValue> = Vec::new();
-    for input in inputs {
-        let session_value = match input.data {
+    for input_info in session.inputs().iter() {
+        let name = input_info.name().to_string();
+        let input = inputs_by_name.get(&name).ok_or_else(|| {
+            GraphError::OnnxRuntimeFailed {
+                reason: format!("model expects input '{name}' but it was not provided"),
+            }
+        })?;
+        if debug_onnx {
+            let shape_str = format!("{:?}", input.shape);
+            let preview = match &input.data {
+                TensorData::Float32(d) if d.len() <= 12 => format!("data={:?}", d),
+                TensorData::Float32(d) => format!("len={} first4={:?}", d.len(), &d[..4.min(d.len())]),
+                _ => "".to_string(),
+            };
+            eprintln!("  [ONNX] feeding {} shape={} {}", name, shape_str, preview);
+        }
+        let session_value = match &input.data {
             TensorData::Float32(data) => {
                 let value = if input.shape.contains(&0) {
                     // ort tuple-shape API rejects 0-sized dimensions; ndarray path supports them.
-                    let array = ArrayD::from_shape_vec(IxDyn(&input.shape), data).map_err(|e| {
+                    let array = ArrayD::from_shape_vec(IxDyn(&input.shape), data.clone()).map_err(|e| {
                         GraphError::OnnxRuntimeFailed {
                             reason: format!(
                                 "failed to create float32 ndarray input tensor for {}: {e}",
@@ -267,7 +292,7 @@ fn run_onnx_with_inputs_impl(
                 } else {
                     // Convert shape to i64 for ort compatibility
                     let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                    Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                    Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                         GraphError::OnnxRuntimeFailed {
                             reason: format!(
                                 "failed to create float32 input tensor for {}: {e}",
@@ -297,9 +322,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Int8(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create int8 input tensor for {}: {e}",
@@ -310,9 +334,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Uint8(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create uint8 input tensor for {}: {e}",
@@ -323,9 +346,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Int32(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create int32 input tensor for {}: {e}",
@@ -336,9 +358,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Uint32(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create uint32 input tensor for {}: {e}",
@@ -349,9 +370,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Int64(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create int64 input tensor for {}: {e}",
@@ -362,9 +382,8 @@ fn run_onnx_with_inputs_impl(
                 SessionInputValue::from(value)
             }
             TensorData::Uint64(data) => {
-                // Convert shape to i64 for ort compatibility
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.as_slice(), data)).map_err(|e| {
+                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
                     GraphError::OnnxRuntimeFailed {
                         reason: format!(
                             "failed to create uint64 input tensor for {}: {e}",
