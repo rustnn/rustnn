@@ -158,6 +158,29 @@ const DEFAULT_EPSILON: f32 = 1e-45;
 pub struct CoremlMlProgramConverter;
 
 impl CoremlMlProgramConverter {
+    /// Parse MLNumber values represented as JSON numbers or strings.
+    /// Supports non-finite strings used by WPT/interchange JSON.
+    fn parse_mlnumber_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+        let v = value?;
+        if let Some(n) = v.as_f64() {
+            return Some(n);
+        }
+        let s = v.as_str()?.trim().to_ascii_lowercase();
+        match s.as_str() {
+            "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+            "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+            "nan" => Some(f64::NAN),
+            _ => s.parse::<f64>().ok(),
+        }
+    }
+
+    /// Parse clamp bounds from MLNumber. NaN is treated as "missing bound".
+    fn parse_clamp_bound(value: Option<&serde_json::Value>, default: f64) -> f64 {
+        Self::parse_mlnumber_f64(value)
+            .filter(|v| !v.is_nan())
+            .unwrap_or(default)
+    }
+
     fn mil_dimension_from_graph_dim(dim: &GraphDimension) -> Dimension {
         match dim {
             GraphDimension::Static(v) => Dimension {
@@ -1214,16 +1237,10 @@ impl CoremlMlProgramConverter {
                     .attributes
                     .as_clamp()
                     .map(|o| {
-                        let min = o
-                            .min_value
-                            .as_ref()
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(f64::NEG_INFINITY) as f32;
-                        let max = o
-                            .max_value
-                            .as_ref()
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(f64::INFINITY) as f32;
+                        let min =
+                            Self::parse_clamp_bound(o.min_value.as_ref(), f64::NEG_INFINITY) as f32;
+                        let max =
+                            Self::parse_clamp_bound(o.max_value.as_ref(), f64::INFINITY) as f32;
                         (min, max)
                     })
                     .unwrap_or((f32::NEG_INFINITY, f32::INFINITY));
@@ -1810,7 +1827,7 @@ impl CoremlMlProgramConverter {
                     if !pad.is_empty() {
                         inputs.insert("pad".to_string(), Self::create_immediate_int_array(&pad));
                     }
-                    if let Some(v) = opts.value.as_ref().and_then(|v| v.as_f64()) {
+                    if let Some(v) = Self::parse_mlnumber_f64(opts.value.as_ref()) {
                         inputs.insert(
                             "constant_val".to_string(),
                             Self::create_immediate_float(v as f32),
@@ -2375,14 +2392,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     .as_clamp()
                     .map(|o| {
                         (
-                            o.min_value
-                                .as_ref()
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(f64::NEG_INFINITY),
-                            o.max_value
-                                .as_ref()
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(f64::INFINITY),
+                            Self::parse_clamp_bound(o.min_value.as_ref(), f64::NEG_INFINITY),
+                            Self::parse_clamp_bound(o.max_value.as_ref(), f64::INFINITY),
                         )
                     })
                     .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
@@ -3214,6 +3225,39 @@ mod tests {
         });
 
         graph
+    }
+
+    #[test]
+    fn test_parse_mlnumber_f64_non_finite_strings() {
+        let pos_inf = serde_json::json!("Infinity");
+        let neg_inf = serde_json::json!("-Infinity");
+        let nan = serde_json::json!("NaN");
+        let finite = serde_json::json!("3.5");
+
+        let parsed_pos =
+            CoremlMlProgramConverter::parse_mlnumber_f64(Some(&pos_inf)).expect("parse +inf");
+        assert!(parsed_pos.is_infinite());
+        assert!(parsed_pos.is_sign_positive());
+
+        let parsed_neg =
+            CoremlMlProgramConverter::parse_mlnumber_f64(Some(&neg_inf)).expect("parse -inf");
+        assert!(parsed_neg.is_infinite());
+        assert!(parsed_neg.is_sign_negative());
+
+        let parsed_nan =
+            CoremlMlProgramConverter::parse_mlnumber_f64(Some(&nan)).expect("parse nan");
+        assert!(parsed_nan.is_nan());
+
+        let parsed_finite =
+            CoremlMlProgramConverter::parse_mlnumber_f64(Some(&finite)).expect("parse finite");
+        assert_eq!(parsed_finite, 3.5);
+    }
+
+    #[test]
+    fn test_parse_clamp_bound_nan_uses_default() {
+        let nan = serde_json::json!("NaN");
+        let value = CoremlMlProgramConverter::parse_clamp_bound(Some(&nan), 42.0);
+        assert_eq!(value, 42.0);
     }
 
     #[test]
