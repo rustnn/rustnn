@@ -545,7 +545,12 @@ impl OnnxConverter {
 
     fn infer_pool_ceil_mode_from_output_sizes(op: &Operation, graph: &GraphInfo) -> Option<i64> {
         let opts = op.attributes.as_pool2d()?;
-        let target: Vec<i64> = opts.output_sizes.as_ref()?.iter().map(|&u| u as i64).collect();
+        let target: Vec<i64> = opts
+            .output_sizes
+            .as_ref()?
+            .iter()
+            .map(|&u| u as i64)
+            .collect();
         if target.len() != 2 {
             return None;
         }
@@ -744,12 +749,10 @@ impl OnnxConverter {
         }
         let ceil_mode = if opts.output_sizes.is_some() {
             Self::infer_pool_ceil_mode_from_output_sizes(op, graph)
+        } else if opts.output_shape_rounding.eq_ignore_ascii_case("ceil") {
+            Some(1)
         } else {
-            if opts.output_shape_rounding.eq_ignore_ascii_case("ceil") {
-                Some(1)
-            } else {
-                Some(0)
-            }
+            Some(0)
         };
         // ceil_mode supported by AveragePool, MaxPool, and LpPool (opset 18+)
         if let Some(cm) = ceil_mode {
@@ -926,14 +929,14 @@ impl OnnxConverter {
         let mut attributes = Vec::new();
 
         if let Some(opts) = op.attributes.as_reduce() {
-            if let Some(ref axes) = opts.axes {
-                if !axes.is_empty() {
-                    Self::add_ints_attribute(
-                        &mut attributes,
-                        "axes",
-                        axes.iter().map(|&u| u as i64).collect(),
-                    );
-                }
+            if let Some(ref axes) = opts.axes
+                && !axes.is_empty()
+            {
+                Self::add_ints_attribute(
+                    &mut attributes,
+                    "axes",
+                    axes.iter().map(|&u| u as i64).collect(),
+                );
             }
             Self::add_int_attribute(
                 &mut attributes,
@@ -1030,7 +1033,11 @@ impl OnnxConverter {
     fn create_concat_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
 
-        let axis = op.attributes.as_concat().map(|o| o.axis as i64).unwrap_or(0);
+        let axis = op
+            .attributes
+            .as_concat()
+            .map(|o| o.axis as i64)
+            .unwrap_or(0);
         attributes.push(AttributeProto {
             name: "axis".to_string(),
             r#type: AttributeType::Int as i32,
@@ -1060,7 +1067,11 @@ impl OnnxConverter {
     /// Create ONNX attributes for gather operation
     fn create_gather_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-        let axis = op.attributes.as_gather().map(|o| o.axis as i64).unwrap_or(0);
+        let axis = op
+            .attributes
+            .as_gather()
+            .map(|o| o.axis as i64)
+            .unwrap_or(0);
         attributes.push(AttributeProto {
             name: "axis".to_string(),
             r#type: AttributeType::Int as i32,
@@ -1078,7 +1089,12 @@ impl OnnxConverter {
             .attributes
             .as_transpose()
             .filter(|o| !o.permutation.is_empty())
-            .map(|o| o.permutation.iter().map(|&u| u as i64).collect::<Vec<i64>>());
+            .map(|o| {
+                o.permutation
+                    .iter()
+                    .map(|&u| u as i64)
+                    .collect::<Vec<i64>>()
+            });
         if let Some(perm) = perm {
             Self::add_ints_attribute(&mut attributes, "perm", perm);
         }
@@ -1348,7 +1364,11 @@ impl OnnxConverter {
             .attributes
             .as_batch_normalization()
             .map(|o| o.epsilon as f32)
-            .or_else(|| op.attributes.as_instance_normalization().map(|o| o.epsilon as f32))
+            .or_else(|| {
+                op.attributes
+                    .as_instance_normalization()
+                    .map(|o| o.epsilon as f32)
+            })
             .unwrap_or(1e-5);
         attributes.push(AttributeProto {
             name: "epsilon".to_string(),
@@ -1366,7 +1386,10 @@ impl OnnxConverter {
             Self::create_conv2d_attributes(op)
         } else if op_type == "convtranspose2d" {
             Self::create_conv_transpose2d_attributes(op)
-        } else if op_type == "averagepool2d" || op_type == "maxpool2d" || op_type.eq_ignore_ascii_case("l2pool2d") {
+        } else if op_type == "averagepool2d"
+            || op_type == "maxpool2d"
+            || op_type.eq_ignore_ascii_case("l2pool2d")
+        {
             Self::create_pool2d_attributes(op)
         } else if op_type.starts_with("reduce") {
             Self::create_reduce_attributes(op)
@@ -1444,7 +1467,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
         // Sort input operands by name so ONNX model input order is deterministic (alphabetical).
         // This matches runners that send inputs in key order (e.g. BTreeMap) and executor name-based lookup.
-        let mut sorted_input_operands: Vec<u32> = graph.input_operands.iter().copied().collect();
+        let mut sorted_input_operands: Vec<u32> = graph.input_operands.to_vec();
         sorted_input_operands.sort_by_key(|&id| {
             graph
                 .operand(id)
@@ -1618,7 +1641,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .collect();
                     let axes: Vec<i64> = (0..starts.len() as i64).collect();
 
-                    if !axes.is_empty() && axes.len() == starts.len() && starts.len() == ends.len() {
+                    if !axes.is_empty() && axes.len() == starts.len() && starts.len() == ends.len()
+                    {
                         let steps_vec = strides;
                         let len = axes
                             .len()
@@ -2231,7 +2255,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .iter()
                         .enumerate()
                         .find(|(_, op)| {
-                            op.name.as_deref() == Some(init_ref.as_str()) && op.kind == OperandKind::Constant
+                            op.name.as_deref() == Some(init_ref.as_str())
+                                && op.kind == OperandKind::Constant
                         })
                         .map(|(id, _)| id as u32)
                         .ok_or_else(|| {
@@ -2282,9 +2307,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
 
                 let dtype_str = dtype_str_opt.ok_or_else(|| GraphError::ConversionFailed {
-                        format: "onnx".to_string(),
-                        reason: "Constant op missing 'dataType' attribute".to_string(),
-                    })?;
+                    format: "onnx".to_string(),
+                    reason: "Constant op missing 'dataType' attribute".to_string(),
+                })?;
                 let data_type = match dtype_str.to_ascii_lowercase().as_str() {
                     "float32" => DataType::Float32,
                     "float16" => DataType::Float16,
@@ -3145,20 +3170,24 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .filter(|o| !o.strides.is_empty())
                     .map(|o| o.strides.iter().map(|&u| u as i64).collect())
                     .unwrap_or_else(|| vec![1, 1]);
-                let pads: Vec<i64> = op.attributes.as_pool2d().map(|o| {
-                    if o.padding.len() == 4 {
-                        vec![
-                            o.padding[0] as i64,
-                            o.padding[2] as i64,
-                            o.padding[1] as i64,
-                            o.padding[3] as i64,
-                        ]
-                    } else if o.padding.is_empty() {
-                        vec![0, 0, 0, 0]
-                    } else {
-                        o.padding.iter().map(|&u| u as i64).collect()
-                    }
-                }).unwrap_or_else(|| vec![0, 0, 0, 0]);
+                let pads: Vec<i64> = op
+                    .attributes
+                    .as_pool2d()
+                    .map(|o| {
+                        if o.padding.len() == 4 {
+                            vec![
+                                o.padding[0] as i64,
+                                o.padding[2] as i64,
+                                o.padding[1] as i64,
+                                o.padding[3] as i64,
+                            ]
+                        } else if o.padding.is_empty() {
+                            vec![0, 0, 0, 0]
+                        } else {
+                            o.padding.iter().map(|&u| u as i64).collect()
+                        }
+                    })
+                    .unwrap_or_else(|| vec![0, 0, 0, 0]);
                 let kernel_shape = op
                     .attributes
                     .as_pool2d()
@@ -3365,33 +3394,31 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         }],
                         ..Default::default()
                     });
+                } else if l2pool_needs_cast_f16 {
+                    let l2pool_f32 = format!("{}_l2pool_f32", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![l2pool_f32.clone()],
+                        name: op_name.clone(),
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
+                    nodes.push(Self::create_cast_node(
+                        &format!("{}_l2pool_cast_f16", op_name),
+                        l2pool_f32,
+                        output_name,
+                        ProtoDataType::Float16,
+                    ));
                 } else {
-                    if l2pool_needs_cast_f16 {
-                        let l2pool_f32 = format!("{}_l2pool_f32", op_name);
-                        nodes.push(NodeProto {
-                            input: vec![input_name],
-                            output: vec![l2pool_f32.clone()],
-                            name: op_name.clone(),
-                            op_type: Self::onnx_op_type(&op.op_type),
-                            attribute: attributes,
-                            ..Default::default()
-                        });
-                        nodes.push(Self::create_cast_node(
-                            &format!("{}_l2pool_cast_f16", op_name),
-                            l2pool_f32,
-                            output_name,
-                            ProtoDataType::Float16,
-                        ));
-                    } else {
-                        nodes.push(NodeProto {
-                            input: vec![input_name],
-                            output: vec![output_name],
-                            name: op_name.clone(),
-                            op_type: Self::onnx_op_type(&op.op_type),
-                            attribute: attributes,
-                            ..Default::default()
-                        });
-                    }
+                    nodes.push(NodeProto {
+                        input: vec![input_name],
+                        output: vec![output_name],
+                        name: op_name.clone(),
+                        op_type: Self::onnx_op_type(&op.op_type),
+                        attribute: attributes,
+                        ..Default::default()
+                    });
                 }
                 continue;
             }
@@ -3928,7 +3955,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .attributes
                     .as_reverse()
                     .and_then(|o| {
-                        o.axes.as_ref().map(|ax| ax.iter().map(|&u| u as i64).collect())
+                        o.axes
+                            .as_ref()
+                            .map(|ax| ax.iter().map(|&u| u as i64).collect())
                     })
                     .unwrap_or_else(|| (0..rank_i64).collect());
 
@@ -4114,12 +4143,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let weight_id = op.input_operands[1];
                 let recurrent_weight_id = op.input_operands[2];
                 let output_ids = op.output_operands_slice();
-                let output_id = output_ids.first().copied().ok_or_else(|| {
-                    GraphError::ConversionFailed {
-                        format: "onnx".to_string(),
-                        reason: "gru requires at least one output".to_string(),
-                    }
-                })?;
+                let output_id =
+                    output_ids
+                        .first()
+                        .copied()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: "gru requires at least one output".to_string(),
+                        })?;
                 let final_output_name = operand_name(graph, output_id);
 
                 let input_name = operand_name(graph, input_id);
@@ -4135,9 +4166,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .and_then(|o| o.hidden_size.map(|u| u as u64))
                     .or_else(|| {
                         let shape = &weight_operand.descriptor.static_or_max_shape();
-                        if shape.len() >= 1 {
+                        if !shape.is_empty() {
                             let dim = get_static_or_max_size(&weight_operand.descriptor.shape[0]);
-                            if dim > 0 && dim % 3 == 0 {
+                            if dim > 0 && dim.is_multiple_of(3) {
                                 Some((dim / 3) as u64)
                             } else {
                                 None
@@ -4148,7 +4179,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     })
                     .ok_or_else(|| GraphError::ConversionFailed {
                         format: "onnx".to_string(),
-                        reason: "gru missing hiddenSize or weight shape not [3*hidden_size, ...]".to_string(),
+                        reason: "gru missing hiddenSize or weight shape not [3*hidden_size, ...]"
+                            .to_string(),
                     })?;
 
                 let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
@@ -4406,10 +4438,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 } else {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
-                        reason: format!(
-                            "gru input must have rank 2 or 3, got {}",
-                            input_rank
-                        ),
+                        reason: format!("gru input must have rank 2 or 3, got {}", input_rank),
                     });
                 }
 
@@ -4468,35 +4497,39 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
 
-                let (hidden_state_name, hidden_state_rank, hidden_state_needs_reshape, hidden_state_shape_ok_3d) =
-                    if let Some(id) = initial_h_operand_id {
-                        let desc = graph.operand(id);
-                        let rank = desc.map(|o| o.descriptor.shape.len()).unwrap_or(0);
-                        let shape = desc
-                            .map(|o| o.descriptor.static_or_max_shape())
-                            .unwrap_or_default();
-                        // WebNN may serialize initialHiddenState as [1, batch*hidden]; reshape to [1, batch, hidden].
-                        let needs_reshape = rank == 2
-                            && shape.len() >= 2
-                            && shape[0] == 1
-                            && shape[1] as i64 == batch_size * hidden_size as i64;
-                        // Already [1, batch_size, hidden_size] -> use as-is (Identity), no Reshape.
-                        let shape_ok_3d = rank == 3
-                            && shape.len() >= 3
-                            && shape[0] == 1
-                            && shape[1] as i64 == batch_size
-                            && shape[2] as i64 == hidden_size as i64;
-                        (operand_name(graph, id), rank, needs_reshape, shape_ok_3d)
-                    } else {
-                        let name = format!("{}_initial_h_zero", op_name);
-                        initializers.push(Self::create_vector_initializer(
-                            name.clone(),
-                            input_dtype,
-                            vec![batch_size, hidden_size as i64],
-                            0.0,
-                        ));
-                        (name, 2, false, false)
-                    };
+                let (
+                    hidden_state_name,
+                    hidden_state_rank,
+                    hidden_state_needs_reshape,
+                    hidden_state_shape_ok_3d,
+                ) = if let Some(id) = initial_h_operand_id {
+                    let desc = graph.operand(id);
+                    let rank = desc.map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                    let shape = desc
+                        .map(|o| o.descriptor.static_or_max_shape())
+                        .unwrap_or_default();
+                    // WebNN may serialize initialHiddenState as [1, batch*hidden]; reshape to [1, batch, hidden].
+                    let needs_reshape = rank == 2
+                        && shape.len() >= 2
+                        && shape[0] == 1
+                        && shape[1] as i64 == batch_size * hidden_size as i64;
+                    // Already [1, batch_size, hidden_size] -> use as-is (Identity), no Reshape.
+                    let shape_ok_3d = rank == 3
+                        && shape.len() >= 3
+                        && shape[0] == 1
+                        && shape[1] as i64 == batch_size
+                        && shape[2] as i64 == hidden_size as i64;
+                    (operand_name(graph, id), rank, needs_reshape, shape_ok_3d)
+                } else {
+                    let name = format!("{}_initial_h_zero", op_name);
+                    initializers.push(Self::create_vector_initializer(
+                        name.clone(),
+                        input_dtype,
+                        vec![batch_size, hidden_size as i64],
+                        0.0,
+                    ));
+                    (name, 2, false, false)
+                };
 
                 // ONNX initial_h must be 3D [num_directions, batch_size, hidden_size].
                 if hidden_state_needs_reshape {
@@ -4587,10 +4620,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|o| o.reset_after)
                     .unwrap_or(true);
                 let direction_str = match direction.as_str() {
-                        "backward" => "reverse",
-                        "both" => "bidirectional",
-                        _ => "forward",
-                    };
+                    "backward" => "reverse",
+                    "both" => "bidirectional",
+                    _ => "forward",
+                };
 
                 let mut gru_attrs = vec![
                     AttributeProto {
@@ -4613,10 +4646,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     },
                 ];
 
-                if let Some(activations) = op
-                    .attributes
-                    .as_gru()
-                    .and_then(|o| o.activations.clone())
+                if let Some(activations) =
+                    op.attributes.as_gru().and_then(|o| o.activations.clone())
                 {
                     let strings: Vec<Vec<u8>> = activations
                         .iter()
@@ -4657,16 +4688,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // When two outputs and returnSequence: WPT uses gruOutput1 = hidden state (Y_h), gruOutput2 = sequence (Y).
                 // If the first output name ends with '1' (e.g. gruOutput1), wire Y_h -> output_ids[0], Y -> output_ids[1].
                 // Otherwise assume first = sequence, second = last state (WebNN spec order).
-                let (seq_output_id, last_state_output_id) = if return_sequence && output_ids.len() >= 2 {
-                    let name0 = operand_name(graph, output_ids[0]);
-                    if name0.ends_with('1') {
-                        (output_ids[1], output_ids[0])
+                let (seq_output_id, last_state_output_id) =
+                    if return_sequence && output_ids.len() >= 2 {
+                        let name0 = operand_name(graph, output_ids[0]);
+                        if name0.ends_with('1') {
+                            (output_ids[1], output_ids[0])
+                        } else {
+                            (output_ids[0], output_ids[1])
+                        }
                     } else {
-                        (output_ids[0], output_ids[1])
-                    }
-                } else {
-                    (output_id, output_ids.get(1).copied().unwrap_or(output_id))
-                };
+                        (output_id, output_ids.get(1).copied().unwrap_or(output_id))
+                    };
 
                 if return_sequence {
                     let seq_output_name = operand_name(graph, seq_output_id);
@@ -4677,7 +4709,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     // ONNX GRU Y shape: [seq_len, num_directions, batch, hidden]. When unidirectional and graph expects 3D, squeeze axis 1 to [seq, batch, hidden].
                     // When graph expects 4D (e.g. [1,1,3,4] or [2,1,3,4]) keep Identity. For direction='both' never squeeze.
                     let unidirectional = direction != "both";
-                    let seq_rank = graph.operand(seq_output_id).map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                    let seq_rank = graph
+                        .operand(seq_output_id)
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(0);
                     let squeeze_seq = unidirectional && seq_rank == 3;
                     let seq_source_name = if squeeze_seq {
                         let seq_after_squeeze = format!("{}_y_squeezed", op_name);
@@ -4731,7 +4766,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .operand(last_state_output_id)
                         .map(|o| Self::data_type_code(o.descriptor.data_type))
                         .unwrap_or(input_dtype);
-                    let rank = graph.operand(last_state_output_id).map(|o| o.descriptor.shape.len()).unwrap_or(0);
+                    let rank = graph
+                        .operand(last_state_output_id)
+                        .map(|o| o.descriptor.shape.len())
+                        .unwrap_or(0);
                     let need_unsqueeze = rank == 4;
                     if need_unsqueeze {
                         let y_h_4d_name = format!("{}_y_h_4d", op_name);
@@ -4789,7 +4827,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let shape = &weight_operand.descriptor.static_or_max_shape();
                     if shape.len() >= 2 {
                         let dim = get_static_or_max_size(&weight_operand.descriptor.shape[1]);
-                        if dim > 0 && dim % 4 == 0 {
+                        if dim > 0 && dim.is_multiple_of(4) {
                             Some((dim / 4) as u64)
                         } else {
                             None
@@ -5063,13 +5101,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     },
                 ];
-                if let Some(activations) = op.attributes.as_lstm().and_then(|o| o.activations.clone()) {
+                if let Some(activations) =
+                    op.attributes.as_lstm().and_then(|o| o.activations.clone())
+                {
                     let strings: Vec<Vec<u8>> = activations
                         .iter()
                         .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
                         .collect();
                     if !strings.is_empty() {
-                        let num_directions = if direction == "both" || direction == "bidirectional" {
+                        let num_directions = if direction == "both" || direction == "bidirectional"
+                        {
                             2
                         } else {
                             1
@@ -5164,7 +5205,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         } else if out_name.contains("Output2") {
                             // outputs[1] is always the cell state (Y_c).
                             (lstm_y_c_name.clone(), "y_c")
-                        } else if out_name.contains("Output3") || (output_ids.len() >= 3 && out_id == output_ids[2]) {
+                        } else if out_name.contains("Output3")
+                            || (output_ids.len() >= 3 && out_id == output_ids[2])
+                        {
                             // outputs[2] when returnSequence: sequence.
                             // Unidirectional: seq_source is [steps, batch, hidden]; Unsqueeze(axis=1) → [steps, 1, batch, hidden].
                             // Bidirectional: seq_source is already [steps, num_directions, batch, hidden]; use as-is (no Unsqueeze).
@@ -5245,11 +5288,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let shape = &weight_operand.descriptor.static_or_max_shape();
                     if shape.len() >= 2 {
                         let dim = get_static_or_max_size(&weight_operand.descriptor.shape[1]);
-                        if dim > 0 && dim % 4 == 0 {
+                        if dim > 0 && dim.is_multiple_of(4) {
                             Some((dim / 4) as u64)
                         } else {
                             let dim0 = get_static_or_max_size(&weight_operand.descriptor.shape[0]);
-                            if dim0 > 0 && dim0 % 4 == 0 {
+                            if dim0 > 0 && dim0.is_multiple_of(4) {
                                 Some((dim0 / 4) as u64)
                             } else {
                                 None
@@ -5261,7 +5304,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "onnx".to_string(),
-                    reason: "lstmCell weight shape must be [?, 4*hidden_size, ?] or [4*hidden_size, ?]".to_string(),
+                    reason:
+                        "lstmCell weight shape must be [?, 4*hidden_size, ?] or [4*hidden_size, ?]"
+                            .to_string(),
                 })?;
                 let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
@@ -5278,7 +5323,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 for &id in op.input_operands.get(4..).unwrap_or(&[]) {
                     let name = operand_name(graph, id);
                     let lower = name.to_lowercase();
-                    if lower.contains("cell") && (lower.contains("state") || lower.contains("initial")) {
+                    if lower.contains("cell")
+                        && (lower.contains("state") || lower.contains("initial"))
+                    {
                         cell_state_operand_id = Some(id);
                     } else if lower.contains("recurrent") && lower.contains("bias") {
                         recurrent_bias_name = name;
@@ -5317,7 +5364,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     recurrent_bias_name = name;
                 }
                 // Ensure 2D [1, 4*H] for Concat(axis=1). Graph may give 1D [4*H].
-                let bias_2d = if bias_operand_id.and_then(|id| graph.operand(id)).map(|o| o.descriptor.shape.len()) == Some(1) {
+                let bias_2d = if bias_operand_id
+                    .and_then(|id| graph.operand(id))
+                    .map(|o| o.descriptor.shape.len())
+                    == Some(1)
+                {
                     let name = format!("{}_bias_2d", op_name);
                     nodes.push(NodeProto {
                         input: vec![bias_name.clone(), axes0_name.clone()],
@@ -5330,7 +5381,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 } else {
                     bias_name
                 };
-                let recurrent_bias_2d = if recurrent_bias_operand_id.and_then(|id| graph.operand(id)).map(|o| o.descriptor.shape.len()) == Some(1) {
+                let recurrent_bias_2d = if recurrent_bias_operand_id
+                    .and_then(|id| graph.operand(id))
+                    .map(|o| o.descriptor.shape.len())
+                    == Some(1)
+                {
                     let name = format!("{}_rbias_2d", op_name);
                     nodes.push(NodeProto {
                         input: vec![recurrent_bias_name.clone(), axes0_name.clone()],
@@ -5464,7 +5519,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     },
                 ];
-                if let Some(activations) = op.attributes.as_lstm_cell().and_then(|o| o.activations.clone()) {
+                if let Some(activations) = op
+                    .attributes
+                    .as_lstm_cell()
+                    .and_then(|o| o.activations.clone())
+                {
                     let strings: Vec<Vec<u8>> = activations
                         .iter()
                         .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
@@ -5488,11 +5547,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         h_3d_name.clone(),
                         c_3d_name.clone(),
                     ],
-                    output: vec![
-                        lstm_y_name,
-                        lstm_y_h_name.clone(),
-                        lstm_y_c_name.clone(),
-                    ],
+                    output: vec![lstm_y_name, lstm_y_h_name.clone(), lstm_y_c_name.clone()],
                     name: op_name.clone(),
                     op_type: "LSTM".to_string(),
                     attribute: lstm_attrs,
@@ -6610,10 +6665,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     continue;
                 }
                 let pads_data: Vec<i64> = {
-                    let p = op.attributes.as_pad().ok_or_else(|| GraphError::ConversionFailed {
-                        format: "onnx".to_string(),
-                        reason: "pad operation requires typed options".to_string(),
-                    })?;
+                    let p = op
+                        .attributes
+                        .as_pad()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: "pad operation requires typed options".to_string(),
+                        })?;
                     if !p.beginning_padding.is_empty() && !p.ending_padding.is_empty() {
                         let mut combined: Vec<i64> =
                             p.beginning_padding.iter().map(|&u| u as i64).collect();
@@ -7048,7 +7106,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
 
                     let mut attrs = Vec::new();
-                    if let Some(batch_dims) = op.attributes.as_gather().and_then(|o| o.batch_dimensions) {
+                    if let Some(batch_dims) =
+                        op.attributes.as_gather().and_then(|o| o.batch_dimensions)
+                    {
                         attrs.push(AttributeProto {
                             name: "batch_dims".to_string(),
                             r#type: AttributeType::Int as i32,
@@ -7087,10 +7147,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .collect();
 
                 // Slice requires typed options (attributes deprecated).
-                let o = op.attributes.as_slice().ok_or_else(|| GraphError::ConversionFailed {
-                    format: "onnx".to_string(),
-                    reason: "slice operation requires typed options".to_string(),
-                })?;
+                let o = op
+                    .attributes
+                    .as_slice()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: "slice operation requires typed options".to_string(),
+                    })?;
                 let starts: Vec<i64> = o.starts.iter().map(|&u| u as i64).collect();
                 let sizes: Vec<i64> = o.sizes.iter().map(|&u| u as i64).collect();
                 let ends: Vec<i64> = starts
@@ -7103,8 +7166,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 } else {
                     Some(o.strides.iter().map(|&u| u as i64).collect())
                 };
-                let axes: Option<Vec<i64>> = None;
-
                 // Special case: 0D tensor (scalar) cannot be sliced
                 // Use Identity node instead (ONNX Runtime doesn't support slicing scalars)
                 // A scalar has no axes, so any slice operation should just return the scalar unchanged
@@ -7149,7 +7210,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Add axes as initializer
                 // If axes not provided, default to [0, 1, ..., len(starts)-1]
-                let axes_data = axes.unwrap_or_else(|| (0..starts_len as i64).collect());
+                let axes_data: Vec<i64> = (0..starts_len as i64).collect();
 
                 let axes_name = format!("{}_axes", op_name);
                 inputs.push(axes_name.clone());
@@ -7188,13 +7249,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
             } else if op.op_type == "split" {
                 let axis_attr = op.attributes.as_split().map(|o| o.axis as u64).unwrap_or(0);
 
-                let mut attributes = Vec::new();
-                attributes.push(AttributeProto {
+                let attributes = vec![AttributeProto {
                     name: "axis".to_string(),
                     r#type: AttributeType::Int as i32,
                     i: axis_attr as i64,
                     ..Default::default()
-                });
+                }];
 
                 let mut inputs: Vec<String> = op
                     .input_operands
@@ -7215,21 +7275,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 })?;
                 let input_dtype = Self::data_type_code(input_operand.descriptor.data_type);
                 let input_shape = input_operand.descriptor.static_or_max_shape();
-                let dim_at_axis: i64 = input_shape
-                    .get(axis)
-                    .copied()
-                    .unwrap_or(0) as i64;
+                let dim_at_axis: i64 = input_shape.get(axis).copied().unwrap_or(0) as i64;
 
                 let equal_sizes = || {
                     (0..num_outputs)
                         .map(|i| {
                             let base = dim_at_axis / num_outputs as i64;
                             let rem = dim_at_axis % num_outputs as i64;
-                            if (i as i64) < rem {
-                                base + 1
-                            } else {
-                                base
-                            }
+                            if (i as i64) < rem { base + 1 } else { base }
                         })
                         .collect::<Vec<i64>>()
                 };
@@ -7680,19 +7733,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // Scale/bias presence: prefer typed options (has_scale/has_bias) when present;
                 // else get_attr; else infer from operand count.
                 let (has_scale, has_bias) = if op.op_type == "batchNormalization" {
-                    (
-                        op.input_operands.len() > 3,
-                        op.input_operands.len() > 4,
-                    )
+                    (op.input_operands.len() > 3, op.input_operands.len() > 4)
                 } else if op.op_type == "instanceNormalization" {
                     let opts = op.attributes.as_instance_normalization();
                     // Optional inputs order: [scale?, bias?]. With 2 operands we have [input, bias] or [input, scale];
                     // infer so that single optional is bias (common for "options.bias" tests).
                     (
                         opts.and_then(|o| o.has_scale)
-                            .unwrap_or_else(|| op.input_operands.len() > 2),
+                            .unwrap_or(op.input_operands.len() > 2),
                         opts.and_then(|o| o.has_bias)
-                            .unwrap_or_else(|| op.input_operands.len() > 1),
+                            .unwrap_or(op.input_operands.len() > 1),
                     )
                 } else if op.op_type == "layerNormalization" {
                     let opts = op.attributes.as_layer_normalization();
@@ -7700,9 +7750,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     // infer so that single optional is bias (consistent with instanceNormalization "options.bias" tests).
                     (
                         opts.and_then(|o| o.has_scale)
-                            .unwrap_or_else(|| op.input_operands.len() > 2),
+                            .unwrap_or(op.input_operands.len() > 2),
                         opts.and_then(|o| o.has_bias)
-                            .unwrap_or_else(|| op.input_operands.len() > 1),
+                            .unwrap_or(op.input_operands.len() > 1),
                     )
                 } else {
                     (false, false)
@@ -7710,16 +7760,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 if op.op_type == "layerNormalization" {
                     let rank = input_shape.len();
-                    let axes_raw: Option<Vec<serde_json::Value>> = op
-                        .attributes
-                        .as_layer_normalization()
-                        .and_then(|o| o.axes.as_ref().map(|ax| {
-                            ax.iter()
-                                .map(|&u| serde_json::Value::Number(
-                                    serde_json::Number::from(u as u64),
-                                ))
-                                .collect()
-                        }));
+                    let axes_raw: Option<Vec<serde_json::Value>> =
+                        op.attributes.as_layer_normalization().and_then(|o| {
+                            o.axes.as_ref().map(|ax| {
+                                ax.iter()
+                                    .map(|&u| {
+                                        serde_json::Value::Number(serde_json::Number::from(
+                                            u as u64,
+                                        ))
+                                    })
+                                    .collect()
+                            })
+                        });
                     if rank == 0 {
                         let output_name = operand_name(
                             graph,
@@ -7885,10 +7937,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let scale_bias_shape = if op.op_type == "layerNormalization" {
                     // For layer norm, ONNX LayerNormalization expects scale/bias shape to match
                     // X.shape[axis:], i.e., all dimensions from axis to the end
-                    let axes = op
-                        .attributes
-                        .as_layer_normalization()
-                        .and_then(|o| o.axes.as_ref().map(|v| v.iter().map(|&u| u as i64).collect::<Vec<_>>()));
+                    let axes = op.attributes.as_layer_normalization().and_then(|o| {
+                        o.axes
+                            .as_ref()
+                            .map(|v| v.iter().map(|&u| u as i64).collect::<Vec<_>>())
+                    });
 
                     // Get the first axis (ONNX only supports a single axis parameter)
                     let first_axis = layernorm_axis_override
@@ -8458,8 +8511,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     inputs.push(operand_name(graph, updates_id));
                 }
 
-                let output_operand_id =
-                    op.output_operand.expect("ScatterND has single output");
+                let output_operand_id = op.output_operand.expect("ScatterND has single output");
                 let output_name = operand_name(graph, output_operand_id);
                 let data_id = op.input_operands[0];
                 let input_dtype = graph
@@ -8597,8 +8649,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 if op.op_type.eq_ignore_ascii_case("scatterelements") {
                     // ONNX ScatterElements may output float; cast when data or expected output is non-float.
-                    let output_operand_id =
-                        op.output_operand.expect("ScatterElements has single output");
+                    let output_operand_id = op
+                        .output_operand
+                        .expect("ScatterElements has single output");
                     let output_name = operand_name(graph, output_operand_id);
                     let data_id = op.input_operands[0];
                     let input_dtype = graph
@@ -8609,8 +8662,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .operand(output_operand_id)
                         .map(|o| Self::data_type_code(o.descriptor.data_type))
                         .unwrap_or(input_dtype);
-                    let need_cast =
-                        input_dtype != ProtoDataType::Float || expected_dtype != ProtoDataType::Float;
+                    let need_cast = input_dtype != ProtoDataType::Float
+                        || expected_dtype != ProtoDataType::Float;
                     let cast_to = if expected_dtype != ProtoDataType::Float {
                         expected_dtype
                     } else {
@@ -8670,8 +8723,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 if op.op_type.eq_ignore_ascii_case("roundeven") {
                     // ONNX Round outputs float; cast to float16 when input or expected output is float16.
-                    let output_operand_id =
-                        op.output_operand.expect("roundEven has single output");
+                    let output_operand_id = op.output_operand.expect("roundEven has single output");
                     let output_name = operand_name(graph, output_operand_id);
                     let input_id = op.input_operands[0];
                     let input_dtype = graph
@@ -8780,9 +8832,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 {
                     let input_id = op.input_operands[0];
                     let input_name = operand_name(graph, input_id);
-                    let output_id = op
-                        .output_operand
-                        .expect("Single-output operation expected");
+                    let output_id = op.output_operand.expect("Single-output operation expected");
                     let output_name = operand_name(graph, output_id);
                     let input_operand = graph.operand(input_id).ok_or_else(|| {
                         Self::invalid_operand(
@@ -8939,9 +8989,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     // Regular operation - no Cast nodes needed
                     // Cast requires "to" attribute; derive from output operand when typed options don't provide it
                     let attributes = if op.op_type.eq_ignore_ascii_case("cast") {
-                        let output_id = op
-                            .output_operand
-                            .expect("Single-output operation expected");
+                        let output_id =
+                            op.output_operand.expect("Single-output operation expected");
                         let type_code: i64 = match op
                             .attributes
                             .as_cast()
@@ -9032,19 +9081,19 @@ impl crate::converters::GraphConverter for OnnxConverter {
             let elem_type = Self::data_type_to_onnx_elem_type(desired_type);
             if let Some(vi) = outputs_val.get_mut(i) {
                 let out_name = vi.name.clone();
-                if let Some(tp) = vi.r#type.as_mut() {
-                    if let Some(TypeProtoValue::TensorType(tt)) = tp.value.as_mut() {
-                        tt.elem_type = elem_type;
-                        debug_print!(
-                            "[DEBUG] output type propagation: i={} id={} name={:?} desired_type={:?} elem_type={} source={}",
-                            i,
-                            id,
-                            out_name,
-                            desired_type,
-                            elem_type,
-                            source
-                        );
-                    }
+                if let Some(tp) = vi.r#type.as_mut()
+                    && let Some(TypeProtoValue::TensorType(tt)) = tp.value.as_mut()
+                {
+                    tt.elem_type = elem_type;
+                    debug_print!(
+                        "[DEBUG] output type propagation: i={} id={} name={:?} desired_type={:?} elem_type={} source={}",
+                        i,
+                        id,
+                        out_name,
+                        desired_type,
+                        elem_type,
+                        source
+                    );
                 }
             }
         }
@@ -9094,7 +9143,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             producer_version: "0.1.0".to_string(),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
-                version: 18, // Opset 18: LpPool gains ceil_mode and dilations (for l2pool2d)
+                version: 18,            // Opset 18: LpPool gains ceil_mode and dilations (for l2pool2d)
                 domain: "".to_string(), // Empty string = default ONNX domain
             }],
             ..Default::default()

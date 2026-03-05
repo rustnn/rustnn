@@ -1063,16 +1063,14 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add transpose parameters if specified
-                if let Some(a_transpose) = op.get_attr("aTranspose").and_then(|v| v.as_bool())
-                {
+                if let Some(a_transpose) = op.get_attr("aTranspose").and_then(|v| v.as_bool()) {
                     inputs.insert(
                         "transpose_x".to_string(),
                         Self::create_immediate_bool(a_transpose),
                     );
                 }
 
-                if let Some(b_transpose) = op.get_attr("bTranspose").and_then(|v| v.as_bool())
-                {
+                if let Some(b_transpose) = op.get_attr("bTranspose").and_then(|v| v.as_bool()) {
                     inputs.insert(
                         "transpose_y".to_string(),
                         Self::create_immediate_bool(b_transpose),
@@ -1275,8 +1273,9 @@ impl CoremlMlProgramConverter {
                 // Add permutation parameter (required by CoreML)
                 // If not specified in WebNN, default is to reverse all dimensions
                 // Note: Empty perm array is valid for 0D scalar tensors
-                if let Some(permutation) =
-                    op.get_attr("permutation").and_then(|v| v.as_array().cloned())
+                if let Some(permutation) = op
+                    .get_attr("permutation")
+                    .and_then(|v| v.as_array().cloned())
                 {
                     let perm_u32: Vec<u32> = permutation
                         .iter()
@@ -1312,7 +1311,8 @@ impl CoremlMlProgramConverter {
 
                 // Add shape parameter from attributes (required by CoreML)
                 // Note: Empty shape array is valid for 0D scalar tensors
-                if let Some(new_shape) = op.get_attr("newShape").and_then(|v| v.as_array().cloned()) {
+                if let Some(new_shape) = op.get_attr("newShape").and_then(|v| v.as_array().cloned())
+                {
                     let shape_values: Vec<u32> = new_shape
                         .iter()
                         .filter_map(|v| v.as_i64().map(|i| i as u32))
@@ -1352,7 +1352,9 @@ impl CoremlMlProgramConverter {
                     }
                 }
 
-                if let Some(dilations) = op.get_attr("dilations").and_then(|v| v.as_array().cloned()) {
+                if let Some(dilations) =
+                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
+                {
                     let dilations_u32: Vec<u32> = dilations
                         .iter()
                         .filter_map(|v| v.as_u64().map(|u| u as u32))
@@ -1425,7 +1427,9 @@ impl CoremlMlProgramConverter {
                     }
                 }
 
-                if let Some(dilations) = op.get_attr("dilations").and_then(|v| v.as_array().cloned()) {
+                if let Some(dilations) =
+                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
+                {
                     let dilations_u32: Vec<u32> = dilations
                         .iter()
                         .filter_map(|v| v.as_u64().map(|u| u as u32))
@@ -1558,7 +1562,9 @@ impl CoremlMlProgramConverter {
                     }
                 }
 
-                if let Some(dilations) = op.get_attr("dilations").and_then(|v| v.as_array().cloned()) {
+                if let Some(dilations) =
+                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
+                {
                     let dilations_u32: Vec<u32> = dilations
                         .iter()
                         .filter_map(|v| v.as_u64().map(|u| u as u32))
@@ -1796,7 +1802,11 @@ impl CoremlMlProgramConverter {
                 // If reshape was added before this operation, use reshaped input name
                 //  Otherwise use original input
 
-                if let Some(new_shape_u32) = op.attributes.as_expand().map(|o| o.new_shape_static_or_max()).filter(|s| !s.is_empty())
+                if let Some(new_shape_u32) = op
+                    .attributes
+                    .as_expand()
+                    .map(|o| o.new_shape_static_or_max())
+                    .filter(|s| !s.is_empty())
                 {
                     // Get input operand shape
                     if !op.input_operands.is_empty()
@@ -2034,7 +2044,8 @@ impl CoremlMlProgramConverter {
 
                 // Add dtype parameter (required)
                 // CoreML expects dtype as a string, not an integer
-                if let Some(to_type) = op.get_attr("to").and_then(|v| v.as_str().map(String::from)) {
+                if let Some(to_type) = op.get_attr("to").and_then(|v| v.as_str().map(String::from))
+                {
                     let dtype_string = match to_type.as_str() {
                         "float32" => "fp32",
                         "float16" => "fp16",
@@ -2094,7 +2105,10 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add repetitions parameter
-                if let Some(reps) = op.get_attr("repetitions").and_then(|v| v.as_array().cloned()) {
+                if let Some(reps) = op
+                    .get_attr("repetitions")
+                    .and_then(|v| v.as_array().cloned())
+                {
                     let reps_u32: Vec<u32> = reps
                         .iter()
                         .filter_map(|v| v.as_u64().map(|u| u as u32))
@@ -2381,8 +2395,9 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             if (op_type_lower == "conv2d" || op_type_lower == "convtranspose2d")
                 && op.input_operands.len() >= 2
             {
-                if let Some(filter_layout) =
-                    op.get_attr("filterLayout").and_then(|v| v.as_str().map(String::from))
+                if let Some(filter_layout) = op
+                    .get_attr("filterLayout")
+                    .and_then(|v| v.as_str().map(String::from))
                 {
                     let expected_layout = if op_type_lower == "conv2d" {
                         "oihw"
@@ -2462,8 +2477,9 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 }
 
                 // Also check for nhwc input layout that needs transposition
-                if let Some(input_layout) =
-                    op.get_attr("inputLayout").and_then(|v| v.as_str().map(String::from))
+                if let Some(input_layout) = op
+                    .get_attr("inputLayout")
+                    .and_then(|v| v.as_str().map(String::from))
                     && input_layout == "nhwc"
                     && !op.input_operands.is_empty()
                 {

@@ -221,8 +221,7 @@ impl<'de> Deserialize<'de> for Operation {
                     .unwrap_or_default()
             }
         } else {
-            OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes)
-                .unwrap_or_default()
+            OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes).unwrap_or_default()
         };
         Ok(Operation {
             op_type: h.op_type,

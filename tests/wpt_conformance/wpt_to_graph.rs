@@ -788,14 +788,8 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 if ordered.len() == 2 {
                     let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
                     let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
-                    attributes.insert(
-                        "hasScale".to_string(),
-                        serde_json::Value::Bool(has_scale),
-                    );
-                    attributes.insert(
-                        "hasBias".to_string(),
-                        serde_json::Value::Bool(has_bias),
-                    );
+                    attributes.insert("hasScale".to_string(), serde_json::Value::Bool(has_scale));
+                    attributes.insert("hasBias".to_string(), serde_json::Value::Bool(has_bias));
                 }
             }
         }

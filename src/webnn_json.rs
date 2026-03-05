@@ -599,7 +599,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Only use axes path when axes is non-empty; otherwise use newShape (default axes is []).
                 "expand" => {
                     if input_shapes.len() == 1 {
-                        if let Some(axes) = op.attributes.get("axes").and_then(|v| parse_i64_array(&v))
+                        if let Some(axes) =
+                            op.attributes.get("axes").and_then(|v| parse_i64_array(&v))
                             && !axes.is_empty()
                         {
                             let rank = input_shapes[0].len() as i64;
@@ -644,8 +645,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Transpose
                 "transpose" => {
                     if input_shapes.len() == 1 {
-                        if let Some(perm_array) =
-                            op.attributes.get("permutation").and_then(|v| v.as_array().map(|a| a.clone()))
+                        if let Some(perm_array) = op
+                            .attributes
+                            .get("permutation")
+                            .and_then(|v| v.as_array().cloned())
                         {
                             let perm: Vec<u32> = perm_array
                                 .iter()
@@ -719,8 +722,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
                 // Gather
                 "gather" => {
-                    if let Some(shape_override) =
-                        op.attributes.get("shape").and_then(|v| parse_dimension_array(&v))
+                    if let Some(shape_override) = op
+                        .attributes
+                        .get("shape")
+                        .and_then(|v| parse_dimension_array(&v))
                     {
                         // Also try to back-propagate the implied indices shape when we know the data
                         // shape and axis. This helps downstream ops (e.g., Where) get proper ranks.
@@ -802,7 +807,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                             .get("axes")
                             .and_then(|v| parse_i64_array(&v))
                             .unwrap_or_else(|| (0..rank).collect());
-                        let starts = op.attributes.get("starts").and_then(|v| parse_i64_array(&v));
+                        let starts = op
+                            .attributes
+                            .get("starts")
+                            .and_then(|v| parse_i64_array(&v));
                         let ends = op.attributes.get("ends").and_then(|v| parse_i64_array(&v));
                         if let (Some(starts), Some(ends)) = (starts, ends) {
                             let steps = op

@@ -2727,10 +2727,7 @@ impl TrtxConverter {
         }
         axis_idx = axis_idx.max(0).min((rank.saturating_sub(1)) as i64);
         // Channel count: stats may be 1D [C], 4D [C,1,1,1], or 4D [1,C,1,1]; use product so we get C in all cases.
-        let c: i32 = stats_dims
-            .iter()
-            .product::<i32>()
-            .max(1);
+        let c: i32 = stats_dims.iter().product::<i32>().max(1);
         // When stats are 4D [C,1,1,1], use a transpose-only shuffle so TensorRT sees [1,C,1,1].
         // (Transpose+reshape in one shuffle can leave logical shape as [C,1,1,1].)
         let is_4d_channel_first = rank >= 2
@@ -2743,18 +2740,22 @@ impl TrtxConverter {
             let mut perm: Vec<i32> = (0..rank as i32).collect();
             perm[0] = axis_idx as i32;
             perm[axis_idx as usize] = 0;
-            let mut shuffle = network
-                .add_shuffle(stats)
+            let mut shuffle =
+                network
+                    .add_shuffle(stats)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!(
+                            "Failed to add shuffle for {} (4D transpose): {}",
+                            op_name, e
+                        ),
+                    })?;
+            shuffle
+                .set_first_transpose(&perm)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Failed to add shuffle for {} (4D transpose): {}", op_name, e),
-                })?;
-            shuffle.set_first_transpose(&perm).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
                     reason: format!("Failed to set transpose for {}: {}", op_name, e),
-                }
-            })?;
+                })?;
             return shuffle
                 .get_output(0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -2765,7 +2766,9 @@ impl TrtxConverter {
 
         // For 1D [C], reshape to [1,1,...,1,C] then transpose so C moves to axis_idx; avoids TensorRT giving [C,1,1,1].
         let (target_shape, need_second_transpose) = if stats_dims.len() == 1 {
-            let shape_last: Vec<i32> = (0..rank).map(|i| if i == rank - 1 { c } else { 1 }).collect();
+            let shape_last: Vec<i32> = (0..rank)
+                .map(|i| if i == rank - 1 { c } else { 1 })
+                .collect();
             (shape_last, true)
         } else {
             let shape_axis: Vec<i32> = (0..rank)
@@ -2796,18 +2799,19 @@ impl TrtxConverter {
             let mut perm: Vec<i32> = (0..rank as i32).collect();
             perm[axis_idx as usize] = (rank - 1) as i32;
             perm[rank - 1] = axis_idx as i32;
-            let mut shuffle2 = network
-                .add_shuffle(&result)
+            let mut shuffle2 =
+                network
+                    .add_shuffle(&result)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Failed to add second shuffle for {}: {}", op_name, e),
+                    })?;
+            shuffle2
+                .set_first_transpose(&perm)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Failed to add second shuffle for {}: {}", op_name, e),
-                })?;
-            shuffle2.set_first_transpose(&perm).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
                     reason: format!("Failed to set second transpose for {}: {}", op_name, e),
-                }
-            })?;
+                })?;
             result = shuffle2
                 .get_output(0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -2894,12 +2898,13 @@ impl TrtxConverter {
         )?;
 
         // Step 3: sqrt(variance + epsilon)
-        let mut sqrt_var_layer = network
-            .add_unary(&var_bc, UnaryOperation::kSQRT)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add sqrt for batch norm: {}", e),
-            })?;
+        let mut sqrt_var_layer =
+            network
+                .add_unary(&var_bc, UnaryOperation::kSQRT)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to add sqrt for batch norm: {}", e),
+                })?;
         let _ = sqrt_var_layer.set_layer_name("batch_norm_sqrt_var");
 
         let sqrt_var = sqrt_var_layer
@@ -3436,15 +3441,13 @@ impl TrtxConverter {
         // Option<axes>: None = key omitted => default; Some(v) = use v (Some([]) = explicit no reduction).
         let opts = operation.attributes.as_layer_normalization();
         let _epsilon = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
-        let axes: Vec<u32> = opts
-            .and_then(|o| o.axes.clone())
-            .unwrap_or_else(|| {
-                if input_dims.len() > 1 {
-                    (1..input_dims.len()).map(|i| i as u32).collect()
-                } else {
-                    vec![]
-                }
-            });
+        let axes: Vec<u32> = opts.and_then(|o| o.axes.clone()).unwrap_or_else(|| {
+            if input_dims.len() > 1 {
+                (1..input_dims.len()).map(|i| i as u32).collect()
+            } else {
+                vec![]
+            }
+        });
 
         // Spec: "If empty, no dimensions are reduced." TensorRT Reduce requires at least one dimension to reduce.
         // When axes=[], mean/variance reduce over nothing -> normalized = 0; output = 0*scale + bias = bias or 0.
@@ -4491,12 +4494,13 @@ impl TrtxConverter {
             })?;
         // Empty starts/sizes: no-op (identity), e.g. 0D tensor with empty slices.
         if opts.starts.is_empty() || opts.sizes.is_empty() {
-            let id_layer = network
-                .add_identity(input)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Slice no-op identity: {}", e),
-                })?;
+            let id_layer =
+                network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Slice no-op identity: {}", e),
+                    })?;
             let output = id_layer
                 .get_output(0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -4709,12 +4713,14 @@ impl TrtxConverter {
             })?;
 
         // Get axes from attributes
-        let axes_value = operation.attributes.get("axes").ok_or_else(|| {
-            GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
-            }
-        })?;
+        let axes_value =
+            operation
+                .attributes
+                .get("axes")
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
+                })?;
 
         let _axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
             arr.iter()
@@ -4768,14 +4774,19 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        let opts = operation
-            .attributes
-            .as_expand()
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Expand operation missing options".to_string(),
-            })?;
-        let new_shape: Vec<i32> = opts.new_shape_static_or_max().into_iter().map(|u| u as i32).collect();
+        let opts =
+            operation
+                .attributes
+                .as_expand()
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Expand operation missing options".to_string(),
+                })?;
+        let new_shape: Vec<i32> = opts
+            .new_shape_static_or_max()
+            .into_iter()
+            .map(|u| u as i32)
+            .collect();
 
         if new_shape.is_empty() {
             return Err(GraphError::ConversionFailed {
@@ -6760,7 +6771,10 @@ impl TrtxConverter {
         let (pre_padding, post_padding) = conv_opts
             .map(|o| {
                 if o.padding.len() >= 4 {
-                    (vec![o.padding[0] as i32, o.padding[1] as i32], vec![o.padding[2] as i32, o.padding[3] as i32])
+                    (
+                        vec![o.padding[0] as i32, o.padding[1] as i32],
+                        vec![o.padding[2] as i32, o.padding[3] as i32],
+                    )
                 } else {
                     (vec![0, 0], vec![0, 0])
                 }
@@ -7218,7 +7232,10 @@ impl TrtxConverter {
         let (pre_padding, post_padding) = deconv_opts
             .map(|o| {
                 if o.padding.len() >= 4 {
-                    (vec![o.padding[0] as i32, o.padding[2] as i32], vec![o.padding[1] as i32, o.padding[3] as i32])
+                    (
+                        vec![o.padding[0] as i32, o.padding[2] as i32],
+                        vec![o.padding[1] as i32, o.padding[3] as i32],
+                    )
                 } else {
                     (vec![0, 0], vec![0, 0])
                 }
@@ -7611,13 +7628,14 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        let pool_opts = operation
-            .attributes
-            .as_pool2d()
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Pool2d operation missing options".to_string(),
-            })?;
+        let pool_opts =
+            operation
+                .attributes
+                .as_pool2d()
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Pool2d operation missing options".to_string(),
+                })?;
         let window_size = pool_opts
             .window_dimensions
             .as_ref()
@@ -8333,7 +8351,11 @@ impl TrtxConverter {
         let axes_to_reverse: Vec<usize> = operation
             .attributes
             .as_reverse()
-            .and_then(|o| o.axes.as_ref().map(|ax| ax.iter().map(|&x| x as usize).collect()))
+            .and_then(|o| {
+                o.axes
+                    .as_ref()
+                    .map(|ax| ax.iter().map(|&x| x as usize).collect())
+            })
             .unwrap_or_else(|| (0..rank).collect());
 
         // Build slice parameters for negative stride

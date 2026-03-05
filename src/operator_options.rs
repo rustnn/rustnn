@@ -15,7 +15,6 @@
  * limitations under the License.
  */
 
-
 //! WebNN operator options as a tagged union.
 //!
 //! All IDL dictionaries that extend MLOperatorOptions from the
@@ -280,7 +279,10 @@ pub struct MLExpandOptions {
 impl MLExpandOptions {
     /// Returns each dimension as u32 (static value or dynamic maxSize).
     pub fn new_shape_static_or_max(&self) -> Vec<u32> {
-        self.new_shape.iter().map(MLDimension::static_or_max).collect()
+        self.new_shape
+            .iter()
+            .map(MLDimension::static_or_max)
+            .collect()
     }
 }
 
@@ -373,7 +375,7 @@ pub struct MLGruOptions {
     #[serde(default)]
     pub direction: String, // "forward" | "backward" | "both"
     #[serde(default)]
-    pub layout: String,   // "zrn" | "rzn"
+    pub layout: String, // "zrn" | "rzn"
     pub activations: Option<Vec<String>>, // MLRecurrentNetworkActivation
     pub hidden_size: Option<u32>,
 }
@@ -682,7 +684,10 @@ pub struct MLReshapeOptions {
 impl MLReshapeOptions {
     /// Returns each dimension as u32 (static value or dynamic maxSize).
     pub fn new_shape_static_or_max(&self) -> Vec<u32> {
-        self.new_shape.iter().map(MLDimension::static_or_max).collect()
+        self.new_shape
+            .iter()
+            .map(MLDimension::static_or_max)
+            .collect()
     }
 }
 
@@ -770,7 +775,9 @@ where
     let v = serde_json::Value::deserialize(d)?;
     match v {
         serde_json::Value::Number(n) => {
-            let _ = n.as_u64().ok_or_else(|| D::Error::custom("splits number out of range"))?;
+            let _ = n
+                .as_u64()
+                .ok_or_else(|| D::Error::custom("splits number out of range"))?;
             Ok(Vec::new())
         }
         serde_json::Value::Array(arr) => arr
@@ -1009,7 +1016,9 @@ impl OperatorOptions {
                 "gruCell" => try_opt!(MLGruCellOptions, GruCell),
                 "hardSigmoid" => try_opt!(MLHardSigmoidOptions, HardSigmoid),
                 "hardSwish" => try_opt!(MLHardSwishOptions, HardSwish),
-                "instanceNormalization" => try_opt!(MLInstanceNormalizationOptions, InstanceNormalization),
+                "instanceNormalization" => {
+                    try_opt!(MLInstanceNormalizationOptions, InstanceNormalization)
+                }
                 "layerNormalization" => try_opt!(MLLayerNormalizationOptions, LayerNormalization),
                 "leakyRelu" => try_opt!(MLLeakyReluOptions, LeakyRelu),
                 "linear" => try_opt!(MLLinearOptions, Linear),
@@ -1018,7 +1027,8 @@ impl OperatorOptions {
                 "pad" => try_opt!(MLPadOptions, Pad),
                 "averagePool2d" | "maxPool2d" | "l2Pool2d" => try_opt!(MLPool2dOptions, Pool2d),
                 "reduceSum" | "reduceMean" | "reduceMax" | "reduceMin" | "reduceProduct"
-                | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp" | "reduceSumSquare" => {
+                | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp"
+                | "reduceSumSquare" => {
                     try_opt!(MLReduceOptions, Reduce)
                 }
                 "reshape" => try_opt!(MLReshapeOptions, Reshape),
