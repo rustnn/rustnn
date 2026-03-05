@@ -816,7 +816,23 @@ pub struct MLTransposeOptions {
     pub permutation: Vec<u32>,
 }
 
-/// MLUnsqueezeOptions. unsqueeze.
+// ---------------------------------------------------------------------------
+// Operator Emulation (squeeze, unsqueeze, flatten)
+// These ops are not part of the official WebNN API; they are defined in
+// § 11 Operator Emulation and can be implemented via reshape().
+// ---------------------------------------------------------------------------
+
+/// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLSqueezeOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub axes: Vec<u32>,
+}
+
+/// MLUnsqueezeOptions. unsqueeze (emulation-only; not in WebNN IDL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLUnsqueezeOptions {
@@ -858,7 +874,7 @@ pub struct MLTriangularOptions {
 /// Each variant holds the corresponding options struct from the
 /// [WebNN specification](https://www.w3.org/TR/webnn/).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum OperatorOptions {
     /// MLOperatorOptions (base; label only).
     Operator(MLOperatorOptions),
@@ -965,7 +981,10 @@ pub enum OperatorOptions {
     /// MLTransposeOptions.
     Transpose(MLTransposeOptions),
 
-    /// MLUnsqueezeOptions.
+    // Operator Emulation (not part of official WebNN API; § 11).
+    /// MLSqueezeOptions. squeeze.
+    Squeeze(MLSqueezeOptions),
+    /// MLUnsqueezeOptions. unsqueeze.
     Unsqueeze(MLUnsqueezeOptions),
 
     /// MLTileOptions.
@@ -1039,6 +1058,7 @@ impl OperatorOptions {
                 "slice" => try_opt!(MLSliceOptions, Slice),
                 "split" => try_opt!(MLSplitOptions, Split),
                 "transpose" => try_opt!(MLTransposeOptions, Transpose),
+                "squeeze" => try_opt!(MLSqueezeOptions, Squeeze),
                 "unsqueeze" => try_opt!(MLUnsqueezeOptions, Unsqueeze),
                 "tile" => try_opt!(MLTileOptions, Tile),
                 "triangular" => try_opt!(MLTriangularOptions, Triangular),
@@ -1263,6 +1283,12 @@ impl OperatorOptions {
     pub fn as_transpose(&self) -> Option<&MLTransposeOptions> {
         match self {
             OperatorOptions::Transpose(o) => Some(o),
+            _ => None,
+        }
+    }
+    pub fn as_squeeze(&self) -> Option<&MLSqueezeOptions> {
+        match self {
+            OperatorOptions::Squeeze(o) => Some(o),
             _ => None,
         }
     }

@@ -840,30 +840,25 @@ impl CoremlMlProgramConverter {
         // Add main input (x)
         inputs.insert("x".to_string(), Self::create_name_argument(input_name));
 
-        // Add num_splits or split_sizes
-        if let Some(splits_val) = op.get_attr("splits") {
-            if let Some(count) = splits_val.as_u64() {
-                // Equal splits - use num_splits
+        // Add num_splits or split_sizes from typed options
+        if let Some(opts) = op.attributes.as_split() {
+            if opts.splits.is_empty() {
+                // Equal splits - use num_splits (from output count)
                 inputs.insert(
                     "num_splits".to_string(),
-                    Self::create_int_argument(count as i32),
+                    Self::create_int_argument(op.output_operands.len() as i32),
                 );
-            } else if let Some(sizes) = splits_val.as_array() {
-                // Explicit split sizes - use split_sizes
-                let split_sizes: Vec<i32> = sizes
-                    .iter()
-                    .filter_map(|v| v.as_u64().map(|n| n as i32))
-                    .collect();
+            } else {
+                let split_sizes: Vec<i32> = opts.splits.iter().map(|&u| u as i32).collect();
                 inputs.insert(
                     "split_sizes".to_string(),
                     Self::create_int_array_argument(split_sizes),
                 );
             }
-        }
-
-        // Add axis
-        if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_i64()) {
-            inputs.insert("axis".to_string(), Self::create_int_argument(axis as i32));
+            inputs.insert(
+                "axis".to_string(),
+                Self::create_int_argument(opts.axis as i32),
+            );
         }
 
         Ok(Self::create_mil_operation("split", inputs, outputs))
@@ -1062,18 +1057,15 @@ impl CoremlMlProgramConverter {
                     inputs.insert("y".to_string(), Self::create_argument(&input_names[1]));
                 }
 
-                // Add transpose parameters if specified
-                if let Some(a_transpose) = op.get_attr("aTranspose").and_then(|v| v.as_bool()) {
+                // Add transpose parameters from typed options
+                if let Some(opts) = op.attributes.as_gemm() {
                     inputs.insert(
                         "transpose_x".to_string(),
-                        Self::create_immediate_bool(a_transpose),
+                        Self::create_immediate_bool(opts.a_transpose),
                     );
-                }
-
-                if let Some(b_transpose) = op.get_attr("bTranspose").and_then(|v| v.as_bool()) {
                     inputs.insert(
                         "transpose_y".to_string(),
-                        Self::create_immediate_bool(b_transpose),
+                        Self::create_immediate_bool(opts.b_transpose),
                     );
                 }
 
@@ -1104,11 +1096,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
                 // Default axis is -1 (last dimension) if not specified
-                let axis = op
-                    .attributes
-                    .get("axis")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(-1) as i32;
+                let axis = op.attributes.as_softmax().map(|o| o.axis).unwrap_or(-1);
                 inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
             }
 
@@ -1180,13 +1168,13 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // Add alpha parameter from attributes
-                if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
-                    inputs.insert(
-                        "alpha".to_string(),
-                        Self::create_immediate_float(alpha as f32),
-                    );
-                }
+                let alpha = op
+                    .attributes
+                    .as_elu()
+                    .map(|o| o.alpha as f32)
+                    .or_else(|| op.attributes.as_leaky_relu().map(|o| o.alpha as f32))
+                    .unwrap_or(0.01);
+                inputs.insert("alpha".to_string(), Self::create_immediate_float(alpha));
             }
 
             // HardSwish: decomposed in main loop (hardsigmoid + mul)
@@ -1203,18 +1191,14 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // Add alpha parameter from attributes
-                if let Some(alpha) = op.get_attr("alpha").and_then(|v| v.as_f64()) {
+                if let Some(opts) = op.attributes.as_hard_sigmoid() {
                     inputs.insert(
                         "alpha".to_string(),
-                        Self::create_immediate_float(alpha as f32),
+                        Self::create_immediate_float(opts.alpha as f32),
                     );
-                }
-                // Add beta parameter from attributes
-                if let Some(beta) = op.get_attr("beta").and_then(|v| v.as_f64()) {
                     inputs.insert(
                         "beta".to_string(),
-                        Self::create_immediate_float(beta as f32),
+                        Self::create_immediate_float(opts.beta as f32),
                     );
                 }
             }
@@ -1226,16 +1210,23 @@ impl CoremlMlProgramConverter {
                 }
                 // CoreML clip operation requires BOTH alpha and beta parameters
                 // WebNN clamp defaults: minValue=-Infinity, maxValue=+Infinity
-                let min_value = op
+                let (min_value, max_value) = op
                     .attributes
-                    .get("minValue")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(f64::NEG_INFINITY) as f32;
-                let max_value = op
-                    .attributes
-                    .get("maxValue")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(f64::INFINITY) as f32;
+                    .as_clamp()
+                    .map(|o| {
+                        let min = o
+                            .min_value
+                            .as_ref()
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(f64::NEG_INFINITY) as f32;
+                        let max = o
+                            .max_value
+                            .as_ref()
+                            .and_then(|v| v.as_f64())
+                            .unwrap_or(f64::INFINITY) as f32;
+                        (min, max)
+                    })
+                    .unwrap_or((f32::NEG_INFINITY, f32::INFINITY));
 
                 // Alpha and beta must match input type (CoreML requirement)
                 // Check first input operand type and use appropriate immediate value method
@@ -1272,34 +1263,22 @@ impl CoremlMlProgramConverter {
 
                 // Add permutation parameter (required by CoreML)
                 // If not specified in WebNN, default is to reverse all dimensions
-                // Note: Empty perm array is valid for 0D scalar tensors
-                if let Some(permutation) = op
-                    .get_attr("permutation")
-                    .and_then(|v| v.as_array().cloned())
+                if let Some(opts) = op.attributes.as_transpose()
+                    && !opts.permutation.is_empty()
                 {
-                    let perm_u32: Vec<u32> = permutation
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    // Always add perm parameter, even if empty (for 0D scalars)
                     inputs.insert(
                         "perm".to_string(),
-                        Self::create_immediate_int_array(&perm_u32),
+                        Self::create_immediate_int_array(&opts.permutation),
                     );
-                } else {
-                    // Default: reverse all dimensions
-                    // Get input operand to determine rank
-                    if !op.input_operands.is_empty()
-                        && let Some(input_operand) = _graph.operand(op.input_operands[0])
-                    {
-                        let rank = input_operand.descriptor.shape.len();
-                        let default_perm: Vec<u32> = (0..rank).rev().map(|i| i as u32).collect();
-                        // Always add perm parameter, even if empty (for 0D scalars)
-                        inputs.insert(
-                            "perm".to_string(),
-                            Self::create_immediate_int_array(&default_perm),
-                        );
-                    }
+                } else if !op.input_operands.is_empty()
+                    && let Some(input_operand) = _graph.operand(op.input_operands[0])
+                {
+                    let rank = input_operand.descriptor.shape.len();
+                    let default_perm: Vec<u32> = (0..rank).rev().map(|i| i as u32).collect();
+                    inputs.insert(
+                        "perm".to_string(),
+                        Self::create_immediate_int_array(&default_perm),
+                    );
                 }
             }
 
@@ -1309,16 +1288,11 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add shape parameter from attributes (required by CoreML)
-                // Note: Empty shape array is valid for 0D scalar tensors
-                if let Some(new_shape) = op.get_attr("newShape").and_then(|v| v.as_array().cloned())
+                // Add shape parameter from typed options (required by CoreML)
+                if let Some(opts) = op.attributes.as_reshape()
+                    && !opts.new_shape.is_empty()
                 {
-                    let shape_values: Vec<u32> = new_shape
-                        .iter()
-                        .filter_map(|v| v.as_i64().map(|i| i as u32))
-                        .collect();
-
-                    // Always add shape parameter, even if empty (for 0D scalars)
+                    let shape_values = opts.new_shape_static_or_max();
                     inputs.insert(
                         "shape".to_string(),
                         Self::create_immediate_int_array(&shape_values),
@@ -1338,52 +1312,29 @@ impl CoremlMlProgramConverter {
                     inputs.insert("bias".to_string(), Self::create_argument(&input_names[2]));
                 }
 
-                // Add parameters from attributes
-                if let Some(strides) = op.get_attr("strides").and_then(|v| v.as_array().cloned()) {
-                    let strides_u32: Vec<u32> = strides
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !strides_u32.is_empty() {
+                // Add parameters from typed options
+                if let Some(opts) = op.attributes.as_conv2d() {
+                    if !opts.strides.is_empty() {
                         inputs.insert(
                             "strides".to_string(),
-                            Self::create_immediate_int_array(&strides_u32),
+                            Self::create_immediate_int_array(&opts.strides),
                         );
                     }
-                }
-
-                if let Some(dilations) =
-                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
-                {
-                    let dilations_u32: Vec<u32> = dilations
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !dilations_u32.is_empty() {
+                    if !opts.dilations.is_empty() {
                         inputs.insert(
                             "dilations".to_string(),
-                            Self::create_immediate_int_array(&dilations_u32),
+                            Self::create_immediate_int_array(&opts.dilations),
                         );
                     }
-                }
-
-                if let Some(pads) = op.get_attr("pads").and_then(|v| v.as_array().cloned()) {
-                    let pads_u32: Vec<u32> = pads
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !pads_u32.is_empty() {
+                    if !opts.padding.is_empty() {
                         inputs.insert(
                             "pad".to_string(),
-                            Self::create_immediate_int_array(&pads_u32),
+                            Self::create_immediate_int_array(&opts.padding),
                         );
                     }
-                }
-
-                if let Some(groups) = op.get_attr("groups").and_then(|v| v.as_u64()) {
                     inputs.insert(
                         "groups".to_string(),
-                        Self::create_immediate_int(groups as u32),
+                        Self::create_immediate_int(opts.groups),
                     );
                 }
 
@@ -1414,47 +1365,30 @@ impl CoremlMlProgramConverter {
                 );
 
                 // Add parameters from attributes
-                if let Some(strides) = op.get_attr("strides").and_then(|v| v.as_array().cloned()) {
-                    let strides_u32: Vec<u32> = strides
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !strides_u32.is_empty() {
+                if let Some(opts) = op.attributes.as_conv_transpose2d() {
+                    if !opts.strides.is_empty() {
                         inputs.insert(
                             "strides".to_string(),
-                            Self::create_immediate_int_array(&strides_u32),
+                            Self::create_immediate_int_array(&opts.strides),
                         );
                     }
-                }
-
-                if let Some(dilations) =
-                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
-                {
-                    let dilations_u32: Vec<u32> = dilations
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !dilations_u32.is_empty() {
+                    if !opts.dilations.is_empty() {
                         inputs.insert(
                             "dilations".to_string(),
-                            Self::create_immediate_int_array(&dilations_u32),
+                            Self::create_immediate_int_array(&opts.dilations),
                         );
                     }
-                }
-
-                if let Some(pads) = op.get_attr("pads").and_then(|v| v.as_array().cloned()) {
-                    let pads_u32: Vec<u32> = pads
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !pads_u32.is_empty() {
+                    if !opts.padding.is_empty() {
                         inputs.insert(
                             "pad".to_string(),
-                            Self::create_immediate_int_array(&pads_u32),
+                            Self::create_immediate_int_array(&opts.padding),
                         );
                     }
+                    inputs.insert(
+                        "groups".to_string(),
+                        Self::create_immediate_int(opts.groups),
+                    );
                 }
-
                 // Handle outputSizes (explicit output spatial dimensions [H, W])
                 // Following Chromium: For conv_transpose, CoreML requires output_shape
                 // to be the full output tensor dimensions [N, C, H, W] (from output operand),
@@ -1463,23 +1397,22 @@ impl CoremlMlProgramConverter {
                 // When explicit outputSizes is provided, we need to compute full output shape.
                 // For now, skip adding output_shape when using padding (custom pad_type).
                 // TODO: Compute full output shape from outputSizes + input shape + channels
-
-                if let Some(groups) = op.get_attr("groups").and_then(|v| v.as_u64()) {
-                    inputs.insert(
-                        "groups".to_string(),
-                        Self::create_immediate_int(groups as u32),
-                    );
-                }
             }
 
             // Pooling operations: input + parameters
             "averagepool2d" | "maxpool2d" => {
+                let pool_opts = op.attributes.as_pool2d();
+
                 // CoreML MLProgram pooling path currently assumes NCHW input layout.
                 // Reject NHWC explicitly to avoid invalid model/runtime crashes.
-                let layout = op
-                    .attributes
-                    .get("layout")
-                    .and_then(|v| v.as_str())
+                let layout = pool_opts
+                    .map(|o| {
+                        if o.layout.is_empty() {
+                            "nchw"
+                        } else {
+                            o.layout.as_str()
+                        }
+                    })
                     .unwrap_or("nchw");
                 if !layout.eq_ignore_ascii_case("nchw") {
                     return Err(GraphError::ConversionFailed {
@@ -1494,8 +1427,7 @@ impl CoremlMlProgramConverter {
                 // WebNN `outputSizes` for pooling is not currently lowered to CoreML
                 // pooling parameters in this converter. Reject explicitly to avoid
                 // output-shape mismatches that can lead to runtime crashes.
-                if let Some(output_sizes) =
-                    op.attributes.get("outputSizes").and_then(|v| v.as_array())
+                if let Some(output_sizes) = pool_opts.and_then(|o| o.output_sizes.as_ref())
                     && !output_sizes.is_empty()
                 {
                     return Err(GraphError::ConversionFailed {
@@ -1512,11 +1444,8 @@ impl CoremlMlProgramConverter {
                 }
 
                 // outputShapeRounding: "floor" (default) or "ceil"
-                let ceil_mode = op
-                    .attributes
-                    .get("outputShapeRounding")
-                    .and_then(|v| v.as_str())
-                    .map(|v| v.eq_ignore_ascii_case("ceil"))
+                let ceil_mode = pool_opts
+                    .map(|o| o.output_shape_rounding.eq_ignore_ascii_case("ceil"))
                     .unwrap_or(false);
                 inputs.insert(
                     "ceil_mode".to_string(),
@@ -1531,64 +1460,35 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                // Add parameters from attributes
-                if let Some(window_dimensions) = op
-                    .attributes
-                    .get("windowDimensions")
-                    .and_then(|v| v.as_array().cloned())
-                {
-                    let window_dimensions_u32: Vec<u32> = window_dimensions
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !window_dimensions_u32.is_empty() {
+                // Add parameters from typed options
+                if let Some(opts) = pool_opts {
+                    if let Some(window_dimensions) = opts.window_dimensions.as_ref()
+                        && !window_dimensions.is_empty()
+                    {
                         inputs.insert(
                             "kernel_sizes".to_string(),
-                            Self::create_immediate_int_array(&window_dimensions_u32),
+                            Self::create_immediate_int_array(window_dimensions),
                         );
                     }
-                }
-
-                if let Some(strides) = op.get_attr("strides").and_then(|v| v.as_array().cloned()) {
-                    let strides_u32: Vec<u32> = strides
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !strides_u32.is_empty() {
+                    if !opts.strides.is_empty() {
                         inputs.insert(
                             "strides".to_string(),
-                            Self::create_immediate_int_array(&strides_u32),
+                            Self::create_immediate_int_array(&opts.strides),
                         );
                     }
-                }
-
-                if let Some(dilations) =
-                    op.get_attr("dilations").and_then(|v| v.as_array().cloned())
-                {
-                    let dilations_u32: Vec<u32> = dilations
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !dilations_u32.is_empty() && dilations_u32.iter().any(|&d| d != 1) {
+                    if !opts.dilations.is_empty() && opts.dilations.iter().any(|&d| d != 1) {
                         return Err(GraphError::ConversionFailed {
                             format: "coreml_mlprogram".to_string(),
                             reason: format!(
                                 "CoreML pooling does not support non-default dilations; got {:?} for {}",
-                                dilations_u32, op.op_type
+                                opts.dilations, op.op_type
                             ),
                         });
                     }
-                }
-
-                if let Some(pads) = op.get_attr("pads").and_then(|v| v.as_array().cloned()) {
-                    let pads_u32: Vec<u32> = pads
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !pads_u32.is_empty() {
+                    if !opts.padding.is_empty() {
                         inputs.insert(
                             "pad".to_string(),
-                            Self::create_immediate_int_array(&pads_u32),
+                            Self::create_immediate_int_array(&opts.padding),
                         );
                         inputs.insert(
                             "pad_type".to_string(),
@@ -1608,15 +1508,12 @@ impl CoremlMlProgramConverter {
                 // Check if axes is empty - CoreML doesn't support empty axes
                 // Following Chromium (graph_builder_coreml.cc:4000-4019):
                 // When axes is empty, mean equals input, so output = bias + (scale * 0)
-                // We emulate this by: input - input = 0, then 0 + bias
-                let axes_vec: Vec<i32> =
-                    if let Some(axes) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
-                        axes.iter()
-                            .filter_map(|v| v.as_i64().map(|i| i as i32))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
+                let axes_vec: Vec<i32> = op
+                    .attributes
+                    .as_layer_normalization()
+                    .and_then(|o| o.axes.as_ref())
+                    .map(|ax| ax.iter().map(|&u| u as i32).collect())
+                    .unwrap_or_default();
 
                 if axes_vec.is_empty() {
                     // Empty axes case: use sub operation (input - input = 0)
@@ -1670,11 +1567,10 @@ impl CoremlMlProgramConverter {
                     Self::create_int_array_argument(axes_vec),
                 );
 
-                // Add epsilon parameter
-                if let Some(epsilon) = op.get_attr("epsilon").and_then(|v| v.as_f64()) {
+                if let Some(opts) = op.attributes.as_layer_normalization() {
                     inputs.insert(
                         "epsilon".to_string(),
-                        Self::create_immediate_float(epsilon as f32),
+                        Self::create_immediate_float(opts.epsilon as f32),
                     );
                 }
             }
@@ -1734,12 +1630,17 @@ impl CoremlMlProgramConverter {
                     inputs.insert("beta".to_string(), Self::create_argument(&input_names[4]));
                 }
 
-                // Add epsilon parameter
-                if let Some(epsilon) = op.get_attr("epsilon").and_then(|v| v.as_f64()) {
-                    inputs.insert(
-                        "epsilon".to_string(),
-                        Self::create_immediate_float(epsilon as f32),
-                    );
+                let epsilon_opt = op
+                    .attributes
+                    .as_batch_normalization()
+                    .map(|o| o.epsilon as f32)
+                    .or_else(|| {
+                        op.attributes
+                            .as_instance_normalization()
+                            .map(|o| o.epsilon as f32)
+                    });
+                if let Some(epsilon) = epsilon_opt {
+                    inputs.insert("epsilon".to_string(), Self::create_immediate_float(epsilon));
                 }
             }
 
@@ -1753,12 +1654,9 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                // Add axis parameter
-                if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_u64()) {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
+                if let Some(opts) = op.attributes.as_concat() {
+                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                 }
-
-                // Add interleave parameter (defaults to false)
                 inputs.insert("interleave".to_string(), Self::create_immediate_bool(false));
             }
 
@@ -1768,32 +1666,19 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add starts (begin) parameter
-                // Note: Empty arrays are valid for no-op slices on 0D tensors
-                if let Some(starts) = op.get_attr("starts").and_then(|v| v.as_array().cloned()) {
-                    let starts_u32: Vec<u32> = starts
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    // Always add begin parameter, even if empty
-                    inputs.insert(
-                        "begin".to_string(),
-                        Self::create_immediate_int_array(&starts_u32),
-                    );
-                }
-
-                // Add sizes parameter (required by CoreML)
-                // Note: Empty arrays are valid for no-op slices on 0D tensors
-                if let Some(sizes) = op.get_attr("sizes").and_then(|v| v.as_array().cloned()) {
-                    let sizes_u32: Vec<u32> = sizes
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    // Always add size parameter, even if empty (required by CoreML)
-                    inputs.insert(
-                        "size".to_string(),
-                        Self::create_immediate_int_array(&sizes_u32),
-                    );
+                if let Some(opts) = op.attributes.as_slice() {
+                    if !opts.starts.is_empty() {
+                        inputs.insert(
+                            "begin".to_string(),
+                            Self::create_immediate_int_array(&opts.starts),
+                        );
+                    }
+                    if !opts.sizes.is_empty() {
+                        inputs.insert(
+                            "size".to_string(),
+                            Self::create_immediate_int_array(&opts.sizes),
+                        );
+                    }
                 }
             }
 
@@ -1867,11 +1752,7 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add axis parameter (REQUIRED by CoreML, defaults to 0)
-                let axis = op
-                    .attributes
-                    .get("axis")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
+                let axis = op.attributes.as_gather().map(|o| o.axis).unwrap_or(0);
                 inputs.insert("axis".to_string(), Self::create_immediate_int(axis));
 
                 // Add validate_indices parameter (required by CoreML)
@@ -1888,31 +1769,19 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-
-                // Add splits parameter (can be int or array)
-                if let Some(splits) = op.get_attr("splits") {
-                    if let Some(count) = splits.as_u64() {
+                if let Some(opts) = op.attributes.as_split() {
+                    if opts.splits.is_empty() {
                         inputs.insert(
                             "num_splits".to_string(),
-                            Self::create_immediate_int(count as u32),
+                            Self::create_immediate_int(op.output_operands.len() as u32),
                         );
-                    } else if let Some(sizes) = splits.as_array() {
-                        let sizes_u32: Vec<u32> = sizes
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|u| u as u32))
-                            .collect();
-                        if !sizes_u32.is_empty() {
-                            inputs.insert(
-                                "split_sizes".to_string(),
-                                Self::create_immediate_int_array(&sizes_u32),
-                            );
-                        }
+                    } else {
+                        inputs.insert(
+                            "split_sizes".to_string(),
+                            Self::create_immediate_int_array(&opts.splits),
+                        );
                     }
-                }
-
-                // Add axis parameter (defaults to 0)
-                if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_u64()) {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
+                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                 }
             }
 
@@ -1930,33 +1799,27 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-
-                // Add padding parameter
-                if let Some(padding) = op.get_attr("padding").and_then(|v| v.as_array().cloned()) {
-                    let padding_u32: Vec<u32> = padding
+                if let Some(opts) = op.attributes.as_pad() {
+                    // CoreML expects pad as [begin_0, end_0, begin_1, end_1, ...]
+                    let pad: Vec<u32> = opts
+                        .beginning_padding
                         .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
+                        .zip(opts.ending_padding.iter())
+                        .flat_map(|(a, b)| [*a, *b])
                         .collect();
-                    if !padding_u32.is_empty() {
+                    if !pad.is_empty() {
+                        inputs.insert("pad".to_string(), Self::create_immediate_int_array(&pad));
+                    }
+                    if let Some(v) = opts.value.as_ref().and_then(|v| v.as_f64()) {
                         inputs.insert(
-                            "pad".to_string(),
-                            Self::create_immediate_int_array(&padding_u32),
+                            "constant_val".to_string(),
+                            Self::create_immediate_float(v as f32),
                         );
                     }
                 }
-
                 // Add mode parameter (defaults to "constant")
                 // CoreML pad modes: "constant", "reflect", "replicate"
                 // WebNN modes: "constant", "edge", "reflection", "symmetric"
-                // Note: "edge" maps to "replicate", "reflection" and "symmetric" are similar
-
-                // Add constant value if present
-                if let Some(value) = op.get_attr("value").and_then(|v| v.as_f64()) {
-                    inputs.insert(
-                        "constant_val".to_string(),
-                        Self::create_immediate_float(value as f32),
-                    );
-                }
             }
 
             "gelu" => {
@@ -1969,23 +1832,16 @@ impl CoremlMlProgramConverter {
             }
 
             "squeeze" => {
-                // squeeze: x, axes (optional)
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-
-                // Add axes parameter if present
-                if let Some(axes) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
-                    let axes_u32: Vec<u32> = axes
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !axes_u32.is_empty() {
-                        inputs.insert(
-                            "axes".to_string(),
-                            Self::create_immediate_int_array(&axes_u32),
-                        );
-                    }
+                if let Some(opts) = op.attributes.as_squeeze()
+                    && !opts.axes.is_empty()
+                {
+                    inputs.insert(
+                        "axes".to_string(),
+                        Self::create_immediate_int_array(&opts.axes),
+                    );
                 }
             }
 
@@ -1995,18 +1851,13 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add axes parameter (required for unsqueeze)
-                if let Some(axes) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
-                    let axes_u32: Vec<u32> = axes
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !axes_u32.is_empty() {
-                        inputs.insert(
-                            "axes".to_string(),
-                            Self::create_immediate_int_array(&axes_u32),
-                        );
-                    }
+                if let Some(opts) = op.attributes.as_unsqueeze()
+                    && !opts.axes.is_empty()
+                {
+                    inputs.insert(
+                        "axes".to_string(),
+                        Self::create_immediate_int_array(&opts.axes),
+                    );
                 }
             }
 
@@ -2016,23 +1867,13 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add axis parameter (required)
-                if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_u64()) {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
-                }
-
-                // Add keep_dims parameter (defaults to false)
-                if let Some(keep_dims) = op
-                    .attributes
-                    .get("keepDimensions")
-                    .and_then(|v| v.as_bool())
-                {
+                if let Some(opts) = op.attributes.as_arg_min_max() {
+                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                     inputs.insert(
                         "keep_dims".to_string(),
-                        Self::create_immediate_bool(keep_dims),
+                        Self::create_immediate_bool(opts.keep_dimensions),
                     );
                 }
-
                 // Note: outputDataType is handled by the output tensor's data type
             }
 
@@ -2043,9 +1884,10 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add dtype parameter (required)
-                // CoreML expects dtype as a string, not an integer
-                if let Some(to_type) = op.get_attr("to").and_then(|v| v.as_str().map(String::from))
+                if let Some(opts) = op.attributes.as_cast()
+                    && !opts.to.is_empty()
                 {
+                    let to_type = &opts.to;
                     let dtype_string = match to_type.as_str() {
                         "float32" => "fp32",
                         "float16" => "fp16",
@@ -2077,9 +1919,8 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                // Add axis parameter
-                if let Some(axis) = op.get_attr("axis").and_then(|v| v.as_i64()) {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
+                if let Some(opts) = op.attributes.as_scatter_elements() {
+                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                 }
             }
 
@@ -2104,21 +1945,13 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add repetitions parameter
-                if let Some(reps) = op
-                    .get_attr("repetitions")
-                    .and_then(|v| v.as_array().cloned())
+                if let Some(opts) = op.attributes.as_tile()
+                    && !opts.repetitions.is_empty()
                 {
-                    let reps_u32: Vec<u32> = reps
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-                    if !reps_u32.is_empty() {
-                        inputs.insert(
-                            "reps".to_string(),
-                            Self::create_immediate_int_array(&reps_u32),
-                        );
-                    }
+                    inputs.insert(
+                        "reps".to_string(),
+                        Self::create_immediate_int_array(&opts.repetitions),
+                    );
                 }
             }
 
@@ -2128,30 +1961,20 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                let axis = op
-                    .attributes
-                    .get("axis")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0) as i32;
-                inputs.insert("axis".to_string(), Self::create_int_argument(axis));
-
-                let exclusive = op
-                    .attributes
-                    .get("exclusive")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                inputs.insert(
-                    "exclusive".to_string(),
-                    Self::create_immediate_bool(exclusive),
-                );
-
-                let reverse = op
-                    .attributes
-                    .get("reverse")
-                    .or_else(|| op.get_attr("reversed"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                inputs.insert("reverse".to_string(), Self::create_immediate_bool(reverse));
+                if let Some(opts) = op.attributes.as_cumulative_sum() {
+                    inputs.insert(
+                        "axis".to_string(),
+                        Self::create_int_argument(opts.axis as i32),
+                    );
+                    inputs.insert(
+                        "exclusive".to_string(),
+                        Self::create_immediate_bool(opts.exclusive),
+                    );
+                    inputs.insert(
+                        "reverse".to_string(),
+                        Self::create_immediate_bool(opts.reversed),
+                    );
+                }
             }
 
             "reverse" => {
@@ -2161,22 +1984,22 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Default behavior: reverse all axes when options.axes is omitted.
-                let axes_u32: Vec<u32> =
-                    if let Some(axes) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
-                        axes.iter()
-                            .filter_map(|v| v.as_u64().map(|u| u as u32))
+                let axes_u32: Vec<u32> = if let Some(opts) =
+                    op.attributes.as_reverse().and_then(|o| o.axes.as_ref())
+                    && !opts.is_empty()
+                {
+                    opts.clone()
+                } else if let Some(input_id) = op.input_operands.first() {
+                    if let Some(input_operand) = _graph.operand(*input_id) {
+                        (0..input_operand.descriptor.shape.len())
+                            .map(|axis| axis as u32)
                             .collect()
-                    } else if let Some(input_id) = op.input_operands.first() {
-                        if let Some(input_operand) = _graph.operand(*input_id) {
-                            (0..input_operand.descriptor.shape.len())
-                                .map(|axis| axis as u32)
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
                     } else {
                         Vec::new()
-                    };
+                    }
+                } else {
+                    Vec::new()
+                };
 
                 // Always provide axes, including empty arrays (explicit no-op).
                 inputs.insert(
@@ -2192,17 +2015,15 @@ impl CoremlMlProgramConverter {
                 }
 
                 // CoreML band_part uses lower and upper bounds instead of upper/diagonal
-                // upper=true, diagonal=0 means: lower=-1 (all below diagonal), upper=0 (main diagonal and above)
-                // upper=false, diagonal=0 means: lower=0 (main diagonal and below), upper=-1 (all above diagonal)
                 let is_upper = op
                     .attributes
-                    .get("upper")
-                    .and_then(|v| v.as_bool())
+                    .as_triangular()
+                    .and_then(|o| o.upper)
                     .unwrap_or(true);
                 let diagonal = op
                     .attributes
-                    .get("diagonal")
-                    .and_then(|v| v.as_i64())
+                    .as_triangular()
+                    .map(|o| o.diagonal as i64)
                     .unwrap_or(0);
 
                 // Convert WebNN (upper, diagonal) to CoreML (lower, upper)
@@ -2234,33 +2055,17 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add axes parameter (optional - if not specified, reduces over all dimensions)
-                if let Some(axes) = op.get_attr("axes").and_then(|v| v.as_array().cloned()) {
-                    let axes_i32: Vec<i32> = axes
-                        .iter()
-                        .filter_map(|v| v.as_i64().map(|i| i as i32))
-                        .collect();
-                    if !axes_i32.is_empty() {
-                        // CoreML expects signed integers for axes
-                        inputs.insert(
-                            "axes".to_string(),
-                            Self::create_immediate_int_array(
-                                &axes_i32.iter().map(|&i| i as u32).collect::<Vec<u32>>(),
-                            ),
-                        );
+                if let Some(opts) = op.attributes.as_reduce() {
+                    if let Some(ref axes) = opts.axes
+                        && !axes.is_empty()
+                    {
+                        inputs.insert("axes".to_string(), Self::create_immediate_int_array(axes));
                     }
+                    inputs.insert(
+                        "keep_dims".to_string(),
+                        Self::create_immediate_bool(opts.keep_dimensions),
+                    );
                 }
-
-                // Add keep_dims parameter (required by CoreML, defaults to false per WebNN spec)
-                let keep_dims = op
-                    .attributes
-                    .get("keepDimensions")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                inputs.insert(
-                    "keep_dims".to_string(),
-                    Self::create_immediate_bool(keep_dims),
-                );
             }
 
             _ => {}
@@ -2391,14 +2196,22 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         for op in &graph_info.operations {
             let op_type_lower = op.op_type.to_lowercase();
 
-            // Check if this is a convolution operation that needs filter transposition
             if (op_type_lower == "conv2d" || op_type_lower == "convtranspose2d")
                 && op.input_operands.len() >= 2
             {
-                if let Some(filter_layout) = op
-                    .get_attr("filterLayout")
-                    .and_then(|v| v.as_str().map(String::from))
-                {
+                let filter_layout = match op_type_lower.as_str() {
+                    "conv2d" => op
+                        .attributes
+                        .as_conv2d()
+                        .map(|o| o.filter_layout.as_str())
+                        .unwrap_or(""),
+                    _ => op
+                        .attributes
+                        .as_conv_transpose2d()
+                        .map(|o| o.filter_layout.as_str())
+                        .unwrap_or(""),
+                };
+                if !filter_layout.is_empty() {
                     let expected_layout = if op_type_lower == "conv2d" {
                         "oihw"
                     } else {
@@ -2410,7 +2223,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
                         if let Some(filter_operand) = graph_info.operand(filter_operand_id) {
                             // Calculate transpose permutation
-                            let perm = match (op_type_lower.as_str(), filter_layout.as_str()) {
+                            let perm = match (op_type_lower.as_str(), filter_layout) {
                                 // Conv2d conversions to oihw [O, I, H, W]
                                 ("conv2d", "hwio") => vec![3, 2, 0, 1], // [H, W, I, O] -> [O, I, H, W]
                                 ("conv2d", "ohwi") => vec![0, 3, 1, 2], // [O, H, W, I] -> [O, I, H, W]
@@ -2476,13 +2289,19 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     }
                 }
 
-                // Also check for nhwc input layout that needs transposition
-                if let Some(input_layout) = op
-                    .get_attr("inputLayout")
-                    .and_then(|v| v.as_str().map(String::from))
-                    && input_layout == "nhwc"
-                    && !op.input_operands.is_empty()
-                {
+                let input_layout = match op_type_lower.as_str() {
+                    "conv2d" => op
+                        .attributes
+                        .as_conv2d()
+                        .map(|o| o.input_layout.as_str())
+                        .unwrap_or(""),
+                    _ => op
+                        .attributes
+                        .as_conv_transpose2d()
+                        .map(|o| o.input_layout.as_str())
+                        .unwrap_or(""),
+                };
+                if input_layout == "nhwc" && !op.input_operands.is_empty() {
                     let input_operand_id = op.input_operands[0];
 
                     // Only transpose if not already transposed
@@ -2551,16 +2370,22 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // CoreML clip rejects alpha == beta, while WebNN clamp(min==max) is valid and
             // should produce a constant tensor. Lower as: output = input * 0 + bound.
             if op.op_type.to_lowercase() == "clamp" {
-                let min_value = op
+                let (min_value, max_value) = op
                     .attributes
-                    .get("minValue")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(f64::NEG_INFINITY);
-                let max_value = op
-                    .attributes
-                    .get("maxValue")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(f64::INFINITY);
+                    .as_clamp()
+                    .map(|o| {
+                        (
+                            o.min_value
+                                .as_ref()
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(f64::NEG_INFINITY),
+                            o.max_value
+                                .as_ref()
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(f64::INFINITY),
+                        )
+                    })
+                    .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
 
                 if min_value == max_value {
                     if op.input_operands.is_empty() || op.output_operand.is_none() {
@@ -2644,77 +2469,73 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
 
             // Special handling for expand operation (may need reshape first)
-            if op.op_type.to_lowercase() == "expand" {
-                // Check if rank-increasing expand (add reshape operation first)
-                if !op.input_operands.is_empty()
-                    && let Some(input_operand) = graph_info.operand(op.input_operands[0])
-                    && let Some(new_shape) =
-                        op.get_attr("newShape").and_then(|v| v.as_array().cloned())
-                {
-                    let input_shape = input_operand.descriptor.static_or_max_shape();
-                    let input_rank = input_shape.len();
-                    let output_rank = new_shape.len();
+            if op.op_type.to_lowercase() == "expand"
+                && !op.input_operands.is_empty()
+                && let Some(input_operand) = graph_info.operand(op.input_operands[0])
+                && let Some(opts) = op.attributes.as_expand()
+            {
+                let new_shape = opts.new_shape_static_or_max();
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let input_rank = input_shape.len();
+                let output_rank = new_shape.len();
 
-                    if input_rank < output_rank {
-                        // Need to add reshape operation first
-                        // Create reshaped dimensions (right-aligned, padded with 1s on left)
-                        let mut reshaped_dims = vec![1u32; output_rank];
-                        for i in 0..input_rank {
-                            reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
-                        }
-
-                        //Create reshape operation
-                        let input_name = operand_name(graph_info, op.input_operands[0]);
-                        // Use input name to create unique intermediate name (don't rely on output_operands)
-                        let reshape_output_name = format!("{}_expand_reshaped", input_name);
-
-                        let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
-                        reshape_inputs
-                            .insert("x".to_string(), Self::create_name_argument(input_name));
-                        reshape_inputs.insert(
-                            "shape".to_string(),
-                            Self::create_int_array_argument(
-                                reshaped_dims.iter().map(|&v| v as i32).collect(),
-                            ),
-                        );
-
-                        // Create tensor type for reshape output
-                        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
-                        let dimensions: Vec<Dimension> = reshaped_dims
-                            .iter()
-                            .map(|&d| Dimension {
-                                dimension: Some(dimension::Dimension::Constant(
-                                    dimension::ConstantDimension { size: d as u64 },
-                                )),
-                            })
-                            .collect();
-
-                        let value_type = ValueType {
-                            r#type: Some(
-                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                    TensorType {
-                                        rank: dimensions.len() as i64,
-                                        data_type: dtype,
-                                        dimensions,
-                                        attributes: HashMap::new(),
-                                    },
-                                ),
-                            ),
-                        };
-
-                        let reshape_output_type = NamedValueType {
-                            name: reshape_output_name.clone(),
-                            r#type: Some(value_type),
-                        };
-
-                        let reshape_mil_op = Self::create_mil_operation(
-                            "reshape",
-                            reshape_inputs,
-                            vec![reshape_output_type],
-                        );
-
-                        main_block.operations.push(reshape_mil_op);
+                #[allow(clippy::collapsible_if)]
+                if !new_shape.is_empty() && input_rank < output_rank {
+                    let mut reshaped_dims = vec![1u32; output_rank];
+                    for i in 0..input_rank {
+                        reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
                     }
+
+                    //Create reshape operation
+                    let input_name = operand_name(graph_info, op.input_operands[0]);
+                    // Use input name to create unique intermediate name (don't rely on output_operands)
+                    let reshape_output_name = format!("{}_expand_reshaped", input_name);
+
+                    let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
+                    reshape_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+                    reshape_inputs.insert(
+                        "shape".to_string(),
+                        Self::create_int_array_argument(
+                            reshaped_dims.iter().map(|&v| v as i32).collect(),
+                        ),
+                    );
+
+                    // Create tensor type for reshape output
+                    let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                    let dimensions: Vec<Dimension> = reshaped_dims
+                        .iter()
+                        .map(|&d| Dimension {
+                            dimension: Some(dimension::Dimension::Constant(
+                                dimension::ConstantDimension { size: d as u64 },
+                            )),
+                        })
+                        .collect();
+
+                    let value_type = ValueType {
+                        r#type: Some(
+                            crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                TensorType {
+                                    rank: dimensions.len() as i64,
+                                    data_type: dtype,
+                                    dimensions,
+                                    attributes: HashMap::new(),
+                                },
+                            ),
+                        ),
+                    };
+
+                    let reshape_output_type = NamedValueType {
+                        name: reshape_output_name.clone(),
+                        r#type: Some(value_type),
+                    };
+
+                    let reshape_mil_op = Self::create_mil_operation(
+                        "reshape",
+                        reshape_inputs,
+                        vec![reshape_output_type],
+                    );
+
+                    main_block.operations.push(reshape_mil_op);
                 }
             }
 
@@ -3028,16 +2849,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     }
                 })?;
 
-                let alpha = op
+                let (alpha, beta) = op
                     .attributes
-                    .get("alpha")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0) as f32;
-                let beta = op
-                    .attributes
-                    .get("beta")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as f32;
+                    .as_linear()
+                    .map(|o| (o.alpha as f32, o.beta as f32))
+                    .unwrap_or((1.0, 0.0));
 
                 let (alpha_arg, beta_arg) = match input_operand.descriptor.data_type {
                     DataType::Float16 => (
