@@ -80,10 +80,14 @@ build:
 	$(CARGO) build
 
 test:
+	@echo "Running rustfmt..."
+	$(CARGO) fmt
 	@echo "Running clippy..."
 	$(CARGO) clippy --all-targets -- -D warnings
 	@echo "Running tests..."
 	$(CARGO) test
+	@echo "Checking backend operator support report drift..."
+	$(MAKE) docs-backend-ops-check
 
 fmt:
 	$(CARGO) fmt
@@ -215,7 +219,7 @@ help:
 	@echo ""
 	@echo "Rust Targets:"
 	@echo "  build              - Build the Rust project"
-	@echo "  test               - Run Rust tests"
+	@echo "  test               - Run rustfmt, clippy, Rust tests, and backend report drift check"
 	@echo "  fmt                - Format Rust code"
 	@echo "  run                - Run with sample graph"
 	@echo "  clean              - Clean Rust build artifacts"
