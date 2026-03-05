@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
-use crate::operator_options::OperatorOptions;
+use crate::operator_options::{MLDimension, MLDynamicDimension, OperatorOptions};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +27,48 @@ pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
     match dim {
         Dimension::Static(v) => *v,
         Dimension::Dynamic(d) => d.max_size,
+    }
+}
+
+impl From<MLDimension> for Dimension {
+    fn from(m: MLDimension) -> Self {
+        match m {
+            MLDimension::Static(n) => Dimension::Static(n),
+            MLDimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
+                name: d.name,
+                max_size: d.max_size,
+            }),
+        }
+    }
+}
+
+impl From<MLDynamicDimension> for DynamicDimension {
+    fn from(d: MLDynamicDimension) -> Self {
+        DynamicDimension {
+            name: d.name,
+            max_size: d.max_size,
+        }
+    }
+}
+
+impl From<Dimension> for MLDimension {
+    fn from(d: Dimension) -> Self {
+        match d {
+            Dimension::Static(n) => MLDimension::Static(n),
+            Dimension::Dynamic(d) => MLDimension::Dynamic(MLDynamicDimension {
+                name: d.name,
+                max_size: d.max_size,
+            }),
+        }
+    }
+}
+
+impl From<DynamicDimension> for MLDynamicDimension {
+    fn from(d: DynamicDimension) -> Self {
+        MLDynamicDimension {
+            name: d.name,
+            max_size: d.max_size,
+        }
     }
 }
 

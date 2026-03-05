@@ -121,6 +121,7 @@ mod tests {
         DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
         to_dimension_vector,
     };
+    use crate::operator_options::OperatorOptions;
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {

@@ -29,6 +29,37 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub type OperandIndex = u32;
 
 // ---------------------------------------------------------------------------
+// WebNN IDL: MLDimension (supports dynamic dimensions)
+// ---------------------------------------------------------------------------
+
+/// MLDynamicDimension. IDL: `dictionary MLDynamicDimension { required DOMString name; required [EnforceRange] unsigned long maxSize; };`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLDynamicDimension {
+    pub name: String,
+    pub max_size: u32,
+}
+
+/// MLDimension. IDL: `typedef ([EnforceRange] unsigned long or MLDynamicDimension) MLDimension;`
+/// In JSON: either a number (static) or an object `{ "name": string, "maxSize": number }` (dynamic).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum MLDimension {
+    Static(u32),
+    Dynamic(MLDynamicDimension),
+}
+
+impl MLDimension {
+    /// Returns the static value or dynamic maxSize as u32.
+    pub fn static_or_max(&self) -> u32 {
+        match self {
+            MLDimension::Static(n) => *n,
+            MLDimension::Dynamic(d) => d.max_size,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Base: MLOperatorOptions
 // ---------------------------------------------------------------------------
 
@@ -234,15 +265,23 @@ pub struct MLCumulativeSumOptions {
 }
 
 /// MLExpandOptions. expand (newShape or axes from attributes for interchange).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// newShape uses MLDimension (static or dynamic) per WebNN IDL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLExpandOptions {
     #[serde(default)]
     pub label: String,
     #[serde(default, rename = "newShape")]
-    pub new_shape: Vec<u32>,
+    pub new_shape: Vec<MLDimension>,
     #[serde(default)]
     pub axes: Vec<u32>,
+}
+
+impl MLExpandOptions {
+    /// Returns each dimension as u32 (static value or dynamic maxSize).
+    pub fn new_shape_static_or_max(&self) -> Vec<u32> {
+        self.new_shape.iter().map(MLDimension::static_or_max).collect()
+    }
 }
 
 fn default_elu_alpha() -> f64 {
@@ -630,13 +669,21 @@ pub struct MLReduceOptions {
 }
 
 /// MLReshapeOptions. reshape (newShape from attributes for interchange).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// newShape uses MLDimension (static or dynamic) per WebNN IDL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReshapeOptions {
     #[serde(default)]
     pub label: String,
     #[serde(default, rename = "newShape")]
-    pub new_shape: Vec<u32>,
+    pub new_shape: Vec<MLDimension>,
+}
+
+impl MLReshapeOptions {
+    /// Returns each dimension as u32 (static value or dynamic maxSize).
+    pub fn new_shape_static_or_max(&self) -> Vec<u32> {
+        self.new_shape.iter().map(MLDimension::static_or_max).collect()
+    }
 }
 
 /// MLResample2dOptions. resample2d.

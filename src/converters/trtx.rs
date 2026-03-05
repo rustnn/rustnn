@@ -4775,7 +4775,7 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: "Expand operation missing options".to_string(),
             })?;
-        let new_shape: Vec<i32> = opts.new_shape.iter().map(|&u| u as i32).collect();
+        let new_shape: Vec<i32> = opts.new_shape_static_or_max().into_iter().map(|u| u as i32).collect();
 
         if new_shape.is_empty() {
             return Err(GraphError::ConversionFailed {

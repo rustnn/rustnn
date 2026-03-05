@@ -1566,8 +1566,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     // Check for newShape from typed options first
                     if let Some(opts) = op.attributes.as_expand() {
-                        if !opts.new_shape.is_empty() {
-                            let shape = opts.new_shape.clone();
+                        let shape = opts.new_shape_static_or_max();
+                        if !shape.is_empty() {
                             shape_overrides.insert(output_id, shape.clone());
                             operand_shapes.insert(output_id, shape);
                         }
@@ -1899,13 +1899,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 }
             }
-            // Reshape: if newShape is static, set output shape
+            // Reshape: if newShape is present, set output shape (static or max for dynamic)
             else if op.op_type.eq_ignore_ascii_case("reshape") {
                 if let Some(output_id) = op.output_operand
                     && let Some(opts) = op.attributes.as_reshape()
                     && !opts.new_shape.is_empty()
                 {
-                    let shape = opts.new_shape.clone();
+                    let shape = opts.new_shape_static_or_max();
                     shape_overrides.insert(output_id, shape.clone());
                     operand_shapes.insert(output_id, shape);
                 }
@@ -6097,12 +6097,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Handle newShape from typed options - can be array (static), string (operand reference), or missing
+                // Handle newShape from typed options - can be array (static/dynamic), string (operand reference), or missing
                 let new_shape_attr = op
                     .attributes
                     .as_reshape()
                     .filter(|o| !o.new_shape.is_empty())
-                    .and_then(|o| serde_json::to_value(o.new_shape.clone()).ok());
+                    .and_then(|o| serde_json::to_value(&o.new_shape).ok());
                 if let Some(new_shape_attr) = new_shape_attr {
                     if let Some(shape_dims) = Self::parse_dimension_array(&new_shape_attr) {
                         // Case 1: newShape is an array (static or dynamic)
@@ -6246,16 +6246,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         attribute: vec![], // No attributes for Unsqueeze in opset 13+
                         ..Default::default()
                     });
-                } else if let Some(new_shape) = op
+                } else if let Some(new_shape_value) = op
                     .attributes
                     .as_expand()
                     .filter(|o| !o.new_shape.is_empty())
-                    .map(|o| {
-                        o.new_shape
-                            .iter()
-                            .map(|&u| serde_json::Value::Number(serde_json::Number::from(u as u64)))
-                            .collect::<Vec<_>>()
-                    })
+                    .and_then(|o| serde_json::to_value(&o.new_shape).ok())
                 {
                     // WebNN expand with newShape can be either:
                     // 1. ONNX Expand (broadcasting-compatible shapes)
@@ -6268,7 +6263,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .collect();
 
                     let target_dims =
-                        Self::parse_dimension_array(&serde_json::Value::Array(new_shape.clone()))
+                        Self::parse_dimension_array(&new_shape_value)
                             .ok_or_else(|| GraphError::ConversionFailed {
                                 format: "onnx".to_string(),
                                 reason: format!(
@@ -9172,6 +9167,7 @@ mod tests {
         DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor, OperandKind,
         Operation,
     };
+    use crate::operator_options::OperatorOptions;
     use crate::protos::onnx::tensor_proto::DataType as ProtoDataType;
     use std::collections::HashMap;
 
@@ -9317,7 +9313,7 @@ mod tests {
             input_operands: vec![0, 1, 2],
             output_operand: Some(3),
             output_operands: vec![],
-            attributes: serde_json::json!({}),
+            attributes: OperatorOptions::default(),
             label: None,
         });
 
@@ -9405,7 +9401,7 @@ mod tests {
             input_operands: vec![0, 1, 2],
             output_operand: Some(3),
             output_operands: vec![],
-            attributes: serde_json::json!({}),
+            attributes: OperatorOptions::default(),
             label: None,
         });
 
@@ -9491,7 +9487,7 @@ mod tests {
             input_operands: vec![0, 1, 2],
             output_operand: Some(3),
             output_operands: vec![],
-            attributes: serde_json::json!({}),
+            attributes: OperatorOptions::default(),
             label: None,
         });
 
@@ -9611,9 +9607,11 @@ mod tests {
             input_operands: vec![0],
             output_operand: Some(1),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "to": "int4"
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "cast",
+                &serde_json::json!({ "to": "int4" }),
+            )
+            .unwrap_or_default(),
             label: None,
         });
 
@@ -9675,7 +9673,7 @@ mod tests {
                 input_operands: vec![0],
                 output_operand: Some(1),
                 output_operands: vec![],
-                attributes: serde_json::json!({}),
+                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -9730,7 +9728,7 @@ mod tests {
             input_operands: vec![0],
             output_operand: Some(1),
             output_operands: vec![1],
-            attributes: serde_json::json!({}),
+            attributes: OperatorOptions::default(),
             label: None,
         });
 
@@ -9805,11 +9803,15 @@ mod tests {
             input_operands: vec![0],
             output_operand: Some(1),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "axis": 1,
-                "exclusive": true,
-                "reversed": true
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "cumulativeSum",
+                &serde_json::json!({
+                    "axis": 1,
+                    "exclusive": true,
+                    "reversed": true
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 
@@ -9931,12 +9933,16 @@ mod tests {
             input_operands: vec![0, 1, 2, 3, 4, 5],
             output_operand: Some(6),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "hiddenSize": 4,
-                "layout": "rzn",
-                "resetAfter": false,
-                "activations": ["relu", "relu"]
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "gruCell",
+                &serde_json::json!({
+                    "hiddenSize": 4,
+                    "layout": "rzn",
+                    "resetAfter": false,
+                    "activations": ["relu", "relu"]
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 
@@ -10033,12 +10039,16 @@ mod tests {
             input_operands: vec![0],
             output_operand: Some(1),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "newShape": [
-                    { "name": "batch", "maxSize": 8 },
-                    4
-                ]
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "reshape",
+                &serde_json::json!({
+                    "newShape": [
+                        { "name": "batch", "maxSize": 8 },
+                        4
+                    ]
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 
@@ -10103,12 +10113,16 @@ mod tests {
             input_operands: vec![0],
             output_operand: Some(1),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "newShape": [
-                    { "name": "batch", "maxSize": 8 },
-                    4
-                ]
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "expand",
+                &serde_json::json!({
+                    "newShape": [
+                        { "name": "batch", "maxSize": 8 },
+                        4
+                    ]
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 
@@ -10194,12 +10208,16 @@ mod tests {
             input_operands: vec![0, 1, 2], // no scale/bias operands, defaults required
             output_operand: Some(3),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "axis": 1,
-                "hasScale": false,
-                "hasBias": false,
-                "epsilon": 1e-5
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "batchNormalization",
+                &serde_json::json!({
+                    "axis": 1,
+                    "hasScale": false,
+                    "hasBias": false,
+                    "epsilon": 1e-5
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 
@@ -10266,12 +10284,16 @@ mod tests {
             input_operands: vec![0], // no explicit scale/bias operands
             output_operand: Some(1),
             output_operands: vec![],
-            attributes: serde_json::json!({
-                "axes": [1],
-                "hasScale": false,
-                "hasBias": true,
-                "epsilon": 1e-5
-            }),
+            attributes: OperatorOptions::from_json_with_op_type(
+                "layerNormalization",
+                &serde_json::json!({
+                    "axes": [1],
+                    "hasScale": false,
+                    "hasBias": true,
+                    "epsilon": 1e-5
+                }),
+            )
+            .unwrap_or_default(),
             label: None,
         }];
 

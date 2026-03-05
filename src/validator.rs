@@ -465,6 +465,7 @@ impl<'a> GraphValidator<'a> {
 mod tests {
     use super::*;
     use crate::graph::{ConstantData, GraphInfo, Operand, Operation};
+    use crate::operator_options::OperatorOptions;
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)

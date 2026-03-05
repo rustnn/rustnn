@@ -596,9 +596,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 }
 
                 // Expand: use axes for unsqueeze-style or newShape for broadcast
+                // Only use axes path when axes is non-empty; otherwise use newShape (default axes is []).
                 "expand" => {
                     if input_shapes.len() == 1 {
-                        if let Some(axes) = op.attributes.get("axes").and_then(|v| parse_i64_array(&v)) {
+                        if let Some(axes) = op.attributes.get("axes").and_then(|v| parse_i64_array(&v))
+                            && !axes.is_empty()
+                        {
                             let rank = input_shapes[0].len() as i64;
                             let mut normalized = Vec::with_capacity(axes.len());
                             let mut valid = true;
@@ -1229,7 +1232,8 @@ mod tests {
                 attributes: crate::operator_options::OperatorOptions::from_json_with_op_type(
                     "leakyRelu",
                     &serde_json::Value::Object(attrs),
-                ),
+                )
+                .expect("leakyRelu options"),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),

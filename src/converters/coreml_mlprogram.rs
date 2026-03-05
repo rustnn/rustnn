@@ -1796,12 +1796,8 @@ impl CoremlMlProgramConverter {
                 // If reshape was added before this operation, use reshaped input name
                 //  Otherwise use original input
 
-                if let Some(new_shape) = op.get_attr("newShape").and_then(|v| v.as_array().cloned()) {
-                    let new_shape_u32: Vec<u32> = new_shape
-                        .iter()
-                        .filter_map(|v| v.as_u64().map(|u| u as u32))
-                        .collect();
-
+                if let Some(new_shape_u32) = op.attributes.as_expand().map(|o| o.new_shape_static_or_max()).filter(|s| !s.is_empty())
+                {
                     // Get input operand shape
                     if !op.input_operands.is_empty()
                         && let Some(input_operand) = _graph.operand(op.input_operands[0])
@@ -3320,6 +3316,7 @@ mod tests {
     use crate::graph::{
         ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
     };
+    use crate::operator_options::OperatorOptions;
     #[cfg(feature = "dynamic-inputs")]
     use crate::protos::coreml::mil_spec::dimension;
     use crate::protos::coreml::specification::Model;
@@ -3918,10 +3915,11 @@ mod tests {
                 input_operands: vec![0],
                 output_operand: Some(1),
                 output_operands: vec![],
-                attributes: crate::operator_options::OperatorOptions::from_json_with_op_type(
+                attributes: OperatorOptions::from_json_with_op_type(
                     "linear",
                     &serde_json::json!({ "alpha": 2.0, "beta": -1.0 }),
-                ),
+                )
+                .expect("linear options"),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -4167,10 +4165,11 @@ mod tests {
                 input_operands: vec![0],
                 output_operand: Some(1),
                 output_operands: vec![],
-                attributes: crate::operator_options::OperatorOptions::from_json_with_op_type(
+                attributes: OperatorOptions::from_json_with_op_type(
                     "cumulativeSum",
                     &serde_json::json!({ "axis": 1, "exclusive": true, "reversed": true }),
-                ),
+                )
+                .expect("cumulativeSum options"),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
