@@ -1,3 +1,21 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <tarek@ziade.org>
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //! TensorRT native converter - directly builds TensorRT INetworkDefinition
 //!
 //! This converter bypasses ONNX serialization and builds TensorRT networks directly
@@ -2930,14 +2948,18 @@ impl TrtxConverter {
                 reason: format!("Failed to get div output: {}", e),
             })?;
 
-        // Step 5: Apply scale if present (input 3)
+        // Step 5: Apply scale if present (WebNN: scale is in MLBatchNormalizationOptions, not a positional input)
+        let scale_id = operation
+            .attributes
+            .as_batch_normalization()
+            .and_then(|o| o.scale);
         let mut result = normalized;
-        if operation.input_operands.len() > 3 {
+        if let Some(scale_id) = scale_id {
             let scale = tensor_map
-                .get(&operation.input_operands[3])
+                .get(&scale_id)
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Scale operand {} not found", operation.input_operands[3]),
+                    reason: format!("Scale operand {} not found", scale_id),
                 })?;
 
             let scale_bc = Self::reshape_batch_norm_stats_for_broadcast(
@@ -2964,13 +2986,17 @@ impl TrtxConverter {
                 })?;
         }
 
-        // Step 6: Apply bias if present (input 4)
-        if operation.input_operands.len() > 4 {
+        // Step 6: Apply bias if present (WebNN: bias is in MLBatchNormalizationOptions, not a positional input)
+        let bias_id = operation
+            .attributes
+            .as_batch_normalization()
+            .and_then(|o| o.bias);
+        if let Some(bias_id) = bias_id {
             let bias = tensor_map
-                .get(&operation.input_operands[4])
+                .get(&bias_id)
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Bias operand {} not found", operation.input_operands[4]),
+                    reason: format!("Bias operand {} not found", bias_id),
                 })?;
 
             let bias_bc = Self::reshape_batch_norm_stats_for_broadcast(

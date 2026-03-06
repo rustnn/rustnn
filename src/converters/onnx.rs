@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <jane.doe@example.com>
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <tarek@ziade.org>
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
@@ -15,6 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
@@ -4299,42 +4300,36 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     recurrent_weight_name
                 };
 
-                // Optional GRU inputs (indices 3,4,5) may be serialized in any order (e.g. by options key order).
-                // Identify bias, recurrentBias, initialHiddenState by name so we never mix initial_h into the bias Concat.
-                let mut bias_name = String::new();
-                let mut recurrent_bias_name = String::new();
-                let mut initial_h_operand_id: Option<u32> = None;
-                for &id in op.input_operands.get(3..).unwrap_or(&[]) {
-                    let name = operand_name(graph, id);
-                    let lower = name.to_lowercase();
-                    if lower.contains("initial") && lower.contains("hidden") {
-                        initial_h_operand_id = Some(id);
-                    } else if lower.contains("recurrent") && lower.contains("bias") {
-                        recurrent_bias_name = name;
-                    } else if lower.contains("bias") {
-                        bias_name = name;
-                    }
-                }
-                if bias_name.is_empty() {
-                    let name = format!("{}_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![3 * hidden_size as i64],
-                        0.0,
-                    ));
-                    bias_name = name;
-                }
-                if recurrent_bias_name.is_empty() {
-                    let name = format!("{}_recurrent_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![3 * hidden_size as i64],
-                        0.0,
-                    ));
-                    recurrent_bias_name = name;
-                }
+                // GRU optional inputs are in options (MLGruOptions), not positionals; positionals are [input, weight, recurrentWeight] only.
+                let gru_opts = op.attributes.as_gru();
+                let mut bias_name = gru_opts
+                    .and_then(|o| o.bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![3 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let mut recurrent_bias_name = gru_opts
+                    .and_then(|o| o.recurrent_bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_recurrent_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![3 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let initial_h_operand_id: Option<u32> =
+                    gru_opts.and_then(|o| o.initial_hidden_state);
                 if needs_rzn_to_zrn {
                     bias_name =
                         reorder_rzn_gate_chunks("b", bias_name, &mut nodes, &mut initializers);
@@ -4859,45 +4854,38 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     int64_data: vec![0],
                     ..Default::default()
                 });
-                // Identify optional inputs by name (bias, recurrentBias, initialHiddenState, initialCellState)
-                let mut bias_name = String::new();
-                let mut recurrent_bias_name = String::new();
-                let mut initial_h_operand_id: Option<u32> = None;
-                let mut initial_c_operand_id: Option<u32> = None;
-                for &id in op.input_operands.get(3..).unwrap_or(&[]) {
-                    let name = operand_name(graph, id);
-                    let lower = name.to_lowercase();
-                    if lower.contains("initial") && lower.contains("cell") {
-                        initial_c_operand_id = Some(id);
-                    } else if lower.contains("initial") && lower.contains("hidden") {
-                        initial_h_operand_id = Some(id);
-                    } else if lower.contains("recurrent") && lower.contains("bias") {
-                        recurrent_bias_name = name;
-                    } else if lower.contains("bias") {
-                        bias_name = name;
-                    }
-                }
-                // Zero bias initializers must be [1, 4*H] so Concat(axis=1) with [1,4*H] graph inputs yields [1, 8*H].
-                if bias_name.is_empty() {
-                    let name = format!("{}_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![1, 4 * hidden_size as i64],
-                        0.0,
-                    ));
-                    bias_name = name;
-                }
-                if recurrent_bias_name.is_empty() {
-                    let name = format!("{}_recurrent_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![1, 4 * hidden_size as i64],
-                        0.0,
-                    ));
-                    recurrent_bias_name = name;
-                }
+                // LSTM optional inputs are in options (MLLstmOptions), not positionals; positionals are [input, weight, recurrentWeight] only.
+                let lstm_opts = op.attributes.as_lstm();
+                let bias_name = lstm_opts
+                    .and_then(|o| o.bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![1, 4 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let recurrent_bias_name = lstm_opts
+                    .and_then(|o| o.recurrent_bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_recurrent_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![1, 4 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let initial_h_operand_id: Option<u32> =
+                    lstm_opts.and_then(|o| o.initial_hidden_state);
+                let initial_c_operand_id: Option<u32> =
+                    lstm_opts.and_then(|o| o.initial_cell_state);
                 // ONNX LSTM B: [num_directions, 8*hidden_size]. WebNN gives bias [1,4*H] and recurrentBias [1,4*H].
                 // Concat on axis 1 -> [1, 8*H] directly (no Reshape -1 to avoid viewer/runtime confusion).
                 let b_2d_name = format!("{}_b_2d", op_name);
@@ -5315,26 +5303,37 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_shape = input_operand.descriptor.static_or_max_shape();
                 let batch_size = input_shape.first().copied().unwrap_or(1) as i64;
                 // Identify optional inputs by name (bias, recurrentBias, cellState)
-                let mut bias_name = String::new();
-                let mut recurrent_bias_name = String::new();
-                let mut bias_operand_id: Option<u32> = None;
-                let mut recurrent_bias_operand_id: Option<u32> = None;
-                let mut cell_state_operand_id: Option<u32> = None;
-                for &id in op.input_operands.get(4..).unwrap_or(&[]) {
-                    let name = operand_name(graph, id);
-                    let lower = name.to_lowercase();
-                    if lower.contains("cell")
-                        && (lower.contains("state") || lower.contains("initial"))
-                    {
-                        cell_state_operand_id = Some(id);
-                    } else if lower.contains("recurrent") && lower.contains("bias") {
-                        recurrent_bias_name = name;
-                        recurrent_bias_operand_id = Some(id);
-                    } else if lower.contains("bias") {
-                        bias_name = name;
-                        bias_operand_id = Some(id);
-                    }
-                }
+                // lstmCell optional inputs are in options (MLLstmCellOptions); positionals are [input, weight, recurrentWeight, hiddenState] only.
+                let lstm_cell_opts = op.attributes.as_lstm_cell();
+                let bias_operand_id = lstm_cell_opts.and_then(|o| o.bias);
+                let recurrent_bias_operand_id = lstm_cell_opts.and_then(|o| o.recurrent_bias);
+                let cell_state_operand_id: Option<u32> = None; // lstmCell does not have initialCellState in MLLstmCellOptions; add if spec adds it
+                let bias_name = lstm_cell_opts
+                    .and_then(|o| o.bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![1, 4 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let recurrent_bias_name = lstm_cell_opts
+                    .and_then(|o| o.recurrent_bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_recurrent_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![1, 4 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
                 let axes0_name = format!("{}_axes0", op_name);
                 initializers.push(TensorProto {
                     name: axes0_name.clone(),
@@ -5343,26 +5342,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     int64_data: vec![0],
                     ..Default::default()
                 });
-                if bias_name.is_empty() {
-                    let name = format!("{}_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![1, 4 * hidden_size as i64],
-                        0.0,
-                    ));
-                    bias_name = name;
-                }
-                if recurrent_bias_name.is_empty() {
-                    let name = format!("{}_recurrent_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![1, 4 * hidden_size as i64],
-                        0.0,
-                    ));
-                    recurrent_bias_name = name;
-                }
                 // Ensure 2D [1, 4*H] for Concat(axis=1). Graph may give 1D [4*H].
                 let bias_2d = if bias_operand_id
                     .and_then(|id| graph.operand(id))
@@ -5730,47 +5709,45 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     recurrent_weight_name
                 };
 
-                let bias_rank = if op.input_operands.len() > 4 {
-                    graph
-                        .operand(op.input_operands[4])
-                        .map(|o| o.descriptor.shape.len())
-                        .unwrap_or(1)
-                } else {
-                    1
-                };
-                let recurrent_bias_rank = if op.input_operands.len() > 5 {
-                    graph
-                        .operand(op.input_operands[5])
-                        .map(|o| o.descriptor.shape.len())
-                        .unwrap_or(1)
-                } else {
-                    1
-                };
+                // gruCell optional inputs are in options (MLGruCellOptions), not positionals; positionals are [input, weight, recurrentWeight, hiddenState] only.
+                let gru_cell_opts = op.attributes.as_gru_cell();
+                let bias_rank = gru_cell_opts
+                    .and_then(|o| o.bias)
+                    .and_then(|id| graph.operand(id))
+                    .map(|o| o.descriptor.shape.len())
+                    .unwrap_or(1);
+                let recurrent_bias_rank = gru_cell_opts
+                    .and_then(|o| o.recurrent_bias)
+                    .and_then(|id| graph.operand(id))
+                    .map(|o| o.descriptor.shape.len())
+                    .unwrap_or(1);
 
-                let mut bias_name = if op.input_operands.len() > 4 {
-                    operand_name(graph, op.input_operands[4])
-                } else {
-                    let name = format!("{}_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![3 * hidden_size as i64],
-                        0.0,
-                    ));
-                    name
-                };
-                let mut recurrent_bias_name = if op.input_operands.len() > 5 {
-                    operand_name(graph, op.input_operands[5])
-                } else {
-                    let name = format!("{}_recurrent_bias_zero", op_name);
-                    initializers.push(Self::create_vector_initializer(
-                        name.clone(),
-                        input_dtype,
-                        vec![3 * hidden_size as i64],
-                        0.0,
-                    ));
-                    name
-                };
+                let mut bias_name = gru_cell_opts
+                    .and_then(|o| o.bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![3 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
+                let mut recurrent_bias_name = gru_cell_opts
+                    .and_then(|o| o.recurrent_bias)
+                    .map(|id| operand_name(graph, id))
+                    .unwrap_or_else(|| {
+                        let name = format!("{}_recurrent_bias_zero", op_name);
+                        initializers.push(Self::create_vector_initializer(
+                            name.clone(),
+                            input_dtype,
+                            vec![3 * hidden_size as i64],
+                            0.0,
+                        ));
+                        name
+                    });
 
                 if needs_rzn_to_zrn {
                     if bias_rank == 1 {
@@ -7567,9 +7544,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 conv_inputs.push(transposed_filter);
 
-                // Add bias if present (third input)
-                if op.input_operands.len() > 2 {
-                    conv_inputs.push(operand_name(graph, op.input_operands[2]));
+                // Bias is in options (MLConv2dOptions / MLConvTranspose2dOptions), not positional.
+                if op.op_type == "conv2d"
+                    && let Some(bias_id) = op.attributes.as_conv2d().and_then(|o| o.bias)
+                {
+                    conv_inputs.push(operand_name(graph, bias_id));
+                } else if op.op_type == "convTranspose2d"
+                    && let Some(bias_id) = op.attributes.as_conv_transpose2d().and_then(|o| o.bias)
+                {
+                    conv_inputs.push(operand_name(graph, bias_id));
                 }
 
                 // If WebNN layout is NHWC, ONNX node output (NCHW) must be transposed back.
@@ -7730,29 +7713,26 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let mut inputs: Vec<String> = vec![normalized_input_name.clone()];
 
-                // Scale/bias presence: prefer typed options (has_scale/has_bias) when present;
-                // else get_attr; else infer from operand count.
-                let (has_scale, has_bias) = if op.op_type == "batchNormalization" {
-                    (op.input_operands.len() > 3, op.input_operands.len() > 4)
-                } else if op.op_type == "instanceNormalization" {
-                    let opts = op.attributes.as_instance_normalization();
-                    // Optional inputs order: [scale?, bias?]. With 2 operands we have [input, bias] or [input, scale];
-                    // infer so that single optional is bias (common for "options.bias" tests).
+                // Scale/bias presence: batchNormalization has scale/bias only in MLBatchNormalizationOptions.
+                let (_has_scale, has_bias) = if op.op_type == "batchNormalization" {
+                    let opts = op.attributes.as_batch_normalization();
                     (
-                        opts.and_then(|o| o.has_scale)
-                            .unwrap_or(op.input_operands.len() > 2),
-                        opts.and_then(|o| o.has_bias)
-                            .unwrap_or(op.input_operands.len() > 1),
+                        opts.and_then(|o| o.scale).is_some(),
+                        opts.and_then(|o| o.bias).is_some(),
+                    )
+                } else if op.op_type == "instanceNormalization" {
+                    // Scale/bias are in options (MLInstanceNormalizationOptions), not positionals.
+                    let opts = op.attributes.as_instance_normalization();
+                    (
+                        opts.and_then(|o| o.scale).is_some(),
+                        opts.and_then(|o| o.bias).is_some(),
                     )
                 } else if op.op_type == "layerNormalization" {
+                    // Scale/bias are in options (MLLayerNormalizationOptions), not positionals.
                     let opts = op.attributes.as_layer_normalization();
-                    // Optional inputs order: [scale?, bias?]. With 2 operands we have [input, bias] or [input, scale];
-                    // infer so that single optional is bias (consistent with instanceNormalization "options.bias" tests).
                     (
-                        opts.and_then(|o| o.has_scale)
-                            .unwrap_or(op.input_operands.len() > 2),
-                        opts.and_then(|o| o.has_bias)
-                            .unwrap_or(op.input_operands.len() > 1),
+                        opts.and_then(|o| o.scale).is_some(),
+                        opts.and_then(|o| o.bias).is_some(),
                     )
                 } else {
                     (false, false)
@@ -7778,16 +7758,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             op.output_operand.expect("Single-output operation expected"),
                         );
                         if has_bias {
-                            let mut optional_input_index = 1usize;
-                            if has_scale && op.input_operands.len() > optional_input_index {
-                                optional_input_index += 1;
-                            }
-                            if op.input_operands.len() > optional_input_index {
+                            let bias_id =
+                                op.attributes.as_layer_normalization().and_then(|o| o.bias);
+                            if let Some(id) = bias_id {
                                 nodes.push(NodeProto {
-                                    input: vec![operand_name(
-                                        graph,
-                                        op.input_operands[optional_input_index],
-                                    )],
+                                    input: vec![operand_name(graph, id)],
                                     output: vec![output_name],
                                     name: op_name.clone(),
                                     op_type: "Identity".to_string(),
@@ -7831,13 +7806,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             op.output_operand.expect("Single-output operation expected"),
                         );
                         if has_bias {
-                            let mut optional_input_index = 1usize;
-                            if has_scale && op.input_operands.len() > optional_input_index {
-                                optional_input_index += 1;
-                            }
-                            if op.input_operands.len() > optional_input_index {
-                                let bias_name =
-                                    operand_name(graph, op.input_operands[optional_input_index]);
+                            let bias_id =
+                                op.attributes.as_layer_normalization().and_then(|o| o.bias);
+                            if let Some(id) = bias_id {
+                                let bias_name = operand_name(graph, id);
                                 let input_name = operand_name(graph, input_id);
                                 let zero_like_name = format!("{}_zero_like", op_name);
                                 nodes.push(NodeProto {
@@ -7994,27 +7966,21 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     vec![1]
                 };
 
-                // Batch normalization has different input order than layer/instance normalization
-                // Python API order: [input, mean, variance, scale?, bias?]
-                // ONNX order: [input, scale, bias, mean, variance]
+                // Batch normalization: input_operands = [input, mean, variance] only (required);
+                // scale and bias are in MLBatchNormalizationOptions, not positional.
+                //
+                // ONNX BatchNormalization input order (must match exactly):
+                //   0: X           - input data (N x C x D1 x D2 ...)
+                //   1: scale       - scale tensor shape (C,) from options.scale
+                //   2: B           - bias tensor shape (C,) from options.bias or default
+                //   3: input_mean  - mean tensor shape (C,) from input_operands[1]
+                //   4: input_var   - variance tensor shape (C,) from input_operands[2]
                 if op.op_type == "batchNormalization" {
-                    // Python API order: [input, mean, variance, scale?, bias?]
-                    let mut optional_input_index = 3usize;
-                    let scale_input_id =
-                        if has_scale && op.input_operands.len() > optional_input_index {
-                            let id = op.input_operands[optional_input_index];
-                            optional_input_index += 1;
-                            Some(id)
-                        } else {
-                            None
-                        };
-                    let bias_input_id =
-                        if has_bias && op.input_operands.len() > optional_input_index {
-                            Some(op.input_operands[optional_input_index])
-                        } else {
-                            None
-                        };
+                    let bn_opts = op.attributes.as_batch_normalization();
+                    let scale_input_id = bn_opts.and_then(|o| o.scale);
+                    let bias_input_id = bn_opts.and_then(|o| o.bias);
 
+                    // 1: scale (from options only; must not be input_operands[2] which is variance)
                     if let Some(scale_input_id) = scale_input_id {
                         inputs.push(operand_name(graph, scale_input_id));
                     } else {
@@ -8040,6 +8006,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         inputs.push(scale_name);
                     }
 
+                    // 2: B (bias, from options or default)
                     if let Some(bias_input_id) = bias_input_id {
                         inputs.push(operand_name(graph, bias_input_id));
                     } else {
@@ -8065,34 +8032,31 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         inputs.push(bias_name);
                     }
 
-                    // Add mean (index 1 - required)
+                    // 3: input_mean (from positionals only: input_operands[1])
                     if op.input_operands.len() > 1 {
                         inputs.push(operand_name(graph, op.input_operands[1]));
                     }
 
-                    // Add variance (index 2 - required)
+                    // 4: input_var (from positionals only: input_operands[2]; must not be same as options.scale)
                     if op.input_operands.len() > 2 {
                         inputs.push(operand_name(graph, op.input_operands[2]));
                     }
                 } else {
-                    // Layer normalization and instance normalization
-                    // Python API order: [input, scale?, bias?]
-                    // ONNX order: [input, scale, bias]
-                    let mut optional_input_index = 1usize;
-                    let scale_input_id =
-                        if has_scale && op.input_operands.len() > optional_input_index {
-                            let id = op.input_operands[optional_input_index];
-                            optional_input_index += 1;
-                            Some(id)
-                        } else {
-                            None
-                        };
-                    let bias_input_id =
-                        if has_bias && op.input_operands.len() > optional_input_index {
-                            Some(op.input_operands[optional_input_index])
-                        } else {
-                            None
-                        };
+                    // Layer normalization and instance normalization: scale/bias from options only.
+                    let scale_input_id = if op.op_type == "instanceNormalization" {
+                        op.attributes
+                            .as_instance_normalization()
+                            .and_then(|o| o.scale)
+                    } else {
+                        op.attributes.as_layer_normalization().and_then(|o| o.scale)
+                    };
+                    let bias_input_id = if op.op_type == "instanceNormalization" {
+                        op.attributes
+                            .as_instance_normalization()
+                            .and_then(|o| o.bias)
+                    } else {
+                        op.attributes.as_layer_normalization().and_then(|o| o.bias)
+                    };
 
                     // Add scale input (from operand or create default with 1.0)
                     if let Some(scale_input_id) = scale_input_id {
@@ -9043,16 +9007,36 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             Some((op, idx)),
                         ));
                     }
-                    nodes.push(NodeProto {
-                        input: op
-                            .input_operands
+                    // GEMM: C is in options (MLGemmOptions.c) when present; positionals are [A, B] only.
+                    let node_inputs: Vec<String> = if op.op_type.eq_ignore_ascii_case("gemm") {
+                        let a = operand_name(
+                            graph,
+                            *op.input_operands.first().ok_or_else(|| {
+                                Self::invalid_operand("gemm missing A", idx as u32, Some((op, idx)))
+                            })?,
+                        );
+                        let b = operand_name(
+                            graph,
+                            *op.input_operands.get(1).ok_or_else(|| {
+                                Self::invalid_operand("gemm missing B", idx as u32, Some((op, idx)))
+                            })?,
+                        );
+                        let mut inputs = vec![a, b];
+                        if let Some(c_id) = op.attributes.as_gemm().and_then(|o| o.c) {
+                            inputs.push(operand_name(graph, c_id));
+                        }
+                        inputs
+                    } else {
+                        op.input_operands
                             .iter()
                             .map(|id| {
-                                // Resolve remapping for skipped concat outputs
                                 let resolved_id = operand_remapping.get(id).copied().unwrap_or(*id);
                                 operand_name(graph, resolved_id)
                             })
-                            .collect(),
+                            .collect()
+                    };
+                    nodes.push(NodeProto {
+                        input: node_inputs,
                         output: output_names,
                         name: op_name,
                         op_type: Self::onnx_op_type(&op.op_type),

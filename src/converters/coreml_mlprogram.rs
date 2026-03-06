@@ -1,3 +1,21 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <tarek@ziade.org>
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 /// CoreML MLProgram (MIL) converter
 ///
 /// This converter generates CoreML MLProgram models using the Model Intermediate Language (MIL).
@@ -1638,13 +1656,29 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                // Scale and bias are optional (4th and 5th inputs)
-                // These can be either constants or graph inputs in CoreML
-                if input_names.len() >= 4 {
-                    inputs.insert("gamma".to_string(), Self::create_argument(&input_names[3]));
-                }
-                if input_names.len() >= 5 {
-                    inputs.insert("beta".to_string(), Self::create_argument(&input_names[4]));
+                // Scale and bias: WebNN batchNormalization has them only in MLBatchNormalizationOptions (not positional inputs).
+                if op.op_type == "batchNormalization" {
+                    let bn_opts = op.attributes.as_batch_normalization();
+                    if let Some(sid) = bn_opts.and_then(|o| o.scale) {
+                        inputs.insert(
+                            "gamma".to_string(),
+                            Self::create_argument(&operand_name(_graph, sid)),
+                        );
+                    }
+                    if let Some(bid) = bn_opts.and_then(|o| o.bias) {
+                        inputs.insert(
+                            "beta".to_string(),
+                            Self::create_argument(&operand_name(_graph, bid)),
+                        );
+                    }
+                } else {
+                    // Instance normalization: scale/bias at positions 2 and 3
+                    if input_names.len() >= 4 {
+                        inputs.insert("gamma".to_string(), Self::create_argument(&input_names[3]));
+                    }
+                    if input_names.len() >= 5 {
+                        inputs.insert("beta".to_string(), Self::create_argument(&input_names[4]));
+                    }
                 }
 
                 let epsilon_opt = op

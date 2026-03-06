@@ -1,3 +1,21 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2026 Tarek Ziadé <tarek@ziade.org>
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 //! Debug utilities for rustnn
 //!
 //! Provides centralized debug logging controlled by the RUSTNN_DEBUG environment variable.
@@ -8,12 +26,13 @@ use std::sync::OnceLock;
 
 static DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
 
-/// Check if debug mode is enabled via RUSTNN_DEBUG environment variable
+/// Check if debug mode is enabled via RUSTNN_DEBUG environment variable.
+/// Accepts: 1, true (case-insensitive), or 2 (used by rustnnpt --debug).
 #[inline]
 pub fn debug_enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {
         env::var("RUSTNN_DEBUG")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .map(|v| v == "1" || v == "2" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false)
     })
 }
