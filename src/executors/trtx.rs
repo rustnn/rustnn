@@ -212,10 +212,10 @@ fn execute_trtx_engine(
 ) -> Result<Vec<TrtxOutputWithData>, trtx::Error> {
     // Create logger and runtime
     let logger = create_trtx_logger().map_err(|e| trtx::Error::Runtime(e.to_string()))?;
-    let runtime = trtx::Runtime::new(&logger)?;
+    let mut runtime = trtx::Runtime::new(&logger)?;
 
     // Deserialize engine
-    let engine = runtime.deserialize_cuda_engine(engine_bytes)?;
+    let mut engine = runtime.deserialize_cuda_engine(engine_bytes)?;
     let mut context = engine.create_execution_context()?;
 
     // Get tensor information
