@@ -1,5 +1,37 @@
 use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
+
+/// Bundle WPT conformance JSONs as a single JSON array for wasm tests.
+fn write_wpt_conformance_gz(out_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let conformance_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("wpt_data")
+        .join("conformance");
+    let mut entries: Vec<(String, String)> = Vec::new();
+    if conformance_dir.is_dir() {
+        for entry in fs::read_dir(&conformance_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|e| e == "json") {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown.json")
+                    .to_string();
+                let mut s = String::new();
+                fs::File::open(&path)?.read_to_string(&mut s)?;
+                entries.push((name, s));
+            }
+        }
+        println!("cargo:rerun-if-changed={}", conformance_dir.display());
+    }
+    let json = serde_json::to_string(&entries)?;
+    let out_path = out_dir.join("wpt_conformance.json");
+    let mut file = fs::File::create(&out_path)?;
+    file.write_all(json.as_bytes())?;
+    Ok(())
+}
 
 fn collect_protos(dir: &str) -> Vec<String> {
     let mut files = Vec::new();
@@ -35,5 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=OUT_DIR");
+
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR")?);
+    write_wpt_conformance_gz(&out_dir)?;
+
     Ok(())
 }
