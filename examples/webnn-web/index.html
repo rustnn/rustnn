@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>My WebNN Game</title>
+</head>
+<body>
+    <script type="module">
+    import init from './out/web_example.js';
+
+    async function run() {
+        try {
+            const wasm = await init();
+            console.log("WASM loaded");
+        } catch (e) {
+            console.error("Initialization failed:", e);
+        }
+    }
+    run();
+    </script>
+</body>
+</html>
