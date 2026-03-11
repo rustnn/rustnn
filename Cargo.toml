@@ -24,6 +24,7 @@ coreml-runtime = ["objc"]
 onnx-runtime = ["ort", "ndarray", "tokenizers", "dep:tempfile"]
 trtx-runtime = ["trtx"]
 trtx-runtime-mock = ["trtx/mock"]
+web = ["web-sys", "wasm-bindgen", "js-sys", "wasm-bindgen-futures", "pollster"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -38,8 +39,12 @@ bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
 objc = { version = "0.2", optional = true }
-ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half", "load-dynamic"] }
 tempfile = { version = "3.8", optional = true }
+ort = { version = "=2.0.0-rc.11", optional = true, features = [
+    "ndarray",
+    "half",
+    "load-dynamic",
+] }
 tokenizers = { version = "0.22", optional = true }
 half = "2.4"
 trtx = { version = "0.5.0", optional = true }
@@ -47,13 +52,119 @@ regex = "1.11"
 webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
 
+web-sys = { version = "0.3.91", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn", features = [
+    "console",
+    "GpuDevice",
+    "Ml",
+    "MlArgMinMaxOptions",
+    "MlBatchNormalizationOptions",
+    "MlBatchNormalizationSupportLimits",
+    "MlBinarySupportLimits",
+    "MlClampOptions",
+    "MlConcatSupportLimits",
+    "MlContext",
+    "MlContext",
+    "MlContextLostInfo",
+    "MlContextLostInfo",
+    "MlContextOptions",
+    "MlContextOptions",
+    "MlConv2dFilterOperandLayout",
+    "MlConv2dOptions",
+    "MlConv2dSupportLimits",
+    "MlConvTranspose2dFilterOperandLayout",
+    "MlConvTranspose2dOptions",
+    "MlCumulativeSumOptions",
+    "MlEluOptions",
+    "MlGatherOptions",
+    "MlGatherSupportLimits",
+    "MlGemmOptions",
+    "MlGemmSupportLimits",
+    "MlGraph",
+    "MlGraph",
+    "MlGraph",
+    "MlGraphBuilder",
+    "MlGraphBuilder",
+    "MlGruCellOptions",
+    "MlGruCellSupportLimits",
+    "MlGruOptions",
+    "MlGruSupportLimits",
+    "MlGruWeightLayout",
+    "MlHardSigmoidOptions",
+    "MlInputOperandLayout",
+    "MlInstanceNormalizationOptions",
+    "MlInterpolationMode",
+    "MlLayerNormalizationOptions",
+    "MlLeakyReluOptions",
+    "MlLinearOptions",
+    "MlLogicalNotSupportLimits",
+    "MlLstmCellOptions",
+    "MlLstmCellSupportLimits",
+    "MlLstmOptions",
+    "MlLstmSupportLimits",
+    "MlNormalizationSupportLimits",
+    "MlOperand",
+    "MlOperandDataType",
+    "MlOperandDescriptor",
+    "MlOperatorOptions",
+    "MlOpSupportLimits",
+    "MlOpSupportLimits",
+    "MlPaddingMode",
+    "MlPadOptions",
+    "MlPool2dOptions",
+    "MlPowerPreference",
+    "MlPreluSupportLimits",
+    "MlQuantizeDequantizeLinearSupportLimits",
+    "MlRankRange",
+    "MlRecurrentNetworkActivation",
+    "MlRecurrentNetworkDirection",
+    "MlReduceOptions",
+    "MlResample2dOptions",
+    "MlReverseOptions",
+    "MlRoundingType",
+    "MlScatterOptions",
+    "MlScatterSupportLimits",
+    "MlSingleInputSupportLimits",
+    "MlSliceOptions",
+    "MlSplitOptions",
+    "MlSplitSupportLimits",
+    "MlTensor",
+    "MlTensor",
+    "MlTensorDescriptor",
+    "MlTensorLimits",
+    "MlTransposeOptions",
+    "MlTriangularOptions",
+    "MlWhereSupportLimits",
+    "Navigator",
+    "Window",
+], optional = true }
+wasm-bindgen = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn", optional = true }
+js-sys = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn", optional = true }
+wasm-bindgen-futures = { version = "0.4", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn", optional = true }
+pollster = { version = "0.4.0", optional = true }
+
+[patch.crates-io]
+wasm-bindgen = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+wasm-bindgen-shared = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+wasm-bindgen-macro = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+#wasm-bindgen-backend = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+js-sys = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+web-sys = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+wasm-bindgen-futures = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+wasm-bindgen-test = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+
 [build-dependencies]
 prost-build = "0.12"
+serde_json = "1.0"
 
 [dev-dependencies]
 tempfile = "3.8"
 half = "2.4"
 safetensors = "0.7"
+wasm-bindgen-test = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+
+js-sys = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+wasm-bindgen-futures = { version = "0.4", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
+pollster = "0.4"
 
 [lib]
 name = "rustnn"
