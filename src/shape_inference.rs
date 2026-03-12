@@ -1936,20 +1936,18 @@ pub fn infer_cast_shape(input_shape: &[u32]) -> Vec<u32> {
 }
 
 /// Infer output shape for scatterElements operation
-/// Output shape equals input shape
+/// Output shape equals input shape.
+/// `axis` must be in range [0, rank).
 pub fn infer_scatter_elements_shape(
     input_shape: &[u32],
     indices_shape: &[u32],
     updates_shape: &[u32],
-    axis: i32,
+    axis: u32,
 ) -> Result<Vec<u32>, GraphError> {
-    let rank = input_shape.len() as i32;
+    let rank = input_shape.len();
 
-    // Normalize negative axis
-    let normalized_axis = if axis < 0 { rank + axis } else { axis };
-
-    // Validate axis
-    if normalized_axis < 0 || normalized_axis >= rank {
+    // Validate axis (valid range is [0, rank))
+    if axis >= rank as u32 {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
                 "ScatterElements axis {} out of bounds for rank {}, input shape: {:?}",
@@ -3391,14 +3389,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_scatter_elements_negative_axis() {
-        // Negative axis
-        assert_eq!(
-            infer_scatter_elements_shape(&[3, 4], &[3, 2], &[3, 2], -1).unwrap(),
-            vec![3, 4]
-        );
-    }
+  
 
     #[test]
     fn test_scatter_elements_invalid() {

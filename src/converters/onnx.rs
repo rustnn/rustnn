@@ -1051,11 +1051,12 @@ impl OnnxConverter {
 
     fn create_softmax_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
+        // Axis is required by WebNN spec
         let axis = op
             .attributes
             .as_softmax()
-            .map(|o| o.axis as i64)
-            .unwrap_or(-1);
+            .expect("softmax operation must have options with axis")
+            .axis as i64;
         attributes.push(AttributeProto {
             name: "axis".to_string(),
             r#type: AttributeType::Int as i32,

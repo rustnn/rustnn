@@ -723,22 +723,7 @@ pub struct MLReverseOptions {
 pub struct MLSoftmaxOptions {
     #[serde(default)]
     pub label: String,
-    /// Axis over which to compute softmax. Default -1 (last axis).
-    #[serde(default = "default_softmax_axis")]
-    pub axis: i32,
-}
-
-fn default_softmax_axis() -> i32 {
-    -1
-}
-
-impl Default for MLSoftmaxOptions {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            axis: default_softmax_axis(),
-        }
-    }
+    pub axis: u32,
 }
 
 /// MLScatterOptions. scatterElements.

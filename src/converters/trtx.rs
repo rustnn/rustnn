@@ -7710,28 +7710,17 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands[0]),
             })?;
 
-        // Get the axis parameter (defaults to last axis)
-        // TensorRT uses a bitmask where bit N represents axis N
-        let axis = operation
+        // Axis is required by WebNN spec (unsigned long)
+        let positive_axis = operation
             .attributes
             .as_softmax()
-            .map(|o| o.axis as i64)
-            .or_else(|| operation.attributes.get("axis").and_then(|v| v.as_i64()))
-            .unwrap_or(-1); // Default to last axis
-
-        // Handle negative axis (convert to positive)
-        let dims = input
-            .dimensions()
-            .map_err(|e| GraphError::ConversionFailed {
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get input dimensions: {}", e),
-            })?;
-        let num_dims = dims.len() as i64;
-        let positive_axis = if axis < 0 {
-            (num_dims + axis) as u32
-        } else {
-            axis as u32
-        };
+                reason: "softmax operation must have options with axis".to_string(),
+            })?
+            .axis;
+
+        // TensorRT uses a bitmask where bit N represents axis N
 
         // Create bitmask for the axis
         let axes = 1u32 << positive_axis;

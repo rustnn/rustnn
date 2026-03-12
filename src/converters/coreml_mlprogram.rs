@@ -1131,14 +1131,20 @@ impl CoremlMlProgramConverter {
                 inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
             }
 
-            // Softmax operation (requires axis parameter)
+            // Softmax operation (axis is required by WebNN spec)
             "softmax" => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // Default axis is -1 (last dimension) if not specified
-                let axis = op.attributes.as_softmax().map(|o| o.axis).unwrap_or(-1);
-                inputs.insert("axis".to_string(), Self::create_immediate_int(axis as u32));
+                let axis = op
+                    .attributes
+                    .as_softmax()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: "softmax operation must have options with axis".to_string(),
+                    })?
+                    .axis;
+                inputs.insert("axis".to_string(), Self::create_immediate_int(axis));
             }
 
             // Neg operation: implemented as mul by -1, requires x and y parameters
