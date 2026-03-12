@@ -3389,8 +3389,6 @@ mod tests {
         );
     }
 
-  
-
     #[test]
     fn test_scatter_elements_invalid() {
         // Indices and updates shape mismatch
