@@ -82,6 +82,7 @@ pub struct OnnxOutputWithData {
     pub name: String,
     pub shape: Vec<usize>,
     pub data: Vec<f64>,
+    pub float32_data: Option<Vec<f32>>,
     pub int64_data: Option<Vec<i64>>,
     pub uint64_data: Option<Vec<u64>>,
 }
@@ -417,39 +418,39 @@ fn run_onnx_with_inputs_impl(
 
         // Try to extract tensor with different types
         // The order matches most common types first for performance
-        let (shape_vec, data_vec, int64_data, uint64_data) =
+        let (shape_vec, data_vec, float32_data, int64_data, uint64_data) =
             if let Ok((shape, data)) = value.try_extract_tensor::<f32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, Some(data.to_vec()), None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<half::f16>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x.to_f32() as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i8>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u8>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None)
+                (shape_vec, data_vec, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i64>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, Some(data.to_vec()), None)
+                (shape_vec, data_vec, None, Some(data.to_vec()), None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u64>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, Some(data.to_vec()))
+                (shape_vec, data_vec, None, None, Some(data.to_vec()))
             } else {
                 return Err(GraphError::OnnxRuntimeFailed {
                     reason: "failed to extract output tensor: unsupported data type".to_string(),
@@ -460,6 +461,7 @@ fn run_onnx_with_inputs_impl(
             name,
             shape: shape_vec,
             data: data_vec,
+            float32_data: float32_data,
             int64_data,
             uint64_data,
         });
@@ -682,7 +684,6 @@ pub fn run_onnx_with_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor::{BackendKind, DeviceKind, DeviceTensorBackend};
 
     #[test]
     fn test_ort_device_tensor_lifecycle() {

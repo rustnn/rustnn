@@ -282,7 +282,7 @@ mod app {
                     .ok_or_else(|| format!("missing cache input: {cache_k_name}"))?;
                 write_cache_slice(
                     cache_k,
-                    &present_k.data,
+                    &present_k.float32_data.as_deref().unwrap(),
                     layout.num_heads,
                     layout.cache_len,
                     seq_len,
@@ -297,7 +297,7 @@ mod app {
                     .ok_or_else(|| format!("missing cache input: {cache_v_name}"))?;
                 write_cache_slice(
                     cache_v,
-                    &present_v.data,
+                    &present_v.float32_data.as_deref().unwrap(),
                     layout.num_heads,
                     layout.cache_len,
                     seq_len,
@@ -399,7 +399,7 @@ mod app {
                 .iter()
                 .find(|o| o.name == layout.logits_name)
                 .ok_or_else(|| format!("missing logits output: {}", layout.logits_name))?;
-            let next_id = argmax(&logits.data) as u32;
+            let next_id = argmax(&logits.float32_data.as_deref().unwrap()) as u32;
             generated_ids.push(next_id);
 
             if current_pos >= layout.cache_len {
