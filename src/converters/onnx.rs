@@ -8790,7 +8790,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     && has_float_inputs
                     && matches!(op.op_type.as_str(), "mul" | "add");
 
-                // Integer Relu: Max(0, x) in integer domain to avoid float rounding and cast overflow near 2^31
+                // Integer Relu: Clip(x, 0, type_max) in integer domain. Use Clip instead of Max
+                // so ONNX runtimes that lack Max(int8) support (e.g. some Python ORT builds) can run.
                 if op.op_type.eq_ignore_ascii_case("relu")
                     && has_integer_inputs
                     && !has_float_inputs
@@ -8810,43 +8811,105 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .get(&input_id)
                         .copied()
                         .unwrap_or(input_operand.descriptor.data_type);
-                    let zero_name = format!("{}_relu_zero", op_name);
-                    let zero_tensor = match dtype {
-                        DataType::Int32 => TensorProto {
-                            name: zero_name.clone(),
-                            data_type: ProtoDataType::Int32 as i32,
-                            dims: vec![],
-                            int32_data: vec![0],
-                            ..Default::default()
-                        },
-                        DataType::Int64 => TensorProto {
-                            name: zero_name.clone(),
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![],
-                            int64_data: vec![0i64],
-                            ..Default::default()
-                        },
-                        DataType::Uint64 => TensorProto {
-                            name: zero_name.clone(),
-                            data_type: ProtoDataType::Uint64 as i32,
-                            dims: vec![],
-                            uint64_data: vec![0u64],
-                            ..Default::default()
-                        },
-                        DataType::Uint32 => TensorProto {
-                            name: zero_name.clone(),
-                            data_type: ProtoDataType::Uint32 as i32,
-                            dims: vec![],
-                            raw_data: 0u32.to_le_bytes().to_vec(),
-                            ..Default::default()
-                        },
-                        DataType::Int8 | DataType::Uint8 => TensorProto {
-                            name: zero_name.clone(),
-                            data_type: Self::data_type_code(dtype) as i32,
-                            dims: vec![],
-                            raw_data: vec![0u8],
-                            ..Default::default()
-                        },
+                    let zero_name = format!("{}_relu_min", op_name);
+                    let max_name = format!("{}_relu_max", op_name);
+                    let (zero_tensor, max_tensor) = match dtype {
+                        DataType::Int32 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: ProtoDataType::Int32 as i32,
+                                dims: vec![],
+                                int32_data: vec![0],
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: ProtoDataType::Int32 as i32,
+                                dims: vec![],
+                                int32_data: vec![i32::MAX],
+                                ..Default::default()
+                            },
+                        ),
+                        DataType::Int64 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: ProtoDataType::Int64 as i32,
+                                dims: vec![],
+                                int64_data: vec![0i64],
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: ProtoDataType::Int64 as i32,
+                                dims: vec![],
+                                int64_data: vec![i64::MAX],
+                                ..Default::default()
+                            },
+                        ),
+                        DataType::Uint64 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: ProtoDataType::Uint64 as i32,
+                                dims: vec![],
+                                uint64_data: vec![0u64],
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: ProtoDataType::Uint64 as i32,
+                                dims: vec![],
+                                uint64_data: vec![u64::MAX],
+                                ..Default::default()
+                            },
+                        ),
+                        DataType::Uint32 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: ProtoDataType::Uint32 as i32,
+                                dims: vec![],
+                                raw_data: 0u32.to_le_bytes().to_vec(),
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: ProtoDataType::Uint32 as i32,
+                                dims: vec![],
+                                raw_data: u32::MAX.to_le_bytes().to_vec(),
+                                ..Default::default()
+                            },
+                        ),
+                        DataType::Int8 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: Self::data_type_code(dtype) as i32,
+                                dims: vec![],
+                                raw_data: vec![0u8],
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: Self::data_type_code(dtype) as i32,
+                                dims: vec![],
+                                raw_data: vec![127u8],
+                                ..Default::default()
+                            },
+                        ),
+                        DataType::Uint8 => (
+                            TensorProto {
+                                name: zero_name.clone(),
+                                data_type: Self::data_type_code(dtype) as i32,
+                                dims: vec![],
+                                raw_data: vec![0u8],
+                                ..Default::default()
+                            },
+                            TensorProto {
+                                name: max_name.clone(),
+                                data_type: Self::data_type_code(dtype) as i32,
+                                dims: vec![],
+                                raw_data: vec![255u8],
+                                ..Default::default()
+                            },
+                        ),
                         _ => {
                             return Err(Self::invalid_operand(
                                 "relu integer dtype",
@@ -8856,11 +8919,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         }
                     };
                     initializers.push(zero_tensor);
+                    initializers.push(max_tensor);
                     nodes.push(NodeProto {
-                        input: vec![zero_name, input_name],
+                        input: vec![input_name, zero_name, max_name],
                         output: vec![output_name],
                         name: op_name,
-                        op_type: "Max".to_string(),
+                        op_type: "Clip".to_string(),
                         ..Default::default()
                     });
                     type_overrides.insert(output_id, dtype);
