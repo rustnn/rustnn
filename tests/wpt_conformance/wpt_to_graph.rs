@@ -445,6 +445,32 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             if value.is_string() {
                 if let Some(name) = value.as_str() {
                     if let Some(&id) = name_to_id.get(name) {
+                        // conv2d/convTranspose2d: bias is in options (MLConv2dOptions.bias), not positional.
+                        if (key == "bias") && (op_type == "conv2d" || op_type == "conv_transpose2d")
+                        {
+                            attributes.insert(
+                                "bias".to_string(),
+                                serde_json::Value::Number(serde_json::Number::from(id)),
+                            );
+                            continue;
+                        }
+                        // instance_normalization: scale/bias are in options (MLInstanceNormalizationOptions), not positional.
+                        if (key == "scale" || key == "bias") && op_type == "instance_normalization"
+                        {
+                            attributes.insert(
+                                key.clone(),
+                                serde_json::Value::Number(serde_json::Number::from(id)),
+                            );
+                            continue;
+                        }
+                        // layer_normalization: scale/bias are in options (MLLayerNormalizationOptions), not positional.
+                        if (key == "scale" || key == "bias") && op_type == "layer_normalization" {
+                            attributes.insert(
+                                key.clone(),
+                                serde_json::Value::Number(serde_json::Number::from(id)),
+                            );
+                            continue;
+                        }
                         if key == "input"
                             || key == "a"
                             || key == "b"
@@ -716,8 +742,8 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 }
             }
         }
-        // layer_normalization: TRTX/ONNX expect [input, scale, bias]. If only scale or only bias
-        // is provided, insert a default constant so converters always see three operands.
+        // layer_normalization: only input is positional; scale/bias are in options.
+        // If only scale or only bias is provided, insert a default constant and put both ids in options.
         if op_type == "layer_normalization" {
             let order = ["input", "scale", "bias"];
             let ordered: Vec<u32> = order
@@ -728,7 +754,10 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                         .and_then(|name| name_to_id.get(name).copied())
                 })
                 .collect();
-            if !ordered.is_empty() && ordered.len() == 2 {
+            if !ordered.is_empty() {
+                input_ids = vec![ordered[0]];
+            }
+            if ordered.len() == 2 {
                 let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
                 let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
                 let shape_id = ordered[1];
@@ -769,7 +798,10 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                         },
                         name: Some("layer_norm_default_scale".to_string()),
                     });
-                    input_ids = vec![ordered[0], next_id, ordered[1]];
+                    attributes.insert(
+                        "scale".to_string(),
+                        serde_json::Value::Number(serde_json::Number::from(next_id)),
+                    );
                     next_id += 1;
                 } else if has_scale && !has_bias {
                     let bias_bytes: Vec<u8> = match data_type {
@@ -795,19 +827,17 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                         },
                         name: Some("layer_norm_default_bias".to_string()),
                     });
-                    input_ids = vec![ordered[0], ordered[1], next_id];
+                    attributes.insert(
+                        "bias".to_string(),
+                        serde_json::Value::Number(serde_json::Number::from(next_id)),
+                    );
                     next_id += 1;
-                } else {
-                    input_ids = ordered;
                 }
-            } else if !ordered.is_empty() {
-                input_ids = ordered;
             }
         }
-        // instance_normalization: canonical order [input, scale?, bias?]. When only one optional
-        // is provided (2 operands), set hasScale/hasBias so the ONNX converter can disambiguate.
+        // instance_normalization: only input is positional; scale/bias are in options.
         if op_type == "instance_normalization" {
-            let order = ["input", "scale", "bias"];
+            let order = ["input"];
             let ordered: Vec<u32> = order
                 .iter()
                 .filter_map(|key| {
@@ -817,18 +847,19 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
                 })
                 .collect();
             if !ordered.is_empty() {
-                input_ids = ordered.clone();
-                if ordered.len() == 2 {
-                    let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
-                    let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
-                    attributes.insert("hasScale".to_string(), serde_json::Value::Bool(has_scale));
-                    attributes.insert("hasBias".to_string(), serde_json::Value::Bool(has_bias));
-                }
+                input_ids = ordered;
+            }
+            // When exactly one of scale/bias is provided, set hasScale/hasBias for converter disambiguation.
+            let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
+            let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
+            if has_scale ^ has_bias {
+                attributes.insert("hasScale".to_string(), serde_json::Value::Bool(has_scale));
+                attributes.insert("hasBias".to_string(), serde_json::Value::Bool(has_bias));
             }
         }
-        // conv2d / conv_transpose2d: ONNX expects [input, filter, bias?]
+        // conv2d / conv_transpose2d: only input and filter are positional; bias is in options.
         if op_type == "conv2d" || op_type == "conv_transpose2d" {
-            let order = ["input", "filter", "bias"];
+            let order = ["input", "filter"];
             let ordered: Vec<u32> = order
                 .iter()
                 .filter_map(|key| {
