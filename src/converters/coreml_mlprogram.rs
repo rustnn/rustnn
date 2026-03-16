@@ -1731,9 +1731,10 @@ impl CoremlMlProgramConverter {
                         );
                     }
                     if !opts.sizes.is_empty() {
+                        let sizes_u32 = opts.sizes_static_or_max();
                         inputs.insert(
                             "size".to_string(),
-                            Self::create_immediate_int_array(&opts.sizes),
+                            Self::create_immediate_int_array(&sizes_u32),
                         );
                     }
                 }

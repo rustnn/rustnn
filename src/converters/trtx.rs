@@ -4538,7 +4538,11 @@ impl TrtxConverter {
             return Ok(());
         }
         let starts: Vec<i32> = opts.starts.iter().map(|&u| u as i32).collect();
-        let sizes: Vec<i32> = opts.sizes.iter().map(|&u| u as i32).collect();
+        let sizes: Vec<i32> = opts
+            .sizes_static_or_max()
+            .iter()
+            .map(|&u| u as i32)
+            .collect();
         let strides: Vec<i32> = if opts.strides.is_empty() {
             vec![1; starts.len()]
         } else {

@@ -22,12 +22,15 @@ use crate::error::GraphError;
 use crate::graph::{
     DataType, Dimension, GraphInfo, OperandKind, Operation, get_static_or_max_size,
 };
+use crate::operator_options::MLDimension;
 use crate::protos::onnx::{
     AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
     TensorShapeProto, TypeProto, ValueInfoProto, attribute_proto::AttributeType,
     tensor_proto::DataType as ProtoDataType, type_proto::Tensor as TensorTypeProto,
 };
-use crate::shape_inference::{broadcast_shapes, infer_matmul_shape, infer_transpose_shape};
+use crate::shape_inference::{
+    broadcast_shapes, infer_matmul_shape, infer_transpose_shape, infer_where_shape,
+};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use prost::Message;
@@ -1612,9 +1615,32 @@ impl crate::converters::GraphConverter for OnnxConverter {
             } else if op.op_type.eq_ignore_ascii_case("where") {
                 if let (Some(output_id), Some(val_input_id)) =
                     (op.output_operand, op.input_operands.get(1))
-                    && let Some(input_operand) = graph.operand(*val_input_id)
                 {
-                    type_overrides.insert(output_id, input_operand.descriptor.data_type);
+                    if let Some(input_operand) = graph.operand(*val_input_id) {
+                        type_overrides.insert(output_id, input_operand.descriptor.data_type);
+                    }
+
+                    if op.input_operands.len() >= 3 {
+                        let cond_shape = operand_shapes.get(&op.input_operands[0]);
+                        let true_shape = operand_shapes.get(&op.input_operands[1]);
+                        let false_shape = operand_shapes.get(&op.input_operands[2]);
+
+                        let inferred_shape = if let (Some(cond), Some(true_val), Some(false_val)) =
+                            (cond_shape, true_shape, false_shape)
+                        {
+                            infer_where_shape(cond, true_val, false_val).ok()
+                        } else if let (Some(true_val), Some(false_val)) = (true_shape, false_shape)
+                        {
+                            broadcast_shapes(true_val, false_val).ok()
+                        } else {
+                            true_shape.cloned().or_else(|| false_shape.cloned())
+                        };
+
+                        if let Some(shape) = inferred_shape {
+                            shape_overrides.insert(output_id, shape.clone());
+                            operand_shapes.insert(output_id, shape);
+                        }
+                    }
                 }
             } else if op.op_type.eq_ignore_ascii_case("slice") {
                 if let (Some(&input_id), Some(output_id)) =
@@ -1628,7 +1654,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                     // WebNN slice has starts, sizes, strides; derive ends as starts[i] + sizes[i] for default stride 1
                     let starts: Vec<i64> = opts.starts.iter().map(|&u| u as i64).collect();
-                    let sizes: Vec<i64> = opts.sizes.iter().map(|&u| u as i64).collect();
+                    let sizes: Vec<i64> = opts
+                        .sizes_static_or_max()
+                        .iter()
+                        .map(|&u| u as i64)
+                        .collect();
                     let strides: Vec<i64> = if opts.strides.is_empty() {
                         vec![1; starts.len()]
                     } else {
@@ -7133,20 +7163,19 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         reason: "slice operation requires typed options".to_string(),
                     })?;
                 let starts: Vec<i64> = o.starts.iter().map(|&u| u as i64).collect();
-                let sizes: Vec<i64> = o.sizes.iter().map(|&u| u as i64).collect();
-                let ends: Vec<i64> = starts
-                    .iter()
-                    .zip(sizes.iter())
-                    .map(|(s, z)| s + z)
-                    .collect();
+                let sizes_max: Vec<i64> =
+                    o.sizes_static_or_max().iter().map(|&u| u as i64).collect();
                 let steps: Option<Vec<i64>> = if o.strides.is_empty() {
                     None
                 } else {
                     Some(o.strides.iter().map(|&u| u as i64).collect())
                 };
+
+                // Check if any size is dynamic
+                let has_dynamic_sizes =
+                    o.sizes.iter().any(|s| matches!(s, MLDimension::Dynamic(_)));
+
                 // Special case: 0D tensor (scalar) cannot be sliced
-                // Use Identity node instead (ONNX Runtime doesn't support slicing scalars)
-                // A scalar has no axes, so any slice operation should just return the scalar unchanged
                 if is_0d {
                     nodes.push(NodeProto {
                         input: vec![inputs[0].clone()],
@@ -7158,10 +7187,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         op_type: "Identity".to_string(),
                         ..Default::default()
                     });
-                    continue; // Skip the rest of the slice handling
+                    continue;
                 }
 
-                // Capture length before moving starts
                 let starts_len = starts.len();
 
                 // Add starts as initializer
@@ -7171,23 +7199,69 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     name: starts_name,
                     data_type: ProtoDataType::Int64 as i32,
                     dims: vec![starts_len as i64],
-                    int64_data: starts,
+                    int64_data: starts.clone(),
                     ..Default::default()
                 });
 
-                // Add ends as initializer
-                let ends_name = format!("{}_ends", op_name);
-                inputs.push(ends_name.clone());
-                initializers.push(TensorProto {
-                    name: ends_name,
-                    data_type: ProtoDataType::Int64 as i32,
-                    dims: vec![ends.len() as i64],
-                    int64_data: ends,
-                    ..Default::default()
-                });
+                if has_dynamic_sizes {
+                    // Dynamic Slice: build ends tensor from runtime dimensions.
+                    // Convert sizes to end dimensions: end[i] = start[i] + size[i]
+                    // For dynamic sizes, adjust the name to include the start offset.
+                    use crate::graph::DynamicDimension as GraphDynDim;
+                    let end_dims: Vec<Dimension> = o
+                        .sizes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, sd)| {
+                            match sd {
+                                MLDimension::Static(s) => Dimension::Static((starts[i] as u32) + s),
+                                MLDimension::Dynamic(dd) => {
+                                    if starts[i] == 0 {
+                                        // end = size (which is the dynamic dim directly)
+                                        Dimension::Dynamic(GraphDynDim {
+                                            name: dd.name.clone(),
+                                            max_size: dd.max_size,
+                                        })
+                                    } else {
+                                        // end = start + size; encode as "dim_name + start"
+                                        Dimension::Dynamic(GraphDynDim {
+                                            name: format!("{} + {}", dd.name, starts[i]),
+                                            max_size: (starts[i] as u32) + dd.max_size,
+                                        })
+                                    }
+                                }
+                            }
+                        })
+                        .collect();
+
+                    let ends_name = Self::build_runtime_shape_input(
+                        &format!("{}_ends", op_name),
+                        &end_dims,
+                        graph,
+                        op,
+                        &mut nodes,
+                        &mut initializers,
+                    );
+                    inputs.push(ends_name);
+                } else {
+                    // Static ends: use initializer
+                    let ends: Vec<i64> = starts
+                        .iter()
+                        .zip(sizes_max.iter())
+                        .map(|(s, z)| s + z)
+                        .collect();
+                    let ends_name = format!("{}_ends", op_name);
+                    inputs.push(ends_name.clone());
+                    initializers.push(TensorProto {
+                        name: ends_name,
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![ends.len() as i64],
+                        int64_data: ends,
+                        ..Default::default()
+                    });
+                }
 
                 // Add axes as initializer
-                // If axes not provided, default to [0, 1, ..., len(starts)-1]
                 let axes_data: Vec<i64> = (0..starts_len as i64).collect();
 
                 let axes_name = format!("{}_axes", op_name);
@@ -8258,6 +8332,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
+                let input_id = op.input_operands[0];
+                let input_shape = operand_shapes.get(&input_id).cloned().unwrap_or_else(|| {
+                    graph.operands[input_id as usize]
+                        .descriptor
+                        .static_or_max_shape()
+                });
+
                 // Get axes from typed options (unsqueeze). Typed options required.
                 let axes_i64 = op
                     .attributes
@@ -8275,6 +8356,45 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         int64_data: axes_i64,
                         ..Default::default()
                     });
+                }
+
+                if let Some(output_id) = op.output_operand {
+                    let mut output_shape = input_shape.clone();
+                    if op.op_type == "unsqueeze" {
+                        let mut axes: Vec<usize> = op
+                            .attributes
+                            .as_unsqueeze()
+                            .map(|o| o.axes.iter().map(|&u| u as usize).collect())
+                            .unwrap_or_default();
+                        axes.sort_unstable();
+                        for axis in axes {
+                            let idx = axis.min(output_shape.len());
+                            output_shape.insert(idx, 1);
+                        }
+                    } else {
+                        let mut axes: Vec<usize> = op
+                            .attributes
+                            .as_squeeze()
+                            .map(|o| {
+                                if o.axes.is_empty() {
+                                    output_shape
+                                        .iter()
+                                        .enumerate()
+                                        .filter_map(|(idx, &dim)| (dim == 1).then_some(idx))
+                                        .collect()
+                                } else {
+                                    o.axes.iter().map(|&u| u as usize).collect()
+                                }
+                            })
+                            .unwrap_or_default();
+                        axes.sort_unstable_by(|a, b| b.cmp(a));
+                        for axis in axes {
+                            if axis < output_shape.len() {
+                                output_shape.remove(axis);
+                            }
+                        }
+                    }
+                    operand_shapes.insert(output_id, output_shape);
                 }
 
                 nodes.push(NodeProto {
@@ -9880,7 +10000,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![2, 3],
+                    shape: vec![Dimension::Static(2), Dimension::Static(3)],
                     pending_permutation: vec![],
                 },
                 name: Some("input".to_string()),
@@ -9889,7 +10009,7 @@ mod tests {
                 kind: OperandKind::Output,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![2, 3],
+                    shape: vec![Dimension::Static(2), Dimension::Static(3)],
                     pending_permutation: vec![],
                 },
                 name: Some("output".to_string()),
@@ -10241,6 +10361,277 @@ mod tests {
         assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
         assert!(gp.node.iter().any(|n| n.op_type == "Gather"));
         assert!(gp.node.iter().any(|n| n.op_type == "Concat"));
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn test_unsqueeze_shape_tracking_prevents_expand_scalar_reshape() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "sequence_length".to_string(),
+                            max_size: 4096,
+                        }),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "past_sequence_length + 1".to_string(),
+                            max_size: 4096,
+                        }),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("unsqueezed_0".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("unsqueezed_1".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch_size".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "sequence_length".to_string(),
+                            max_size: 4096,
+                        }),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "past_sequence_length + 1".to_string(),
+                            max_size: 4096,
+                        }),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("expanded".to_string()),
+            },
+        ];
+
+        let operations = vec![
+            Operation {
+                op_type: "unsqueeze".to_string(),
+                input_operands: vec![0],
+                output_operand: Some(1),
+                output_operands: vec![],
+                attributes: OperatorOptions::from_json_with_op_type(
+                    "unsqueeze",
+                    &serde_json::json!({ "axes": [0] }),
+                )
+                .unwrap_or_default(),
+                label: None,
+            },
+            Operation {
+                op_type: "unsqueeze".to_string(),
+                input_operands: vec![1],
+                output_operand: Some(2),
+                output_operands: vec![],
+                attributes: OperatorOptions::from_json_with_op_type(
+                    "unsqueeze",
+                    &serde_json::json!({ "axes": [1] }),
+                )
+                .unwrap_or_default(),
+                label: None,
+            },
+            Operation {
+                op_type: "expand".to_string(),
+                input_operands: vec![2],
+                output_operand: Some(3),
+                output_operands: vec![],
+                attributes: OperatorOptions::from_json_with_op_type(
+                    "expand",
+                    &serde_json::json!({
+                        "newShape": [
+                            { "name": "batch_size", "maxSize": 8 },
+                            1,
+                            { "name": "sequence_length", "maxSize": 4096 },
+                            { "name": "past_sequence_length + 1", "maxSize": 4096 }
+                        ]
+                    }),
+                )
+                .unwrap_or_default(),
+                label: None,
+            },
+        ];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        assert!(gp.node.iter().any(|n| n.op_type == "Expand"));
+        assert!(
+            !gp.node.iter().any(|n| n.name.ends_with("_scalar_reshape")),
+            "unsqueeze-tracked tensors should not be treated as scalars before expand",
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn test_where_shape_tracking_prevents_expand_scalar_reshape() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint8,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "sequence_length".to_string(),
+                            max_size: 4096,
+                        }),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "past_sequence_length + 1".to_string(),
+                            max_size: 4096,
+                        }),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("cond".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("true_scalar".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "sequence_length".to_string(),
+                            max_size: 4096,
+                        }),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "past_sequence_length + 1".to_string(),
+                            max_size: 4096,
+                        }),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("false_value".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![],
+                    pending_permutation: vec![],
+                },
+                name: Some("where_out".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "batch_size".to_string(),
+                            max_size: 8,
+                        }),
+                        Dimension::Static(1),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "sequence_length".to_string(),
+                            max_size: 4096,
+                        }),
+                        Dimension::Dynamic(DynamicDimension {
+                            name: "past_sequence_length + 1".to_string(),
+                            max_size: 4096,
+                        }),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("expanded".to_string()),
+            },
+        ];
+
+        let operations = vec![
+            Operation {
+                op_type: "where".to_string(),
+                input_operands: vec![0, 1, 2],
+                output_operand: Some(3),
+                output_operands: vec![],
+                attributes: OperatorOptions::default(),
+                label: None,
+            },
+            Operation {
+                op_type: "expand".to_string(),
+                input_operands: vec![3],
+                output_operand: Some(4),
+                output_operands: vec![],
+                attributes: OperatorOptions::from_json_with_op_type(
+                    "expand",
+                    &serde_json::json!({
+                        "newShape": [
+                            { "name": "batch_size", "maxSize": 8 },
+                            1,
+                            { "name": "sequence_length", "maxSize": 4096 },
+                            { "name": "past_sequence_length + 1", "maxSize": 4096 }
+                        ]
+                    }),
+                )
+                .unwrap_or_default(),
+                label: None,
+            },
+        ];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![4],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        assert!(gp.node.iter().any(|n| n.op_type == "Where"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Expand"));
+        assert!(
+            !gp.node.iter().any(|n| n.name.ends_with("_scalar_reshape")),
+            "where-tracked tensors should not be treated as scalars before expand",
+        );
     }
 
     #[cfg(feature = "dynamic-inputs")]
