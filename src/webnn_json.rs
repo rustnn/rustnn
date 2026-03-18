@@ -553,8 +553,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
                 // Unary element-wise operations (shape unchanged)
                 "abs" | "ceil" | "floor" | "neg" | "relu" | "sigmoid" | "tanh" | "exp" | "log"
-                | "sqrt" | "erf" | "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "sinh"
-                | "cosh" | "asinh" | "acosh" | "atanh" | "round" | "sign" | "reciprocal"
+                | "sqrt" | "erf" | "sin" | "cos" | "tan" | "sign" | "reciprocal"
+                | "roundEven"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
                 | "reverse" | "cumulativesum" | "cumulative_sum" | "logical_not" | "isnan"
                 | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
@@ -962,16 +962,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     | "sin"
                     | "cos"
                     | "tan"
-                    | "asin"
-                    | "acos"
-                    | "atan"
-                    | "sinh"
-                    | "cosh"
-                    | "asinh"
-                    | "acosh"
-                    | "atanh"
-                    | "round"
                     | "sign"
+                    | "roundEven"
                     | "reciprocal"
                     | "softplus"
                     | "softsign"

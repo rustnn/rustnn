@@ -54,7 +54,7 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
         let mut label_lines = vec![format!("{} (#{})", operation.display_name(), idx)];
         if let Some(label) = &operation.label
             && !label.is_empty()
-            && label != &operation.op_type
+            && label != &operation.op_type()
         {
             label_lines.push(label.clone());
         }
@@ -65,7 +65,7 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
             node_id, label
         );
 
-        for (input_idx, operand_id) in operation.input_operands.iter().enumerate() {
+        for (input_idx, operand_id) in operation.input_operands().iter().enumerate() {
             let _ = writeln!(
                 dot,
                 "  operand_{} -> {} [label=\"in{}\"];",
@@ -122,6 +122,7 @@ mod tests {
         to_dimension_vector,
     };
     use crate::operator_options::OperatorOptions;
+    use crate::operators::Operator;
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {
@@ -157,13 +158,15 @@ mod tests {
             ],
             input_operands: vec![0, 1],
             output_operands: vec![2],
-            operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(2),
+                    output_operands: Vec::new(),
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),

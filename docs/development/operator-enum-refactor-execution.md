@@ -94,10 +94,10 @@ Outputs stay on `Operation` (single- and multi-output ops unchanged).
 | Step | Action | Status |
 |------|--------|--------|
 | 1.1 | **New module** (e.g. `src/operators.rs` or under `operator_options.rs`): Define `Operator` enum with one variant per op. Each variant = builder name + named operand fields + options struct (or `MLOperatorOptions`). Reuse all existing `ML*Options` and `MLDimension` from `operator_options.rs`. | [x] |
-| 1.2 | **Conversion helpers** (same crate): `Operator -> (op_type: &str, input_operands: Vec<u32>, attributes: OperatorOptions)` so existing code that expects (op_type, input_operands, attributes) can still run. | [ ] |
-| 1.3 | **Conversion helpers**: `(op_type, input_operands, attributes) -> Operator` for deserializing current JSON and for WPT path. | [ ] |
-| 1.4 | **`Operation`**: Add `operator: Operator` (or a temporary "new" representation). Keep existing `op_type`, `input_operands`, `attributes` for now; fill them from `operator` when present so serialization and all current consumers keep working. Alternatively: keep one internal representation (`operator`) and derive the three fields only at serialization / when a legacy API is used. | [ ] |
-| 1.5 | **GraphInfo**: No change to `operands`, `input_operands`, `output_operands`, `constant_operand_ids_to_handles`; only `operations` now carry `Operator` (and possibly legacy fields during transition). | [ ] |
+| 1.2 | **Conversion helpers** (same crate): `Operator -> (op_type: &str, input_operands: Vec<u32>, attributes: OperatorOptions)` so existing code that expects (op_type, input_operands, attributes) can still run. | [x] |
+| 1.3 | **Conversion helpers**: `(op_type, input_operands, attributes) -> Operator` for deserializing current JSON and for WPT path. | [x] |
+| 1.4 | **`Operation`**: Single representation: `Operation { operator, output_operand, output_operands, label }`. No duplicated legacy fields; `op_type`, `input_operands`, `attributes` derived via `operator.to_legacy()` only at serialization and via accessors `op_type()`, `input_operands()`, `attributes()`. | [x] |
+| 1.5 | **GraphInfo**: No change to `operands`, `input_operands`, `output_operands`, `constant_operand_ids_to_handles`; only `operations` now carry `Operator`. | [x] |
 
 ### Phase 2: Wire Producers to Build `Operator`
 
@@ -121,9 +121,9 @@ Outputs stay on `Operation` (single- and multi-output ops unchanged).
 
 | Step | Action | Status |
 |------|--------|--------|
-| 4.1 | **Remove** from `Operation`: `op_type`, `input_operands`, `attributes`. | [ ] |
-| 4.2 | **Serialization**: **Option A (backward compatible)**: When serializing to JSON, derive `type`, `inputOperands`, and `attributes` from `operator` so existing tools still read the same format. **Option B (new format)**: Introduce a new JSON shape that mirrors `Operator` (e.g. one key per op with named operand refs and options). Keep a reader for the old format that converts into `Operator` on load. | [ ] |
-| 4.3 | **Deserialization**: Already covered in phase 1/2: parse old or new format and build `Operator` + `Operation`. | [ ] |
+| 4.1 | **Remove** from `Operation`: `op_type`, `input_operands`, `attributes`. | [x] |
+| 4.2 | **Serialization**: Custom `Serialize` for `Operation` derives `type`, `input_operands`, `attributes` from `operator.to_legacy()` so existing JSON format is unchanged. | [x] |
+| 4.3 | **Deserialization**: Custom `Deserialize` parses legacy JSON (type, input_operands, attributes) and builds `Operator` via `from_legacy()` then `Operation { operator, ... }`. | [x] |
 
 ### Phase 5: Cleanup and Docs
 

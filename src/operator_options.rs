@@ -1081,6 +1081,12 @@ impl OperatorOptions {
     // Typed accessors: return the options struct when the variant matches.
     // ---------------------------------------------------------------------------
 
+    pub fn as_operator(&self) -> Option<&MLOperatorOptions> {
+        match self {
+            OperatorOptions::Operator(o) => Some(o),
+            _ => None,
+        }
+    }
     pub fn as_arg_min_max(&self) -> Option<&MLArgMinMaxOptions> {
         match self {
             OperatorOptions::ArgMinMax(o) => Some(o),

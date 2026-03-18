@@ -483,7 +483,7 @@ impl TrtxConverter {
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let op_type = operation.op_type.as_str();
+        let op_type = operation.op_type().as_str();
 
         match op_type {
             // Binary element-wise operations
@@ -586,26 +586,11 @@ impl TrtxConverter {
             "cos" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCOS)?,
             "tan" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kTAN)?,
 
-            // Hyperbolic
-            "sinh" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSINH)?,
-            "cosh" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCOSH)?,
-
-            // Inverse trigonometric
-            "asin" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kASIN)?,
-            "acos" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kACOS)?,
-            "atan" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kATAN)?,
-
-            // Inverse hyperbolic
-            "asinh" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kASINH)?,
-            "acosh" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kACOSH)?,
-            "atanh" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kATANH)?,
-
             // Rounding and other
             "ceil" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kCEIL)?,
             "floor" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kFLOOR)?,
             "erf" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kERF)?,
             "sign" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSIGN)?,
-            "round" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kROUND)?,
             "identity" => Self::add_identity_op(network, tensor_map, operation)?,
             "cast" => Self::add_cast_op(
                 graph,
@@ -1066,22 +1051,22 @@ impl TrtxConverter {
         op_code: ElementWiseOperation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Ensure broadcast compatibility (this may reshape tensors if needed)
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         let layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
@@ -1113,22 +1098,22 @@ impl TrtxConverter {
         op_code: ElementWiseOperation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Ensure broadcast compatibility
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         // Comparison operation returns BOOL
         let layer = network
@@ -1163,22 +1148,22 @@ impl TrtxConverter {
         op_code: ElementWiseOperation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Ensure broadcast compatibility BEFORE casting to BOOL
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         // Cast Float32 inputs to BOOL
         let bool_input0 = Self::cast_to_bool(network, &bc_input0)?;
@@ -1218,7 +1203,7 @@ impl TrtxConverter {
         operation: &Operation,
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -1307,10 +1292,10 @@ impl TrtxConverter {
         activation_type: ActivationType,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let layer = network
@@ -1345,10 +1330,10 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let alpha = operation
@@ -1357,12 +1342,12 @@ impl TrtxConverter {
             .map(|o| o.alpha as f32)
             .unwrap_or(1.0);
 
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -1550,10 +1535,10 @@ impl TrtxConverter {
         unary_op: UnaryOperation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let layer =
@@ -1589,10 +1574,10 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let alpha = operation
@@ -1601,12 +1586,12 @@ impl TrtxConverter {
             .map(|o| o.alpha as f32)
             .unwrap_or(0.01);
 
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -1707,17 +1692,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let slope = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Slope operand {} not found", operation.input_operands[1]),
+                reason: format!("Slope operand {} not found", operation.input_operands()[1]),
             })?;
 
         // PReLU: output = x if x > 0, else slope * x
@@ -1812,13 +1797,13 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let opts = operation.attributes.as_hard_sigmoid();
+        let opts = operation.attributes().as_hard_sigmoid();
         let alpha = opts.map(|o| o.alpha as f32).unwrap_or(0.2);
         let beta = opts.map(|o| o.beta as f32).unwrap_or(0.5);
 
@@ -1840,12 +1825,12 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -2000,18 +1985,18 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -2162,7 +2147,7 @@ impl TrtxConverter {
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -2204,7 +2189,7 @@ impl TrtxConverter {
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -2465,17 +2450,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let scale = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Scale operand {} not found", operation.input_operands[1]),
+                reason: format!("Scale operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Note: WebNN quantizeLinear also has zeroPoint parameter (operand 2)
@@ -2510,17 +2495,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let scale = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Scale operand {} not found", operation.input_operands[1]),
+                reason: format!("Scale operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Note: WebNN dequantizeLinear also has zeroPoint parameter (operand 2)
@@ -2556,10 +2541,10 @@ impl TrtxConverter {
         pool_type: PoolingType,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get input dimensions to determine window size
@@ -2613,17 +2598,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         let dims0 = input0
@@ -2850,24 +2835,24 @@ impl TrtxConverter {
     ) -> Result<(), GraphError> {
         // Input operands: input, mean, variance, scale (optional), bias (optional)
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let mean = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Mean operand {} not found", operation.input_operands[1]),
+                reason: format!("Mean operand {} not found", operation.input_operands()[1]),
             })?;
 
         let variance = tensor_map
-            .get(&operation.input_operands[2])
+            .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Variance operand {} not found", operation.input_operands[2]),
+                reason: format!("Variance operand {} not found", operation.input_operands()[2]),
             })?;
 
         // Read typed batchNormalization options (fallback keeps WebNN defaults).
@@ -3042,10 +3027,10 @@ impl TrtxConverter {
         // Instance normalization computes statistics per-instance (N, C) over spatial dims
         // Input operands: input, scale (optional), bias (optional)
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dims = input
@@ -3056,7 +3041,7 @@ impl TrtxConverter {
             })?;
 
         // Get epsilon from attributes (default: 1e-5), cast to input dtype per spec
-        let opts = operation.attributes.as_instance_normalization();
+        let opts = operation.attributes().as_instance_normalization();
         let epsilon_f32 = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
         let layout = opts
             .map(|o| o.layout.as_str())
@@ -3143,12 +3128,12 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("InstanceNorm: failed to get variance dimensions: {}", e),
             })?;
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "InstanceNorm: input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -3246,7 +3231,7 @@ impl TrtxConverter {
         // Classify optional operands by name: WPT can pass [input, bias] or [input, scale] or [input, scale, bias].
         let mut scale_id: Option<u32> = None;
         let mut bias_id: Option<u32> = None;
-        for &operand_id in &operation.input_operands[1..] {
+        for &operand_id in &operation.input_operands()[1..] {
             let name = graph
                 .operand(operand_id)
                 .and_then(|o| o.name.as_deref())
@@ -3368,10 +3353,10 @@ impl TrtxConverter {
         // Layer normalization computes statistics over specified axes
         // Input operands: input, scale (optional), bias (optional)
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dims = input
@@ -3383,12 +3368,12 @@ impl TrtxConverter {
 
         // TensorRT Reduce requires at least 1 dimension. For 0D scalar: mean=x, variance=0, output = 0*scale + bias = bias or 0.
         if input_dims.is_empty() {
-            let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+            let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
                 GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!(
                         "Input operand {} not found in graph",
-                        operation.input_operands[0]
+                        operation.input_operands()[0]
                     ),
                 }
             })?;
@@ -3415,8 +3400,8 @@ impl TrtxConverter {
                         reason: format!("LayerNorm 0D: zero const output: {}", e),
                     })?;
             // Optional operands are [scale?, bias?]; bias is last when present. So len>=2 => add last (bias when only bias, or bias when scale+bias).
-            if operation.input_operands.len() >= 2 {
-                let bias_id = operation.input_operands[operation.input_operands.len() - 1];
+            if operation.input_operands().len() >= 2 {
+                let bias_id = operation.input_operands()[operation.input_operands().len() - 1];
                 let bias =
                     tensor_map
                         .get(&bias_id)
@@ -3465,7 +3450,7 @@ impl TrtxConverter {
 
         // Get epsilon and axes from typed options. Spec: when axes not present, axes = [1..rank) if rank > 1 else [].
         // Option<axes>: None = key omitted => default; Some(v) = use v (Some([]) = explicit no reduction).
-        let opts = operation.attributes.as_layer_normalization();
+        let opts = operation.attributes().as_layer_normalization();
         let _epsilon = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
         let axes: Vec<u32> = opts.and_then(|o| o.axes.clone()).unwrap_or_else(|| {
             if input_dims.len() > 1 {
@@ -3478,12 +3463,12 @@ impl TrtxConverter {
         // Spec: "If empty, no dimensions are reduced." TensorRT Reduce requires at least one dimension to reduce.
         // When axes=[], mean/variance reduce over nothing -> normalized = 0; output = 0*scale + bias = bias or 0.
         if axes.is_empty() {
-            let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+            let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
                 GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!(
                         "Input operand {} not found in graph",
-                        operation.input_operands[0]
+                        operation.input_operands()[0]
                     ),
                 }
             })?;
@@ -3519,8 +3504,8 @@ impl TrtxConverter {
                         reason: format!("LayerNorm axes=[]: zero const output: {}", e),
                     })?;
             // Optional operands are [scale?, bias?]; bias is last when present.
-            if operation.input_operands.len() >= 2 {
-                let bias_id = operation.input_operands[operation.input_operands.len() - 1];
+            if operation.input_operands().len() >= 2 {
+                let bias_id = operation.input_operands()[operation.input_operands().len() - 1];
                 let bias =
                     tensor_map
                         .get(&bias_id)
@@ -3704,12 +3689,12 @@ impl TrtxConverter {
             })?;
         let var_shape: Vec<i32> = var_dims.iter().map(|&d| d as i32).collect();
         let num_var_el: usize = var_dims.iter().map(|&d| d as usize).product();
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -3888,8 +3873,8 @@ impl TrtxConverter {
         };
 
         // Optional operands are [scale?, bias?] in that order. When len() == 2, the single optional may be scale or bias; use name to distinguish.
-        if operation.input_operands.len() > 1 {
-            let opt_id_1 = operation.input_operands[1];
+        if operation.input_operands().len() > 1 {
+            let opt_id_1 = operation.input_operands()[1];
             let opt_1 = tensor_map
                 .get(&opt_id_1)
                 .ok_or_else(|| GraphError::ConversionFailed {
@@ -3938,12 +3923,12 @@ impl TrtxConverter {
         }
 
         // Second optional (when len() == 3) is always bias
-        if operation.input_operands.len() > 2 {
+        if operation.input_operands().len() > 2 {
             let bias = tensor_map
-                .get(&operation.input_operands[2])
+                .get(&operation.input_operands()[2])
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Bias operand {} not found", operation.input_operands[2]),
+                    reason: format!("Bias operand {} not found", operation.input_operands()[2]),
                 })?;
             let bias_bc = reshape_scale_bias_to_result_rank(network, bias, &result, "bias", &axes)?;
 
@@ -3981,10 +3966,10 @@ impl TrtxConverter {
         reduce_op: ReduceOperation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dims = input
@@ -3995,7 +3980,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4053,10 +4038,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let abs_layer = network
@@ -4081,7 +4066,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4128,14 +4113,14 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dtype = graph
-            .operand(operation.input_operands[0])
+            .operand(operation.input_operands()[0])
             .map(|o| o.descriptor.data_type)
             .unwrap_or(DataType::Float32);
 
@@ -4162,7 +4147,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4240,10 +4225,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dims = input
@@ -4254,7 +4239,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4326,10 +4311,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let exp_layer = network
@@ -4354,7 +4339,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4427,10 +4412,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let square_layer = network
@@ -4456,7 +4441,7 @@ impl TrtxConverter {
             })?;
         let rank = input_dims.len();
 
-        let opts = operation.attributes.as_reduce();
+        let opts = operation.attributes().as_reduce();
         let axes: Vec<u32> = opts
             .and_then(|o| o.axes.clone())
             .unwrap_or_else(|| (0..rank).map(|i| i as u32).collect());
@@ -4505,10 +4490,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let opts = operation
@@ -4592,7 +4577,7 @@ impl TrtxConverter {
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input_dims = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -4693,14 +4678,14 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get axes from attributes (optional - if not provided, squeeze all size-1 dims)
-        let _axes_opt = operation.attributes.get("axes");
+        let _axes_opt = operation.attributes().get("axes");
 
         // For squeeze, we need to reshape the tensor to remove dimensions of size 1
         // We'll use IShuffleLayer with setReshapeDimensions
@@ -4736,10 +4721,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get axes from attributes
@@ -4798,10 +4783,10 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let opts =
@@ -4831,12 +4816,12 @@ impl TrtxConverter {
             .product::<usize>()
             .max(1);
 
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -4916,7 +4901,7 @@ impl TrtxConverter {
         // Tile by concatenating the tensor multiple times along each axis
         // We process each axis sequentially: tile axis 0, then axis 1, etc.
         // Start with the input tensor's ID
-        let mut current_id = operation.input_operands[0];
+        let mut current_id = operation.input_operands()[0];
 
         for (axis, &reps) in repetitions.iter().enumerate() {
             if reps <= 1 {
@@ -4979,7 +4964,7 @@ impl TrtxConverter {
             tensor_map.insert(output_id, final_tensor);
         } else {
             // No tiling happened (all reps were 1), just use input
-            if let Some(input_tensor) = tensor_map.get(&operation.input_operands[0]) {
+            if let Some(input_tensor) = tensor_map.get(&operation.input_operands()[0]) {
                 // We need to create an identity layer to "clone" the tensor reference
                 let identity_layer = network.add_identity(input_tensor).map_err(|e| {
                     GraphError::ConversionFailed {
@@ -5012,21 +4997,21 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         // greaterOrEqual = greater OR equal
         let greater_layer = network
@@ -5088,21 +5073,21 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         // lesserOrEqual = lesser OR equal
         let lesser_layer = network
@@ -5164,21 +5149,21 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input0 = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input1 = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type)?;
+            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
 
         // notEqual = NOT equal
         let equal_layer = network
@@ -5232,17 +5217,17 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let indices = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Get axis attribute (default to 0)
@@ -5252,12 +5237,12 @@ impl TrtxConverter {
             .map(|o| o.axis as i32)
             .unwrap_or(0);
 
-        let data_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let data_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Data operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -5274,12 +5259,12 @@ impl TrtxConverter {
         }
         let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i32;
 
-        let indices_operand = graph.operand(operation.input_operands[1]).ok_or_else(|| {
+        let indices_operand = graph.operand(operation.input_operands()[1]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Indices operand {} not found in graph",
-                    operation.input_operands[1]
+                    operation.input_operands()[1]
                 ),
             }
         })?;
@@ -5396,17 +5381,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let indices = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Create gather layer with axis 0 (required by addGather API)
@@ -5446,24 +5431,24 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let data = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Data operand {} not found", operation.input_operands[0]),
+                reason: format!("Data operand {} not found", operation.input_operands()[0]),
             })?;
 
         let indices = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
             })?;
 
         let updates = tensor_map
-            .get(&operation.input_operands[2])
+            .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Updates operand {} not found", operation.input_operands[2]),
+                reason: format!("Updates operand {} not found", operation.input_operands()[2]),
             })?;
 
         // Get axis attribute (default to 0)
@@ -5509,24 +5494,24 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let data = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Data operand {} not found", operation.input_operands[0]),
+                reason: format!("Data operand {} not found", operation.input_operands()[0]),
             })?;
 
         let indices = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
             })?;
 
         let updates = tensor_map
-            .get(&operation.input_operands[2])
+            .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Updates operand {} not found", operation.input_operands[2]),
+                reason: format!("Updates operand {} not found", operation.input_operands()[2]),
             })?;
 
         // Create scatter layer with mode kND for N-dimensional scatter
@@ -5557,13 +5542,13 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let opts = operation.attributes.as_arg_min_max();
+        let opts = operation.attributes().as_arg_min_max();
         let axis = opts.map(|o| o.axis).unwrap_or(0);
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
@@ -5620,13 +5605,13 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let opts = operation.attributes.as_arg_min_max();
+        let opts = operation.attributes().as_arg_min_max();
         let axis = opts.map(|o| o.axis).unwrap_or(0);
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
@@ -5689,19 +5674,19 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get input operand descriptor to determine shape dimensions
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -5745,7 +5730,7 @@ impl TrtxConverter {
                 })
         };
 
-        let clamp_opts = operation.attributes.as_clamp();
+        let clamp_opts = operation.attributes().as_clamp();
         let min_value = clamp_opts
             .and_then(|o| o.min_value.as_ref())
             .and_then(parse_clamp_bound_f32)
@@ -5919,32 +5904,32 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let condition = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Condition operand {} not found",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             })?;
 
         let true_value = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "True value operand {} not found",
-                    operation.input_operands[1]
+                    operation.input_operands()[1]
                 ),
             })?;
 
         let false_value = tensor_map
-            .get(&operation.input_operands[2])
+            .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "False value operand {} not found",
-                    operation.input_operands[2]
+                    operation.input_operands()[2]
                 ),
             })?;
 
@@ -5980,19 +5965,19 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get input operand descriptor to determine shape dimensions
-        let input_operand = graph.operand(operation.input_operands[0]).ok_or_else(|| {
+        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
-                    operation.input_operands[0]
+                    operation.input_operands()[0]
                 ),
             }
         })?;
@@ -6000,7 +5985,7 @@ impl TrtxConverter {
         // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
         let broadcast_shape: Vec<i32> = vec![1; num_dims];
 
-        let linear_opts = operation.attributes.as_linear();
+        let linear_opts = operation.attributes().as_linear();
         let alpha = linear_opts.map(|o| o.alpha as f32).unwrap_or(1.0);
         let beta = linear_opts.map(|o| o.beta as f32).unwrap_or(0.0);
 
@@ -6125,10 +6110,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let opts = operation
@@ -6327,20 +6312,20 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_a = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_b = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[1]),
+                reason: format!("Input operand {} not found", operation.input_operands()[1]),
             })?;
 
-        let opts = operation.attributes.as_gemm();
+        let opts = operation.attributes().as_gemm();
         let alpha = opts.map(|o| o.alpha as f32).unwrap_or(1.0);
         let beta = opts.map(|o| o.beta as f32).unwrap_or(1.0);
         let a_transpose = opts.map(|o| o.a_transpose).unwrap_or(false);
@@ -6478,12 +6463,12 @@ impl TrtxConverter {
         }
 
         // If there's a C input and beta != 0, add it
-        if operation.input_operands.len() > 2 && beta.abs() > 1e-6 {
+        if operation.input_operands().len() > 2 && beta.abs() > 1e-6 {
             let input_c = tensor_map
-                .get(&operation.input_operands[2])
+                .get(&operation.input_operands()[2])
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Input operand {} not found", operation.input_operands[2]),
+                    reason: format!("Input operand {} not found", operation.input_operands()[2]),
                 })?;
 
             // Scale C by beta if needed, then add to result
@@ -6582,8 +6567,8 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let filter_id = operation.input_operands[1];
-        let bias_id = operation.input_operands.get(2).copied();
+        let filter_id = operation.input_operands()[1];
+        let bias_id = operation.input_operands().get(2).copied();
 
         // Filter operand and shape (needed for both constant and tensor-weight paths)
         let filter_operand =
@@ -6601,7 +6586,7 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let conv_opts = operation.attributes.as_conv2d();
+        let conv_opts = operation.attributes().as_conv2d();
         let filter_layout = conv_opts
             .map(|o| o.filter_layout.as_str())
             .filter(|s| !s.is_empty())
@@ -6717,7 +6702,7 @@ impl TrtxConverter {
             .map(|o| o.input_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input_dtype = graph
             .operand(input_id)
             .map(|o| o.descriptor.data_type)
@@ -7045,8 +7030,8 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let filter_id = operation.input_operands[1];
-        let bias_id = operation.input_operands.get(2).copied();
+        let filter_id = operation.input_operands()[1];
+        let bias_id = operation.input_operands().get(2).copied();
 
         let filter_operand =
             graph
@@ -7066,7 +7051,7 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let deconv_opts = operation.attributes.as_conv_transpose2d();
+        let deconv_opts = operation.attributes().as_conv_transpose2d();
         let filter_layout = deconv_opts
             .map(|o| o.filter_layout.as_str())
             .filter(|s| !s.is_empty())
@@ -7182,7 +7167,7 @@ impl TrtxConverter {
             .map(|o| o.input_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
-        let input_id = operation.input_operands[0];
+        let input_id = operation.input_operands()[0];
         let input_dtype = graph
             .operand(input_id)
             .map(|o| o.descriptor.data_type)
@@ -7652,10 +7637,10 @@ impl TrtxConverter {
         pool_type: PoolingType,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let pool_opts =
@@ -7708,10 +7693,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Axis is required by WebNN spec (unsigned long)
@@ -7835,10 +7820,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         let input_dims = input
@@ -7903,10 +7888,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Parse newShape attribute
@@ -7961,10 +7946,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Parse mode attribute (default to "nearest-neighbor")
@@ -8061,10 +8046,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // NaN is the only value where x != x is true
@@ -8115,10 +8100,10 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Check if abs(x) == infinity
@@ -8185,10 +8170,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // TensorRT's kROUND already uses round-to-nearest-even (banker's rounding) by default
@@ -8219,17 +8204,17 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let data_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Data operand {} not found", operation.input_operands[0]),
+                reason: format!("Data operand {} not found", operation.input_operands()[0]),
             })?;
 
         let indices_tensor = tensor_map
-            .get(&operation.input_operands[1])
+            .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands[1]),
+                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
             })?;
 
         // Get axis parameter (default to 0)
@@ -8275,10 +8260,10 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Step 1: Square the input (x^2)
@@ -8355,14 +8340,14 @@ impl TrtxConverter {
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
         // Get input shape from graph
-        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let input_operand = &graph.operands[operation.input_operands()[0] as usize];
         let shape = &input_operand.descriptor.shape;
         let rank = shape.len();
 
@@ -8441,19 +8426,19 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let cum_opts = operation.attributes.as_cumulative_sum();
+        let cum_opts = operation.attributes().as_cumulative_sum();
         let axis = cum_opts.map(|o| o.axis as usize).unwrap_or(0);
         let exclusive = cum_opts.map(|o| o.exclusive).unwrap_or(false);
         let reverse = cum_opts.map(|o| o.reversed).unwrap_or(false);
 
         // Get input shape
-        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let input_operand = &graph.operands[operation.input_operands()[0] as usize];
         let shape = &input_operand.descriptor.shape;
         let rank = shape.len();
 
@@ -8525,18 +8510,18 @@ impl TrtxConverter {
         temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_tensor = tensor_map
-            .get(&operation.input_operands[0])
+            .get(&operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands[0]),
+                reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let tri_opts = operation.attributes.as_triangular();
+        let tri_opts = operation.attributes().as_triangular();
         let upper = tri_opts.and_then(|o| o.upper).unwrap_or(true);
         let diagonal = tri_opts.map(|o| o.diagonal).unwrap_or(0);
 
         // Get input shape from graph
-        let input_operand = &graph.operands[operation.input_operands[0] as usize];
+        let input_operand = &graph.operands[operation.input_operands()[0] as usize];
         let shape = &input_operand.descriptor.shape;
 
         // Triangular only makes sense for 2D matrices (or higher-D tensors treated as batches of 2D)

@@ -4,6 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
 use crate::operator_options::{MLDimension, MLDynamicDimension, OperatorOptions};
+use crate::operators::Operator;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -174,20 +175,34 @@ pub struct Operand {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// Single source of truth: the operator enum. Output and label are stored here;
+/// type, inputOperands, and attributes are derived via to_legacy() for JSON and accessors.
+#[derive(Debug, Clone)]
 pub struct Operation {
-    #[serde(rename = "type")]
-    pub op_type: String,
-    #[serde(default)]
-    pub input_operands: Vec<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator: Operator,
+    // #[serde(skip_serializing_if = "Option::is_none")]
     pub output_operand: Option<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_operands: Vec<u32>,
-    #[serde(default)]
-    pub attributes: OperatorOptions,
-    #[serde(default)]
     pub label: Option<String>,
+}
+
+impl Serialize for Operation {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let (op_type, input_operands, attributes) = self.operator.to_legacy();
+        let mut st = serializer.serialize_struct("Operation", 6)?;
+        st.serialize_field("type", &op_type)?;
+        st.serialize_field("input_operands", &input_operands)?;
+        st.serialize_field("attributes", &attributes)?;
+        st.serialize_field("output_operand", &self.output_operand)?;
+        st.serialize_field("output_operands", &self.output_operands)?;
+        st.serialize_field("label", &self.label)?;
+        st.end()
+    }
 }
 
 impl<'de> Deserialize<'de> for Operation {
@@ -201,7 +216,7 @@ impl<'de> Deserialize<'de> for Operation {
             op_type: String,
             #[serde(default)]
             input_operands: Vec<u32>,
-            #[serde(skip_serializing_if = "Option::is_none")]
+            #[serde(default)]
             output_operand: Option<u32>,
             #[serde(default)]
             output_operands: Vec<u32>,
@@ -223,18 +238,34 @@ impl<'de> Deserialize<'de> for Operation {
         } else {
             OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes).unwrap_or_default()
         };
+        let operator = Operator::from_legacy(&h.op_type, &h.input_operands, &attributes).ok_or_else(
+            || serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type)),
+        )?;
         Ok(Operation {
-            op_type: h.op_type,
-            input_operands: h.input_operands,
+            operator,
             output_operand: h.output_operand,
             output_operands: h.output_operands,
-            attributes,
             label: h.label,
         })
     }
 }
 
 impl Operation {
+    /// Legacy op_type string (e.g. `"conv2d"`). Derived from `operator`.
+    pub fn op_type(&self) -> String {
+        self.operator.to_legacy().0
+    }
+
+    /// Legacy input operand indices. Derived from `operator`.
+    pub fn input_operands(&self) -> Vec<u32> {
+        self.operator.to_legacy().1
+    }
+
+    /// Legacy attributes. Derived from `operator`.
+    pub fn attributes(&self) -> OperatorOptions {
+        self.operator.to_legacy().2
+    }
+
     /// Borrow all output operand IDs (handles single- and multi-output operations)
     pub fn output_operands_slice(&self) -> &[u32] {
         if !self.output_operands.is_empty() {
@@ -252,18 +283,18 @@ impl Operation {
     /// Attributes as a JSON value for code that expects `serde_json::Value` (e.g. parse_json_ints).
     /// Returns `Value::Null` when there are no attributes.
     pub fn attributes_value(&self) -> serde_json::Value {
-        self.attributes.to_value()
+        self.attributes().to_value()
     }
 
     /// Get a single attribute by key as JSON value. Use for code that still expects key-based lookup.
     pub fn get_attr(&self, key: &str) -> Option<serde_json::Value> {
-        self.attributes.get(key)
+        self.attributes().get(key)
     }
-}
 
-impl Operation {
     pub fn display_name(&self) -> String {
-        self.label.clone().unwrap_or_else(|| self.op_type.clone())
+        self.label
+            .clone()
+            .unwrap_or_else(|| self.op_type())
     }
 }
 

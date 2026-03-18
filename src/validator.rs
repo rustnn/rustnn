@@ -193,7 +193,7 @@ impl<'a> GraphValidator<'a> {
     fn validate_operations(&mut self) -> Result<(), GraphError> {
         for operation in &self.graph.operations {
             let op_name = operation.display_name();
-            for &input_id in &operation.input_operands {
+            for &input_id in &operation.input_operands() {
                 self.graph.operand(input_id).ok_or_else(|| {
                     GraphError::InvalidOperandReference {
                         operation: op_name.clone(),
@@ -227,12 +227,12 @@ impl<'a> GraphValidator<'a> {
                     });
                 }
                 self.operand_to_producer
-                    .insert(output_id, operation.op_type.clone());
+                    .insert(output_id, operation.op_type().clone());
                 self.processed_operands.insert(output_id);
             }
 
             // Operation-specific validation
-            match operation.op_type.as_str() {
+            match operation.op_type().as_str() {
                 "quantizeLinear" => self.validate_quantize_like(operation, true)?,
                 "dequantizeLinear" => self.validate_quantize_like(operation, false)?,
                 _ => {}
@@ -278,10 +278,10 @@ impl<'a> GraphValidator<'a> {
             reason,
         };
 
-        if operation.input_operands.len() != 3 {
+        if operation.input_operands().len() != 3 {
             return Err(invalid(format!(
                 "expected 3 inputs (input, scale, zeroPoint), got {}",
-                operation.input_operands.len()
+                operation.input_operands().len()
             )));
         }
         let output_id = operation
@@ -290,27 +290,27 @@ impl<'a> GraphValidator<'a> {
 
         let input_operand = self
             .graph
-            .operand(operation.input_operands[0])
+            .operand(operation.input_operands()[0])
             .ok_or_else(|| GraphError::InvalidOperandReference {
                 operation: op_name.clone(),
-                operand: operation.input_operands[0],
+                operand: operation.input_operands()[0],
             })?;
         let input_desc = &input_operand.descriptor;
         let scale_desc = self
             .graph
-            .operand(operation.input_operands[1])
+            .operand(operation.input_operands()[1])
             .map(|o| &o.descriptor)
             .ok_or_else(|| GraphError::InvalidOperandReference {
                 operation: op_name.clone(),
-                operand: operation.input_operands[1],
+                operand: operation.input_operands()[1],
             })?;
         let zero_point_desc = self
             .graph
-            .operand(operation.input_operands[2])
+            .operand(operation.input_operands()[2])
             .map(|o| &o.descriptor)
             .ok_or_else(|| GraphError::InvalidOperandReference {
                 operation: op_name.clone(),
-                operand: operation.input_operands[2],
+                operand: operation.input_operands()[2],
             })?;
         let output_operand =
             self.graph
@@ -466,6 +466,7 @@ mod tests {
     use super::*;
     use crate::graph::{ConstantData, GraphInfo, Operand, Operation};
     use crate::operator_options::OperatorOptions;
+    use crate::operators::Operator;
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)
@@ -536,12 +537,12 @@ mod tests {
             name: Some("output".to_string()),
         };
 
+        let operator =
+            Operator::from_legacy(op_type, &[0, 1, 2], &OperatorOptions::default()).unwrap();
         let operation = Operation {
-            op_type: op_type.to_string(),
-            input_operands: vec![0, 1, 2],
+            operator,
             output_operand: Some(3),
             output_operands: Vec::new(),
-            attributes: OperatorOptions::default(),
             label: None,
         };
 
@@ -597,13 +598,15 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: vec![],
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(1),
+                    output_operands: vec![],
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -752,19 +755,20 @@ mod tests {
         };
 
         let relu = Operation {
-            op_type: "relu".to_string(),
-            input_operands: vec![0],
+            operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
             output_operand: Some(3),
             output_operands: vec![],
-            attributes: OperatorOptions::default(),
             label: None,
         };
         let quantize = Operation {
-            op_type: "quantizeLinear".to_string(),
-            input_operands: vec![3, 1, 2],
+            operator: Operator::from_legacy(
+                "quantizeLinear",
+                &[3, 1, 2],
+                &OperatorOptions::default(),
+            )
+            .unwrap(),
             output_operand: Some(4),
             output_operands: vec![],
-            attributes: OperatorOptions::default(),
             label: None,
         };
 
@@ -834,13 +838,15 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: vec![],
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(1),
+                    output_operands: vec![],
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -877,13 +883,15 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: vec![],
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(1),
+                    output_operands: vec![],
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1154,13 +1162,15 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: vec![],
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(1),
+                    output_operands: vec![],
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1353,13 +1363,15 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: vec![],
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![{
+                let operator =
+                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                Operation {
+                    operator,
+                    output_operand: Some(1),
+                    output_operands: vec![],
+                    label: None,
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),

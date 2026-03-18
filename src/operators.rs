@@ -44,6 +44,7 @@ use crate::operator_options::{
     MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions, MLReverseOptions,
     MLScatterOptions, MLSliceOptions, MLSoftmaxOptions, MLSplitOptions, MLSqueezeOptions,
     MLTileOptions, MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions, OperandIndex,
+    OperatorOptions,
 };
 
 // ---------------------------------------------------------------------------
@@ -197,36 +198,6 @@ pub enum Operator {
         input: OperandIndex,
         options: Option<MLOperatorOptions>,
     },
-    /// [asin()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-asin)
-    Asin {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-    /// [acos()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-acos)
-    Acos {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-    /// [atan()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-atan)
-    Atan {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-    /// [sinh()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-sinh)
-    Sinh {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-    /// [cosh()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-cosh)
-    Cosh {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-    /// [atanh()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-atanh)
-    Atanh {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
     /// [erf()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-erf)
     Erf {
         input: OperandIndex,
@@ -242,12 +213,6 @@ pub enum Operator {
         input: OperandIndex,
         options: Option<MLOperatorOptions>,
     },
-    /// [round()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-round) (spec name may differ; roundEven is separate)
-    Round {
-        input: OperandIndex,
-        options: Option<MLOperatorOptions>,
-    },
-
     // ---------- Logical (MLOperatorOptions) ----------
     /// [logicalAnd()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-logicaland)
     LogicalAnd {
@@ -713,4 +678,950 @@ pub enum Operator {
         input: OperandIndex,
         options: Option<MLOperatorOptions>,
     },
+}
+
+// ---------------------------------------------------------------------------
+// Legacy conversion: Operator <-> (op_type, input_operands, attributes)
+// ---------------------------------------------------------------------------
+
+impl Operator {
+    /// Converts this operator to the legacy triple used by JSON and existing consumers.
+    /// Returns `(op_type, input_operands, attributes)`.
+    pub fn to_legacy(&self) -> (String, Vec<u32>, OperatorOptions) {
+        use OperatorOptions as OO;
+        match self {
+            Operator::Add { a, b, options } => (
+                "add".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Sub { a, b, options } => (
+                "sub".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Mul { a, b, options } => (
+                "mul".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Div { a, b, options } => (
+                "div".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Pow { a, b, options } => (
+                "pow".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Matmul { a, b, options } => (
+                "matmul".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Equal { a, b, options } => (
+                "equal".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Greater { a, b, options } => (
+                "greater".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::GreaterOrEqual { a, b, options } => (
+                "greaterOrEqual".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Lesser { a, b, options } => (
+                "lesser".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::LesserOrEqual { a, b, options } => (
+                "lesserOrEqual".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Abs { input, options } => (
+                "abs".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Ceil { input, options } => (
+                "ceil".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Cos { input, options } => (
+                "cos".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Exp { input, options } => (
+                "exp".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Floor { input, options } => (
+                "floor".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Log { input, options } => (
+                "log".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Neg { input, options } => (
+                "neg".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Sin { input, options } => (
+                "sin".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Tan { input, options } => (
+                "tan".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Erf { input, options } => (
+                "erf".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Identity { input, options } => (
+                "identity".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Reciprocal { input, options } => (
+                "reciprocal".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Sign { input, options } => (
+                "sign".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Sqrt { input, options } => (
+                "sqrt".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Tanh { input, options } => (
+                "tanh".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Relu { input, options } => (
+                "relu".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Sigmoid { input, options } => (
+                "sigmoid".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::LogicalAnd { a, b, options } => (
+                "logicalAnd".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::LogicalOr { a, b, options } => (
+                "logicalOr".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::LogicalNot { input, options } => (
+                "logicalNot".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::LogicalXor { a, b, options } => (
+                "logicalXor".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Where {
+                condition,
+                true_value,
+                false_value,
+                options,
+            } => (
+                "where".into(),
+                vec![*condition, *true_value, *false_value],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::ArgMax { input, options } => (
+                "argMax".into(),
+                vec![*input],
+                OO::ArgMinMax(options.clone().unwrap_or_default()),
+            ),
+            Operator::ArgMin { input, options } => (
+                "argMin".into(),
+                vec![*input],
+                OO::ArgMinMax(options.clone().unwrap_or_default()),
+            ),
+            Operator::BatchNormalization {
+                input,
+                mean,
+                variance,
+                options,
+            } => (
+                "batchNormalization".into(),
+                vec![*input, *mean, *variance],
+                OO::BatchNormalization(options.clone().unwrap_or_default()),
+            ),
+            Operator::Cast { input, options } => (
+                "cast".into(),
+                vec![*input],
+                OO::Cast(options.clone().unwrap_or_default()),
+            ),
+            Operator::Clamp { input, options } => (
+                "clamp".into(),
+                vec![*input],
+                OO::Clamp(options.clone().unwrap_or_default()),
+            ),
+            Operator::Constant { options } => (
+                "constant".into(),
+                vec![],
+                OO::Constant(options.clone().unwrap_or_default()),
+            ),
+            Operator::Conv2d { input, filter, options } => (
+                "conv2d".into(),
+                vec![*input, *filter],
+                OO::Conv2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::ConvTranspose2d { input, filter, options } => (
+                "convTranspose2d".into(),
+                vec![*input, *filter],
+                OO::ConvTranspose2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::Concat { inputs, options } => (
+                "concat".into(),
+                inputs.clone(),
+                OO::Concat(options.clone().unwrap_or_default()),
+            ),
+            Operator::CumulativeSum { input, options } => (
+                "cumulativeSum".into(),
+                vec![*input],
+                OO::CumulativeSum(options.clone().unwrap_or_default()),
+            ),
+            Operator::Expand { input, options } => (
+                "expand".into(),
+                vec![*input],
+                OO::Expand(options.clone().unwrap_or_default()),
+            ),
+            Operator::Elu { input, options } => (
+                "elu".into(),
+                vec![*input],
+                OO::Elu(options.clone().unwrap_or_default()),
+            ),
+            Operator::Gather { input, indices, options } => (
+                "gather".into(),
+                vec![*input, *indices],
+                OO::Gather(options.clone().unwrap_or_default()),
+            ),
+            Operator::GatherElements { input, indices, options } => (
+                "gatherElements".into(),
+                vec![*input, *indices],
+                OO::Gather(options.clone().unwrap_or_default()),
+            ),
+            Operator::Gemm { a, b, options } => (
+                "gemm".into(),
+                vec![*a, *b],
+                OO::Gemm(options.clone().unwrap_or_default()),
+            ),
+            Operator::Gru {
+                input,
+                weight,
+                recurrence,
+                options,
+            } => (
+                "gru".into(),
+                vec![*input, *weight, *recurrence],
+                OO::Gru(options.clone().unwrap_or_default()),
+            ),
+            Operator::GruCell {
+                input,
+                weight,
+                recurrence,
+                options,
+            } => (
+                "gruCell".into(),
+                vec![*input, *weight, *recurrence],
+                OO::GruCell(options.clone().unwrap_or_default()),
+            ),
+            Operator::HardSigmoid { input, options } => (
+                "hardSigmoid".into(),
+                vec![*input],
+                OO::HardSigmoid(options.clone().unwrap_or_default()),
+            ),
+            Operator::HardSwish { input, options } => (
+                "hardSwish".into(),
+                vec![*input],
+                OO::HardSwish(options.clone().unwrap_or_default()),
+            ),
+            Operator::InstanceNormalization { input, options } => (
+                "instanceNormalization".into(),
+                vec![*input],
+                OO::InstanceNormalization(options.clone().unwrap_or_default()),
+            ),
+            Operator::LayerNormalization { input, options } => (
+                "layerNormalization".into(),
+                vec![*input],
+                OO::LayerNormalization(options.clone().unwrap_or_default()),
+            ),
+            Operator::LeakyRelu { input, options } => (
+                "leakyRelu".into(),
+                vec![*input],
+                OO::LeakyRelu(options.clone().unwrap_or_default()),
+            ),
+            Operator::Linear { input, options } => (
+                "linear".into(),
+                vec![*input],
+                OO::Linear(options.clone().unwrap_or_default()),
+            ),
+            Operator::Lstm {
+                input,
+                weight,
+                recurrence,
+                options,
+            } => (
+                "lstm".into(),
+                vec![*input, *weight, *recurrence],
+                OO::Lstm(options.clone().unwrap_or_default()),
+            ),
+            Operator::LstmCell {
+                input,
+                weight,
+                recurrence,
+                options,
+            } => (
+                "lstmCell".into(),
+                vec![*input, *weight, *recurrence],
+                OO::LstmCell(options.clone().unwrap_or_default()),
+            ),
+            Operator::Pad { input, options } => (
+                "pad".into(),
+                vec![*input],
+                OO::Pad(options.clone().unwrap_or_default()),
+            ),
+            Operator::AveragePool2d { input, options } => (
+                "averagePool2d".into(),
+                vec![*input],
+                OO::Pool2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::MaxPool2d { input, options } => (
+                "maxPool2d".into(),
+                vec![*input],
+                OO::Pool2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::L2Pool2d { input, options } => (
+                "l2Pool2d".into(),
+                vec![*input],
+                OO::Pool2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::GlobalAveragePool { input, options } => (
+                "globalAveragePool".into(),
+                vec![*input],
+                OO::Pool2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::GlobalMaxPool { input, options } => (
+                "globalMaxPool".into(),
+                vec![*input],
+                OO::Pool2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceSum { input, options } => (
+                "reduceSum".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceMean { input, options } => (
+                "reduceMean".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceMax { input, options } => (
+                "reduceMax".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceMin { input, options } => (
+                "reduceMin".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceProduct { input, options } => (
+                "reduceProduct".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceL1 { input, options } => (
+                "reduceL1".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceL2 { input, options } => (
+                "reduceL2".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceLogSum { input, options } => (
+                "reduceLogSum".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceLogSumExp { input, options } => (
+                "reduceLogSumExp".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::ReduceSumSquare { input, options } => (
+                "reduceSumSquare".into(),
+                vec![*input],
+                OO::Reduce(options.clone().unwrap_or_default()),
+            ),
+            Operator::Reshape { input, options } => (
+                "reshape".into(),
+                vec![*input],
+                OO::Reshape(options.clone().unwrap_or_default()),
+            ),
+            Operator::Resample2d { input, options } => (
+                "resample2d".into(),
+                vec![*input],
+                OO::Resample2d(options.clone().unwrap_or_default()),
+            ),
+            Operator::Reverse { input, options } => (
+                "reverse".into(),
+                vec![*input],
+                OO::Reverse(options.clone().unwrap_or_default()),
+            ),
+            Operator::ScatterElements {
+                input,
+                indices,
+                updates,
+                options,
+            } => (
+                "scatterElements".into(),
+                vec![*input, *indices, *updates],
+                OO::ScatterElements(options.clone().unwrap_or_default()),
+            ),
+            Operator::Softmax { input, options } => (
+                "softmax".into(),
+                vec![*input],
+                OO::Softmax(options.clone().unwrap_or_default()),
+            ),
+            Operator::Slice { input, options } => (
+                "slice".into(),
+                vec![*input],
+                OO::Slice(options.clone().unwrap_or_default()),
+            ),
+            Operator::Split { input, options } => (
+                "split".into(),
+                vec![*input],
+                OO::Split(options.clone().unwrap_or_default()),
+            ),
+            Operator::Transpose { input, options } => (
+                "transpose".into(),
+                vec![*input],
+                OO::Transpose(options.clone().unwrap_or_default()),
+            ),
+            Operator::Squeeze { input, options } => (
+                "squeeze".into(),
+                vec![*input],
+                OO::Squeeze(options.clone().unwrap_or_default()),
+            ),
+            Operator::Unsqueeze { input, options } => (
+                "unsqueeze".into(),
+                vec![*input],
+                OO::Unsqueeze(options.clone().unwrap_or_default()),
+            ),
+            Operator::Tile { input, options } => (
+                "tile".into(),
+                vec![*input],
+                OO::Tile(options.clone().unwrap_or_default()),
+            ),
+            Operator::Triangular { input, options } => (
+                "triangular".into(),
+                vec![*input],
+                OO::Triangular(options.clone().unwrap_or_default()),
+            ),
+            Operator::Prelu { input, slope, options } => (
+                "prelu".into(),
+                vec![*input, *slope],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::QuantizeLinear {
+                input,
+                scale,
+                zero_point,
+                options,
+            } => {
+                let mut inps = vec![*input, *scale];
+                if let Some(z) = zero_point {
+                    inps.push(*z);
+                }
+                (
+                    "quantizeLinear".into(),
+                    inps,
+                    OO::Operator(options.clone().unwrap_or_default()),
+                )
+            }
+            Operator::DequantizeLinear {
+                input,
+                scale,
+                zero_point,
+                options,
+            } => {
+                let mut inps = vec![*input, *scale];
+                if let Some(z) = zero_point {
+                    inps.push(*z);
+                }
+                (
+                    "dequantizeLinear".into(),
+                    inps,
+                    OO::Operator(options.clone().unwrap_or_default()),
+                )
+            }
+            Operator::Softplus { input, options } => (
+                "softplus".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Softsign { input, options } => (
+                "softsign".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Gelu { input, options } => (
+                "gelu".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Shape { input, options } => (
+                "shape".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::ScatterND {
+                input,
+                indices,
+                updates,
+                options,
+            } => (
+                "scatterND".into(),
+                vec![*input, *indices, *updates],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::GatherND { input, indices, options } => (
+                "gatherND".into(),
+                vec![*input, *indices],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::IsNaN { input, options } => (
+                "isNaN".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::IsInfinite { input, options } => (
+                "isInfinite".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::RoundEven { input, options } => (
+                "roundEven".into(),
+                vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+        }
+    }
+
+    /// Builds an `Operator` from the legacy triple. Returns `None` if `op_type` is unknown
+    /// or `input_operands` length does not match.
+    pub fn from_legacy(
+        op_type: &str,
+        input_operands: &[u32],
+        attributes: &OperatorOptions,
+    ) -> Option<Self> {
+        fn at(inputs: &[u32], i: usize) -> Option<u32> {
+            inputs.get(i).copied()
+        }
+        let n = op_type.trim();
+        match n {
+            "add" if input_operands.len() >= 2 => Some(Operator::Add {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "sub" if input_operands.len() >= 2 => Some(Operator::Sub {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "mul" if input_operands.len() >= 2 => Some(Operator::Mul {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "div" if input_operands.len() >= 2 => Some(Operator::Div {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "pow" if input_operands.len() >= 2 => Some(Operator::Pow {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "matmul" if input_operands.len() >= 2 => Some(Operator::Matmul {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "equal" if input_operands.len() >= 2 => Some(Operator::Equal {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "greater" if input_operands.len() >= 2 => Some(Operator::Greater {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "greaterOrEqual" if input_operands.len() >= 2 => Some(Operator::GreaterOrEqual {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "lesser" if input_operands.len() >= 2 => Some(Operator::Lesser {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "lesserOrEqual" if input_operands.len() >= 2 => Some(Operator::LesserOrEqual {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "abs" | "ceil" | "cos" | "exp" | "floor" | "log" | "neg" | "sin" | "tan" | "erf"
+            | "identity" | "reciprocal" | "sign" | "sqrt" | "tanh" | "relu" | "sigmoid"
+            | "logicalNot" if input_operands.len() >= 1 =>
+            {
+                let input = at(input_operands, 0)?;
+                let opts = attributes.as_operator().cloned();
+                Some(match n {
+                    "abs" => Operator::Abs { input, options: opts },
+                    "ceil" => Operator::Ceil { input, options: opts },
+                    "cos" => Operator::Cos { input, options: opts },
+                    "exp" => Operator::Exp { input, options: opts },
+                    "floor" => Operator::Floor { input, options: opts },
+                    "log" => Operator::Log { input, options: opts },
+                    "neg" => Operator::Neg { input, options: opts },
+                    "sin" => Operator::Sin { input, options: opts },
+                    "tan" => Operator::Tan { input, options: opts },
+                    "erf" => Operator::Erf { input, options: opts },
+                    "identity" => Operator::Identity { input, options: opts },
+                    "reciprocal" => Operator::Reciprocal { input, options: opts },
+                    "sign" => Operator::Sign { input, options: opts },
+                    "sqrt" => Operator::Sqrt { input, options: opts },
+                    "tanh" => Operator::Tanh { input, options: opts },
+                    "relu" => Operator::Relu { input, options: opts },
+                    "sigmoid" => Operator::Sigmoid { input, options: opts },
+                    "logicalNot" => Operator::LogicalNot { input, options: opts },
+                    _ => return None,
+                })
+            }
+            "logicalAnd" if input_operands.len() >= 2 => Some(Operator::LogicalAnd {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "logicalOr" if input_operands.len() >= 2 => Some(Operator::LogicalOr {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "logicalXor" if input_operands.len() >= 2 => Some(Operator::LogicalXor {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "where" if input_operands.len() >= 3 => Some(Operator::Where {
+                condition: at(input_operands, 0)?,
+                true_value: at(input_operands, 1)?,
+                false_value: at(input_operands, 2)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "argMax" if input_operands.len() >= 1 => Some(Operator::ArgMax {
+                input: at(input_operands, 0)?,
+                options: attributes.as_arg_min_max().cloned(),
+            }),
+            "argMin" if input_operands.len() >= 1 => Some(Operator::ArgMin {
+                input: at(input_operands, 0)?,
+                options: attributes.as_arg_min_max().cloned(),
+            }),
+            "batchNormalization" if input_operands.len() >= 3 => Some(Operator::BatchNormalization {
+                input: at(input_operands, 0)?,
+                mean: at(input_operands, 1)?,
+                variance: at(input_operands, 2)?,
+                options: attributes.as_batch_normalization().cloned(),
+            }),
+            "cast" if input_operands.len() >= 1 => Some(Operator::Cast {
+                input: at(input_operands, 0)?,
+                options: attributes.as_cast().cloned(),
+            }),
+            "clamp" if input_operands.len() >= 1 => Some(Operator::Clamp {
+                input: at(input_operands, 0)?,
+                options: attributes.as_clamp().cloned(),
+            }),
+            "constant" => Some(Operator::Constant {
+                options: attributes.as_constant().cloned(),
+            }),
+            "conv2d" if input_operands.len() >= 2 => Some(Operator::Conv2d {
+                input: at(input_operands, 0)?,
+                filter: at(input_operands, 1)?,
+                options: attributes.as_conv2d().cloned(),
+            }),
+            "convTranspose2d" if input_operands.len() >= 2 => Some(Operator::ConvTranspose2d {
+                input: at(input_operands, 0)?,
+                filter: at(input_operands, 1)?,
+                options: attributes.as_conv_transpose2d().cloned(),
+            }),
+            "concat" => Some(Operator::Concat {
+                inputs: input_operands.to_vec(),
+                options: attributes.as_concat().cloned(),
+            }),
+            "cumulativeSum" if input_operands.len() >= 1 => Some(Operator::CumulativeSum {
+                input: at(input_operands, 0)?,
+                options: attributes.as_cumulative_sum().cloned(),
+            }),
+            "expand" if input_operands.len() >= 1 => Some(Operator::Expand {
+                input: at(input_operands, 0)?,
+                options: attributes.as_expand().cloned(),
+            }),
+            "elu" if input_operands.len() >= 1 => Some(Operator::Elu {
+                input: at(input_operands, 0)?,
+                options: attributes.as_elu().cloned(),
+            }),
+            "gather" if input_operands.len() >= 2 => Some(Operator::Gather {
+                input: at(input_operands, 0)?,
+                indices: at(input_operands, 1)?,
+                options: attributes.as_gather().cloned(),
+            }),
+            "gatherElements" if input_operands.len() >= 2 => Some(Operator::GatherElements {
+                input: at(input_operands, 0)?,
+                indices: at(input_operands, 1)?,
+                options: attributes.as_gather().cloned(),
+            }),
+            "gemm" if input_operands.len() >= 2 => Some(Operator::Gemm {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_gemm().cloned(),
+            }),
+            "gru" if input_operands.len() >= 3 => Some(Operator::Gru {
+                input: at(input_operands, 0)?,
+                weight: at(input_operands, 1)?,
+                recurrence: at(input_operands, 2)?,
+                options: attributes.as_gru().cloned(),
+            }),
+            "gruCell" if input_operands.len() >= 3 => Some(Operator::GruCell {
+                input: at(input_operands, 0)?,
+                weight: at(input_operands, 1)?,
+                recurrence: at(input_operands, 2)?,
+                options: attributes.as_gru_cell().cloned(),
+            }),
+            "hardSigmoid" if input_operands.len() >= 1 => Some(Operator::HardSigmoid {
+                input: at(input_operands, 0)?,
+                options: attributes.as_hard_sigmoid().cloned(),
+            }),
+            "hardSwish" if input_operands.len() >= 1 => Some(Operator::HardSwish {
+                input: at(input_operands, 0)?,
+                options: attributes.as_hard_swish().cloned(),
+            }),
+            "instanceNormalization" if input_operands.len() >= 1 => {
+                Some(Operator::InstanceNormalization {
+                    input: at(input_operands, 0)?,
+                    options: attributes.as_instance_normalization().cloned(),
+                })
+            }
+            "layerNormalization" if input_operands.len() >= 1 => Some(Operator::LayerNormalization {
+                input: at(input_operands, 0)?,
+                options: attributes.as_layer_normalization().cloned(),
+            }),
+            "leakyRelu" if input_operands.len() >= 1 => Some(Operator::LeakyRelu {
+                input: at(input_operands, 0)?,
+                options: attributes.as_leaky_relu().cloned(),
+            }),
+            "linear" if input_operands.len() >= 1 => Some(Operator::Linear {
+                input: at(input_operands, 0)?,
+                options: attributes.as_linear().cloned(),
+            }),
+            "lstm" if input_operands.len() >= 3 => Some(Operator::Lstm {
+                input: at(input_operands, 0)?,
+                weight: at(input_operands, 1)?,
+                recurrence: at(input_operands, 2)?,
+                options: attributes.as_lstm().cloned(),
+            }),
+            "lstmCell" if input_operands.len() >= 3 => Some(Operator::LstmCell {
+                input: at(input_operands, 0)?,
+                weight: at(input_operands, 1)?,
+                recurrence: at(input_operands, 2)?,
+                options: attributes.as_lstm_cell().cloned(),
+            }),
+            "pad" if input_operands.len() >= 1 => Some(Operator::Pad {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pad().cloned(),
+            }),
+            "averagePool2d" if input_operands.len() >= 1 => Some(Operator::AveragePool2d {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pool2d().cloned(),
+            }),
+            "maxPool2d" if input_operands.len() >= 1 => Some(Operator::MaxPool2d {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pool2d().cloned(),
+            }),
+            "l2Pool2d" if input_operands.len() >= 1 => Some(Operator::L2Pool2d {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pool2d().cloned(),
+            }),
+            "globalAveragePool" if input_operands.len() >= 1 => Some(Operator::GlobalAveragePool {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pool2d().cloned(),
+            }),
+            "globalMaxPool" if input_operands.len() >= 1 => Some(Operator::GlobalMaxPool {
+                input: at(input_operands, 0)?,
+                options: attributes.as_pool2d().cloned(),
+            }),
+            "reduceSum" | "reduceMean" | "reduceMax" | "reduceMin" | "reduceProduct"
+            | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp" | "reduceSumSquare"
+                if input_operands.len() >= 1 =>
+            {
+                let input = at(input_operands, 0)?;
+                let opts = attributes.as_reduce().cloned();
+                Some(match n {
+                    "reduceSum" => Operator::ReduceSum { input, options: opts },
+                    "reduceMean" => Operator::ReduceMean { input, options: opts },
+                    "reduceMax" => Operator::ReduceMax { input, options: opts },
+                    "reduceMin" => Operator::ReduceMin { input, options: opts },
+                    "reduceProduct" => Operator::ReduceProduct { input, options: opts },
+                    "reduceL1" => Operator::ReduceL1 { input, options: opts },
+                    "reduceL2" => Operator::ReduceL2 { input, options: opts },
+                    "reduceLogSum" => Operator::ReduceLogSum { input, options: opts },
+                    "reduceLogSumExp" => Operator::ReduceLogSumExp { input, options: opts },
+                    "reduceSumSquare" => Operator::ReduceSumSquare { input, options: opts },
+                    _ => return None,
+                })
+            }
+            "reshape" if input_operands.len() >= 1 => Some(Operator::Reshape {
+                input: at(input_operands, 0)?,
+                options: attributes.as_reshape().cloned(),
+            }),
+            "resample2d" if input_operands.len() >= 1 => Some(Operator::Resample2d {
+                input: at(input_operands, 0)?,
+                options: attributes.as_resample2d().cloned(),
+            }),
+            "reverse" if input_operands.len() >= 1 => Some(Operator::Reverse {
+                input: at(input_operands, 0)?,
+                options: attributes.as_reverse().cloned(),
+            }),
+            "scatterElements" if input_operands.len() >= 3 => Some(Operator::ScatterElements {
+                input: at(input_operands, 0)?,
+                indices: at(input_operands, 1)?,
+                updates: at(input_operands, 2)?,
+                options: attributes.as_scatter_elements().cloned(),
+            }),
+            "softmax" if input_operands.len() >= 1 => Some(Operator::Softmax {
+                input: at(input_operands, 0)?,
+                options: attributes.as_softmax().cloned(),
+            }),
+            "slice" if input_operands.len() >= 1 => Some(Operator::Slice {
+                input: at(input_operands, 0)?,
+                options: attributes.as_slice().cloned(),
+            }),
+            "split" if input_operands.len() >= 1 => Some(Operator::Split {
+                input: at(input_operands, 0)?,
+                options: attributes.as_split().cloned(),
+            }),
+            "transpose" if input_operands.len() >= 1 => Some(Operator::Transpose {
+                input: at(input_operands, 0)?,
+                options: attributes.as_transpose().cloned(),
+            }),
+            "squeeze" if input_operands.len() >= 1 => Some(Operator::Squeeze {
+                input: at(input_operands, 0)?,
+                options: attributes.as_squeeze().cloned(),
+            }),
+            "unsqueeze" if input_operands.len() >= 1 => Some(Operator::Unsqueeze {
+                input: at(input_operands, 0)?,
+                options: attributes.as_unsqueeze().cloned(),
+            }),
+            "tile" if input_operands.len() >= 1 => Some(Operator::Tile {
+                input: at(input_operands, 0)?,
+                options: attributes.as_tile().cloned(),
+            }),
+            "triangular" if input_operands.len() >= 1 => Some(Operator::Triangular {
+                input: at(input_operands, 0)?,
+                options: attributes.as_triangular().cloned(),
+            }),
+            "prelu" if input_operands.len() >= 2 => Some(Operator::Prelu {
+                input: at(input_operands, 0)?,
+                slope: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "quantizeLinear" if input_operands.len() >= 2 => {
+                let zero_point = input_operands.get(2).copied();
+                Some(Operator::QuantizeLinear {
+                    input: at(input_operands, 0)?,
+                    scale: at(input_operands, 1)?,
+                    zero_point,
+                    options: attributes.as_operator().cloned(),
+                })
+            }
+            "dequantizeLinear" if input_operands.len() >= 2 => {
+                let zero_point = input_operands.get(2).copied();
+                Some(Operator::DequantizeLinear {
+                    input: at(input_operands, 0)?,
+                    scale: at(input_operands, 1)?,
+                    zero_point,
+                    options: attributes.as_operator().cloned(),
+                })
+            }
+            "softplus" | "softsign" | "gelu" | "shape" | "isNaN" | "isInfinite" | "roundEven"
+                | "round" if input_operands.len() >= 1 =>
+            {
+                let input = at(input_operands, 0)?;
+                let opts = attributes.as_operator().cloned();
+                Some(match n {
+                    "softplus" => Operator::Softplus { input, options: opts },
+                    "softsign" => Operator::Softsign { input, options: opts },
+                    "gelu" => Operator::Gelu { input, options: opts },
+                    "shape" => Operator::Shape { input, options: opts },
+                    "isNaN" => Operator::IsNaN { input, options: opts },
+                    "isInfinite" => Operator::IsInfinite { input, options: opts },
+                    "roundEven" | "round" => Operator::RoundEven { input, options: opts },
+                    _ => return None,
+                })
+            }
+            "scatterND" if input_operands.len() >= 3 => Some(Operator::ScatterND {
+                input: at(input_operands, 0)?,
+                indices: at(input_operands, 1)?,
+                updates: at(input_operands, 2)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "gatherND" if input_operands.len() >= 2 => Some(Operator::GatherND {
+                input: at(input_operands, 0)?,
+                indices: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            _ => None,
+        }
+    }
 }

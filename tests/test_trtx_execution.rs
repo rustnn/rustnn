@@ -608,97 +608,13 @@ mod tests {
         verify_output(&output, &expected, 1e-5);
     }
 
-    #[test]
-    fn test_asin_execution() {
-        let graph = create_unary_graph("asin", vec![3], DataType::Float32);
-        let input = vec![0.0, 0.5, 1.0];
-        let expected = vec![0.0, std::f32::consts::PI / 6.0, std::f32::consts::PI / 2.0];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_acos_execution() {
-        let graph = create_unary_graph("acos", vec![3], DataType::Float32);
-        let input = vec![1.0, 0.5, 0.0];
-        let expected = vec![0.0, std::f32::consts::PI / 3.0, std::f32::consts::PI / 2.0];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_atan_execution() {
-        let graph = create_unary_graph("atan", vec![3], DataType::Float32);
-        let input = vec![0.0, 1.0, -1.0];
-        let expected = vec![0.0, std::f32::consts::PI / 4.0, -std::f32::consts::PI / 4.0];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    // ============================================================================
-    // Execution Tests - Hyperbolic Operations
-    // ============================================================================
-
-    #[test]
-    fn test_sinh_execution() {
-        let graph = create_unary_graph("sinh", vec![4], DataType::Float32);
-        let input = vec![0.0, 1.0, -1.0, 2.0];
-        let expected = vec![0.0, 1.175201194, -1.175201194, 3.626860408];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_cosh_execution() {
-        let graph = create_unary_graph("cosh", vec![4], DataType::Float32);
-        let input = vec![0.0, 1.0, -1.0, 2.0];
-        let expected = vec![1.0, 1.543080635, 1.543080635, 3.762195691];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_asinh_execution() {
-        let graph = create_unary_graph("asinh", vec![4], DataType::Float32);
-        let input = vec![0.0, 1.0, -1.0, 2.0];
-        let expected = vec![0.0, 0.881373587, -0.881373587, 1.443635475];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_acosh_execution() {
-        let graph = create_unary_graph("acosh", vec![3], DataType::Float32);
-        let input = vec![1.0, 2.0, 3.0];
-        let expected = vec![0.0, 1.316957897, 1.762747174];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
-    #[test]
-    fn test_atanh_execution() {
-        let graph = create_unary_graph("atanh", vec![3], DataType::Float32);
-        let input = vec![0.0, 0.5, -0.5];
-        let expected = vec![0.0, 0.549306144, -0.549306144];
-
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-5);
-    }
-
     // ============================================================================
     // Execution Tests - Rounding and Other Operations
     // ============================================================================
 
     #[test]
-    fn test_round_execution() {
-        let graph = create_unary_graph("round", vec![6], DataType::Float32);
+    fn test_round_even_execution() {
+        let graph = create_unary_graph("roundEven", vec![6], DataType::Float32);
         let input = vec![-1.5, -0.5, 0.5, 1.5, 2.5, 3.5];
         // Round to nearest even
         let expected = vec![-2.0, 0.0, 0.0, 2.0, 2.0, 4.0];
