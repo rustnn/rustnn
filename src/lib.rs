@@ -5,6 +5,7 @@ pub mod executors;
 pub mod graph;
 pub mod graphviz;
 pub mod loader;
+pub mod operators;
 pub mod operator_options;
 pub mod protos;
 pub mod runtime_checks;
