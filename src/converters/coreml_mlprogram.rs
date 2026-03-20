@@ -1384,20 +1384,14 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                let alpha = options
-                    .as_ref()
-                    .map(|o| o.alpha as f32)
-                    .unwrap_or(1.0);
+                let alpha = options.as_ref().map(|o| o.alpha as f32).unwrap_or(1.0);
                 inputs.insert("alpha".to_string(), Self::create_immediate_float(alpha));
             }
             Operator::LeakyRelu { options, .. } => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                let alpha = options
-                    .as_ref()
-                    .map(|o| o.alpha as f32)
-                    .unwrap_or(0.01);
+                let alpha = options.as_ref().map(|o| o.alpha as f32).unwrap_or(0.01);
                 inputs.insert("alpha".to_string(), Self::create_immediate_float(alpha));
             }
 
@@ -1615,9 +1609,12 @@ impl CoremlMlProgramConverter {
             }
 
             // Pooling operations: input + parameters
-            Operator::AveragePool2d { options: pool_opts, .. }
-            | Operator::MaxPool2d { options: pool_opts, .. } => {
-
+            Operator::AveragePool2d {
+                options: pool_opts, ..
+            }
+            | Operator::MaxPool2d {
+                options: pool_opts, ..
+            } => {
                 // CoreML MLProgram pooling path currently assumes NCHW input layout.
                 // Reject NHWC explicitly to avoid invalid model/runtime crashes.
                 let layout = pool_opts
@@ -1635,7 +1632,8 @@ impl CoremlMlProgramConverter {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!(
                             "CoreML pooling currently supports only NCHW layout; got '{}' for {}",
-                            layout, op.op_type(),
+                            layout,
+                            op.op_type(),
                         ),
                     });
                 }
@@ -1650,7 +1648,8 @@ impl CoremlMlProgramConverter {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!(
                             "CoreML pooling with outputSizes is not supported yet; got {:?} for {}",
-                            output_sizes, op.op_type()
+                            output_sizes,
+                            op.op_type()
                         ),
                     });
                 }
@@ -1698,7 +1697,8 @@ impl CoremlMlProgramConverter {
                             format: "coreml_mlprogram".to_string(),
                             reason: format!(
                                 "CoreML pooling does not support non-default dilations; got {:?} for {}",
-                                opts.dilations, op.op_type()
+                                opts.dilations,
+                                op.op_type()
                             ),
                         });
                     }
@@ -2313,14 +2313,8 @@ impl CoremlMlProgramConverter {
                 }
 
                 // CoreML band_part uses lower and upper bounds instead of upper/diagonal
-                let is_upper = options
-                    .as_ref()
-                    .and_then(|o| o.upper)
-                    .unwrap_or(true);
-                let diagonal = options
-                    .as_ref()
-                    .map(|o| o.diagonal as i64)
-                    .unwrap_or(0);
+                let is_upper = options.as_ref().and_then(|o| o.upper).unwrap_or(true);
+                let diagonal = options.as_ref().map(|o| o.diagonal as i64).unwrap_or(0);
 
                 // Convert WebNN (upper, diagonal) to CoreML (lower, upper)
                 // For upper triangle: keep diagonal and above
@@ -2753,7 +2747,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!(
                             "CoreML logical op '{}' expects uint8 graph output, got {:?}",
-                            op.op_type(), output_operand.descriptor.data_type
+                            op.op_type(),
+                            output_operand.descriptor.data_type
                         ),
                     });
                 }
@@ -2953,74 +2948,78 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
 
             // Special handling for expand operation (may need reshape first)
-            if let Operator::Expand { options: Some(opts), .. } = &op.operator
+            if let Operator::Expand {
+                options: Some(opts),
+                ..
+            } = &op.operator
             {
                 if !op.input_operands().is_empty()
                     && let Some(input_operand) = graph_info.operand(op.input_operands()[0])
                 {
-                let new_shape = opts.new_shape_static_or_max();
-                let input_shape = input_operand.descriptor.static_or_max_shape();
-                let input_rank = input_shape.len();
-                let output_rank = new_shape.len();
+                    let new_shape = opts.new_shape_static_or_max();
+                    let input_shape = input_operand.descriptor.static_or_max_shape();
+                    let input_rank = input_shape.len();
+                    let output_rank = new_shape.len();
 
-                #[allow(clippy::collapsible_if)]
-                if !new_shape.is_empty() && input_rank < output_rank {
-                    let mut reshaped_dims = vec![1u32; output_rank];
-                    for i in 0..input_rank {
-                        reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
-                    }
+                    #[allow(clippy::collapsible_if)]
+                    if !new_shape.is_empty() && input_rank < output_rank {
+                        let mut reshaped_dims = vec![1u32; output_rank];
+                        for i in 0..input_rank {
+                            reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
+                        }
 
-                    //Create reshape operation
-                    let input_name = operand_name(graph_info, op.input_operands()[0]);
-                    // Use input name to create unique intermediate name (don't rely on output_operands)
-                    let reshape_output_name = format!("{}_expand_reshaped", input_name);
+                        //Create reshape operation
+                        let input_name = operand_name(graph_info, op.input_operands()[0]);
+                        // Use input name to create unique intermediate name (don't rely on output_operands)
+                        let reshape_output_name = format!("{}_expand_reshaped", input_name);
 
-                    let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
-                    reshape_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
-                    reshape_inputs.insert(
-                        "shape".to_string(),
-                        Self::create_int_array_argument(
-                            reshaped_dims.iter().map(|&v| v as i32).collect(),
-                        ),
-                    );
-
-                    // Create tensor type for reshape output
-                    let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
-                    let dimensions: Vec<Dimension> = reshaped_dims
-                        .iter()
-                        .map(|&d| Dimension {
-                            dimension: Some(dimension::Dimension::Constant(
-                                dimension::ConstantDimension { size: d as u64 },
-                            )),
-                        })
-                        .collect();
-
-                    let value_type = ValueType {
-                        r#type: Some(
-                            crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                TensorType {
-                                    rank: dimensions.len() as i64,
-                                    data_type: dtype,
-                                    dimensions,
-                                    attributes: HashMap::new(),
-                                },
+                        let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
+                        reshape_inputs
+                            .insert("x".to_string(), Self::create_name_argument(input_name));
+                        reshape_inputs.insert(
+                            "shape".to_string(),
+                            Self::create_int_array_argument(
+                                reshaped_dims.iter().map(|&v| v as i32).collect(),
                             ),
-                        ),
-                    };
+                        );
 
-                    let reshape_output_type = NamedValueType {
-                        name: reshape_output_name.clone(),
-                        r#type: Some(value_type),
-                    };
+                        // Create tensor type for reshape output
+                        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                        let dimensions: Vec<Dimension> = reshaped_dims
+                            .iter()
+                            .map(|&d| Dimension {
+                                dimension: Some(dimension::Dimension::Constant(
+                                    dimension::ConstantDimension { size: d as u64 },
+                                )),
+                            })
+                            .collect();
 
-                    let reshape_mil_op = Self::create_mil_operation(
-                        "reshape",
-                        reshape_inputs,
-                        vec![reshape_output_type],
-                    );
+                        let value_type = ValueType {
+                            r#type: Some(
+                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                    TensorType {
+                                        rank: dimensions.len() as i64,
+                                        data_type: dtype,
+                                        dimensions,
+                                        attributes: HashMap::new(),
+                                    },
+                                ),
+                            ),
+                        };
 
-                    main_block.operations.push(reshape_mil_op);
-                }
+                        let reshape_output_type = NamedValueType {
+                            name: reshape_output_name.clone(),
+                            r#type: Some(value_type),
+                        };
+
+                        let reshape_mil_op = Self::create_mil_operation(
+                            "reshape",
+                            reshape_inputs,
+                            vec![reshape_output_type],
+                        );
+
+                        main_block.operations.push(reshape_mil_op);
+                    }
                 }
             }
 
@@ -3037,12 +3036,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     });
                 }
 
-                let input_operand = graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
-                    GraphError::ConversionFailed {
-                        format: "coreml_mlprogram".to_string(),
-                        reason: format!("Input operand {} not found", op.input_operands()[0]),
-                    }
-                })?;
+                let input_operand =
+                    graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
+                        GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("Input operand {} not found", op.input_operands()[0]),
+                        }
+                    })?;
                 {
                     let input_name = operand_name(graph_info, op.input_operands()[0]);
                     let hardsigmoid_output_name = format!("{}_hardswish_hardsigmoid", input_name);
@@ -3313,12 +3313,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     });
                 }
 
-                let input_operand = graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
-                    GraphError::ConversionFailed {
-                        format: "coreml_mlprogram".to_string(),
-                        reason: format!("Input operand {} not found", op.input_operands()[0]),
-                    }
-                })?;
+                let input_operand =
+                    graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
+                        GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("Input operand {} not found", op.input_operands()[0]),
+                        }
+                    })?;
                 let output_operand_id = op.output_operand.unwrap();
                 let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
                     GraphError::ConversionFailed {
@@ -3423,12 +3424,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     });
                 }
 
-                let input_operand = graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
-                    GraphError::ConversionFailed {
-                        format: "coreml_mlprogram".to_string(),
-                        reason: format!("Input operand {} not found", op.input_operands()[0]),
-                    }
-                })?;
+                let input_operand =
+                    graph_info.operand(op.input_operands()[0]).ok_or_else(|| {
+                        GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("Input operand {} not found", op.input_operands()[0]),
+                        }
+                    })?;
 
                 let input_name = operand_name(graph_info, op.input_operands()[0]);
 
@@ -3655,16 +3657,16 @@ mod tests {
     use crate::operator_options::OperatorOptions;
     use crate::operators::Operator;
 
-    /// Build an Operation from legacy (op_type, input_operands, attributes) for tests.
-    fn op_from_legacy(
+    /// Build an `Operation` from WebNN-style `op` name, operand indices, and parsed options (tests).
+    fn op_from_operator_options(
         op_type: &str,
         input_operands: Vec<u32>,
         output_operand: Option<u32>,
         output_operands: Vec<u32>,
         attributes: OperatorOptions,
     ) -> Operation {
-        let operator =
-            Operator::from_legacy(op_type, &input_operands, &attributes).expect("valid test op");
+        let operator = Operator::from_operator_options(op_type, &input_operands, &attributes)
+            .expect("valid test op");
         Operation {
             operator,
             output_operand,
@@ -3727,7 +3729,7 @@ mod tests {
             .insert(0, ConstantData { data, label: None });
 
         // Add a simple relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -3950,7 +3952,7 @@ mod tests {
         });
 
         // Add operation: output = constant1 + constant2
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "add",
             vec![0, 1],
             Some(2),
@@ -4029,7 +4031,7 @@ mod tests {
         });
 
         // Add relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -4083,7 +4085,7 @@ mod tests {
         });
 
         // Add relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -4145,7 +4147,7 @@ mod tests {
         });
 
         // Add relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -4203,7 +4205,7 @@ mod tests {
         });
 
         // Add relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -4252,7 +4254,7 @@ mod tests {
         });
 
         // Add relu operation
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "relu",
             vec![0],
             Some(1),
@@ -4291,7 +4293,7 @@ mod tests {
                     },
                 },
             ],
-            operations: vec![op_from_legacy(
+            operations: vec![op_from_operator_options(
                 "linear",
                 vec![0],
                 Some(1),
@@ -4363,7 +4365,7 @@ mod tests {
                     },
                 },
             ],
-            operations: vec![op_from_legacy(
+            operations: vec![op_from_operator_options(
                 "identity",
                 vec![0],
                 Some(1),
@@ -4424,7 +4426,7 @@ mod tests {
             },
         });
 
-        graph.operations.push(op_from_legacy(
+        graph.operations.push(op_from_operator_options(
             "identity",
             vec![0],
             Some(1),
@@ -4487,7 +4489,7 @@ mod tests {
                     },
                 },
             ],
-            operations: vec![op_from_legacy(
+            operations: vec![op_from_operator_options(
                 "linear",
                 vec![0],
                 Some(1),
@@ -4537,7 +4539,7 @@ mod tests {
                     },
                 },
             ],
-            operations: vec![op_from_legacy(
+            operations: vec![op_from_operator_options(
                 "cumulativeSum",
                 vec![0],
                 Some(1),

@@ -1342,15 +1342,15 @@ impl TrtxConverter {
             .map(|o| o.alpha as f32)
             .unwrap_or(1.0);
 
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let input_dtype = input_operand.descriptor.data_type;
         // Use built-in kELU only for float32 with default alpha; float16 needs decomposition for correct precision.
         if (alpha - 1.0).abs() <= f32::EPSILON && input_dtype != DataType::Float16 {
@@ -1586,15 +1586,15 @@ impl TrtxConverter {
             .map(|o| o.alpha as f32)
             .unwrap_or(0.01);
 
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let num_dims = input_operand.descriptor.shape.len();
         let broadcast_shape: Vec<i32> = vec![1; num_dims];
 
@@ -1825,15 +1825,15 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let input_dims = input
             .dimensions()
             .map_err(|e| GraphError::ConversionFailed {
@@ -1991,15 +1991,15 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let input_dims = input
             .dimensions()
             .map_err(|e| GraphError::ConversionFailed {
@@ -2852,7 +2852,10 @@ impl TrtxConverter {
             .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Variance operand {} not found", operation.input_operands()[2]),
+                reason: format!(
+                    "Variance operand {} not found",
+                    operation.input_operands()[2]
+                ),
             })?;
 
         // Read typed batchNormalization options (fallback keeps WebNN defaults).
@@ -3128,15 +3131,15 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("InstanceNorm: failed to get variance dimensions: {}", e),
             })?;
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "InstanceNorm: input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let input_dtype = input_operand.descriptor.data_type;
         let num_elements: usize = var_dims.iter().map(|&d| d as usize).product();
         let (epsilon_bytes, trt_dtype) = match input_dtype {
@@ -3368,15 +3371,15 @@ impl TrtxConverter {
 
         // TensorRT Reduce requires at least 1 dimension. For 0D scalar: mean=x, variance=0, output = 0*scale + bias = bias or 0.
         if input_dims.is_empty() {
-            let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-                GraphError::ConversionFailed {
+            let input_operand = graph
+                .operand(operation.input_operands()[0])
+                .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!(
                         "Input operand {} not found in graph",
                         operation.input_operands()[0]
                     ),
-                }
-            })?;
+                })?;
             let (zero_bytes, zero_dtype) = match input_operand.descriptor.data_type {
                 DataType::Float16 => (
                     f16::from_f32(0.0).to_bits().to_le_bytes().to_vec(),
@@ -3463,15 +3466,15 @@ impl TrtxConverter {
         // Spec: "If empty, no dimensions are reduced." TensorRT Reduce requires at least one dimension to reduce.
         // When axes=[], mean/variance reduce over nothing -> normalized = 0; output = 0*scale + bias = bias or 0.
         if axes.is_empty() {
-            let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-                GraphError::ConversionFailed {
+            let input_operand = graph
+                .operand(operation.input_operands()[0])
+                .ok_or_else(|| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!(
                         "Input operand {} not found in graph",
                         operation.input_operands()[0]
                     ),
-                }
-            })?;
+                })?;
             let num_el: usize = input_dims.iter().map(|&d| d as usize).product();
             let (zero_bytes, zero_dtype) = match input_operand.descriptor.data_type {
                 DataType::Float16 => (
@@ -3689,15 +3692,15 @@ impl TrtxConverter {
             })?;
         let var_shape: Vec<i32> = var_dims.iter().map(|&d| d as i32).collect();
         let num_var_el: usize = var_dims.iter().map(|&d| d as usize).product();
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let (epsilon_bytes, epsilon_dtype) = match input_operand.descriptor.data_type {
             DataType::Float16 => (
                 (0..num_var_el)
@@ -4816,15 +4819,15 @@ impl TrtxConverter {
             .product::<usize>()
             .max(1);
 
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let (ones_data, trt_dtype) = match input_operand.descriptor.data_type {
             DataType::Float16 => {
                 let data: Vec<u8> = (0..num_elements)
@@ -5227,7 +5230,10 @@ impl TrtxConverter {
             .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
+                reason: format!(
+                    "Indices operand {} not found",
+                    operation.input_operands()[1]
+                ),
             })?;
 
         // Get axis attribute (default to 0)
@@ -5237,15 +5243,15 @@ impl TrtxConverter {
             .map(|o| o.axis as i32)
             .unwrap_or(0);
 
-        let data_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let data_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Data operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let axis_usize = axis as usize;
         if axis_usize >= data_operand.descriptor.shape.len() {
             return Err(GraphError::ConversionFailed {
@@ -5259,15 +5265,15 @@ impl TrtxConverter {
         }
         let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i32;
 
-        let indices_operand = graph.operand(operation.input_operands()[1]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let indices_operand = graph
+            .operand(operation.input_operands()[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Indices operand {} not found in graph",
                     operation.input_operands()[1]
                 ),
-            }
-        })?;
+            })?;
         let indices_shape: Vec<i32> = indices_operand
             .descriptor
             .shape
@@ -5391,7 +5397,10 @@ impl TrtxConverter {
             .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
+                reason: format!(
+                    "Indices operand {} not found",
+                    operation.input_operands()[1]
+                ),
             })?;
 
         // Create gather layer with axis 0 (required by addGather API)
@@ -5441,14 +5450,20 @@ impl TrtxConverter {
             .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
+                reason: format!(
+                    "Indices operand {} not found",
+                    operation.input_operands()[1]
+                ),
             })?;
 
         let updates = tensor_map
             .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Updates operand {} not found", operation.input_operands()[2]),
+                reason: format!(
+                    "Updates operand {} not found",
+                    operation.input_operands()[2]
+                ),
             })?;
 
         // Get axis attribute (default to 0)
@@ -5504,14 +5519,20 @@ impl TrtxConverter {
             .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
+                reason: format!(
+                    "Indices operand {} not found",
+                    operation.input_operands()[1]
+                ),
             })?;
 
         let updates = tensor_map
             .get(&operation.input_operands()[2])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Updates operand {} not found", operation.input_operands()[2]),
+                reason: format!(
+                    "Updates operand {} not found",
+                    operation.input_operands()[2]
+                ),
             })?;
 
         // Create scatter layer with mode kND for N-dimensional scatter
@@ -5681,15 +5702,15 @@ impl TrtxConverter {
             })?;
 
         // Get input operand descriptor to determine shape dimensions
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let num_dims = input_operand.descriptor.shape.len();
         let input_dtype = input_operand.descriptor.data_type;
         // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
@@ -5972,15 +5993,15 @@ impl TrtxConverter {
             })?;
 
         // Get input operand descriptor to determine shape dimensions
-        let input_operand = graph.operand(operation.input_operands()[0]).ok_or_else(|| {
-            GraphError::ConversionFailed {
+        let input_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
                     "Input operand {} not found in graph",
                     operation.input_operands()[0]
                 ),
-            }
-        })?;
+            })?;
         let num_dims = input_operand.descriptor.shape.len();
         // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
         let broadcast_shape: Vec<i32> = vec![1; num_dims];
@@ -8214,7 +8235,10 @@ impl TrtxConverter {
             .get(&operation.input_operands()[1])
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Indices operand {} not found", operation.input_operands()[1]),
+                reason: format!(
+                    "Indices operand {} not found",
+                    operation.input_operands()[1]
+                ),
             })?;
 
         // Get axis parameter (default to 0)

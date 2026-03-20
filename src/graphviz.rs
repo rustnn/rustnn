@@ -121,7 +121,6 @@ mod tests {
         DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
         to_dimension_vector,
     };
-    use crate::operator_options::OperatorOptions;
     use crate::operators::Operator;
 
     #[test]
@@ -159,8 +158,11 @@ mod tests {
             input_operands: vec![0, 1],
             output_operands: vec![2],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Add {
+                    a: 0,
+                    b: 1,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(2),

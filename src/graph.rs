@@ -238,9 +238,10 @@ impl<'de> Deserialize<'de> for Operation {
         } else {
             OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes).unwrap_or_default()
         };
-        let operator = Operator::from_legacy(&h.op_type, &h.input_operands, &attributes).ok_or_else(
-            || serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type)),
-        )?;
+        let operator = Operator::from_operator_options(&h.op_type, &h.input_operands, &attributes)
+            .ok_or_else(|| {
+                serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
+            })?;
         Ok(Operation {
             operator,
             output_operand: h.output_operand,
@@ -292,9 +293,7 @@ impl Operation {
     }
 
     pub fn display_name(&self) -> String {
-        self.label
-            .clone()
-            .unwrap_or_else(|| self.op_type())
+        self.label.clone().unwrap_or_else(|| self.op_type())
     }
 }
 

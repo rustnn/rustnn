@@ -36,7 +36,7 @@
 
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLCastOptions, MLClampOptions,
-    MLConstantOptions, MLConv2dOptions, MLConvTranspose2dOptions, MLConcatOptions,
+    MLConcatOptions, MLConstantOptions, MLConv2dOptions, MLConvTranspose2dOptions,
     MLCumulativeSumOptions, MLEluOptions, MLExpandOptions, MLGatherOptions, MLGemmOptions,
     MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions, MLHardSwishOptions,
     MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
@@ -301,9 +301,7 @@ pub enum Operator {
 
     // ---------- Constant (no input operands) ----------
     /// [constant()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-constant)
-    Constant {
-        options: Option<MLConstantOptions>,
-    },
+    Constant { options: Option<MLConstantOptions> },
 
     // ---------- Conv2d ----------
     /// [conv2d()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-conv2d)
@@ -923,12 +921,20 @@ impl Operator {
                 vec![],
                 OO::Constant(options.clone().unwrap_or_default()),
             ),
-            Operator::Conv2d { input, filter, options } => (
+            Operator::Conv2d {
+                input,
+                filter,
+                options,
+            } => (
                 "conv2d".into(),
                 vec![*input, *filter],
                 OO::Conv2d(options.clone().unwrap_or_default()),
             ),
-            Operator::ConvTranspose2d { input, filter, options } => (
+            Operator::ConvTranspose2d {
+                input,
+                filter,
+                options,
+            } => (
                 "convTranspose2d".into(),
                 vec![*input, *filter],
                 OO::ConvTranspose2d(options.clone().unwrap_or_default()),
@@ -953,12 +959,20 @@ impl Operator {
                 vec![*input],
                 OO::Elu(options.clone().unwrap_or_default()),
             ),
-            Operator::Gather { input, indices, options } => (
+            Operator::Gather {
+                input,
+                indices,
+                options,
+            } => (
                 "gather".into(),
                 vec![*input, *indices],
                 OO::Gather(options.clone().unwrap_or_default()),
             ),
-            Operator::GatherElements { input, indices, options } => (
+            Operator::GatherElements {
+                input,
+                indices,
+                options,
+            } => (
                 "gatherElements".into(),
                 vec![*input, *indices],
                 OO::Gather(options.clone().unwrap_or_default()),
@@ -994,7 +1008,7 @@ impl Operator {
                     ids.push(id);
                 }
                 ("gruCell".into(), ids, OO::GruCell(o))
-            },
+            }
             Operator::HardSigmoid { input, options } => (
                 "hardSigmoid".into(),
                 vec![*input],
@@ -1190,7 +1204,11 @@ impl Operator {
                 vec![*input],
                 OO::Triangular(options.clone().unwrap_or_default()),
             ),
-            Operator::Prelu { input, slope, options } => (
+            Operator::Prelu {
+                input,
+                slope,
+                options,
+            } => (
                 "prelu".into(),
                 vec![*input, *slope],
                 OO::Operator(options.clone().unwrap_or_default()),
@@ -1257,7 +1275,11 @@ impl Operator {
                 vec![*input, *indices, *updates],
                 OO::Operator(options.clone().unwrap_or_default()),
             ),
-            Operator::GatherND { input, indices, options } => (
+            Operator::GatherND {
+                input,
+                indices,
+                options,
+            } => (
                 "gatherND".into(),
                 vec![*input, *indices],
                 OO::Operator(options.clone().unwrap_or_default()),
@@ -1369,29 +1391,84 @@ impl Operator {
             }),
             "abs" | "ceil" | "cos" | "exp" | "floor" | "log" | "neg" | "sin" | "tan" | "erf"
             | "identity" | "reciprocal" | "sign" | "sqrt" | "tanh" | "relu" | "sigmoid"
-            | "logicalNot" if input_operands.len() >= 1 =>
+            | "logicalNot"
+                if input_operands.len() >= 1 =>
             {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_operator().cloned();
                 Some(match n {
-                    "abs" => Operator::Abs { input, options: opts },
-                    "ceil" => Operator::Ceil { input, options: opts },
-                    "cos" => Operator::Cos { input, options: opts },
-                    "exp" => Operator::Exp { input, options: opts },
-                    "floor" => Operator::Floor { input, options: opts },
-                    "log" => Operator::Log { input, options: opts },
-                    "neg" => Operator::Neg { input, options: opts },
-                    "sin" => Operator::Sin { input, options: opts },
-                    "tan" => Operator::Tan { input, options: opts },
-                    "erf" => Operator::Erf { input, options: opts },
-                    "identity" => Operator::Identity { input, options: opts },
-                    "reciprocal" => Operator::Reciprocal { input, options: opts },
-                    "sign" => Operator::Sign { input, options: opts },
-                    "sqrt" => Operator::Sqrt { input, options: opts },
-                    "tanh" => Operator::Tanh { input, options: opts },
-                    "relu" => Operator::Relu { input, options: opts },
-                    "sigmoid" => Operator::Sigmoid { input, options: opts },
-                    "logicalNot" => Operator::LogicalNot { input, options: opts },
+                    "abs" => Operator::Abs {
+                        input,
+                        options: opts,
+                    },
+                    "ceil" => Operator::Ceil {
+                        input,
+                        options: opts,
+                    },
+                    "cos" => Operator::Cos {
+                        input,
+                        options: opts,
+                    },
+                    "exp" => Operator::Exp {
+                        input,
+                        options: opts,
+                    },
+                    "floor" => Operator::Floor {
+                        input,
+                        options: opts,
+                    },
+                    "log" => Operator::Log {
+                        input,
+                        options: opts,
+                    },
+                    "neg" => Operator::Neg {
+                        input,
+                        options: opts,
+                    },
+                    "sin" => Operator::Sin {
+                        input,
+                        options: opts,
+                    },
+                    "tan" => Operator::Tan {
+                        input,
+                        options: opts,
+                    },
+                    "erf" => Operator::Erf {
+                        input,
+                        options: opts,
+                    },
+                    "identity" => Operator::Identity {
+                        input,
+                        options: opts,
+                    },
+                    "reciprocal" => Operator::Reciprocal {
+                        input,
+                        options: opts,
+                    },
+                    "sign" => Operator::Sign {
+                        input,
+                        options: opts,
+                    },
+                    "sqrt" => Operator::Sqrt {
+                        input,
+                        options: opts,
+                    },
+                    "tanh" => Operator::Tanh {
+                        input,
+                        options: opts,
+                    },
+                    "relu" => Operator::Relu {
+                        input,
+                        options: opts,
+                    },
+                    "sigmoid" => Operator::Sigmoid {
+                        input,
+                        options: opts,
+                    },
+                    "logicalNot" => Operator::LogicalNot {
+                        input,
+                        options: opts,
+                    },
                     _ => return None,
                 })
             }
@@ -1424,12 +1501,14 @@ impl Operator {
                 input: at(input_operands, 0)?,
                 options: attributes.as_arg_min_max().cloned(),
             }),
-            "batchNormalization" if input_operands.len() >= 3 => Some(Operator::BatchNormalization {
-                input: at(input_operands, 0)?,
-                mean: at(input_operands, 1)?,
-                variance: at(input_operands, 2)?,
-                options: attributes.as_batch_normalization().cloned(),
-            }),
+            "batchNormalization" if input_operands.len() >= 3 => {
+                Some(Operator::BatchNormalization {
+                    input: at(input_operands, 0)?,
+                    mean: at(input_operands, 1)?,
+                    variance: at(input_operands, 2)?,
+                    options: attributes.as_batch_normalization().cloned(),
+                })
+            }
             "cast" if input_operands.len() >= 1 => Some(Operator::Cast {
                 input: at(input_operands, 0)?,
                 options: attributes.as_cast().cloned(),
@@ -1499,13 +1578,14 @@ impl Operator {
                         opts.recurrent_bias = at(input_operands, 5);
                     }
                 }
-                let options =
-                    if base.is_some() || input_operands.len() >= 6 || opts != MLGruCellOptions::default()
-                    {
-                        Some(opts)
-                    } else {
-                        None
-                    };
+                let options = if base.is_some()
+                    || input_operands.len() >= 6
+                    || opts != MLGruCellOptions::default()
+                {
+                    Some(opts)
+                } else {
+                    None
+                };
                 Some(Operator::GruCell {
                     input: at(input_operands, 0)?,
                     weight: at(input_operands, 1)?,
@@ -1513,7 +1593,7 @@ impl Operator {
                     hidden_state: at(input_operands, 3)?,
                     options,
                 })
-            },
+            }
             "hardSigmoid" if input_operands.len() >= 1 => Some(Operator::HardSigmoid {
                 input: at(input_operands, 0)?,
                 options: attributes.as_hard_sigmoid().cloned(),
@@ -1528,10 +1608,12 @@ impl Operator {
                     options: attributes.as_instance_normalization().cloned(),
                 })
             }
-            "layerNormalization" if input_operands.len() >= 1 => Some(Operator::LayerNormalization {
-                input: at(input_operands, 0)?,
-                options: attributes.as_layer_normalization().cloned(),
-            }),
+            "layerNormalization" if input_operands.len() >= 1 => {
+                Some(Operator::LayerNormalization {
+                    input: at(input_operands, 0)?,
+                    options: attributes.as_layer_normalization().cloned(),
+                })
+            }
             "leakyRelu" if input_operands.len() >= 1 => Some(Operator::LeakyRelu {
                 input: at(input_operands, 0)?,
                 options: attributes.as_leaky_relu().cloned(),
@@ -1583,16 +1665,46 @@ impl Operator {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_reduce().cloned();
                 Some(match n {
-                    "reduceSum" => Operator::ReduceSum { input, options: opts },
-                    "reduceMean" => Operator::ReduceMean { input, options: opts },
-                    "reduceMax" => Operator::ReduceMax { input, options: opts },
-                    "reduceMin" => Operator::ReduceMin { input, options: opts },
-                    "reduceProduct" => Operator::ReduceProduct { input, options: opts },
-                    "reduceL1" => Operator::ReduceL1 { input, options: opts },
-                    "reduceL2" => Operator::ReduceL2 { input, options: opts },
-                    "reduceLogSum" => Operator::ReduceLogSum { input, options: opts },
-                    "reduceLogSumExp" => Operator::ReduceLogSumExp { input, options: opts },
-                    "reduceSumSquare" => Operator::ReduceSumSquare { input, options: opts },
+                    "reduceSum" => Operator::ReduceSum {
+                        input,
+                        options: opts,
+                    },
+                    "reduceMean" => Operator::ReduceMean {
+                        input,
+                        options: opts,
+                    },
+                    "reduceMax" => Operator::ReduceMax {
+                        input,
+                        options: opts,
+                    },
+                    "reduceMin" => Operator::ReduceMin {
+                        input,
+                        options: opts,
+                    },
+                    "reduceProduct" => Operator::ReduceProduct {
+                        input,
+                        options: opts,
+                    },
+                    "reduceL1" => Operator::ReduceL1 {
+                        input,
+                        options: opts,
+                    },
+                    "reduceL2" => Operator::ReduceL2 {
+                        input,
+                        options: opts,
+                    },
+                    "reduceLogSum" => Operator::ReduceLogSum {
+                        input,
+                        options: opts,
+                    },
+                    "reduceLogSumExp" => Operator::ReduceLogSumExp {
+                        input,
+                        options: opts,
+                    },
+                    "reduceSumSquare" => Operator::ReduceSumSquare {
+                        input,
+                        options: opts,
+                    },
                     _ => return None,
                 })
             }
@@ -1670,18 +1782,40 @@ impl Operator {
                 })
             }
             "softplus" | "softsign" | "gelu" | "shape" | "isNaN" | "isInfinite" | "roundEven"
-                | "round" if input_operands.len() >= 1 =>
+            | "round"
+                if input_operands.len() >= 1 =>
             {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_operator().cloned();
                 Some(match n {
-                    "softplus" => Operator::Softplus { input, options: opts },
-                    "softsign" => Operator::Softsign { input, options: opts },
-                    "gelu" => Operator::Gelu { input, options: opts },
-                    "shape" => Operator::Shape { input, options: opts },
-                    "isNaN" => Operator::IsNaN { input, options: opts },
-                    "isInfinite" => Operator::IsInfinite { input, options: opts },
-                    "roundEven" | "round" => Operator::RoundEven { input, options: opts },
+                    "softplus" => Operator::Softplus {
+                        input,
+                        options: opts,
+                    },
+                    "softsign" => Operator::Softsign {
+                        input,
+                        options: opts,
+                    },
+                    "gelu" => Operator::Gelu {
+                        input,
+                        options: opts,
+                    },
+                    "shape" => Operator::Shape {
+                        input,
+                        options: opts,
+                    },
+                    "isNaN" => Operator::IsNaN {
+                        input,
+                        options: opts,
+                    },
+                    "isInfinite" => Operator::IsInfinite {
+                        input,
+                        options: opts,
+                    },
+                    "roundEven" | "round" => Operator::RoundEven {
+                        input,
+                        options: opts,
+                    },
                     _ => return None,
                 })
             }
@@ -1700,7 +1834,12 @@ impl Operator {
         }
     }
 
-    /// Alias for [`Self::from_operator_options`] (historical name for JSON triple deserialization).
+    /// Deprecated: construct [`Operator`] variants directly, or use [`Self::from_operator_options`]
+    /// when parsing WebNN JSON (`type` + `input_operands` + tagged `attributes`).
+    #[deprecated(
+        since = "0.6.0",
+        note = "construct Operator variants directly, or call Operator::from_operator_options for JSON interchange"
+    )]
     #[inline]
     pub fn from_legacy(
         op_type: &str,

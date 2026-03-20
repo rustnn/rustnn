@@ -465,7 +465,6 @@ impl<'a> GraphValidator<'a> {
 mod tests {
     use super::*;
     use crate::graph::{ConstantData, GraphInfo, Operand, Operation};
-    use crate::operator_options::OperatorOptions;
     use crate::operators::Operator;
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
@@ -537,8 +536,21 @@ mod tests {
             name: Some("output".to_string()),
         };
 
-        let operator =
-            Operator::from_legacy(op_type, &[0, 1, 2], &OperatorOptions::default()).unwrap();
+        let operator = match op_type {
+            "quantizeLinear" => Operator::QuantizeLinear {
+                input: 0,
+                scale: 1,
+                zero_point: Some(2),
+                options: None,
+            },
+            "dequantizeLinear" => Operator::DequantizeLinear {
+                input: 0,
+                scale: 1,
+                zero_point: Some(2),
+                options: None,
+            },
+            _ => panic!("unexpected op_type in build_quantize_graph: {op_type}"),
+        };
         let operation = Operation {
             operator,
             output_operand: Some(3),
@@ -599,8 +611,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Relu {
+                    input: 0,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(1),
@@ -755,18 +769,21 @@ mod tests {
         };
 
         let relu = Operation {
-            operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
+            operator: Operator::Relu {
+                input: 0,
+                options: None,
+            },
             output_operand: Some(3),
             output_operands: vec![],
             label: None,
         };
         let quantize = Operation {
-            operator: Operator::from_legacy(
-                "quantizeLinear",
-                &[3, 1, 2],
-                &OperatorOptions::default(),
-            )
-            .unwrap(),
+            operator: Operator::QuantizeLinear {
+                input: 3,
+                scale: 1,
+                zero_point: Some(2),
+                options: None,
+            },
             output_operand: Some(4),
             output_operands: vec![],
             label: None,
@@ -839,8 +856,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Relu {
+                    input: 0,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(1),
@@ -884,8 +903,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Relu {
+                    input: 0,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(1),
@@ -938,7 +959,11 @@ mod tests {
             input_operands: vec![0, 1],
             output_operands: vec![2],
             operations: vec![Operation {
-                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
+                operator: Operator::Add {
+                    a: 0,
+                    b: 1,
+                    options: None,
+                },
                 output_operand: Some(2),
                 output_operands: vec![],
                 label: None,
@@ -989,13 +1014,19 @@ mod tests {
             output_operands: vec![1, 2],
             operations: vec![
                 Operation {
-                    operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
+                    operator: Operator::Relu {
+                        input: 0,
+                        options: None,
+                    },
                     output_operand: Some(1),
                     output_operands: vec![],
                     label: None,
                 },
                 Operation {
-                    operator: Operator::from_legacy("sigmoid", &[0], &OperatorOptions::default()).unwrap(),
+                    operator: Operator::Sigmoid {
+                        input: 0,
+                        options: None,
+                    },
                     output_operand: Some(2),
                     output_operands: vec![],
                     label: None,
@@ -1046,7 +1077,11 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![2],
             operations: vec![Operation {
-                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
+                operator: Operator::Add {
+                    a: 0,
+                    b: 1,
+                    options: None,
+                },
                 output_operand: Some(2),
                 output_operands: vec![],
                 label: None,
@@ -1107,7 +1142,11 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![2],
             operations: vec![Operation {
-                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
+                operator: Operator::Add {
+                    a: 0,
+                    b: 1,
+                    options: None,
+                },
                 output_operand: Some(2),
                 output_operands: vec![],
                 label: None,
@@ -1153,8 +1192,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Relu {
+                    input: 0,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(1),
@@ -1198,7 +1239,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![Operation {
-                operator: Operator::from_legacy("relu", &[99], &OperatorOptions::default()).unwrap(), // Invalid operand ID
+                operator: Operator::Relu {
+                    input: 99,
+                    options: None,
+                }, // Invalid operand ID
                 output_operand: Some(1),
                 output_operands: vec![],
                 label: None,
@@ -1240,13 +1284,19 @@ mod tests {
             output_operands: vec![1],
             operations: vec![
                 Operation {
-                    operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
+                    operator: Operator::Relu {
+                        input: 0,
+                        options: None,
+                    },
                     output_operand: Some(1),
                     output_operands: vec![],
                     label: None,
                 },
                 Operation {
-                    operator: Operator::from_legacy("sigmoid", &[0], &OperatorOptions::default()).unwrap(),
+                    operator: Operator::Sigmoid {
+                        input: 0,
+                        options: None,
+                    },
                     output_operand: Some(1), // Same output produced twice
                     output_operands: vec![],
                     label: None,
@@ -1297,7 +1347,10 @@ mod tests {
             input_operands: vec![0, 1],
             output_operands: vec![2],
             operations: vec![Operation {
-                operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
+                operator: Operator::Relu {
+                    input: 0,
+                    options: None,
+                },
                 output_operand: Some(2),
                 output_operands: vec![],
                 label: None,
@@ -1346,8 +1399,10 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator =
-                    Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap();
+                let operator = Operator::Relu {
+                    input: 0,
+                    options: None,
+                };
                 Operation {
                     operator,
                     output_operand: Some(1),

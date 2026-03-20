@@ -384,7 +384,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
         )
         .unwrap_or_default();
 
-        let operator = Operator::from_legacy(&node.op, &input_operands, &attributes)
+        let operator = Operator::from_operator_options(&node.op, &input_operands, &attributes)
             .expect("unknown op type in JSON");
 
         operations.push(Operation {
@@ -505,9 +505,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             // Normalize tile inputs: if shape rank is missing, set to repeats length (filled with 1s)
             if op_type == "tile"
                 && let Some(repeats_len) = match &op.operator {
-                    Operator::Tile { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.repetitions.len()),
+                    Operator::Tile { options, .. } => options.as_ref().map(|o| o.repetitions.len()),
                     _ => None,
                 }
                 && let Some(input_id) = op.input_operands().first()
@@ -556,8 +554,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
                 // Unary element-wise operations (shape unchanged)
                 "abs" | "ceil" | "floor" | "neg" | "relu" | "sigmoid" | "tanh" | "exp" | "log"
-                | "sqrt" | "erf" | "sin" | "cos" | "tan" | "sign" | "reciprocal"
-                | "roundEven"
+                | "sqrt" | "erf" | "sin" | "cos" | "tan" | "sign" | "reciprocal" | "roundEven"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
                 | "reverse" | "cumulativesum" | "cumulative_sum" | "logical_not" | "isnan"
                 | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
@@ -568,14 +565,13 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         Some(hidden_state_shape.clone())
                     } else if let Some(input_shape) = input_shapes.first() {
                         let hidden_size = match &op.operator {
-                            Operator::GruCell { options, .. } => options
-                                .as_ref()
-                                .and_then(|o| o.hidden_size),
+                            Operator::GruCell { options, .. } => {
+                                options.as_ref().and_then(|o| o.hidden_size)
+                            }
                             _ => None,
                         };
                         if input_shape.len() == 2 {
-                            hidden_size
-                                .map(|h| vec![input_shape[0].clone(), Dimension::Static(h)])
+                            hidden_size.map(|h| vec![input_shape[0].clone(), Dimension::Static(h)])
                         } else {
                             None
                         }
@@ -588,9 +584,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "concat" => {
                     let axis_u32 = {
                         let axis_i64 = match &op.operator {
-                            Operator::Concat { options, .. } => options
-                                .as_ref()
-                                .map(|o| o.axis as i64),
+                            Operator::Concat { options, .. } => {
+                                options.as_ref().map(|o| o.axis as i64)
+                            }
                             _ => None,
                         };
                         if let Some(axis) = axis_i64 {
@@ -631,15 +627,25 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "expand" => {
                     if input_shapes.len() == 1 {
                         let (axes_opt, new_shape_opt) = match &op.operator {
-                            Operator::Expand { options, .. } => options.as_ref().map(|o| {
-                                let axes: Vec<i64> = o.axes.iter().map(|&u| u as i64).collect();
-                                let new_shape: Vec<Dimension> =
-                                    o.new_shape.iter().map(|d| Dimension::from(d.clone())).collect();
-                                (
-                                    if axes.is_empty() { None } else { Some(axes) },
-                                    if new_shape.is_empty() { None } else { Some(new_shape) },
-                                )
-                            }).unwrap_or((None, None)),
+                            Operator::Expand { options, .. } => options
+                                .as_ref()
+                                .map(|o| {
+                                    let axes: Vec<i64> = o.axes.iter().map(|&u| u as i64).collect();
+                                    let new_shape: Vec<Dimension> = o
+                                        .new_shape
+                                        .iter()
+                                        .map(|d| Dimension::from(d.clone()))
+                                        .collect();
+                                    (
+                                        if axes.is_empty() { None } else { Some(axes) },
+                                        if new_shape.is_empty() {
+                                            None
+                                        } else {
+                                            Some(new_shape)
+                                        },
+                                    )
+                                })
+                                .unwrap_or((None, None)),
                             _ => (None, None),
                         };
                         if let Some(axes) = axes_opt
@@ -664,8 +670,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                             } else {
                                 None
                             }
-                        } else if let Some(new_shape) = new_shape_opt
-                        {
+                        } else if let Some(new_shape) = new_shape_opt {
                             infer_expand_shape_dimensions(&input_shapes[0], &new_shape).ok()
                         } else {
                             None
@@ -678,7 +683,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Reshape - use newShape from operator options if available
                 "reshape" => match &op.operator {
                     Operator::Reshape { options, .. } => options.as_ref().map(|o| {
-                        o.new_shape.iter().map(|d| Dimension::from(d.clone())).collect::<Vec<_>>()
+                        o.new_shape
+                            .iter()
+                            .map(|d| Dimension::from(d.clone()))
+                            .collect::<Vec<_>>()
                     }),
                     _ => None,
                 },
@@ -693,10 +701,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                 .map(|o| o.permutation.clone()),
                             _ => None,
                         };
-                        infer_transpose_shape_dimensions(
-                            &input_shapes[0],
-                            perm.as_deref(),
-                        ).ok()
+                        infer_transpose_shape_dimensions(&input_shapes[0], perm.as_deref()).ok()
                     } else {
                         None
                     }
@@ -790,9 +795,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     if indices_operand.descriptor.shape.is_empty()
                                         && shape_override.len() >= tail_len
                                     {
-                                        indices_operand.descriptor.shape =
-                                            shape_override[..shape_override.len() - tail_len]
-                                                .to_vec();
+                                        indices_operand.descriptor.shape = shape_override
+                                            [..shape_override.len() - tail_len]
+                                            .to_vec();
                                         made_progress = true;
                                     }
                                 }
@@ -874,7 +879,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "constant" => match &op.operator {
                     Operator::Constant { options, .. } => options
                         .as_ref()
-                        .map(|o| o.shape.iter().map(|&u| Dimension::Static(u)).collect::<Vec<_>>())
+                        .map(|o| {
+                            o.shape
+                                .iter()
+                                .map(|&u| Dimension::Static(u))
+                                .collect::<Vec<_>>()
+                        })
                         .or_else(|| Some(Vec::new())),
                     _ => Some(Vec::new()),
                 },
@@ -896,9 +906,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 let output_type = match op_type.as_str() {
                     "shape" => Some(DataType::Int64),
                     "constant" => match &op.operator {
-                        Operator::Constant { options, .. } => options
-                            .as_ref()
-                            .and_then(|o| parse_dtype(&serde_json::Value::String(o.data_type.clone()))),
+                        Operator::Constant { options, .. } => options.as_ref().and_then(|o| {
+                            parse_dtype(&serde_json::Value::String(o.data_type.clone()))
+                        }),
                         _ => None,
                     },
                     "cast" => match &op.operator {
@@ -910,12 +920,16 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     "dequantizelinear" => input_types.get(1).cloned().or(Some(DataType::Float32)),
                     "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
                     "argmax" | "argmin" => match &op.operator {
-                        Operator::ArgMax { options, .. } | Operator::ArgMin { options, .. } => options
-                            .as_ref()
-                            .and_then(|o| {
-                                parse_dtype(&serde_json::Value::String(o.output_data_type.clone()))
-                            })
-                            .or(Some(DataType::Int32)),
+                        Operator::ArgMax { options, .. } | Operator::ArgMin { options, .. } => {
+                            options
+                                .as_ref()
+                                .and_then(|o| {
+                                    parse_dtype(&serde_json::Value::String(
+                                        o.output_data_type.clone(),
+                                    ))
+                                })
+                                .or(Some(DataType::Int32))
+                        }
                         _ => Some(DataType::Int32),
                     },
                     "expand"
@@ -1236,8 +1250,10 @@ mod tests {
                     &serde_json::Value::Object(attrs),
                 )
                 .expect("leakyRelu options");
-                let operator = Operator::from_legacy("leakyRelu", &[0], &attributes)
-                    .expect("leakyRelu operator");
+                let operator = Operator::LeakyRelu {
+                    input: 0,
+                    options: attributes.as_leaky_relu().cloned(),
+                };
                 Operation {
                     operator,
                     output_operand: None,
