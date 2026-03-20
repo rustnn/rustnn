@@ -718,11 +718,12 @@ pub struct MLReverseOptions {
 }
 
 /// MLSoftmaxOptions. softmax.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSoftmaxOptions {
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
     pub axis: u32,
 }
 

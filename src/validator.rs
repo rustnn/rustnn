@@ -938,11 +938,9 @@ mod tests {
             input_operands: vec![0, 1],
             output_operands: vec![2],
             operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
+                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
                 output_operand: Some(2),
                 output_operands: vec![],
-                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -991,19 +989,15 @@ mod tests {
             output_operands: vec![1, 2],
             operations: vec![
                 Operation {
-                    op_type: "relu".to_string(),
-                    input_operands: vec![0],
+                    operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
                     output_operand: Some(1),
                     output_operands: vec![],
-                    attributes: OperatorOptions::default(),
                     label: None,
                 },
                 Operation {
-                    op_type: "sigmoid".to_string(),
-                    input_operands: vec![0],
+                    operator: Operator::from_legacy("sigmoid", &[0], &OperatorOptions::default()).unwrap(),
                     output_operand: Some(2),
                     output_operands: vec![],
-                    attributes: OperatorOptions::default(),
                     label: None,
                 },
             ],
@@ -1052,11 +1046,9 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![2],
             operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
+                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
                 output_operand: Some(2),
                 output_operands: vec![],
-                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(), // Missing constant data
@@ -1115,11 +1107,9 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![2],
             operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
+                operator: Operator::from_legacy("add", &[0, 1], &OperatorOptions::default()).unwrap(),
                 output_operand: Some(2),
                 output_operands: vec![],
-                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: constants,
@@ -1208,11 +1198,9 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![99], // Invalid operand ID
+                operator: Operator::from_legacy("relu", &[99], &OperatorOptions::default()).unwrap(), // Invalid operand ID
                 output_operand: Some(1),
                 output_operands: vec![],
-                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -1252,19 +1240,15 @@ mod tests {
             output_operands: vec![1],
             operations: vec![
                 Operation {
-                    op_type: "relu".to_string(),
-                    input_operands: vec![0],
+                    operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
                     output_operand: Some(1),
                     output_operands: vec![],
-                    attributes: OperatorOptions::default(),
                     label: None,
                 },
                 Operation {
-                    op_type: "sigmoid".to_string(),
-                    input_operands: vec![0],
+                    operator: Operator::from_legacy("sigmoid", &[0], &OperatorOptions::default()).unwrap(),
                     output_operand: Some(1), // Same output produced twice
                     output_operands: vec![],
-                    attributes: OperatorOptions::default(),
                     label: None,
                 },
             ],
@@ -1313,11 +1297,9 @@ mod tests {
             input_operands: vec![0, 1],
             output_operands: vec![2],
             operations: vec![Operation {
-                op_type: "relu".to_string(),
-                input_operands: vec![0],
+                operator: Operator::from_legacy("relu", &[0], &OperatorOptions::default()).unwrap(),
                 output_operand: Some(2),
                 output_operands: vec![],
-                attributes: OperatorOptions::default(),
                 label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),

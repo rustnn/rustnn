@@ -372,6 +372,7 @@ pub enum Operator {
         input: OperandIndex,
         weight: OperandIndex,
         recurrence: OperandIndex,
+        hidden_state: OperandIndex,
         options: Option<MLGruCellOptions>,
     },
 
@@ -725,6 +726,11 @@ impl Operator {
                 vec![*a, *b],
                 OO::Operator(options.clone().unwrap_or_default()),
             ),
+            Operator::NotEqual { a, b, options } => (
+                "notEqual".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
             Operator::Greater { a, b, options } => (
                 "greater".into(),
                 vec![*a, *b],
@@ -954,12 +960,19 @@ impl Operator {
                 input,
                 weight,
                 recurrence,
+                hidden_state,
                 options,
-            } => (
-                "gruCell".into(),
-                vec![*input, *weight, *recurrence],
-                OO::GruCell(options.clone().unwrap_or_default()),
-            ),
+            } => {
+                let o = options.clone().unwrap_or_default();
+                let mut ids = vec![*input, *weight, *recurrence, *hidden_state];
+                if let Some(id) = o.bias {
+                    ids.push(id);
+                }
+                if let Some(id) = o.recurrent_bias {
+                    ids.push(id);
+                }
+                ("gruCell".into(), ids, OO::GruCell(o))
+            },
             Operator::HardSigmoid { input, options } => (
                 "hardSigmoid".into(),
                 vec![*input],
@@ -1292,6 +1305,11 @@ impl Operator {
                 b: at(input_operands, 1)?,
                 options: attributes.as_operator().cloned(),
             }),
+            "notEqual" if input_operands.len() >= 2 => Some(Operator::NotEqual {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
             "greater" if input_operands.len() >= 2 => Some(Operator::Greater {
                 a: at(input_operands, 0)?,
                 b: at(input_operands, 1)?,
@@ -1433,12 +1451,32 @@ impl Operator {
                 recurrence: at(input_operands, 2)?,
                 options: attributes.as_gru().cloned(),
             }),
-            "gruCell" if input_operands.len() >= 3 => Some(Operator::GruCell {
-                input: at(input_operands, 0)?,
-                weight: at(input_operands, 1)?,
-                recurrence: at(input_operands, 2)?,
-                options: attributes.as_gru_cell().cloned(),
-            }),
+            "gruCell" if input_operands.len() >= 4 => {
+                let base = attributes.as_gru_cell().cloned();
+                let mut opts = base.clone().unwrap_or_default();
+                if input_operands.len() >= 6 {
+                    if opts.bias.is_none() {
+                        opts.bias = at(input_operands, 4);
+                    }
+                    if opts.recurrent_bias.is_none() {
+                        opts.recurrent_bias = at(input_operands, 5);
+                    }
+                }
+                let options =
+                    if base.is_some() || input_operands.len() >= 6 || opts != MLGruCellOptions::default()
+                    {
+                        Some(opts)
+                    } else {
+                        None
+                    };
+                Some(Operator::GruCell {
+                    input: at(input_operands, 0)?,
+                    weight: at(input_operands, 1)?,
+                    recurrence: at(input_operands, 2)?,
+                    hidden_state: at(input_operands, 3)?,
+                    options,
+                })
+            },
             "hardSigmoid" if input_operands.len() >= 1 => Some(Operator::HardSigmoid {
                 input: at(input_operands, 0)?,
                 options: attributes.as_hard_sigmoid().cloned(),

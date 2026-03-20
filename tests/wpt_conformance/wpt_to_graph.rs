@@ -22,6 +22,7 @@ use rustnn::graph::{
     get_static_or_max_size, to_dimension_vector,
 };
 use rustnn::operator_options::OperatorOptions;
+use rustnn::operators::Operator;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
@@ -945,12 +946,17 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         let attributes_opts =
             OperatorOptions::from_json_with_op_type(&op_type_for_graph, &attrs_value)
                 .unwrap_or_default();
+        let operator = Operator::from_legacy(op_type_for_graph, &input_ids, &attributes_opts)
+            .ok_or_else(|| {
+                format!(
+                    "unknown or invalid WPT op for Operator::from_legacy: {} (inputs: {:?})",
+                    op_type_for_graph, input_ids
+                )
+            })?;
         operations.push(Operation {
-            op_type: op_type_for_graph.to_string(),
-            input_operands: input_ids,
+            operator,
             output_operand,
             output_operands,
-            attributes: attributes_opts,
             label: Some(format!("{}_op", op.name)),
         });
     }

@@ -1026,7 +1026,7 @@ impl CoremlMlProgramConverter {
         inputs.insert("x".to_string(), Self::create_name_argument(input_name));
 
         // Add num_splits or split_sizes from typed options
-        if let Some(ref opts) = options {
+        if let Some(opts) = options {
             if opts.splits.is_empty() {
                 // Equal splits - use num_splits (from output count)
                 inputs.insert(
@@ -1247,7 +1247,7 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add transpose parameters from operator options
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert(
                         "transpose_x".to_string(),
                         Self::create_immediate_bool(opts.a_transpose),
@@ -1372,7 +1372,17 @@ impl CoremlMlProgramConverter {
             }
 
             // Specialized activations with alpha parameter: elu, leakyRelu
-            Operator::Elu { options, .. } | Operator::LeakyRelu { options, .. } => {
+            Operator::Elu { options, .. } => {
+                if !input_names.is_empty() {
+                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                }
+                let alpha = options
+                    .as_ref()
+                    .map(|o| o.alpha as f32)
+                    .unwrap_or(1.0);
+                inputs.insert("alpha".to_string(), Self::create_immediate_float(alpha));
+            }
+            Operator::LeakyRelu { options, .. } => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -1397,7 +1407,7 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert(
                         "alpha".to_string(),
                         Self::create_immediate_float(opts.alpha as f32),
@@ -1462,7 +1472,7 @@ impl CoremlMlProgramConverter {
 
                 // Add permutation parameter (required by CoreML)
                 // If not specified in WebNN, default is to reverse all dimensions
-                if let Some(ref opts) = options
+                if let Some(opts) = options
                     && !opts.permutation.is_empty()
                 {
                     inputs.insert(
@@ -1488,7 +1498,7 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add shape parameter from operator options (required by CoreML)
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     let shape_values = opts.new_shape_static_or_max();
                     inputs.insert(
                         "shape".to_string(),
@@ -1510,7 +1520,7 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add parameters from operator options
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     if !opts.strides.is_empty() {
                         inputs.insert(
                             "strides".to_string(),
@@ -1562,7 +1572,7 @@ impl CoremlMlProgramConverter {
                 );
 
                 // Add parameters from operator options
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     if !opts.strides.is_empty() {
                         inputs.insert(
                             "strides".to_string(),
@@ -1770,7 +1780,7 @@ impl CoremlMlProgramConverter {
                     Self::create_int_array_argument(axes_vec),
                 );
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert(
                         "epsilon".to_string(),
                         Self::create_immediate_float(opts.epsilon as f32),
@@ -1816,7 +1826,7 @@ impl CoremlMlProgramConverter {
                         Self::create_argument(&input_names[2]),
                     );
                 }
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     if let Some(sid) = opts.scale {
                         inputs.insert(
                             "gamma".to_string(),
@@ -1882,7 +1892,7 @@ impl CoremlMlProgramConverter {
                 if input_names.len() >= 5 {
                     inputs.insert("beta".to_string(), Self::create_argument(&input_names[4]));
                 }
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert(
                         "epsilon".to_string(),
                         Self::create_immediate_float(opts.epsilon as f32),
@@ -1900,7 +1910,7 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                 }
                 inputs.insert("interleave".to_string(), Self::create_immediate_bool(false));
@@ -1912,7 +1922,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     if !opts.starts.is_empty() {
                         inputs.insert(
                             "begin".to_string(),
@@ -2034,7 +2044,7 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     if opts.splits.is_empty() {
                         inputs.insert(
                             "num_splits".to_string(),
@@ -2064,7 +2074,7 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     // CoreML expects pad as [begin_0, end_0, begin_1, end_1, ...]
                     let pad: Vec<u32> = opts
                         .beginning_padding
@@ -2100,7 +2110,7 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                if let Some(ref opts) = options
+                if let Some(opts) = options
                     && !opts.axes.is_empty()
                 {
                     inputs.insert(
@@ -2116,7 +2126,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options
+                if let Some(opts) = options
                     && !opts.axes.is_empty()
                 {
                     inputs.insert(
@@ -2132,7 +2142,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                     inputs.insert(
                         "keep_dims".to_string(),
@@ -2149,7 +2159,7 @@ impl CoremlMlProgramConverter {
                 }
 
                 // Add dtype parameter (required)
-                if let Some(ref opts) = options
+                if let Some(opts) = options
                     && !opts.to.is_empty()
                 {
                     let to_type = &opts.to;
@@ -2184,7 +2194,7 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                 }
             }
@@ -2210,7 +2220,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options
+                if let Some(opts) = options
                     && !opts.repetitions.is_empty()
                 {
                     inputs.insert(
@@ -2226,7 +2236,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options {
+                if let Some(opts) = options {
                     inputs.insert(
                         "axis".to_string(),
                         Self::create_int_argument(opts.axis as i32),
@@ -2341,8 +2351,8 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(ref opts) = options {
-                    if let Some(ref axes) = opts.axes
+                if let Some(opts) = options {
+                    if let Some(axes) = opts.axes.as_ref()
                         && !axes.is_empty()
                     {
                         inputs.insert("axes".to_string(), Self::create_immediate_int_array(axes));
@@ -2535,17 +2545,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             if (op_type_lower == "conv2d" || op_type_lower == "convtranspose2d")
                 && op.input_operands().len() >= 2
             {
-                let filter_layout = match op_type_lower.as_str() {
-                    "conv2d" => op
-                        .attributes
-                        .as_conv2d()
+                let filter_layout = match &op.operator {
+                    Operator::Conv2d { options, .. } => options
+                        .as_ref()
                         .map(|o| o.filter_layout.as_str())
                         .unwrap_or(""),
-                    _ => op
-                        .attributes
-                        .as_conv_transpose2d()
+                    Operator::ConvTranspose2d { options, .. } => options
+                        .as_ref()
                         .map(|o| o.filter_layout.as_str())
                         .unwrap_or(""),
+                    _ => "",
                 };
                 if !filter_layout.is_empty() {
                     let expected_layout = if op_type_lower == "conv2d" {
@@ -2625,17 +2634,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     }
                 }
 
-                let input_layout = match op_type_lower.as_str() {
-                    "conv2d" => op
-                        .attributes
-                        .as_conv2d()
+                let input_layout = match &op.operator {
+                    Operator::Conv2d { options, .. } => options
+                        .as_ref()
                         .map(|o| o.input_layout.as_str())
                         .unwrap_or(""),
-                    _ => op
-                        .attributes
-                        .as_conv_transpose2d()
+                    Operator::ConvTranspose2d { options, .. } => options
+                        .as_ref()
                         .map(|o| o.input_layout.as_str())
                         .unwrap_or(""),
+                    _ => "",
                 };
                 if input_layout == "nhwc" && !op.input_operands().is_empty() {
                     let input_operand_id = op.input_operands()[0];
@@ -2841,16 +2849,18 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // CoreML clip rejects alpha == beta, while WebNN clamp(min==max) is valid and
             // should produce a constant tensor. Lower as: output = input * 0 + bound.
             if op_type_lower == "clamp" {
-                let (min_value, max_value) = op
-                    .attributes
-                    .as_clamp()
-                    .map(|o| {
-                        (
-                            Self::parse_clamp_bound(o.min_value.as_ref(), f64::NEG_INFINITY),
-                            Self::parse_clamp_bound(o.max_value.as_ref(), f64::INFINITY),
-                        )
-                    })
-                    .unwrap_or((f64::NEG_INFINITY, f64::INFINITY));
+                let (min_value, max_value) = match &op.operator {
+                    Operator::Clamp { options, .. } => options
+                        .as_ref()
+                        .map(|o| {
+                            (
+                                Self::parse_clamp_bound(o.min_value.as_ref(), f64::NEG_INFINITY),
+                                Self::parse_clamp_bound(o.max_value.as_ref(), f64::INFINITY),
+                            )
+                        })
+                        .unwrap_or((f64::NEG_INFINITY, f64::INFINITY)),
+                    _ => (f64::NEG_INFINITY, f64::INFINITY),
+                };
 
                 if min_value == max_value {
                     if op.input_operands().is_empty() || op.output_operand.is_none() {
@@ -2935,7 +2945,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
 
             // Special handling for expand operation (may need reshape first)
-            if let Operator::Expand { options: Some(ref opts), .. } = &op.operator
+            if let Operator::Expand { options: Some(opts), .. } = &op.operator
             {
                 if !op.input_operands().is_empty()
                     && let Some(input_operand) = graph_info.operand(op.input_operands()[0])
@@ -3146,16 +3156,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
                 let (output_name, output_type) = Self::create_value(graph_info, output_operand_id)?;
 
-                let alpha = op
-                    .attributes
-                    .get("alpha")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0) as f32;
-                let beta = op
-                    .attributes
-                    .get("beta")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(1.0) as f32;
+                let (alpha, beta) = match &op.operator {
+                    Operator::Gemm { options, .. } => (
+                        options.as_ref().map(|o| o.alpha as f32).unwrap_or(1.0),
+                        options.as_ref().map(|o| o.beta as f32).unwrap_or(1.0),
+                    ),
+                    _ => (1.0, 1.0),
+                };
 
                 let has_bias = op.input_operands().len() >= 3;
                 let needs_alpha_mul = (alpha - 1.0).abs() > f32::EPSILON;
@@ -3197,16 +3204,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     "y".to_string(),
                     Self::create_name_argument(operand_name(graph_info, op.input_operands()[1])),
                 );
-                let a_transpose = op
-                    .attributes
-                    .get("aTranspose")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let b_transpose = op
-                    .attributes
-                    .get("bTranspose")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let (a_transpose, b_transpose) = match &op.operator {
+                    Operator::Gemm { options, .. } => (
+                        options.as_ref().map(|o| o.a_transpose).unwrap_or(false),
+                        options.as_ref().map(|o| o.b_transpose).unwrap_or(false),
+                    ),
+                    _ => (false, false),
+                };
                 matmul_inputs.insert(
                     "transpose_x".to_string(),
                     Self::create_immediate_bool(a_transpose),
@@ -3315,11 +3319,13 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     }
                 })?;
 
-                let (alpha, beta) = op
-                    .attributes
-                    .as_linear()
-                    .map(|o| (o.alpha as f32, o.beta as f32))
-                    .unwrap_or((1.0, 0.0));
+                let (alpha, beta) = match &op.operator {
+                    Operator::Linear { options, .. } => options
+                        .as_ref()
+                        .map(|o| (o.alpha as f32, o.beta as f32))
+                        .unwrap_or((1.0, 0.0)),
+                    _ => (1.0, 0.0),
+                };
 
                 let (alpha_arg, beta_arg) = match input_operand.descriptor.data_type {
                     DataType::Float16 => (
