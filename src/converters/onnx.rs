@@ -1837,6 +1837,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 || op.op_type().eq_ignore_ascii_case("mul")
                 || op.op_type().eq_ignore_ascii_case("div")
                 || op.op_type().eq_ignore_ascii_case("pow")
+                || op.op_type().eq_ignore_ascii_case("max")
+                || op.op_type().eq_ignore_ascii_case("min")
             {
                 // Track binary element-wise operation output shapes (use broadcasting)
                 if let Some(output_id) = op.output_operand
@@ -9611,6 +9613,12 @@ mod tests {
     fn test_round_even_op_maps_to_onnx_round() {
         assert_eq!(OnnxConverter::onnx_op_type("roundEven"), "Round");
         assert_eq!(OnnxConverter::onnx_op_type("round_even"), "Round");
+    }
+
+    #[test]
+    fn test_max_min_map_to_onnx() {
+        assert_eq!(OnnxConverter::onnx_op_type("max"), "Max");
+        assert_eq!(OnnxConverter::onnx_op_type("min"), "Min");
     }
 
     #[test]

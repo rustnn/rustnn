@@ -87,6 +87,18 @@ pub enum Operator {
         b: OperandIndex,
         options: Option<MLOperatorOptions>,
     },
+    /// [max()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-max)
+    Max {
+        a: OperandIndex,
+        b: OperandIndex,
+        options: Option<MLOperatorOptions>,
+    },
+    /// [min()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-min)
+    Min {
+        a: OperandIndex,
+        b: OperandIndex,
+        options: Option<MLOperatorOptions>,
+    },
     /// [matmul()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-matmul)
     Matmul {
         a: OperandIndex,
@@ -716,6 +728,16 @@ impl Operator {
                 vec![*a, *b],
                 OO::Operator(options.clone().unwrap_or_default()),
             ),
+            Operator::Max { a, b, options } => (
+                "max".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            Operator::Min { a, b, options } => (
+                "min".into(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
             Operator::Matmul { a, b, options } => (
                 "matmul".into(),
                 vec![*a, *b],
@@ -1258,9 +1280,14 @@ impl Operator {
         }
     }
 
-    /// Builds an `Operator` from the legacy triple. Returns `None` if `op_type` is unknown
-    /// or `input_operands` length does not match.
-    pub fn from_legacy(
+    /// Parses WebNN interchange: builder/JSON `op_type` string (e.g. camelCase `batchNormalization`
+    /// or lowercase `add`), operand indices in spec order, and typed [`OperatorOptions`].
+    ///
+    /// This is the **supported** way to construct an [`Operator`] from serialized graphs (JSON, WPT,
+    /// etc.). Prefer constructing enum variants directly only in native Rust graph builders.
+    ///
+    /// Returns `None` if `op_type` is unknown or operand lengths do not match.
+    pub fn from_operator_options(
         op_type: &str,
         input_operands: &[u32],
         attributes: &OperatorOptions,
@@ -1291,6 +1318,16 @@ impl Operator {
                 options: attributes.as_operator().cloned(),
             }),
             "pow" if input_operands.len() >= 2 => Some(Operator::Pow {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "max" if input_operands.len() >= 2 => Some(Operator::Max {
+                a: at(input_operands, 0)?,
+                b: at(input_operands, 1)?,
+                options: attributes.as_operator().cloned(),
+            }),
+            "min" if input_operands.len() >= 2 => Some(Operator::Min {
                 a: at(input_operands, 0)?,
                 b: at(input_operands, 1)?,
                 options: attributes.as_operator().cloned(),
@@ -1661,5 +1698,15 @@ impl Operator {
             }),
             _ => None,
         }
+    }
+
+    /// Alias for [`Self::from_operator_options`] (historical name for JSON triple deserialization).
+    #[inline]
+    pub fn from_legacy(
+        op_type: &str,
+        input_operands: &[u32],
+        attributes: &OperatorOptions,
+    ) -> Option<Self> {
+        Self::from_operator_options(op_type, input_operands, attributes)
     }
 }

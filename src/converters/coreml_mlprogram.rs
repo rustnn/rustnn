@@ -45,6 +45,10 @@ mod mil_ops {
     pub const MUL: &str = "mul";
     pub const DIV: &str = "real_div";
     pub const POW: &str = "pow";
+    /// Element-wise maximum (WebNN max).
+    pub const MAXIMUM: &str = "maximum";
+    /// Element-wise minimum (WebNN min).
+    pub const MINIMUM: &str = "minimum";
     pub const MATMUL: &str = "matmul";
 
     // Activation functions
@@ -1058,6 +1062,8 @@ impl CoremlMlProgramConverter {
             "mul" => mil_ops::MUL,
             "div" => mil_ops::DIV,
             "pow" => mil_ops::POW,
+            "max" => mil_ops::MAXIMUM,
+            "min" => mil_ops::MINIMUM,
             "matmul" => mil_ops::MATMUL,
             "gemm" => mil_ops::MATMUL, // Gemm maps to matmul with transpose handling
 
@@ -1200,6 +1206,8 @@ impl CoremlMlProgramConverter {
             | Operator::Mul { .. }
             | Operator::Div { .. }
             | Operator::Pow { .. }
+            | Operator::Max { .. }
+            | Operator::Min { .. }
             | Operator::Equal { .. }
             | Operator::Greater { .. }
             | Operator::GreaterOrEqual { .. }
