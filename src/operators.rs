@@ -1392,7 +1392,7 @@ impl Operator {
             "abs" | "ceil" | "cos" | "exp" | "floor" | "log" | "neg" | "sin" | "tan" | "erf"
             | "identity" | "reciprocal" | "sign" | "sqrt" | "tanh" | "relu" | "sigmoid"
             | "logicalNot"
-                if input_operands.len() >= 1 =>
+                if !input_operands.is_empty() =>
             {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_operator().cloned();
@@ -1493,11 +1493,11 @@ impl Operator {
                 false_value: at(input_operands, 2)?,
                 options: attributes.as_operator().cloned(),
             }),
-            "argMax" if input_operands.len() >= 1 => Some(Operator::ArgMax {
+            "argMax" if !input_operands.is_empty() => Some(Operator::ArgMax {
                 input: at(input_operands, 0)?,
                 options: attributes.as_arg_min_max().cloned(),
             }),
-            "argMin" if input_operands.len() >= 1 => Some(Operator::ArgMin {
+            "argMin" if !input_operands.is_empty() => Some(Operator::ArgMin {
                 input: at(input_operands, 0)?,
                 options: attributes.as_arg_min_max().cloned(),
             }),
@@ -1509,11 +1509,11 @@ impl Operator {
                     options: attributes.as_batch_normalization().cloned(),
                 })
             }
-            "cast" if input_operands.len() >= 1 => Some(Operator::Cast {
+            "cast" if !input_operands.is_empty() => Some(Operator::Cast {
                 input: at(input_operands, 0)?,
                 options: attributes.as_cast().cloned(),
             }),
-            "clamp" if input_operands.len() >= 1 => Some(Operator::Clamp {
+            "clamp" if !input_operands.is_empty() => Some(Operator::Clamp {
                 input: at(input_operands, 0)?,
                 options: attributes.as_clamp().cloned(),
             }),
@@ -1534,15 +1534,15 @@ impl Operator {
                 inputs: input_operands.to_vec(),
                 options: attributes.as_concat().cloned(),
             }),
-            "cumulativeSum" if input_operands.len() >= 1 => Some(Operator::CumulativeSum {
+            "cumulativeSum" if !input_operands.is_empty() => Some(Operator::CumulativeSum {
                 input: at(input_operands, 0)?,
                 options: attributes.as_cumulative_sum().cloned(),
             }),
-            "expand" if input_operands.len() >= 1 => Some(Operator::Expand {
+            "expand" if !input_operands.is_empty() => Some(Operator::Expand {
                 input: at(input_operands, 0)?,
                 options: attributes.as_expand().cloned(),
             }),
-            "elu" if input_operands.len() >= 1 => Some(Operator::Elu {
+            "elu" if !input_operands.is_empty() => Some(Operator::Elu {
                 input: at(input_operands, 0)?,
                 options: attributes.as_elu().cloned(),
             }),
@@ -1594,31 +1594,31 @@ impl Operator {
                     options,
                 })
             }
-            "hardSigmoid" if input_operands.len() >= 1 => Some(Operator::HardSigmoid {
+            "hardSigmoid" if !input_operands.is_empty() => Some(Operator::HardSigmoid {
                 input: at(input_operands, 0)?,
                 options: attributes.as_hard_sigmoid().cloned(),
             }),
-            "hardSwish" if input_operands.len() >= 1 => Some(Operator::HardSwish {
+            "hardSwish" if !input_operands.is_empty() => Some(Operator::HardSwish {
                 input: at(input_operands, 0)?,
                 options: attributes.as_hard_swish().cloned(),
             }),
-            "instanceNormalization" if input_operands.len() >= 1 => {
+            "instanceNormalization" if !input_operands.is_empty() => {
                 Some(Operator::InstanceNormalization {
                     input: at(input_operands, 0)?,
                     options: attributes.as_instance_normalization().cloned(),
                 })
             }
-            "layerNormalization" if input_operands.len() >= 1 => {
+            "layerNormalization" if !input_operands.is_empty() => {
                 Some(Operator::LayerNormalization {
                     input: at(input_operands, 0)?,
                     options: attributes.as_layer_normalization().cloned(),
                 })
             }
-            "leakyRelu" if input_operands.len() >= 1 => Some(Operator::LeakyRelu {
+            "leakyRelu" if !input_operands.is_empty() => Some(Operator::LeakyRelu {
                 input: at(input_operands, 0)?,
                 options: attributes.as_leaky_relu().cloned(),
             }),
-            "linear" if input_operands.len() >= 1 => Some(Operator::Linear {
+            "linear" if !input_operands.is_empty() => Some(Operator::Linear {
                 input: at(input_operands, 0)?,
                 options: attributes.as_linear().cloned(),
             }),
@@ -1634,33 +1634,35 @@ impl Operator {
                 recurrence: at(input_operands, 2)?,
                 options: attributes.as_lstm_cell().cloned(),
             }),
-            "pad" if input_operands.len() >= 1 => Some(Operator::Pad {
+            "pad" if !input_operands.is_empty() => Some(Operator::Pad {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pad().cloned(),
             }),
-            "averagePool2d" if input_operands.len() >= 1 => Some(Operator::AveragePool2d {
+            "averagePool2d" if !input_operands.is_empty() => Some(Operator::AveragePool2d {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pool2d().cloned(),
             }),
-            "maxPool2d" if input_operands.len() >= 1 => Some(Operator::MaxPool2d {
+            "maxPool2d" if !input_operands.is_empty() => Some(Operator::MaxPool2d {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pool2d().cloned(),
             }),
-            "l2Pool2d" if input_operands.len() >= 1 => Some(Operator::L2Pool2d {
+            "l2Pool2d" if !input_operands.is_empty() => Some(Operator::L2Pool2d {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pool2d().cloned(),
             }),
-            "globalAveragePool" if input_operands.len() >= 1 => Some(Operator::GlobalAveragePool {
-                input: at(input_operands, 0)?,
-                options: attributes.as_pool2d().cloned(),
-            }),
-            "globalMaxPool" if input_operands.len() >= 1 => Some(Operator::GlobalMaxPool {
+            "globalAveragePool" if !input_operands.is_empty() => {
+                Some(Operator::GlobalAveragePool {
+                    input: at(input_operands, 0)?,
+                    options: attributes.as_pool2d().cloned(),
+                })
+            }
+            "globalMaxPool" if !input_operands.is_empty() => Some(Operator::GlobalMaxPool {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pool2d().cloned(),
             }),
             "reduceSum" | "reduceMean" | "reduceMax" | "reduceMin" | "reduceProduct"
             | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp" | "reduceSumSquare"
-                if input_operands.len() >= 1 =>
+                if !input_operands.is_empty() =>
             {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_reduce().cloned();
@@ -1708,15 +1710,15 @@ impl Operator {
                     _ => return None,
                 })
             }
-            "reshape" if input_operands.len() >= 1 => Some(Operator::Reshape {
+            "reshape" if !input_operands.is_empty() => Some(Operator::Reshape {
                 input: at(input_operands, 0)?,
                 options: attributes.as_reshape().cloned(),
             }),
-            "resample2d" if input_operands.len() >= 1 => Some(Operator::Resample2d {
+            "resample2d" if !input_operands.is_empty() => Some(Operator::Resample2d {
                 input: at(input_operands, 0)?,
                 options: attributes.as_resample2d().cloned(),
             }),
-            "reverse" if input_operands.len() >= 1 => Some(Operator::Reverse {
+            "reverse" if !input_operands.is_empty() => Some(Operator::Reverse {
                 input: at(input_operands, 0)?,
                 options: attributes.as_reverse().cloned(),
             }),
@@ -1726,35 +1728,35 @@ impl Operator {
                 updates: at(input_operands, 2)?,
                 options: attributes.as_scatter_elements().cloned(),
             }),
-            "softmax" if input_operands.len() >= 1 => Some(Operator::Softmax {
+            "softmax" if !input_operands.is_empty() => Some(Operator::Softmax {
                 input: at(input_operands, 0)?,
                 options: attributes.as_softmax().cloned(),
             }),
-            "slice" if input_operands.len() >= 1 => Some(Operator::Slice {
+            "slice" if !input_operands.is_empty() => Some(Operator::Slice {
                 input: at(input_operands, 0)?,
                 options: attributes.as_slice().cloned(),
             }),
-            "split" if input_operands.len() >= 1 => Some(Operator::Split {
+            "split" if !input_operands.is_empty() => Some(Operator::Split {
                 input: at(input_operands, 0)?,
                 options: attributes.as_split().cloned(),
             }),
-            "transpose" if input_operands.len() >= 1 => Some(Operator::Transpose {
+            "transpose" if !input_operands.is_empty() => Some(Operator::Transpose {
                 input: at(input_operands, 0)?,
                 options: attributes.as_transpose().cloned(),
             }),
-            "squeeze" if input_operands.len() >= 1 => Some(Operator::Squeeze {
+            "squeeze" if !input_operands.is_empty() => Some(Operator::Squeeze {
                 input: at(input_operands, 0)?,
                 options: attributes.as_squeeze().cloned(),
             }),
-            "unsqueeze" if input_operands.len() >= 1 => Some(Operator::Unsqueeze {
+            "unsqueeze" if !input_operands.is_empty() => Some(Operator::Unsqueeze {
                 input: at(input_operands, 0)?,
                 options: attributes.as_unsqueeze().cloned(),
             }),
-            "tile" if input_operands.len() >= 1 => Some(Operator::Tile {
+            "tile" if !input_operands.is_empty() => Some(Operator::Tile {
                 input: at(input_operands, 0)?,
                 options: attributes.as_tile().cloned(),
             }),
-            "triangular" if input_operands.len() >= 1 => Some(Operator::Triangular {
+            "triangular" if !input_operands.is_empty() => Some(Operator::Triangular {
                 input: at(input_operands, 0)?,
                 options: attributes.as_triangular().cloned(),
             }),
@@ -1783,7 +1785,7 @@ impl Operator {
             }
             "softplus" | "softsign" | "gelu" | "shape" | "isNaN" | "isInfinite" | "roundEven"
             | "round"
-                if input_operands.len() >= 1 =>
+                if !input_operands.is_empty() =>
             {
                 let input = at(input_operands, 0)?;
                 let opts = attributes.as_operator().cloned();

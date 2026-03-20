@@ -2952,74 +2952,71 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 options: Some(opts),
                 ..
             } = &op.operator
+                && !op.input_operands().is_empty()
+                && let Some(input_operand) = graph_info.operand(op.input_operands()[0])
             {
-                if !op.input_operands().is_empty()
-                    && let Some(input_operand) = graph_info.operand(op.input_operands()[0])
-                {
-                    let new_shape = opts.new_shape_static_or_max();
-                    let input_shape = input_operand.descriptor.static_or_max_shape();
-                    let input_rank = input_shape.len();
-                    let output_rank = new_shape.len();
+                let new_shape = opts.new_shape_static_or_max();
+                let input_shape = input_operand.descriptor.static_or_max_shape();
+                let input_rank = input_shape.len();
+                let output_rank = new_shape.len();
 
-                    #[allow(clippy::collapsible_if)]
-                    if !new_shape.is_empty() && input_rank < output_rank {
-                        let mut reshaped_dims = vec![1u32; output_rank];
-                        for i in 0..input_rank {
-                            reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
-                        }
-
-                        //Create reshape operation
-                        let input_name = operand_name(graph_info, op.input_operands()[0]);
-                        // Use input name to create unique intermediate name (don't rely on output_operands)
-                        let reshape_output_name = format!("{}_expand_reshaped", input_name);
-
-                        let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
-                        reshape_inputs
-                            .insert("x".to_string(), Self::create_name_argument(input_name));
-                        reshape_inputs.insert(
-                            "shape".to_string(),
-                            Self::create_int_array_argument(
-                                reshaped_dims.iter().map(|&v| v as i32).collect(),
-                            ),
-                        );
-
-                        // Create tensor type for reshape output
-                        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
-                        let dimensions: Vec<Dimension> = reshaped_dims
-                            .iter()
-                            .map(|&d| Dimension {
-                                dimension: Some(dimension::Dimension::Constant(
-                                    dimension::ConstantDimension { size: d as u64 },
-                                )),
-                            })
-                            .collect();
-
-                        let value_type = ValueType {
-                            r#type: Some(
-                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                    TensorType {
-                                        rank: dimensions.len() as i64,
-                                        data_type: dtype,
-                                        dimensions,
-                                        attributes: HashMap::new(),
-                                    },
-                                ),
-                            ),
-                        };
-
-                        let reshape_output_type = NamedValueType {
-                            name: reshape_output_name.clone(),
-                            r#type: Some(value_type),
-                        };
-
-                        let reshape_mil_op = Self::create_mil_operation(
-                            "reshape",
-                            reshape_inputs,
-                            vec![reshape_output_type],
-                        );
-
-                        main_block.operations.push(reshape_mil_op);
+                #[allow(clippy::collapsible_if)]
+                if !new_shape.is_empty() && input_rank < output_rank {
+                    let mut reshaped_dims = vec![1u32; output_rank];
+                    for i in 0..input_rank {
+                        reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];
                     }
+
+                    //Create reshape operation
+                    let input_name = operand_name(graph_info, op.input_operands()[0]);
+                    // Use input name to create unique intermediate name (don't rely on output_operands)
+                    let reshape_output_name = format!("{}_expand_reshaped", input_name);
+
+                    let mut reshape_inputs: HashMap<String, Argument> = HashMap::new();
+                    reshape_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+                    reshape_inputs.insert(
+                        "shape".to_string(),
+                        Self::create_int_array_argument(
+                            reshaped_dims.iter().map(|&v| v as i32).collect(),
+                        ),
+                    );
+
+                    // Create tensor type for reshape output
+                    let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+                    let dimensions: Vec<Dimension> = reshaped_dims
+                        .iter()
+                        .map(|&d| Dimension {
+                            dimension: Some(dimension::Dimension::Constant(
+                                dimension::ConstantDimension { size: d as u64 },
+                            )),
+                        })
+                        .collect();
+
+                    let value_type = ValueType {
+                        r#type: Some(
+                            crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                TensorType {
+                                    rank: dimensions.len() as i64,
+                                    data_type: dtype,
+                                    dimensions,
+                                    attributes: HashMap::new(),
+                                },
+                            ),
+                        ),
+                    };
+
+                    let reshape_output_type = NamedValueType {
+                        name: reshape_output_name.clone(),
+                        r#type: Some(value_type),
+                    };
+
+                    let reshape_mil_op = Self::create_mil_operation(
+                        "reshape",
+                        reshape_inputs,
+                        vec![reshape_output_type],
+                    );
+
+                    main_block.operations.push(reshape_mil_op);
                 }
             }
 

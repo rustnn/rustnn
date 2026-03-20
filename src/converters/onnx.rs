@@ -534,8 +534,7 @@ impl OnnxConverter {
                 let scale_present = o.and_then(|x| x.scale).is_some();
                 let bias_present = o.and_then(|x| x.bias).is_some();
                 // Respect hasScale/hasBias when operands are omitted (WebNN 2-operand forms).
-                let scale_requested =
-                    !matches!(o.and_then(|x| x.has_scale), Some(false));
+                let scale_requested = !matches!(o.and_then(|x| x.has_scale), Some(false));
                 let bias_requested = !matches!(o.and_then(|x| x.has_bias), Some(false));
                 (
                     scale_present || scale_requested,
@@ -794,7 +793,7 @@ impl OnnxConverter {
             };
             let ch_dynamic = normalized_descriptor_shape
                 .get(1)
-                .map_or(false, |d| matches!(d, Dimension::Dynamic(_)));
+                .is_some_and(|d| matches!(d, Dimension::Dynamic(_)));
             let bn_defaults_need_runtime = crate::graph::dynamic_inputs_enabled()
                 && (bn_scale_id.is_none() || bn_bias_id.is_none())
                 && input_operand.descriptor.has_dynamic_dimensions();
@@ -9716,70 +9715,11 @@ mod tests {
     };
     use crate::operator_options::OperatorOptions;
     use crate::operators::Operator;
-    use crate::protos::onnx::GraphProto;
     use crate::protos::onnx::tensor_proto::DataType as ProtoDataType;
     use std::collections::HashMap;
-    use std::fmt::Write as _;
 
     fn s(shape: &[u32]) -> Vec<Dimension> {
         crate::graph::to_dimension_vector(shape)
-    }
-
-    /// Diagnostics for dynamic BN/LN ONNX tests.
-    ///
-    /// Set `RUSTNN_DEBUG_NORM_TEST=1` when running tests to print this dump to stderr
-    /// (`cargo test ... -- --nocapture`).
-    fn norm_dynamic_onnx_test_dump(graph: &GraphInfo, gp: &GraphProto) -> String {
-        let mut out = String::new();
-
-        let _ = writeln!(
-            &mut out,
-            "dynamic_inputs_enabled (cfg) = {}",
-            crate::graph::dynamic_inputs_enabled()
-        );
-        let _ = writeln!(
-            &mut out,
-            "graph.has_dynamic_dimensions = {}",
-            graph.has_dynamic_dimensions()
-        );
-
-        for (i, op) in graph.operations.iter().enumerate() {
-            let _ = writeln!(
-                &mut out,
-                "WebNN op[{i}]: op_type = {} input_operands = {:?} operator = {:?}",
-                op.op_type(),
-                op.input_operands(),
-                op.operator,
-            );
-        }
-
-        let _ = writeln!(&mut out, "ONNX graph node count = {}", gp.node.len());
-        for (i, n) in gp.node.iter().enumerate() {
-            let _ = writeln!(
-                &mut out,
-                "  ONNX node[{i}]: op_type = {} name = {} input = {:?} output = {:?}",
-                n.op_type, n.name, n.input, n.output
-            );
-        }
-
-        let _ = writeln!(
-            &mut out,
-            "ONNX initializer count = {}",
-            gp.initializer.len()
-        );
-        for t in &gp.initializer {
-            let _ = writeln!(
-                &mut out,
-                "  initializer: name = {} dims = {:?} data_type = {}",
-                t.name, t.dims, t.data_type
-            );
-        }
-
-        if std::env::var_os("RUSTNN_DEBUG_NORM_TEST").is_some() {
-            eprintln!("[RUSTNN_DEBUG_NORM_TEST]\n{out}");
-        }
-
-        out
     }
 
     #[test]
@@ -11172,29 +11112,10 @@ mod tests {
             ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
         let gp = model.graph.unwrap();
 
-        let diag = norm_dynamic_onnx_test_dump(&graph, &gp);
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "Shape"),
-            "expected Shape in ONNX graph (runtime default scale/bias).\n\
-             Tip: rerun with RUSTNN_DEBUG_NORM_TEST=1 and --nocapture.\n\
-             {}",
-            diag
-        );
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "Slice"),
-            "expected Slice in ONNX graph.\n{}",
-            diag
-        );
-        assert!(
-            gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2,
-            "expected at least two Expand nodes.\n{}",
-            diag
-        );
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "BatchNormalization"),
-            "expected BatchNormalization node.\n{}",
-            diag
-        );
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Slice"));
+        assert!(gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2);
+        assert!(gp.node.iter().any(|n| n.op_type == "BatchNormalization"));
     }
 
     #[cfg(feature = "dynamic-inputs")]
@@ -11270,28 +11191,9 @@ mod tests {
             ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
         let gp = model.graph.unwrap();
 
-        let diag = norm_dynamic_onnx_test_dump(&graph, &gp);
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "Shape"),
-            "expected Shape in ONNX graph (runtime default scale/bias).\n\
-             Tip: rerun with RUSTNN_DEBUG_NORM_TEST=1 and --nocapture.\n\
-             {}",
-            diag
-        );
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "Slice"),
-            "expected Slice in ONNX graph.\n{}",
-            diag
-        );
-        assert!(
-            gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2,
-            "expected at least two Expand nodes.\n{}",
-            diag
-        );
-        assert!(
-            gp.node.iter().any(|n| n.op_type == "LayerNormalization"),
-            "expected LayerNormalization node.\n{}",
-            diag
-        );
+        assert!(gp.node.iter().any(|n| n.op_type == "Shape"));
+        assert!(gp.node.iter().any(|n| n.op_type == "Slice"));
+        assert!(gp.node.iter().filter(|n| n.op_type == "Expand").count() >= 2);
+        assert!(gp.node.iter().any(|n| n.op_type == "LayerNormalization"));
     }
 }

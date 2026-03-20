@@ -20,7 +20,7 @@ use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
     ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, Operation, get_static_or_max_size, to_dimension_vector,
+    OperandKind, Operation, to_dimension_vector,
 };
 use crate::operators::Operator;
 use std::collections::{BTreeMap, HashMap};
@@ -445,6 +445,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
         }
     }
 
+    // Reserved for extended JSON operand/attribute parsing.
+    #[allow(dead_code)]
     fn parse_i64_array(value: &serde_json::Value) -> Option<Vec<i64>> {
         let arr = value.as_array()?;
         let mut out = Vec::with_capacity(arr.len());
@@ -460,6 +462,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
         Some(out)
     }
 
+    // Reserved for extended JSON operand/attribute parsing.
+    #[allow(dead_code)]
     fn parse_dimension_array(value: &serde_json::Value) -> Option<Vec<Dimension>> {
         let arr = value.as_array()?;
         let mut out = Vec::with_capacity(arr.len());
