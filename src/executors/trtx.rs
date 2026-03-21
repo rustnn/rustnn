@@ -79,10 +79,10 @@ pub(crate) fn create_trtx_logger() -> Result<trtx::Logger, GraphError> {
 /// Load TensorRT and ONNX parser libraries once per process (no-op when using mock).
 /// Called by the converter and executor so the library is loaded before any trtx API use.
 pub(crate) fn ensure_trtx_loaded() -> Result<(), GraphError> {
-    let mut result = Ok(());
-    TRTX_INIT.call_once(|| {
-        #[cfg(feature = "trtx-runtime")]
-        {
+    #[cfg(feature = "trtx-runtime")]
+    {
+        let mut result = Ok(());
+        TRTX_INIT.call_once(|| {
             result = trtx::dynamically_load_tensorrt(None::<&str>).map_err(|e| {
                 GraphError::TrtxRuntimeFailed {
                     reason: format!("failed to load TensorRT library: {e}"),
@@ -95,9 +95,14 @@ pub(crate) fn ensure_trtx_loaded() -> Result<(), GraphError> {
                     }
                 });
             }
-        }
-    });
-    result
+        });
+        result
+    }
+    #[cfg(not(feature = "trtx-runtime"))]
+    {
+        TRTX_INIT.call_once(|| {});
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
