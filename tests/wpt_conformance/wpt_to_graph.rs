@@ -17,16 +17,16 @@
  */
 //! Convert WPT graph description to rustnn GraphInfo and prepare ONNX inputs.
 //!
-//! Operations are built as [`rustnn::operators::Operator`] with [`rustnn::operator_options::OperatorOptions`]:
+//! Operations are built as [`rustnn::operators::Operation`] with [`rustnn::operator_options::OperatorOptions`]:
 //! options are deserialized via [`OperatorOptions::from_json_with_op_type`], then operands are wired with
-//! [`Operator::from_operator_options`] (WebNN camelCase op names, as in JSON).
+//! [`Operation::from_operator_options`] (WebNN camelCase op names, as in JSON).
 
 use rustnn::graph::{
-    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
     get_static_or_max_size, to_dimension_vector,
 };
 use rustnn::operator_options::OperatorOptions;
-use rustnn::operators::Operator;
+use rustnn::operators::Operation;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
@@ -34,18 +34,18 @@ use std::path::Path;
 
 use super::wpt_types::{WptGraph, WptOperator, WptTensorSpec};
 
-/// Build an [`Operator`] from WebNN JSON op name (camelCase), ordered operand ids, typed options,
+/// Build an [`Operation`] from WebNN JSON op name (camelCase), ordered operand ids, typed options,
 /// and output operand ids for this operation.
 fn operator_from_wpt_parts(
     webnn_op_type: &str,
     operand_ids: &[u32],
     operator_options: &OperatorOptions,
     output_ids: &[u32],
-) -> Result<Operator, String> {
-    Operator::from_operator_options(webnn_op_type, operand_ids, operator_options, output_ids)
+) -> Result<Operation, String> {
+    Operation::from_operator_options(webnn_op_type, operand_ids, operator_options, output_ids)
         .ok_or_else(|| {
             format!(
-                "unsupported WPT op or operand layout for Operator::from_operator_options: {webnn_op_type} (operands: {operand_ids:?})"
+                "unsupported WPT op or operand layout for Operation::from_operator_options: {webnn_op_type} (operands: {operand_ids:?})"
             )
         })
 }
@@ -930,7 +930,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         }
 
         // WebNN JSON / OperatorOptions::from_json_with_op_type expect camelCase op names.
-        // Internal control flow uses snake_case `op_type`; map back for typed options + Operator.
+        // Internal control flow uses snake_case `op_type`; map back for typed options + Operation.
         let webnn_op_type = match op_type.as_str() {
             "batch_normalization" => "batchNormalization",
             "instance_normalization" => "instanceNormalization",
@@ -974,7 +974,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         let operator_options = operator_options_from_wpt_attrs(webnn_op_type, attributes);
         let operator =
             operator_from_wpt_parts(webnn_op_type, &input_ids, &operator_options, &output_ids)?;
-        operations.push(Operation { operator });
+        operations.push(operator);
     }
 
     let output_operands: Vec<u32> = graph

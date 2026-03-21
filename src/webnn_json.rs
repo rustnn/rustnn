@@ -20,9 +20,9 @@ use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
     ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, Operation, to_dimension_vector,
+    OperandKind, to_dimension_vector,
 };
-use crate::operators::Operator;
+use crate::operators::Operation;
 use std::collections::{BTreeMap, HashMap};
 use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
 
@@ -384,7 +384,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
         )
         .unwrap_or_default();
 
-        let operator = Operator::from_operator_options(
+        let operator = Operation::from_operator_options(
             &node.op,
             &input_operands,
             &attributes,
@@ -392,7 +392,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
         )
         .expect("unknown op type in JSON");
 
-        operations.push(Operation { operator });
+        operations.push(operator);
     }
 
     // Build output operands list from outputs map and mark them as Output
@@ -508,8 +508,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
             // Normalize tile inputs: if shape rank is missing, set to repeats length (filled with 1s)
             if op_type == "tile"
-                && let Some(repeats_len) = match &op.operator {
-                    Operator::Tile { options, .. } => options.as_ref().map(|o| o.repetitions.len()),
+                && let Some(repeats_len) = match &op {
+                    Operation::Tile { options, .. } => {
+                        options.as_ref().map(|o| o.repetitions.len())
+                    }
                     _ => None,
                 }
                 && let Some(input_id) = op.input_operands().first()
@@ -568,8 +570,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     if let Some(hidden_state_shape) = input_shapes.get(3) {
                         Some(hidden_state_shape.clone())
                     } else if let Some(input_shape) = input_shapes.first() {
-                        let hidden_size = match &op.operator {
-                            Operator::GruCell { options, .. } => {
+                        let hidden_size = match &op {
+                            Operation::GruCell { options, .. } => {
                                 options.as_ref().and_then(|o| o.hidden_size)
                             }
                             _ => None,
@@ -587,8 +589,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Concat
                 "concat" => {
                     let axis_u32 = {
-                        let axis_i64 = match &op.operator {
-                            Operator::Concat { options, .. } => {
+                        let axis_i64 = match &op {
+                            Operation::Concat { options, .. } => {
                                 options.as_ref().map(|o| o.axis as i64)
                             }
                             _ => None,
@@ -630,8 +632,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Only use axes path when axes is non-empty; otherwise use newShape (default axes is []).
                 "expand" => {
                     if input_shapes.len() == 1 {
-                        let (axes_opt, new_shape_opt) = match &op.operator {
-                            Operator::Expand { options, .. } => options
+                        let (axes_opt, new_shape_opt) = match &op {
+                            Operation::Expand { options, .. } => options
                                 .as_ref()
                                 .map(|o| {
                                     let axes: Vec<i64> = o.axes.iter().map(|&u| u as i64).collect();
@@ -685,8 +687,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 }
 
                 // Reshape - use newShape from operator options if available
-                "reshape" => match &op.operator {
-                    Operator::Reshape { options, .. } => options.as_ref().map(|o| {
+                "reshape" => match &op {
+                    Operation::Reshape { options, .. } => options.as_ref().map(|o| {
                         o.new_shape
                             .iter()
                             .map(|d| Dimension::from(d.clone()))
@@ -698,8 +700,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Transpose
                 "transpose" => {
                     if input_shapes.len() == 1 {
-                        let perm = match &op.operator {
-                            Operator::Transpose { options, .. } => options
+                        let perm = match &op {
+                            Operation::Transpose { options, .. } => options
                                 .as_ref()
                                 .filter(|o| !o.permutation.is_empty())
                                 .map(|o| o.permutation.clone()),
@@ -728,17 +730,17 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "reducemean" | "reducesum" | "reducemax" | "reducemin" | "reduceproduct"
                 | "reducel1" | "reducel2" | "reducelogsum" | "reducelogsumexp"
                 | "reducesumsquare" => {
-                    let opts = match &op.operator {
-                        Operator::ReduceSum { options, .. }
-                        | Operator::ReduceMean { options, .. }
-                        | Operator::ReduceMax { options, .. }
-                        | Operator::ReduceMin { options, .. }
-                        | Operator::ReduceProduct { options, .. }
-                        | Operator::ReduceL1 { options, .. }
-                        | Operator::ReduceL2 { options, .. }
-                        | Operator::ReduceLogSum { options, .. }
-                        | Operator::ReduceLogSumExp { options, .. }
-                        | Operator::ReduceSumSquare { options, .. } => options.as_ref(),
+                    let opts = match &op {
+                        Operation::ReduceSum { options, .. }
+                        | Operation::ReduceMean { options, .. }
+                        | Operation::ReduceMax { options, .. }
+                        | Operation::ReduceMin { options, .. }
+                        | Operation::ReduceProduct { options, .. }
+                        | Operation::ReduceL1 { options, .. }
+                        | Operation::ReduceL2 { options, .. }
+                        | Operation::ReduceLogSum { options, .. }
+                        | Operation::ReduceLogSumExp { options, .. }
+                        | Operation::ReduceSumSquare { options, .. } => options.as_ref(),
                         _ => None,
                     };
                     let (axes_raw, keep_dimensions) = opts
@@ -769,8 +771,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Gather: forward inference (inputs -> output) or use existing output shape for
                 // back-propagation (output -> indices) when output operand already has a shape.
                 "gather" => {
-                    let axis_from_op = match &op.operator {
-                        Operator::Gather { options, .. } => {
+                    let axis_from_op = match &op {
+                        Operation::Gather { options, .. } => {
                             options.as_ref().map(|o| o.axis as i64).unwrap_or(0)
                         }
                         _ => 0,
@@ -846,8 +848,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 // Slice: use starts/sizes from operator options (WebNN slice has no axes/ends/steps)
                 "slice" => {
                     if let Some(input_shape) = input_shapes.first() {
-                        match &op.operator {
-                            Operator::Slice { options, .. } => options.as_ref().and_then(|opts| {
+                        match &op {
+                            Operation::Slice { options, .. } => options.as_ref().and_then(|opts| {
                                 if opts.starts.is_empty() || opts.sizes.is_empty() {
                                     return None;
                                 }
@@ -880,8 +882,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 }
 
                 // Constant: shape from operator options
-                "constant" => match &op.operator {
-                    Operator::Constant { options, .. } => options
+                "constant" => match &op {
+                    Operation::Constant { options, .. } => options
                         .as_ref()
                         .map(|o| {
                             o.shape
@@ -909,22 +911,22 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             if let Some(output_id) = op.output_operand() {
                 let output_type = match op_type.as_str() {
                     "shape" => Some(DataType::Int64),
-                    "constant" => match &op.operator {
-                        Operator::Constant { options, .. } => options.as_ref().and_then(|o| {
+                    "constant" => match &op {
+                        Operation::Constant { options, .. } => options.as_ref().and_then(|o| {
                             parse_dtype(&serde_json::Value::String(o.data_type.clone()))
                         }),
                         _ => None,
                     },
-                    "cast" => match &op.operator {
-                        Operator::Cast { options, .. } => options
+                    "cast" => match &op {
+                        Operation::Cast { options, .. } => options
                             .as_ref()
                             .and_then(|o| parse_dtype(&serde_json::Value::String(o.to.clone()))),
                         _ => None,
                     },
                     "dequantizelinear" => input_types.get(1).cloned().or(Some(DataType::Float32)),
                     "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
-                    "argmax" | "argmin" => match &op.operator {
-                        Operator::ArgMax { options, .. } | Operator::ArgMin { options, .. } => {
+                    "argmax" | "argmin" => match &op {
+                        Operation::ArgMax { options, .. } | Operation::ArgMin { options, .. } => {
                             options
                                 .as_ref()
                                 .and_then(|o| {
@@ -1254,12 +1256,12 @@ mod tests {
                     &serde_json::Value::Object(attrs),
                 )
                 .expect("leakyRelu options");
-                let operator = Operator::LeakyRelu {
+                let operator = Operation::LeakyRelu {
                     input: 0,
                     options: attributes.as_leaky_relu().cloned(),
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),

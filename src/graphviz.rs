@@ -116,10 +116,9 @@ fn format_shape(shape: &[Dimension]) -> String {
 mod tests {
     use super::graph_to_dot;
     use crate::graph::{
-        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
-        to_dimension_vector,
+        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
     };
-    use crate::operators::Operator;
+    use crate::operators::Operation;
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {
@@ -155,14 +154,11 @@ mod tests {
             ],
             input_operands: vec![0, 1],
             output_operands: vec![2],
-            operations: vec![{
-                let operator = Operator::Add {
-                    a: 0,
-                    b: 1,
-                    options: None,
-                    outputs: vec![2],
-                };
-                Operation { operator }
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),

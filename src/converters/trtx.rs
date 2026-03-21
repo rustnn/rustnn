@@ -28,7 +28,8 @@ use half::f16;
 use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
 use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
-use crate::graph::{DataType, GraphInfo, OperandKind, Operation, get_static_or_max_size};
+use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::operators::Operation;
 use trtx::network::Layer;
 use trtx::{
     ActivationType, DataType as TrtDataType, ElementWiseOperation, PoolingType, ReduceOperation,

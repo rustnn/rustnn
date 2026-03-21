@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, OperandDescriptor, OperandKind};
+use crate::operators::Operation;
 
 #[derive(Debug, Clone)]
 pub struct ContextProperties {
@@ -269,7 +270,7 @@ impl<'a> GraphValidator<'a> {
 
     fn validate_quantize_like(
         &self,
-        operation: &crate::graph::Operation,
+        operation: &Operation,
         is_quantize: bool,
     ) -> Result<(), GraphError> {
         let op_name = operation.display_name();
@@ -464,8 +465,8 @@ impl<'a> GraphValidator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ConstantData, GraphInfo, Operand, Operation};
-    use crate::operators::Operator;
+    use crate::graph::{ConstantData, GraphInfo, Operand};
+    use crate::operators::Operation;
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)
@@ -537,14 +538,14 @@ mod tests {
         };
 
         let operator = match op_type {
-            "quantizeLinear" => Operator::QuantizeLinear {
+            "quantizeLinear" => Operation::QuantizeLinear {
                 input: 0,
                 scale: 1,
                 zero_point: Some(2),
                 options: None,
                 outputs: vec![3],
             },
-            "dequantizeLinear" => Operator::DequantizeLinear {
+            "dequantizeLinear" => Operation::DequantizeLinear {
                 input: 0,
                 scale: 1,
                 zero_point: Some(2),
@@ -553,7 +554,7 @@ mod tests {
             },
             _ => panic!("unexpected op_type in build_quantize_graph: {op_type}"),
         };
-        let operation = Operation { operator };
+        let operation = operator;
 
         let mut constants = HashMap::new();
         constants.insert(1, constant_data_for(&scale_descriptor));
@@ -608,12 +609,12 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator = Operator::Relu {
+                let operator = Operation::Relu {
                     input: 0,
                     options: None,
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -761,21 +762,17 @@ mod tests {
             name: Some("output".to_string()),
         };
 
-        let relu = Operation {
-            operator: Operator::Relu {
-                input: 0,
-                options: None,
-                outputs: vec![3],
-            },
+        let relu = Operation::Relu {
+            input: 0,
+            options: None,
+            outputs: vec![3],
         };
-        let quantize = Operation {
-            operator: Operator::QuantizeLinear {
-                input: 3,
-                scale: 1,
-                zero_point: Some(2),
-                options: None,
-                outputs: vec![4],
-            },
+        let quantize = Operation::QuantizeLinear {
+            input: 3,
+            scale: 1,
+            zero_point: Some(2),
+            options: None,
+            outputs: vec![4],
         };
 
         let mut constants = HashMap::new();
@@ -845,12 +842,12 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator = Operator::Relu {
+                let operator = Operation::Relu {
                     input: 0,
                     options: None,
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -888,12 +885,12 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator = Operator::Relu {
+                let operator = Operation::Relu {
                     input: 0,
                     options: None,
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -939,13 +936,11 @@ mod tests {
             ],
             input_operands: vec![0, 1],
             output_operands: vec![2],
-            operations: vec![Operation {
-                operator: Operator::Add {
-                    a: 0,
-                    b: 1,
-                    options: None,
-                    outputs: vec![2],
-                },
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -992,19 +987,15 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1, 2],
             operations: vec![
-                Operation {
-                    operator: Operator::Relu {
-                        input: 0,
-                        options: None,
-                        outputs: vec![1],
-                    },
+                Operation::Relu {
+                    input: 0,
+                    options: None,
+                    outputs: vec![1],
                 },
-                Operation {
-                    operator: Operator::Sigmoid {
-                        input: 0,
-                        options: None,
-                        outputs: vec![2],
-                    },
+                Operation::Sigmoid {
+                    input: 0,
+                    options: None,
+                    outputs: vec![2],
                 },
             ],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -1051,13 +1042,11 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![2],
-            operations: vec![Operation {
-                operator: Operator::Add {
-                    a: 0,
-                    b: 1,
-                    options: None,
-                    outputs: vec![2],
-                },
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(), // Missing constant data
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1114,13 +1103,11 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![2],
-            operations: vec![Operation {
-                operator: Operator::Add {
-                    a: 0,
-                    b: 1,
-                    options: None,
-                    outputs: vec![2],
-                },
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: constants,
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1163,12 +1150,12 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator = Operator::Relu {
+                let operator = Operation::Relu {
                     input: 0,
                     options: None,
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1205,13 +1192,11 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![Operation {
-                operator: Operator::Relu {
-                    input: 99,
-                    options: None,
-                    outputs: vec![1],
-                }, // Invalid operand ID
-            }],
+            operations: vec![Operation::Relu {
+                input: 99,
+                options: None,
+                outputs: vec![1],
+            }], // Invalid operand ID
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
@@ -1248,20 +1233,16 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![
-                Operation {
-                    operator: Operator::Relu {
-                        input: 0,
-                        options: None,
-                        outputs: vec![1],
-                    },
+                Operation::Relu {
+                    input: 0,
+                    options: None,
+                    outputs: vec![1],
                 },
-                Operation {
-                    operator: Operator::Sigmoid {
-                        input: 0,
-                        options: None,
-                        outputs: vec![1],
-                    }, // Same output produced twice
-                },
+                Operation::Sigmoid {
+                    input: 0,
+                    options: None,
+                    outputs: vec![1],
+                }, // Same output produced twice
             ],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1307,12 +1288,10 @@ mod tests {
             ],
             input_operands: vec![0, 1],
             output_operands: vec![2],
-            operations: vec![Operation {
-                operator: Operator::Relu {
-                    input: 0,
-                    options: None,
-                    outputs: vec![2],
-                },
+            operations: vec![Operation::Relu {
+                input: 0,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1358,12 +1337,12 @@ mod tests {
             input_operands: vec![0],
             output_operands: vec![1],
             operations: vec![{
-                let operator = Operator::Relu {
+                let operator = Operation::Relu {
                     input: 0,
                     options: None,
                     outputs: vec![1],
                 };
-                Operation { operator }
+                operator
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),

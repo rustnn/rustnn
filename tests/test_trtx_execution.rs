@@ -10,10 +10,10 @@
 mod tests {
     use rustnn::converters::{GraphConverter, TrtxConverter};
     use rustnn::graph::{
-        ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+        ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
     };
     use rustnn::operator_options::{MLConv2dOptions, OperatorOptions};
-    use rustnn::operators::Operator;
+    use rustnn::operators::Operation;
     use std::collections::HashMap;
     use trtx::cuda::DeviceBuffer;
     use trtx::{Logger, Runtime};
@@ -47,7 +47,7 @@ mod tests {
         } else {
             Vec::new()
         };
-        let operator = Operator::from_operator_options(
+        let operator = Operation::from_operator_options(
             webnn_op_type,
             input_operands,
             &opts,
@@ -56,7 +56,7 @@ mod tests {
         .unwrap_or_else(|| {
             panic!("trtx_operation: unsupported op {webnn_op_type} for operands {input_operands:?}")
         });
-        Operation { operator }
+        operator
     }
 
     /// Helper to create a simple unary operation graph
@@ -928,7 +928,7 @@ mod tests {
         let input_b_size = input_b.len() * std::mem::size_of::<f32>();
 
         // Calculate output size based on operation
-        let output_size = if graph.operations[0].operator.op_type() == "matmul" {
+        let output_size = if graph.operations[0].op_type() == "matmul" {
             // For matrix multiply, output size depends on input shapes
             let a_shape = &graph.operands[0].descriptor.shape;
             let b_shape = &graph.operands[1].descriptor.shape;
@@ -4939,7 +4939,7 @@ mod tests {
         );
 
         // Add groups attribute
-        if let Operator::Conv2d { options, .. } = &mut graph.operations[0].operator {
+        if let Operation::Conv2d { options, .. } = &mut graph.operations[0] {
             let opts = options.get_or_insert_with(MLConv2dOptions::default);
             opts.groups = 4;
         } else {
