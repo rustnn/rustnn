@@ -54,7 +54,7 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
         let mut label_lines = vec![format!("{} (#{})", operation.display_name(), idx)];
         if let Some(label) = &operation.label
             && !label.is_empty()
-            && label != &operation.op_type()
+            && label.as_str() != operation.op_type()
         {
             label_lines.push(label.clone());
         }

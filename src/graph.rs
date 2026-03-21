@@ -252,9 +252,9 @@ impl<'de> Deserialize<'de> for Operation {
 }
 
 impl Operation {
-    /// Legacy op_type string (e.g. `"conv2d"`). Derived from `operator`.
-    pub fn op_type(&self) -> String {
-        self.operator.to_legacy().0
+    /// WebNN operation type string (e.g. `"conv2d"`). Same as JSON `"type"`; see [`Operator::op_type`].
+    pub fn op_type(&self) -> &'static str {
+        self.operator.op_type()
     }
 
     /// Legacy input operand indices. Derived from `operator`.
@@ -293,7 +293,9 @@ impl Operation {
     }
 
     pub fn display_name(&self) -> String {
-        self.label.clone().unwrap_or_else(|| self.op_type())
+        self.label
+            .clone()
+            .unwrap_or_else(|| self.op_type().to_string())
     }
 }
 

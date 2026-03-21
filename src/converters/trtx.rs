@@ -483,7 +483,7 @@ impl TrtxConverter {
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let op_type = operation.op_type().as_str();
+        let op_type = operation.op_type();
 
         match op_type {
             // Binary element-wise operations
@@ -1066,7 +1066,12 @@ impl TrtxConverter {
 
         // Ensure broadcast compatibility (this may reshape tensors if needed)
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         let layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
@@ -1113,7 +1118,12 @@ impl TrtxConverter {
 
         // Ensure broadcast compatibility
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         // Comparison operation returns BOOL
         let layer = network
@@ -1163,7 +1173,12 @@ impl TrtxConverter {
 
         // Ensure broadcast compatibility BEFORE casting to BOOL
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         // Cast Float32 inputs to BOOL
         let bool_input0 = Self::cast_to_bool(network, &bc_input0)?;
@@ -5014,7 +5029,12 @@ impl TrtxConverter {
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         // greaterOrEqual = greater OR equal
         let greater_layer = network
@@ -5090,7 +5110,12 @@ impl TrtxConverter {
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         // lesserOrEqual = lesser OR equal
         let lesser_layer = network
@@ -5166,7 +5191,12 @@ impl TrtxConverter {
             })?;
 
         let (bc_input0, bc_input1) =
-            Self::ensure_broadcast_compatible(network, input0, input1, &operation.op_type())?;
+            Self::ensure_broadcast_compatible(
+                network,
+                input0,
+                input1,
+                operation.op_type(),
+            )?;
 
         // notEqual = NOT equal
         let equal_layer = network

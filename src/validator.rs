@@ -227,12 +227,12 @@ impl<'a> GraphValidator<'a> {
                     });
                 }
                 self.operand_to_producer
-                    .insert(output_id, operation.op_type().clone());
+                    .insert(output_id, operation.op_type().to_string());
                 self.processed_operands.insert(output_id);
             }
 
             // Operation-specific validation
-            match operation.op_type().as_str() {
+            match operation.op_type() {
                 "quantizeLinear" => self.validate_quantize_like(operation, true)?,
                 "dequantizeLinear" => self.validate_quantize_like(operation, false)?,
                 _ => {}

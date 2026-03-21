@@ -907,7 +907,7 @@ impl CoremlMlProgramConverter {
             return self.convert_split_operation(graph, op);
         }
 
-        let mil_op_type = self.get_mil_op_type(&op.op_type())?;
+        let mil_op_type = self.get_mil_op_type(op.op_type())?;
 
         // Get input operand names, using overrides if available
         let input_names = Self::input_names_for_operation(graph, op, operand_name_overrides);
@@ -2835,7 +2835,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         op,
                         &input_names,
                         vec![bool_output_type],
-                        self.get_mil_op_type(&op.op_type())?,
+                        self.get_mil_op_type(op.op_type())?,
                     )?;
                     main_block.operations.push(mil_op);
                 }

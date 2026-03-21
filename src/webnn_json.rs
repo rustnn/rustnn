@@ -187,7 +187,7 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
 
         nodes.push(Node {
             id,
-            op: operation.op_type().clone(),
+            op: operation.op_type().to_string(),
             inputs: input_names,
             options,
             outputs: output_names,
