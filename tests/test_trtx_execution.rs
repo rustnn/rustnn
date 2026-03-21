@@ -12,9 +12,46 @@ mod tests {
     use rustnn::graph::{
         ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
     };
+    use rustnn::operator_options::{MLConv2dOptions, OperatorOptions};
+    use rustnn::operators::Operator;
     use std::collections::HashMap;
     use trtx::cuda::DeviceBuffer;
     use trtx::{Logger, Runtime};
+
+    /// Build [`Operation`] from WebNN op name, operand wiring, JSON attributes, and optional options label.
+    fn trtx_operation(
+        webnn_op_type: &str,
+        input_operands: &[u32],
+        output_operand: Option<u32>,
+        output_operands: Vec<u32>,
+        attributes: serde_json::Value,
+        label: Option<String>,
+    ) -> Operation {
+        let mut attr_obj = match attributes {
+            serde_json::Value::Object(m) => m,
+            serde_json::Value::Null => serde_json::Map::new(),
+            _ => panic!("trtx_operation: attributes must be Object or Null"),
+        };
+        if let Some(l) = label {
+            attr_obj.insert("label".to_string(), serde_json::Value::String(l));
+        }
+        let opts = OperatorOptions::from_json_with_op_type(
+            webnn_op_type,
+            &serde_json::Value::Object(attr_obj),
+        )
+        .unwrap_or_default();
+        let operator = Operator::from_operator_options(webnn_op_type, input_operands, &opts)
+            .unwrap_or_else(|| {
+                panic!(
+                    "trtx_operation: unsupported op {webnn_op_type} for operands {input_operands:?}"
+                )
+            });
+        Operation {
+            operator,
+            output_operand,
+            output_operands,
+        }
+    }
 
     /// Helper to create a simple unary operation graph
     fn create_unary_graph(op_type: &str, input_shape: Vec<u32>, data_type: DataType) -> GraphInfo {
@@ -27,14 +64,14 @@ mod tests {
         let output_desc = input_desc.clone();
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -75,14 +112,14 @@ mod tests {
         };
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -114,14 +151,14 @@ mod tests {
         let output_desc = input_desc.clone();
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0, 1], // Two inputs
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0, 1], // Two inputs
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -823,14 +860,14 @@ mod tests {
         };
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "matmul".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("matmul_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "matmul",
+                &[0, 1],
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("matmul_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -885,7 +922,7 @@ mod tests {
         let input_b_size = input_b.len() * std::mem::size_of::<f32>();
 
         // Calculate output size based on operation
-        let output_size = if graph.operations[0].op_type == "matmul" {
+        let output_size = if graph.operations[0].operator.op_type() == "matmul" {
             // For matrix multiply, output size depends on input shapes
             let a_shape = &graph.operands[0].descriptor.shape;
             let b_shape = &graph.operands[1].descriptor.shape;
@@ -1036,14 +1073,14 @@ mod tests {
         attributes.insert("bTranspose".to_string(), serde_json::json!(b_transpose));
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "gemm".to_string(),
-                input_operands: vec![0, 1, 2],
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("gemm_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "gemm",
+                &[0, 1, 2],
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("gemm_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -1347,14 +1384,14 @@ mod tests {
         let output_operand_id = operands.len() as u32 - 1;
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "conv2d".to_string(),
-                input_operands,
-                output_operand: Some(output_operand_id),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("conv2d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "conv2d",
+                &input_operands,
+                Some(output_operand_id),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("conv2d_op".to_string()),
+            )],
             operands,
             input_operands: vec![0],
             output_operands: vec![output_operand_id],
@@ -1486,14 +1523,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "prelu".to_string(),
-                input_operands: vec![0, 1], // input and slope
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("prelu_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "prelu",
+                &[0, 1], // input and slope
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("prelu_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -1602,14 +1639,14 @@ mod tests {
         };
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "globalAveragePool".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("global_avg_pool_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "globalAveragePool",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("global_avg_pool_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -1657,14 +1694,14 @@ mod tests {
         };
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "globalMaxPool".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("global_max_pool_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "globalMaxPool",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("global_max_pool_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -1729,14 +1766,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2049,14 +2086,14 @@ mod tests {
         attributes.insert("epsilon".to_string(), serde_json::Value::from(0.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "batchNormalization".to_string(),
-                input_operands: vec![0, 1, 2], // input, mean, variance
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("batch_norm_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "batchNormalization",
+                &[0, 1, 2], // input, mean, variance
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("batch_norm_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2126,14 +2163,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "instanceNormalization".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("instance_norm_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "instanceNormalization",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("instance_norm_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2211,14 +2248,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "layerNormalization".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("layer_norm_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "layerNormalization",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("layer_norm_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2313,14 +2350,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "slice".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("slice_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "slice",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("slice_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2405,14 +2442,14 @@ mod tests {
         };
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "squeeze".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(serde_json::Map::new()),
-                label: Some("squeeze_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "squeeze",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(serde_json::Map::new()),
+                Some("squeeze_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2472,14 +2509,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "unsqueeze".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("unsqueeze_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "unsqueeze",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("unsqueeze_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2545,14 +2582,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "expand".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("expand_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "expand",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("expand_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2612,14 +2649,14 @@ mod tests {
         };
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(serde_json::Map::new()),
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0, 1],
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Object(serde_json::Map::new()),
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2831,14 +2868,14 @@ mod tests {
         attributes.insert("axis".to_string(), serde_json::Value::from(axis));
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "gather".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("gather_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "gather",
+                &[0, 1],
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("gather_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2911,14 +2948,14 @@ mod tests {
         );
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: op_type.to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some(format!("{}_op", op_type)),
-            }],
+            operations: vec![trtx_operation(
+                op_type,
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some(format!("{}_op", op_type)),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -2988,14 +3025,14 @@ mod tests {
         attributes.insert("maxValue".to_string(), serde_json::Value::from(3.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "clamp".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("clamp_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "clamp",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("clamp_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3045,14 +3082,14 @@ mod tests {
         attributes.insert("maxValue".to_string(), serde_json::Value::from(3.5));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "clamp".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("clamp_4d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "clamp",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("clamp_4d_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3096,14 +3133,14 @@ mod tests {
         // False values: [1,2,3,4]
         // Expected: [10,2,30,4]
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "where".to_string(),
-                input_operands: vec![0, 1, 2],
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(serde_json::Map::new()),
-                label: Some("where_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "where",
+                &[0, 1, 2],
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Object(serde_json::Map::new()),
+                Some("where_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3171,14 +3208,14 @@ mod tests {
         attributes.insert("beta".to_string(), serde_json::Value::from(1.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "linear".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("linear_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "linear",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("linear_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3226,14 +3263,14 @@ mod tests {
         attributes.insert("beta".to_string(), serde_json::Value::from(0.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "linear".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("linear_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "linear",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("linear_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3279,14 +3316,14 @@ mod tests {
         attributes.insert("beta".to_string(), serde_json::Value::from(5.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "linear".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("linear_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "linear",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("linear_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3329,14 +3366,14 @@ mod tests {
         let attributes = serde_json::Map::new(); // No attributes, use defaults
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "linear".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("linear_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "linear",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("linear_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3385,14 +3422,14 @@ mod tests {
         attributes.insert("beta".to_string(), serde_json::Value::from(1.0));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "linear".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("linear_4d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "linear",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("linear_4d_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3446,14 +3483,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "pad".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("pad_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "pad",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("pad_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3497,14 +3534,14 @@ mod tests {
         // NOTE: TensorRT requires Int32 indices, so we use Int32 and convert from f32
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "gatherND".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("gatherND_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "gatherND",
+                &[0, 1],
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("gatherND_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3570,14 +3607,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "resample2d".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("resample2d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "resample2d",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("resample2d_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3672,14 +3709,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "convTranspose2d".to_string(),
-                input_operands: vec![0, 1, 2],
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("convTranspose2d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "convTranspose2d",
+                &[0, 1, 2],
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("convTranspose2d_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3752,14 +3789,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "scatterElements".to_string(),
-                input_operands: vec![0, 1, 2],
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("scatterElements_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "scatterElements",
+                &[0, 1, 2],
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("scatterElements_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3825,14 +3862,14 @@ mod tests {
         // NOTE: TensorRT requires Int32 indices
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "scatterND".to_string(),
-                input_operands: vec![0, 1, 2],
-                output_operand: Some(3),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("scatterND_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "scatterND",
+                &[0, 1, 2],
+                Some(3),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("scatterND_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -3898,30 +3935,30 @@ mod tests {
 
         let graph = GraphInfo {
             operations: vec![
-                Operation {
-                    op_type: "quantizeLinear".to_string(),
-                    input_operands: vec![0, 1],
-                    output_operand: Some(2),
-                    output_operands: Vec::new(),
-                    attributes: serde_json::Value::Null,
-                    label: Some("quantize".to_string()),
-                },
-                Operation {
-                    op_type: "dequantizeLinear".to_string(),
-                    input_operands: vec![2, 3],
-                    output_operand: Some(4),
-                    output_operands: Vec::new(),
-                    attributes: serde_json::Value::Null,
-                    label: Some("dequantize".to_string()),
-                },
-                Operation {
-                    op_type: "add".to_string(),
-                    input_operands: vec![4, 5],
-                    output_operand: Some(6),
-                    output_operands: Vec::new(),
-                    attributes: serde_json::Value::Null,
-                    label: Some("add_one".to_string()),
-                },
+                trtx_operation(
+                    "quantizeLinear",
+                    &[0, 1],
+                    Some(2),
+                    Vec::new(),
+                    serde_json::Value::Null,
+                    Some("quantize".to_string()),
+                ),
+                trtx_operation(
+                    "dequantizeLinear",
+                    &[2, 3],
+                    Some(4),
+                    Vec::new(),
+                    serde_json::Value::Null,
+                    Some("dequantize".to_string()),
+                ),
+                trtx_operation(
+                    "add",
+                    &[4, 5],
+                    Some(6),
+                    Vec::new(),
+                    serde_json::Value::Null,
+                    Some("add_one".to_string()),
+                ),
             ],
             operands: vec![
                 Operand {
@@ -4014,14 +4051,14 @@ mod tests {
         // Output: [false, true, false, true] (as 0.0/1.0)
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "isNaN".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("isNaN_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "isNaN",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("isNaN_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4063,14 +4100,14 @@ mod tests {
         // Output: [false, true, true, false]
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "isInfinite".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("isInfinite_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "isInfinite",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("isInfinite_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4111,14 +4148,14 @@ mod tests {
         // 0.5 rounds to 0, 1.5 rounds to 2, 2.5 rounds to 2, 3.5 rounds to 4
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "roundEven".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Null,
-                label: Some("roundEven_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "roundEven",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Null,
+                Some("roundEven_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4167,14 +4204,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "gatherElements".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("gatherElements_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "gatherElements",
+                &[0, 1],
+                Some(2),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("gatherElements_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4230,14 +4267,14 @@ mod tests {
         attributes.insert("windowDimensions".to_string(), serde_json::json!([2, 2]));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "l2Pool2d".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("l2Pool2d_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "l2Pool2d",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("l2Pool2d_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4281,14 +4318,14 @@ mod tests {
         attributes.insert("axes".to_string(), serde_json::json!([0]));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "reverse".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("reverse_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "reverse",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("reverse_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4333,14 +4370,14 @@ mod tests {
         );
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "cumulativeSum".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("cumulativeSum_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "cumulativeSum",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("cumulativeSum_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4383,14 +4420,14 @@ mod tests {
         attributes.insert("upper".to_string(), serde_json::Value::Bool(true));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "triangular".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("triangular_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "triangular",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("triangular_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4440,14 +4477,14 @@ mod tests {
         attributes.insert("repetitions".to_string(), serde_json::json!([3]));
 
         let graph = GraphInfo {
-            operations: vec![Operation {
-                op_type: "tile".to_string(),
-                input_operands: vec![0],
-                output_operand: Some(1),
-                output_operands: Vec::new(),
-                attributes: serde_json::Value::Object(attributes),
-                label: Some("tile_op".to_string()),
-            }],
+            operations: vec![trtx_operation(
+                "tile",
+                &[0],
+                Some(1),
+                Vec::new(),
+                serde_json::Value::Object(attributes),
+                Some("tile_op".to_string()),
+            )],
             operands: vec![
                 Operand {
                     kind: OperandKind::Input,
@@ -4606,14 +4643,14 @@ mod tests {
         });
 
         GraphInfo {
-            operations: vec![Operation {
-                op_type: "conv2d".to_string(),
-                input_operands,
-                output_operand: Some(output_operand_id),
-                output_operands: Vec::new(),
+            operations: vec![trtx_operation(
+                "conv2d",
+                &input_operands,
+                Some(output_operand_id),
+                Vec::new(),
                 attributes,
-                label: Some("conv2d".to_string()),
-            }],
+                Some("conv2d".to_string()),
+            )],
             operands,
             input_operands: vec![0],
             output_operands: vec![output_operand_id],
@@ -4896,7 +4933,12 @@ mod tests {
         );
 
         // Add groups attribute
-        graph.operations[0].attributes["groups"] = serde_json::json!(4);
+        if let Operator::Conv2d { options, .. } = &mut graph.operations[0].operator {
+            let opts = options.get_or_insert_with(MLConv2dOptions::default);
+            opts.groups = 4;
+        } else {
+            panic!("expected conv2d operation");
+        }
 
         // Input: 4 channels, each filled with its channel number
         #[rustfmt::skip]

@@ -391,7 +391,6 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             operator,
             output_operand: output_operand_ids.first().copied(),
             output_operands: output_operand_ids,
-            label: None,
         });
     }
 
@@ -1262,7 +1261,6 @@ mod tests {
                     operator,
                     output_operand: None,
                     output_operands: vec![1],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),

@@ -1055,7 +1055,7 @@ impl OnnxConverter {
                 context,
                 idx,
                 op.op_type(),
-                op.label,
+                op.label(),
                 op.input_operands(),
                 op.output_operands
             );
@@ -2920,9 +2920,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         "[DEBUG] Missing operand id {} name '{}' for op {} ({}) at index {}. Inputs: {:?}",
                         input_id,
                         input_name,
-                        op.label
-                            .clone()
-                            .unwrap_or_else(|| op.op_type().to_string()),
+                        op.display_name(),
                         op.op_type(),
                         idx,
                         op.input_operands()
@@ -2933,10 +2931,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         graph.operands.len().saturating_sub(1)
                     );
                     debug_print!(
-                        "[DEBUG] Failing op detail: idx={} type={} label={:?} inputs={:?}",
+                        "[DEBUG] Failing op detail: idx={} type={} label={} inputs={:?}",
                         idx,
                         op.op_type(),
-                        op.label,
+                        op.label(),
                         op.input_operands()
                     );
                     return Err(Self::invalid_operand(
@@ -3156,10 +3154,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 continue;
             }
 
-            let op_name = op
-                .label
-                .clone()
-                .unwrap_or_else(|| format!("{}_{}", op.op_type(), idx));
+            let op_name = {
+                let l = op.label();
+                if !l.is_empty() {
+                    l.to_string()
+                } else {
+                    format!("{}_{}", op.op_type(), idx)
+                }
+            };
 
             if matches!(
                 &op.operator,
@@ -9918,7 +9920,6 @@ mod tests {
             operator,
             output_operand: Some(3),
             output_operands: vec![],
-            label: None,
         });
 
         let graph = GraphInfo {
@@ -10010,7 +10011,6 @@ mod tests {
             operator,
             output_operand: Some(3),
             output_operands: vec![],
-            label: None,
         });
 
         let graph = GraphInfo {
@@ -10100,7 +10100,6 @@ mod tests {
             operator,
             output_operand: Some(3),
             output_operands: vec![],
-            label: None,
         });
 
         let graph = GraphInfo {
@@ -10225,7 +10224,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![],
-            label: None,
         });
 
         let graph = GraphInfo {
@@ -10290,7 +10288,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -10348,7 +10345,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![1],
-            label: None,
         });
 
         let graph = GraphInfo {
@@ -10434,7 +10430,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {
@@ -10574,7 +10569,6 @@ mod tests {
             operator,
             output_operand: Some(6),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {
@@ -10683,7 +10677,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {
@@ -10760,7 +10753,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {
@@ -10877,7 +10869,6 @@ mod tests {
                 },
                 output_operand: Some(1),
                 output_operands: vec![],
-                label: None,
             },
             Operation {
                 operator: Operator::Unsqueeze {
@@ -10886,7 +10877,6 @@ mod tests {
                 },
                 output_operand: Some(2),
                 output_operands: vec![],
-                label: None,
             },
             Operation {
                 operator: Operator::Expand {
@@ -10895,7 +10885,6 @@ mod tests {
                 },
                 output_operand: Some(3),
                 output_operands: vec![],
-                label: None,
             },
         ];
 
@@ -11029,7 +11018,6 @@ mod tests {
                 },
                 output_operand: Some(3),
                 output_operands: vec![],
-                label: None,
             },
             Operation {
                 operator: Operator::Expand {
@@ -11038,7 +11026,6 @@ mod tests {
                 },
                 output_operand: Some(4),
                 output_operands: vec![],
-                label: None,
             },
         ];
 
@@ -11142,7 +11129,6 @@ mod tests {
             operator,
             output_operand: Some(3),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {
@@ -11221,7 +11207,6 @@ mod tests {
             operator,
             output_operand: Some(1),
             output_operands: vec![],
-            label: None,
         }];
 
         let graph = GraphInfo {

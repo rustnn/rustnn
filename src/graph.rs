@@ -175,16 +175,13 @@ pub struct Operand {
     pub name: Option<String>,
 }
 
-/// Single source of truth: the operator enum. Output and label are stored here;
+/// Single source of truth: the operator enum (including options `label`). Output ids here;
 /// type, inputOperands, and attributes are derived via to_legacy() for JSON and accessors.
 #[derive(Debug, Clone)]
 pub struct Operation {
     pub operator: Operator,
-    // #[serde(skip_serializing_if = "Option::is_none")]
     pub output_operand: Option<u32>,
-    // #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub output_operands: Vec<u32>,
-    pub label: Option<String>,
 }
 
 impl Serialize for Operation {
@@ -194,13 +191,12 @@ impl Serialize for Operation {
     {
         use serde::ser::SerializeStruct;
         let (op_type, input_operands, attributes) = self.operator.to_legacy();
-        let mut st = serializer.serialize_struct("Operation", 6)?;
+        let mut st = serializer.serialize_struct("Operation", 5)?;
         st.serialize_field("type", &op_type)?;
         st.serialize_field("input_operands", &input_operands)?;
         st.serialize_field("attributes", &attributes)?;
         st.serialize_field("output_operand", &self.output_operand)?;
         st.serialize_field("output_operands", &self.output_operands)?;
-        st.serialize_field("label", &self.label)?;
         st.end()
     }
 }
@@ -226,17 +222,18 @@ impl<'de> Deserialize<'de> for Operation {
             label: Option<String>,
         }
         let h = OperationHelper::deserialize(deserializer)?;
-        let attributes = if h.attributes.is_null() {
+        let attributes_value = merge_top_level_label_into_attributes(h.attributes, h.label);
+        let attributes = if attributes_value.is_null() {
             OperatorOptions::default()
-        } else if let Some(obj) = h.attributes.as_object() {
+        } else if let Some(obj) = attributes_value.as_object() {
             if obj.is_empty() {
                 OperatorOptions::default()
             } else {
-                OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes)
+                OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value)
                     .unwrap_or_default()
             }
         } else {
-            OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes).unwrap_or_default()
+            OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value).unwrap_or_default()
         };
         let operator = Operator::from_operator_options(&h.op_type, &h.input_operands, &attributes)
             .ok_or_else(|| {
@@ -246,12 +243,41 @@ impl<'de> Deserialize<'de> for Operation {
             operator,
             output_operand: h.output_operand,
             output_operands: h.output_operands,
-            label: h.label,
         })
     }
 }
 
+/// Legacy graph JSON used a top-level `"label"` on each operation; WebNN places `label` on options.
+/// When deserializing, merge top-level label into `attributes` if `attributes.label` is absent or empty.
+fn merge_top_level_label_into_attributes(
+    mut attributes: serde_json::Value,
+    top_level_label: Option<String>,
+) -> serde_json::Value {
+    let Some(s) = top_level_label.filter(|x| !x.is_empty()) else {
+        return attributes;
+    };
+    if attributes.is_null() {
+        attributes = serde_json::json!({});
+    }
+    if let Some(obj) = attributes.as_object_mut() {
+        let has_nonempty = obj
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(|t| !t.is_empty())
+            .unwrap_or(false);
+        if !has_nonempty {
+            obj.insert("label".to_string(), serde_json::Value::String(s));
+        }
+    }
+    attributes
+}
+
 impl Operation {
+    /// WebNN `label` from typed operator options (empty string if unset).
+    pub fn label(&self) -> &str {
+        self.operator.label()
+    }
+
     /// WebNN operation type string (e.g. `"conv2d"`). Same as JSON `"type"`; see [`Operator::op_type`].
     pub fn op_type(&self) -> &'static str {
         self.operator.op_type()
@@ -293,9 +319,12 @@ impl Operation {
     }
 
     pub fn display_name(&self) -> String {
-        self.label
-            .clone()
-            .unwrap_or_else(|| self.op_type().to_string())
+        let l = self.label();
+        if !l.is_empty() {
+            l.to_string()
+        } else {
+            self.op_type().to_string()
+        }
     }
 }
 

@@ -3668,7 +3668,6 @@ mod tests {
             operator,
             output_operand,
             output_operands,
-            label: None,
         }
     }
     #[cfg(feature = "dynamic-inputs")]

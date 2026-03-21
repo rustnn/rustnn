@@ -972,13 +972,16 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             "arg_min" => "argMin",
             _ => op_type.as_str(),
         };
+        attributes.insert(
+            "label".to_string(),
+            serde_json::Value::String(format!("{}_op", op.name)),
+        );
         let operator_options = operator_options_from_wpt_attrs(webnn_op_type, attributes);
         let operator = operator_from_wpt_parts(webnn_op_type, &input_ids, &operator_options)?;
         operations.push(Operation {
             operator,
             output_operand,
             output_operands,
-            label: Some(format!("{}_op", op.name)),
         });
     }
 

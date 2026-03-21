@@ -804,6 +804,120 @@ impl Operator {
         }
     }
 
+    /// WebNN `label` from the typed options for this operator (empty string if unset).
+    pub fn label(&self) -> &str {
+        macro_rules! opt_label {
+            ($opt:expr) => {
+                $opt.as_ref().map(|o| o.label.as_str()).unwrap_or("")
+            };
+        }
+        match self {
+            Operator::Add { options, .. }
+            | Operator::Sub { options, .. }
+            | Operator::Mul { options, .. }
+            | Operator::Div { options, .. }
+            | Operator::Pow { options, .. }
+            | Operator::Max { options, .. }
+            | Operator::Min { options, .. }
+            | Operator::Matmul { options, .. }
+            | Operator::Equal { options, .. }
+            | Operator::NotEqual { options, .. }
+            | Operator::Greater { options, .. }
+            | Operator::GreaterOrEqual { options, .. }
+            | Operator::Lesser { options, .. }
+            | Operator::LesserOrEqual { options, .. }
+            | Operator::Abs { options, .. }
+            | Operator::Ceil { options, .. }
+            | Operator::Cos { options, .. }
+            | Operator::Exp { options, .. }
+            | Operator::Floor { options, .. }
+            | Operator::Log { options, .. }
+            | Operator::Neg { options, .. }
+            | Operator::Relu { options, .. }
+            | Operator::Sigmoid { options, .. }
+            | Operator::Sin { options, .. }
+            | Operator::Sqrt { options, .. }
+            | Operator::Tan { options, .. }
+            | Operator::Tanh { options, .. }
+            | Operator::Erf { options, .. }
+            | Operator::Reciprocal { options, .. }
+            | Operator::Sign { options, .. }
+            | Operator::LogicalAnd { options, .. }
+            | Operator::LogicalOr { options, .. }
+            | Operator::LogicalNot { options, .. }
+            | Operator::LogicalXor { options, .. }
+            | Operator::Where { options, .. }
+            | Operator::Identity { options, .. }
+            | Operator::Prelu { options, .. }
+            | Operator::QuantizeLinear { options, .. }
+            | Operator::DequantizeLinear { options, .. }
+            | Operator::Softplus { options, .. }
+            | Operator::Softsign { options, .. }
+            | Operator::Gelu { options, .. }
+            | Operator::Shape { options, .. }
+            | Operator::ScatterND { options, .. }
+            | Operator::GatherND { options, .. }
+            | Operator::IsNaN { options, .. }
+            | Operator::IsInfinite { options, .. }
+            | Operator::RoundEven { options, .. } => opt_label!(options),
+
+            Operator::ArgMin { options, .. } | Operator::ArgMax { options, .. } => opt_label!(options),
+
+            Operator::BatchNormalization { options, .. } => opt_label!(options),
+            Operator::Cast { options, .. } => opt_label!(options),
+            Operator::Clamp { options, .. } => opt_label!(options),
+            Operator::Constant { options } => opt_label!(options),
+            Operator::Conv2d { options, .. } => opt_label!(options),
+            Operator::ConvTranspose2d { options, .. } => opt_label!(options),
+            Operator::Concat { options, .. } => opt_label!(options),
+            Operator::CumulativeSum { options, .. } => opt_label!(options),
+            Operator::Expand { options, .. } => opt_label!(options),
+            Operator::Elu { options, .. } => opt_label!(options),
+            Operator::Gather { options, .. } | Operator::GatherElements { options, .. } => {
+                opt_label!(options)
+            }
+            Operator::Gemm { options, .. } => opt_label!(options),
+            Operator::Gru { options, .. } => opt_label!(options),
+            Operator::GruCell { options, .. } => opt_label!(options),
+            Operator::HardSigmoid { options, .. } => opt_label!(options),
+            Operator::HardSwish { options, .. } => opt_label!(options),
+            Operator::InstanceNormalization { options, .. } => opt_label!(options),
+            Operator::LayerNormalization { options, .. } => opt_label!(options),
+            Operator::LeakyRelu { options, .. } => opt_label!(options),
+            Operator::Linear { options, .. } => opt_label!(options),
+            Operator::Lstm { options, .. } => opt_label!(options),
+            Operator::LstmCell { options, .. } => opt_label!(options),
+            Operator::Pad { options, .. } => opt_label!(options),
+            Operator::AveragePool2d { options, .. }
+            | Operator::MaxPool2d { options, .. }
+            | Operator::L2Pool2d { options, .. }
+            | Operator::GlobalAveragePool { options, .. }
+            | Operator::GlobalMaxPool { options, .. } => opt_label!(options),
+            Operator::ReduceSum { options, .. }
+            | Operator::ReduceMean { options, .. }
+            | Operator::ReduceMax { options, .. }
+            | Operator::ReduceMin { options, .. }
+            | Operator::ReduceProduct { options, .. }
+            | Operator::ReduceL1 { options, .. }
+            | Operator::ReduceL2 { options, .. }
+            | Operator::ReduceLogSum { options, .. }
+            | Operator::ReduceLogSumExp { options, .. }
+            | Operator::ReduceSumSquare { options, .. } => opt_label!(options),
+            Operator::Reshape { options, .. } => opt_label!(options),
+            Operator::Resample2d { options, .. } => opt_label!(options),
+            Operator::Reverse { options, .. } => opt_label!(options),
+            Operator::ScatterElements { options, .. } => opt_label!(options),
+            Operator::Softmax { options, .. } => opt_label!(options),
+            Operator::Slice { options, .. } => opt_label!(options),
+            Operator::Split { options, .. } => opt_label!(options),
+            Operator::Transpose { options, .. } => opt_label!(options),
+            Operator::Squeeze { options, .. } => opt_label!(options),
+            Operator::Unsqueeze { options, .. } => opt_label!(options),
+            Operator::Tile { options, .. } => opt_label!(options),
+            Operator::Triangular { options, .. } => opt_label!(options),
+        }
+    }
+
     /// Converts this operator to the legacy triple used by JSON and existing consumers.
     /// Returns `(op_type, input_operands, attributes)`.
     pub fn to_legacy(&self) -> (String, Vec<u32>, OperatorOptions) {

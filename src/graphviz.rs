@@ -52,11 +52,9 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
     for (idx, operation) in graph.operations.iter().enumerate() {
         let node_id = format!("op_{}", idx);
         let mut label_lines = vec![format!("{} (#{})", operation.display_name(), idx)];
-        if let Some(label) = &operation.label
-            && !label.is_empty()
-            && label.as_str() != operation.op_type()
-        {
-            label_lines.push(label.clone());
+        let op_label = operation.label();
+        if !op_label.is_empty() && op_label != operation.op_type() {
+            label_lines.push(op_label.to_string());
         }
         let label = escape_label(&label_lines.join("\n"));
         let _ = writeln!(
@@ -167,7 +165,6 @@ mod tests {
                     operator,
                     output_operand: Some(2),
                     output_operands: Vec::new(),
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: Default::default(),

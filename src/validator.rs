@@ -555,7 +555,6 @@ mod tests {
             operator,
             output_operand: Some(3),
             output_operands: Vec::new(),
-            label: None,
         };
 
         let mut constants = HashMap::new();
@@ -619,7 +618,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -775,7 +773,6 @@ mod tests {
             },
             output_operand: Some(3),
             output_operands: vec![],
-            label: None,
         };
         let quantize = Operation {
             operator: Operator::QuantizeLinear {
@@ -786,7 +783,6 @@ mod tests {
             },
             output_operand: Some(4),
             output_operands: vec![],
-            label: None,
         };
 
         let mut constants = HashMap::new();
@@ -864,7 +860,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -911,7 +906,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -966,7 +960,6 @@ mod tests {
                 },
                 output_operand: Some(2),
                 output_operands: vec![],
-                label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1020,7 +1013,6 @@ mod tests {
                     },
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 },
                 Operation {
                     operator: Operator::Sigmoid {
@@ -1029,7 +1021,6 @@ mod tests {
                     },
                     output_operand: Some(2),
                     output_operands: vec![],
-                    label: None,
                 },
             ],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -1084,7 +1075,6 @@ mod tests {
                 },
                 output_operand: Some(2),
                 output_operands: vec![],
-                label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(), // Missing constant data
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1149,7 +1139,6 @@ mod tests {
                 },
                 output_operand: Some(2),
                 output_operands: vec![],
-                label: None,
             }],
             constant_operand_ids_to_handles: constants,
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1200,7 +1189,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -1245,7 +1233,6 @@ mod tests {
                 }, // Invalid operand ID
                 output_operand: Some(1),
                 output_operands: vec![],
-                label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1290,7 +1277,6 @@ mod tests {
                     },
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 },
                 Operation {
                     operator: Operator::Sigmoid {
@@ -1299,7 +1285,6 @@ mod tests {
                     },
                     output_operand: Some(1), // Same output produced twice
                     output_operands: vec![],
-                    label: None,
                 },
             ],
             constant_operand_ids_to_handles: HashMap::new(),
@@ -1353,7 +1338,6 @@ mod tests {
                 },
                 output_operand: Some(2),
                 output_operands: vec![],
-                label: None,
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1407,7 +1391,6 @@ mod tests {
                     operator,
                     output_operand: Some(1),
                     output_operands: vec![],
-                    label: None,
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
