@@ -175,13 +175,11 @@ pub struct Operand {
     pub name: Option<String>,
 }
 
-/// Single source of truth: the operator enum (including options `label`). Output ids here;
-/// type, inputOperands, and attributes are derived via to_legacy() for JSON and accessors.
+/// Single source of truth: the operator enum (including options `label` and output operand ids).
+/// `type`, `inputOperands`, and `attributes` are derived via [`Operator::to_legacy`] for JSON.
 #[derive(Debug, Clone)]
 pub struct Operation {
     pub operator: Operator,
-    pub output_operand: Option<u32>,
-    pub output_operands: Vec<u32>,
 }
 
 impl Serialize for Operation {
@@ -191,12 +189,15 @@ impl Serialize for Operation {
     {
         use serde::ser::SerializeStruct;
         let (op_type, input_operands, attributes) = self.operator.to_legacy();
+        let outs = self.operator.outputs();
+        let output_operands: Vec<u32> = outs.to_vec();
+        let output_operand = outs.first().copied();
         let mut st = serializer.serialize_struct("Operation", 5)?;
         st.serialize_field("type", &op_type)?;
         st.serialize_field("input_operands", &input_operands)?;
         st.serialize_field("attributes", &attributes)?;
-        st.serialize_field("output_operand", &self.output_operand)?;
-        st.serialize_field("output_operands", &self.output_operands)?;
+        st.serialize_field("output_operand", &output_operand)?;
+        st.serialize_field("output_operands", &output_operands)?;
         st.end()
     }
 }
@@ -233,17 +234,26 @@ impl<'de> Deserialize<'de> for Operation {
                     .unwrap_or_default()
             }
         } else {
-            OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value).unwrap_or_default()
+            OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value)
+                .unwrap_or_default()
         };
-        let operator = Operator::from_operator_options(&h.op_type, &h.input_operands, &attributes)
-            .ok_or_else(|| {
-                serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
-            })?;
-        Ok(Operation {
-            operator,
-            output_operand: h.output_operand,
-            output_operands: h.output_operands,
-        })
+        let output_ids: Vec<u32> = if !h.output_operands.is_empty() {
+            h.output_operands.clone()
+        } else if let Some(o) = h.output_operand {
+            vec![o]
+        } else {
+            Vec::new()
+        };
+        let operator = Operator::from_operator_options(
+            &h.op_type,
+            &h.input_operands,
+            &attributes,
+            &output_ids,
+        )
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
+        })?;
+        Ok(Operation { operator })
     }
 }
 
@@ -293,18 +303,24 @@ impl Operation {
         self.operator.to_legacy().2
     }
 
+    /// First output operand id, if any (legacy JSON single-output field).
+    pub fn output_operand(&self) -> Option<u32> {
+        self.operator.outputs().first().copied()
+    }
+
+    /// All output operand ids for this operation (legacy JSON multi-output field).
+    pub fn output_operands(&self) -> &[u32] {
+        self.operator.outputs()
+    }
+
     /// Borrow all output operand IDs (handles single- and multi-output operations)
     pub fn output_operands_slice(&self) -> &[u32] {
-        if !self.output_operands.is_empty() {
-            &self.output_operands
-        } else {
-            self.output_operand.as_slice()
-        }
+        self.operator.outputs()
     }
 
     /// Get all output operand IDs (handles both single and multi-output operations)
     pub fn get_output_operands(&self) -> Vec<u32> {
-        self.output_operands_slice().to_vec()
+        self.operator.outputs().to_vec()
     }
 
     /// Attributes as a JSON value for code that expects `serde_json::Value` (e.g. parse_json_ints).

@@ -384,14 +384,15 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
         )
         .unwrap_or_default();
 
-        let operator = Operator::from_operator_options(&node.op, &input_operands, &attributes)
-            .expect("unknown op type in JSON");
+        let operator = Operator::from_operator_options(
+            &node.op,
+            &input_operands,
+            &attributes,
+            &output_operand_ids,
+        )
+        .expect("unknown op type in JSON");
 
-        operations.push(Operation {
-            operator,
-            output_operand: output_operand_ids.first().copied(),
-            output_operands: output_operand_ids,
-        });
+        operations.push(Operation { operator });
     }
 
     // Build output operands list from outputs map and mark them as Output
@@ -521,7 +522,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             }
 
             // Skip if output already has a shape
-            if let Some(output_id) = op.output_operand
+            if let Some(output_id) = op.output_operand()
                 && !graph.operands[output_id as usize]
                     .descriptor
                     .shape
@@ -777,7 +778,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
                     // If output operand already has a shape (e.g. from JSON or earlier pass), use it
                     // to back-propagate indices shape and as the result.
-                    let existing_output_shape = op.output_operand.and_then(|id| {
+                    let existing_output_shape = op.output_operand().and_then(|id| {
                         let o = graph.operands.get(id as usize)?;
                         (!o.descriptor.shape.is_empty()).then_some(o.descriptor.shape.clone())
                     });
@@ -898,14 +899,14 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 
             // Update output operand shape if we inferred it
             if let Some(shape) = output_shape
-                && let Some(output_id) = op.output_operand
+                && let Some(output_id) = op.output_operand()
             {
                 graph.operands[output_id as usize].descriptor.shape = shape;
                 made_progress = true;
             }
 
             // Propagate output data types where deterministically known
-            if let Some(output_id) = op.output_operand {
+            if let Some(output_id) = op.output_operand() {
                 let output_type = match op_type.as_str() {
                     "shape" => Some(DataType::Int64),
                     "constant" => match &op.operator {
@@ -1026,7 +1027,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     graph.operands[output_id as usize].descriptor.data_type = dtype;
                     // LSTM has multiple outputs (Y_h, Y_c, optional sequence); all match input type.
                     if matches!(op_type.as_str(), "lstm" | "lstmcell" | "lstm_cell") {
-                        for &oid in &op.output_operands {
+                        for &oid in op.output_operands() {
                             if oid != output_id {
                                 graph.operands[oid as usize].descriptor.data_type = dtype;
                             }
@@ -1256,12 +1257,9 @@ mod tests {
                 let operator = Operator::LeakyRelu {
                     input: 0,
                     options: attributes.as_leaky_relu().cloned(),
+                    outputs: vec![1],
                 };
-                Operation {
-                    operator,
-                    output_operand: None,
-                    output_operands: vec![1],
-                }
+                Operation { operator }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -1809,7 +1807,7 @@ mod tests {
         assert!(result.is_ok());
         let graph_info = result.unwrap();
         assert_eq!(graph_info.operations.len(), 1);
-        assert_eq!(graph_info.operations[0].output_operands.len(), 0);
+        assert_eq!(graph_info.operations[0].output_operands().len(), 0);
     }
 
     #[test]

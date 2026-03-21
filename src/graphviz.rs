@@ -160,12 +160,9 @@ mod tests {
                     a: 0,
                     b: 1,
                     options: None,
+                    outputs: vec![2],
                 };
-                Operation {
-                    operator,
-                    output_operand: Some(2),
-                    output_operands: Vec::new(),
-                }
+                Operation { operator }
             }],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),

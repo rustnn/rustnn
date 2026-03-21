@@ -397,7 +397,8 @@ impl OnnxConverter {
         let input_shape = input_operand.descriptor.static_or_max_shape();
         let final_output_name = operand_name(
             graph,
-            op.output_operand.expect("Single-output operation expected"),
+            op.output_operand()
+                .expect("Single-output operation expected"),
         );
         let mut node_output_name = final_output_name.clone();
 
@@ -565,7 +566,8 @@ impl OnnxConverter {
             if rank_ln == 0 {
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
                 if has_bias_norm {
                     let bias_id = match &op.operator {
@@ -625,7 +627,8 @@ impl OnnxConverter {
             {
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
                 if has_bias_norm {
                     let bias_id = match &op.operator {
@@ -1057,7 +1060,7 @@ impl OnnxConverter {
                 op.op_type(),
                 op.label(),
                 op.input_operands(),
-                op.output_operands
+                op.output_operands()
             );
         } else {
             debug_print!("[DEBUG] Invalid operand {} at {}", operand, context);
@@ -1389,7 +1392,7 @@ impl OnnxConverter {
         if matches!(&op.operator, Operator::AveragePool2d { .. })
             && !opts.dilations.is_empty()
             && !has_explicit_window
-            && let (Some(&in_id), Some(out_id)) = (op.input_operands().first(), op.output_operand)
+            && let (Some(&in_id), Some(out_id)) = (op.input_operands().first(), op.output_operand())
             && let (Some(in_operand), Some(out_operand)) =
                 (graph.operand(in_id), graph.operand(out_id))
             && in_operand.descriptor.shape.len() == 4
@@ -2150,9 +2153,9 @@ impl OnnxConverter {
         match &op.operator {
             Operator::Conv2d { .. } => Self::create_conv2d_attributes(op),
             Operator::ConvTranspose2d { .. } => Self::create_conv_transpose2d_attributes(op),
-            Operator::AveragePool2d { .. } | Operator::MaxPool2d { .. } | Operator::L2Pool2d { .. } => {
-                Self::create_pool2d_attributes(op)
-            }
+            Operator::AveragePool2d { .. }
+            | Operator::MaxPool2d { .. }
+            | Operator::L2Pool2d { .. } => Self::create_pool2d_attributes(op),
             Operator::ReduceSum { .. }
             | Operator::ReduceMean { .. }
             | Operator::ReduceMax { .. }
@@ -2166,9 +2169,13 @@ impl OnnxConverter {
             Operator::Squeeze { .. } | Operator::Unsqueeze { .. } => {
                 Self::create_squeeze_unsqueeze_attributes(op)
             }
-            Operator::ArgMax { .. } | Operator::ArgMin { .. } => Self::create_arg_reduce_attributes(op),
+            Operator::ArgMax { .. } | Operator::ArgMin { .. } => {
+                Self::create_arg_reduce_attributes(op)
+            }
             Operator::Concat { .. } => Self::create_concat_attributes(op),
-            Operator::Gather { .. } | Operator::GatherElements { .. } => Self::create_gather_attributes(op),
+            Operator::Gather { .. } | Operator::GatherElements { .. } => {
+                Self::create_gather_attributes(op)
+            }
             Operator::Transpose { .. } => Self::create_transpose_attributes(op),
             Operator::Softmax { .. } => Self::create_softmax_attributes(op),
             Operator::Cast { .. } => Self::create_cast_attributes(op),
@@ -2321,9 +2328,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
             if (matches!(
                 &op.operator,
                 Operator::Unsqueeze { .. } | Operator::Squeeze { .. }
-            ))
-                && let (Some(output_id), Some(&input_id)) =
-                    (op.output_operand, op.input_operands().first())
+            )) && let (Some(output_id), Some(&input_id)) =
+                (op.output_operand(), op.input_operands().first())
             {
                 unsqueeze_like_outputs.insert(output_id);
                 let input_type = type_overrides.get(&input_id).copied().or_else(|| {
@@ -2338,7 +2344,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
             if matches!(&op.operator, Operator::Expand { .. }) {
                 if let (Some(&input_id), Some(output_id)) =
-                    (op.input_operands().first(), op.output_operand)
+                    (op.input_operands().first(), op.output_operand())
                     && let Some(input_operand) = graph.operand(input_id)
                 {
                     type_overrides.insert(output_id, input_operand.descriptor.data_type);
@@ -2364,12 +2370,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 }
             } else if matches!(&op.operator, Operator::Shape { .. }) {
-                if let Some(output_id) = op.output_operand {
+                if let Some(output_id) = op.output_operand() {
                     type_overrides.insert(output_id, DataType::Int64);
                 }
             } else if matches!(&op.operator, Operator::Where { .. }) {
                 if let (Some(output_id), Some(val_input_id)) =
-                    (op.output_operand, op.input_operands().get(1))
+                    (op.output_operand(), op.input_operands().get(1))
                 {
                     if let Some(input_operand) = graph.operand(*val_input_id) {
                         type_overrides.insert(output_id, input_operand.descriptor.data_type);
@@ -2399,7 +2405,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
             } else if matches!(&op.operator, Operator::Slice { .. }) {
                 if let (Some(&input_id), Some(output_id)) =
-                    (op.input_operands().first(), op.output_operand)
+                    (op.input_operands().first(), op.output_operand())
                     && let Some(mut in_shape) = operand_shapes.get(&input_id).cloned()
                     && let Operator::Slice {
                         options: Some(opts),
@@ -2485,7 +2491,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     | Operator::Cast { .. }
             ) {
                 // Track unary element-wise operations (preserve input shape and type)
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && let Some(&input_id) = op.input_operands().first()
                 {
                     let output_name = graph
@@ -2537,7 +2543,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     | Operator::Min { .. }
             ) {
                 // Track binary element-wise operation output shapes (use broadcasting)
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && op.input_operands().len() >= 2
                 {
                     // Try to compute broadcast shape from inputs
@@ -2566,7 +2572,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
             } else if matches!(&op.operator, Operator::Matmul { .. }) {
                 // Track matmul output shapes
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && op.input_operands().len() == 2
                 {
                     let output_name = graph
@@ -2623,7 +2629,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
             } else if matches!(&op.operator, Operator::Concat { .. }) {
                 // Track concat output shapes
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && op.input_operands().len() >= 2
                 {
                     let output_name = graph
@@ -2696,7 +2702,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
             } else if matches!(&op.operator, Operator::Unsqueeze { .. }) {
                 // Track unsqueeze output shapes (adds dimensions)
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && let Some(&input_id) = op.input_operands().first()
                     && let Some(input_shape) = operand_shapes.get(&input_id)
                     && let Operator::Unsqueeze {
@@ -2722,7 +2728,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             }
             // Reshape: if newShape is present, set output shape (static or max for dynamic)
             else if matches!(&op.operator, Operator::Reshape { .. }) {
-                if let Some(output_id) = op.output_operand
+                if let Some(output_id) = op.output_operand()
                     && let Operator::Reshape {
                         options: Some(opts),
                         ..
@@ -2737,7 +2743,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             // Transpose: derive output shape from permutation (default reverse)
             else if matches!(&op.operator, Operator::Transpose { .. }) {
                 if let (Some(&input_id), Some(output_id)) =
-                    (op.input_operands().first(), op.output_operand)
+                    (op.input_operands().first(), op.output_operand())
                     && let Some(input_shape) = operand_shapes.get(&input_id).cloned()
                 {
                     let perm: Option<Vec<u32>> = match &op.operator {
@@ -2758,8 +2764,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             else if matches!(
                 &op.operator,
                 Operator::Gather { .. } | Operator::GatherElements { .. }
-            )
-                && let Some(output_id) = op.output_operand
+            ) && let Some(output_id) = op.output_operand()
                 && op.input_operands().len() >= 2
             {
                 let data_shape = operand_shapes.get(&op.input_operands()[0]);
@@ -2775,10 +2780,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     if axis >= rank {
                         return Err(GraphError::ConversionFailed {
                             format: "onnx".to_string(),
-                            reason: format!(
-                                "gather axis {} out of bounds for rank {}",
-                                axis, rank
-                            ),
+                            reason: format!("gather axis {} out of bounds for rank {}", axis, rank),
                         });
                     }
                     let mut out_shape = indices_shape.clone();
@@ -2789,7 +2791,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             }
 
             // Update operand_shapes for outputs where we inferred a shape override
-            if let Some(out_id) = op.output_operand
+            if let Some(out_id) = op.output_operand()
                 && let Some(shape) = shape_overrides.get(&out_id)
             {
                 operand_shapes.insert(out_id, shape.clone());
@@ -2978,7 +2980,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     if remaining_inputs.len() == 1 {
                         // Perfect case: one skipped (empty past), one remaining (new KV)
-                        let output_id = op.output_operand.ok_or_else(|| {
+                        let output_id = op.output_operand().ok_or_else(|| {
                             Self::invalid_operand("concat output", idx as u32, Some((op, idx)))
                         })?;
 
@@ -3023,13 +3025,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
             // WebNN constant() op: encode as initializer, not a node
             if matches!(&op.operator, Operator::Constant { .. }) {
-                let output_id = op.output_operand.ok_or_else(|| {
+                let output_id = op.output_operand().ok_or_else(|| {
                     Self::invalid_operand("constant output", idx as u32, Some((op, idx)))
                 })?;
 
                 // Get constant data: try 'init' from typed options first, then 'data' (inline base64).
                 let (init_opt, data_opt, dtype_str_opt, shape_opt) = match &op.operator {
-                    Operator::Constant { options } => options
+                    Operator::Constant { options, .. } => options
                         .as_ref()
                         .map(|o| {
                             (
@@ -3187,7 +3189,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let scale_id = op.input_operands()[1];
                 let zero_point_id = op.input_operands()[2];
                 let output_id = op
-                    .output_operand
+                    .output_operand()
                     .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
 
                 let input_shape = operand_shapes.get(&input_id).cloned().unwrap_or_else(|| {
@@ -3547,7 +3549,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let scale_id = op.input_operands()[1];
                 let zero_point_id = op.input_operands().get(2).copied();
                 let output_id = op
-                    .output_operand
+                    .output_operand()
                     .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
 
                 let input_name = operand_name(graph, input_id);
@@ -3864,7 +3866,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -3897,9 +3900,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     | Operator::LogicalXor { .. }
             );
 
-            if matches!(&op.operator, Operator::ArgMax { .. } | Operator::ArgMin { .. }) {
+            if matches!(
+                &op.operator,
+                Operator::ArgMax { .. } | Operator::ArgMin { .. }
+            ) {
                 // ONNX ArgMax/ArgMin produce int64. Cast if WebNN output expects another integer dtype.
-                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
                 let output_operand = graph.operand(output_id).ok_or_else(|| {
                     Self::invalid_operand("arg reduce output lookup", output_id, Some((op, idx)))
                 })?;
@@ -3964,8 +3972,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     | Operator::L2Pool2d { .. }
             ) {
                 let input_id = op.input_operands()[0];
-                let output_operand_id =
-                    op.output_operand.expect("Single-output operation expected");
+                let output_operand_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
                 let input_name = operand_name(graph, input_id);
                 let output_name = operand_name(graph, output_operand_id);
                 let input_is_float16 = graph
@@ -4299,7 +4308,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     bool_output_name,
                     operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     ),
                     ProtoDataType::Uint8,
                 ));
@@ -4308,8 +4318,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // Comparison operations: execute op (or decomposition), then cast bool output to uint8
                 let bool_output_name = format!("{}_bool_output", op_name);
                 let attributes = Self::create_operation_attributes(op);
-                let output_operand_id =
-                    op.output_operand.expect("Single-output operation expected");
+                let output_operand_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
                 let output_name = operand_name(graph, output_operand_id);
                 let input_names: Vec<String> = match &op.operator {
                     Operator::Equal { a, b, .. }
@@ -4410,7 +4421,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     bool_output_name,
                     operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     ),
                     ProtoDataType::Uint8,
                 ));
@@ -4459,7 +4471,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     bool_output_name,
                     operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     ),
                     ProtoDataType::Uint8,
                 ));
@@ -4475,7 +4488,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_name = operand_name(graph, input_id);
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
 
                 let dtype = input_operand.descriptor.data_type;
@@ -4587,7 +4601,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_name = operand_name(graph, input_id);
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
 
                 let (alpha, beta) = match &op.operator {
@@ -4721,7 +4736,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name.clone(),
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -4794,7 +4810,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                     inputs[2] = false_cast_name;
 
-                    if let Some(output_id) = op.output_operand {
+                    if let Some(output_id) = op.output_operand() {
                         type_overrides.insert(output_id, target_type);
                     }
                 }
@@ -4805,7 +4821,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -4819,7 +4836,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     Self::invalid_operand("reverse missing data input", idx as u32, Some((op, idx)))
                 })?;
                 let input_name = operand_name(graph, input_id);
-                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
                 let final_output_name = operand_name(graph, output_id);
 
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
@@ -4936,7 +4955,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     )
                 })?;
                 let input_name = operand_name(graph, input_id);
-                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
                 let output_name = operand_name(graph, output_id);
 
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
@@ -6445,7 +6466,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let weight_id = op.input_operands()[1];
                 let recurrent_weight_id = op.input_operands()[2];
                 let hidden_state_id = op.input_operands()[3];
-                let output_id = op.output_operand.expect("Single-output operation expected");
+                let output_id = op
+                    .output_operand()
+                    .expect("Single-output operation expected");
 
                 let input_name = operand_name(graph, input_id);
                 let weight_name = operand_name(graph, weight_id);
@@ -6816,7 +6839,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: vec![data_input],
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: format!("{}_identity", op_name),
                         op_type: "Identity".to_string(),
@@ -6840,7 +6864,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -6992,7 +7017,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -7065,7 +7091,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 } else {
                     // Case 3: No newShape attribute - infer from output operand descriptor
-                    let output_id = op.output_operand.expect("Single-output operation expected");
+                    let output_id = op
+                        .output_operand()
+                        .expect("Single-output operation expected");
                     let output_operand = graph.operand(output_id).ok_or_else(|| {
                         Self::invalid_operand("reshape output lookup", output_id, Some((op, idx)))
                     })?;
@@ -7105,7 +7133,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -7159,7 +7188,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: inputs,
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: op_name.clone(),
                         op_type: "Unsqueeze".to_string(),
@@ -7321,7 +7351,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
 
                     // Update operand_shapes with the output shape before moving shape_values
-                    if let Some(output_id) = op.output_operand {
+                    if let Some(output_id) = op.output_operand() {
                         let output_shape: Vec<u32> =
                             shape_values.iter().map(|&v| v as u32).collect();
                         operand_shapes.insert(output_id, output_shape);
@@ -7342,7 +7372,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: inputs,
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: op_name,
                         op_type: op_type.to_string(),
@@ -7383,7 +7414,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_name = operand_name(graph, input_id);
                 let final_output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
                 let reduce_opts = match &op.operator {
                     Operator::ReduceSum { options, .. }
@@ -7530,7 +7562,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let data_input_name = operand_name(graph, data_input_id);
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
 
                 let input_rank = graph
@@ -7661,7 +7694,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_id = op.input_operands()[0];
                 let input_name = operand_name(graph, input_id);
                 let output_id = op
-                    .output_operand
+                    .output_operand()
                     .ok_or(GraphError::InvalidConversionOperand { operand: 0 })?;
                 let output_name = operand_name(graph, output_id);
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
@@ -7690,12 +7723,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let axes: Vec<usize> = resample_opts
                     .filter(|o| o.axes.len() == 2)
                     .map(|o| o.axes.iter().map(|&u| u as usize).collect())
-                    .unwrap_or_else(|| {
-                        vec![
-                            rank.saturating_sub(2),
-                            rank.saturating_sub(1),
-                        ]
-                    });
+                    .unwrap_or_else(|| vec![rank.saturating_sub(2), rank.saturating_sub(1)]);
                 if axes.len() != 2 || axes.iter().any(|&a| a >= rank) {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
@@ -7888,7 +7916,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: vec![data_name, clamped_name],
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: op_name,
                         op_type: "GatherElements".to_string(),
@@ -8005,7 +8034,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: vec![data_name, clamped_name],
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: op_name,
                         op_type: "GatherND".to_string(),
@@ -8066,7 +8096,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         input: vec![inputs[0].clone()],
                         output: vec![operand_name(
                             graph,
-                            op.output_operand.expect("Single-output operation expected"),
+                            op.output_operand()
+                                .expect("Single-output operation expected"),
                         )],
                         name: op_name,
                         op_type: "Identity".to_string(),
@@ -8176,7 +8207,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -8205,7 +8237,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .collect();
 
                 let axis = axis_attr as usize;
-                let num_outputs = op.output_operands.len();
+                let num_outputs = op.output_operands().len();
                 let input_id = op.input_operands().first().copied().ok_or_else(|| {
                     GraphError::ConversionFailed {
                         format: "onnx".to_string(),
@@ -8221,10 +8253,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if axis >= rank {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
-                        reason: format!(
-                            "split axis {} out of bounds for rank {}",
-                            axis_attr, rank
-                        ),
+                        reason: format!("split axis {} out of bounds for rank {}", axis_attr, rank),
                     });
                 }
                 let dim_at_axis: i64 = input_shape[axis] as i64;
@@ -8279,7 +8308,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
                 // ONNX Split returns float; if input is float16, we must cast every output.
                 let need_cast = input_dtype == ProtoDataType::Float16;
-                for (i, &out_id) in op.output_operands.iter().enumerate() {
+                for (i, &out_id) in op.output_operands().iter().enumerate() {
                     let out_name = operand_name(graph, out_id);
                     let expected_dtype = graph
                         .operand(out_id)
@@ -8410,7 +8439,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: "Gather".to_string(),
@@ -8545,7 +8575,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // If WebNN layout is NHWC, ONNX node output (NCHW) must be transposed back.
                 let final_output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
                 let conv_output_name = if input_layout.eq_ignore_ascii_case("nhwc") {
                     format!("{}_conv_output_nchw", op_name)
@@ -8584,7 +8615,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_name = operand_name(graph, op.input_operands()[0]);
                 let output_name = operand_name(
                     graph,
-                    op.output_operand.expect("Single-output operation expected"),
+                    op.output_operand()
+                        .expect("Single-output operation expected"),
                 );
 
                 // Get input data type for scalar initializers
@@ -8701,7 +8733,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
 
-                if let Some(output_id) = op.output_operand {
+                if let Some(output_id) = op.output_operand() {
                     let output_shape = if matches!(&op.operator, Operator::Unsqueeze { .. }) {
                         let axes: Vec<usize> = match &op.operator {
                             Operator::Unsqueeze { options, .. } => options
@@ -8754,7 +8786,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -8786,7 +8819,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     w.first().copied().unwrap_or(0) != w.get(1).copied().unwrap_or(0)
                 });
                 let output_rank_is_1d = op
-                    .output_operand
+                    .output_operand()
                     .and_then(|id| graph.operand(id))
                     .map(|operand| operand.descriptor.shape.len() == 1)
                     .unwrap_or(false);
@@ -8822,7 +8855,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     input: concat_inputs,
                     output: vec![operand_name(
                         graph,
-                        op.output_operand.expect("Single-output operation expected"),
+                        op.output_operand()
+                            .expect("Single-output operation expected"),
                     )],
                     name: op_name,
                     op_type: Self::onnx_op_type(op.op_type()),
@@ -8951,7 +8985,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 // Input 2: updates
                 inputs.push(operand_name(graph, *updates_id));
 
-                let output_operand_id = op.output_operand.expect("ScatterND has single output");
+                let output_operand_id = op.output_operand().expect("ScatterND has single output");
                 let output_name = operand_name(graph, output_operand_id);
                 let input_dtype = graph
                     .operand(*data_id)
@@ -9071,8 +9105,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                     inputs.push(false_cast_output_name);
 
-                    let output_operand_id =
-                        op.output_operand.expect("Single-output operation expected");
+                    let output_operand_id = op
+                        .output_operand()
+                        .expect("Single-output operation expected");
                     type_overrides.insert(output_operand_id, target_type);
 
                     nodes.push(NodeProto {
@@ -9089,7 +9124,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if matches!(&op.operator, Operator::ScatterElements { .. }) {
                     // ONNX ScatterElements may output float; cast when data or expected output is non-float.
                     let output_operand_id = op
-                        .output_operand
+                        .output_operand()
                         .expect("ScatterElements has single output");
                     let output_name = operand_name(graph, output_operand_id);
                     let data_id = op.input_operands()[0];
@@ -9162,7 +9197,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 if matches!(&op.operator, Operator::RoundEven { .. }) {
                     // ONNX Round outputs float; cast to float16 when input or expected output is float16.
-                    let output_operand_id = op.output_operand.expect("roundEven has single output");
+                    let output_operand_id =
+                        op.output_operand().expect("roundEven has single output");
                     let output_name = operand_name(graph, output_operand_id);
                     let input_id = op.input_operands()[0];
                     let input_dtype = graph
@@ -9272,7 +9308,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 {
                     let input_id = op.input_operands()[0];
                     let input_name = operand_name(graph, input_id);
-                    let output_id = op.output_operand.expect("Single-output operation expected");
+                    let output_id = op
+                        .output_operand()
+                        .expect("Single-output operation expected");
                     let output_name = operand_name(graph, output_id);
                     let input_operand = graph.operand(input_id).ok_or_else(|| {
                         Self::invalid_operand(
@@ -9455,8 +9493,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     // Create the operation node (outputs float32)
                     let float_output_name = format!("{}_float32_output", op_name);
-                    let output_operand_id =
-                        op.output_operand.expect("Single-output operation expected");
+                    let output_operand_id = op
+                        .output_operand()
+                        .expect("Single-output operation expected");
                     let final_output_name = operand_name(graph, output_operand_id);
                     let op_output_name = if requires_float && !mixed_numeric_inputs {
                         float_output_name.clone()
@@ -9492,8 +9531,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     // Regular operation - no Cast nodes needed
                     // Cast requires "to" attribute; derive from output operand when typed options don't provide it
                     let attributes = if matches!(&op.operator, Operator::Cast { .. }) {
-                        let output_id =
-                            op.output_operand.expect("Single-output operation expected");
+                        let output_id = op
+                            .output_operand()
+                            .expect("Single-output operation expected");
                         let type_code: i64 = match match &op.operator {
                             Operator::Cast { options, .. } => options
                                 .as_ref()
@@ -9548,7 +9588,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ));
                     }
                     // GEMM: C is in options (MLGemmOptions.c) when present; positionals are [A, B] only.
-                    let node_inputs: Vec<String> = if matches!(&op.operator, Operator::Gemm { .. }) {
+                    let node_inputs: Vec<String> = if matches!(&op.operator, Operator::Gemm { .. })
+                    {
                         let a = operand_name(
                             graph,
                             *op.input_operands().first().ok_or_else(|| {
@@ -9915,12 +9956,9 @@ mod tests {
             scale: 1,
             zero_point: Some(2),
             options: None,
+            outputs: vec![3],
         };
-        operations.push(Operation {
-            operator,
-            output_operand: Some(3),
-            output_operands: vec![],
-        });
+        operations.push(Operation { operator });
 
         let graph = GraphInfo {
             operands,
@@ -10006,12 +10044,9 @@ mod tests {
             scale: 1,
             zero_point: Some(2),
             options: None,
+            outputs: vec![3],
         };
-        operations.push(Operation {
-            operator,
-            output_operand: Some(3),
-            output_operands: vec![],
-        });
+        operations.push(Operation { operator });
 
         let graph = GraphInfo {
             operands,
@@ -10095,12 +10130,9 @@ mod tests {
             scale: 1,
             zero_point: Some(2),
             options: None,
+            outputs: vec![3],
         };
-        operations.push(Operation {
-            operator,
-            output_operand: Some(3),
-            output_operands: vec![],
-        });
+        operations.push(Operation { operator });
 
         let graph = GraphInfo {
             operands,
@@ -10219,12 +10251,9 @@ mod tests {
         let operator = Operator::Cast {
             input: 0,
             options: attrs.as_cast().cloned(),
+            outputs: vec![1],
         };
-        operations.push(Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![],
-        });
+        operations.push(Operation { operator });
 
         let graph = GraphInfo {
             operands,
@@ -10283,12 +10312,9 @@ mod tests {
                 let operator = Operator::Identity {
                     input: 0,
                     options: None,
+                    outputs: vec![1],
                 };
-                Operation {
-                    operator,
-                    output_operand: Some(1),
-                    output_operands: vec![],
-                }
+                Operation { operator }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
@@ -10340,12 +10366,9 @@ mod tests {
         let operator = Operator::Identity {
             input: 0,
             options: None,
+            outputs: vec![1],
         };
-        operations.push(Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![1],
-        });
+        operations.push(Operation { operator });
 
         let graph = GraphInfo {
             operands,
@@ -10425,12 +10448,9 @@ mod tests {
         let operator = Operator::CumulativeSum {
             input: 0,
             options: attrs.as_cumulative_sum().cloned(),
+            outputs: vec![1],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,
@@ -10564,12 +10584,9 @@ mod tests {
             recurrence: 2,
             hidden_state: 3,
             options: Some(gru_opts),
+            outputs: vec![6],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(6),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,
@@ -10672,12 +10689,9 @@ mod tests {
         let operator = Operator::Reshape {
             input: 0,
             options: attrs.as_reshape().cloned(),
+            outputs: vec![1],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,
@@ -10748,12 +10762,9 @@ mod tests {
         let operator = Operator::Expand {
             input: 0,
             options: attrs.as_expand().cloned(),
+            outputs: vec![1],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,
@@ -10866,25 +10877,22 @@ mod tests {
                 operator: Operator::Unsqueeze {
                     input: 0,
                     options: u0_attrs.as_unsqueeze().cloned(),
+                    outputs: vec![1],
                 },
-                output_operand: Some(1),
-                output_operands: vec![],
             },
             Operation {
                 operator: Operator::Unsqueeze {
                     input: 1,
                     options: u1_attrs.as_unsqueeze().cloned(),
+                    outputs: vec![2],
                 },
-                output_operand: Some(2),
-                output_operands: vec![],
             },
             Operation {
                 operator: Operator::Expand {
                     input: 2,
                     options: exp_attrs.as_expand().cloned(),
+                    outputs: vec![3],
                 },
-                output_operand: Some(3),
-                output_operands: vec![],
             },
         ];
 
@@ -11015,17 +11023,15 @@ mod tests {
                     true_value: 1,
                     false_value: 2,
                     options: None,
+                    outputs: vec![3],
                 },
-                output_operand: Some(3),
-                output_operands: vec![],
             },
             Operation {
                 operator: Operator::Expand {
                     input: 3,
                     options: exp_attrs.as_expand().cloned(),
+                    outputs: vec![4],
                 },
-                output_operand: Some(4),
-                output_operands: vec![],
             },
         ];
 
@@ -11124,12 +11130,9 @@ mod tests {
             mean: 1,
             variance: 2,
             options: attrs.as_batch_normalization().cloned(),
+            outputs: vec![3],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(3),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,
@@ -11202,12 +11205,9 @@ mod tests {
         let operator = Operator::LayerNormalization {
             input: 0,
             options: attrs.as_layer_normalization().cloned(),
+            outputs: vec![1],
         };
-        let operations = vec![Operation {
-            operator,
-            output_operand: Some(1),
-            output_operands: vec![],
-        }];
+        let operations = vec![Operation { operator }];
 
         let graph = GraphInfo {
             operands,

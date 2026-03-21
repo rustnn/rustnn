@@ -34,17 +34,20 @@ use std::path::Path;
 
 use super::wpt_types::{WptGraph, WptOperator, WptTensorSpec};
 
-/// Build an [`Operator`] from WebNN JSON op name (camelCase), ordered operand ids, and typed options.
+/// Build an [`Operator`] from WebNN JSON op name (camelCase), ordered operand ids, typed options,
+/// and output operand ids for this operation.
 fn operator_from_wpt_parts(
     webnn_op_type: &str,
     operand_ids: &[u32],
     operator_options: &OperatorOptions,
+    output_ids: &[u32],
 ) -> Result<Operator, String> {
-    Operator::from_operator_options(webnn_op_type, operand_ids, operator_options).ok_or_else(|| {
-        format!(
-            "unsupported WPT op or operand layout for Operator::from_operator_options: {webnn_op_type} (operands: {operand_ids:?})"
-        )
-    })
+    Operator::from_operator_options(webnn_op_type, operand_ids, operator_options, output_ids)
+        .ok_or_else(|| {
+            format!(
+                "unsupported WPT op or operand layout for Operator::from_operator_options: {webnn_op_type} (operands: {operand_ids:?})"
+            )
+        })
 }
 
 /// Deserialize attributes map using the WebNN camelCase operation name expected by
@@ -926,14 +929,6 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             output_ids.push(id);
         }
 
-        let output_operand = if output_ids.len() == 1 {
-            Some(output_ids[0])
-        } else {
-            None
-        };
-        // Always set output_operands so converters can use output_operands_slice() safely
-        let output_operands = output_ids;
-
         // WebNN JSON / OperatorOptions::from_json_with_op_type expect camelCase op names.
         // Internal control flow uses snake_case `op_type`; map back for typed options + Operator.
         let webnn_op_type = match op_type.as_str() {
@@ -977,12 +972,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             serde_json::Value::String(format!("{}_op", op.name)),
         );
         let operator_options = operator_options_from_wpt_attrs(webnn_op_type, attributes);
-        let operator = operator_from_wpt_parts(webnn_op_type, &input_ids, &operator_options)?;
-        operations.push(Operation {
-            operator,
-            output_operand,
-            output_operands,
-        });
+        let operator =
+            operator_from_wpt_parts(webnn_op_type, &input_ids, &operator_options, &output_ids)?;
+        operations.push(Operation { operator });
     }
 
     let output_operands: Vec<u32> = graph

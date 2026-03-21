@@ -914,10 +914,10 @@ impl CoremlMlProgramConverter {
 
         // Get output operand info
         // Check if this is a single-output or multi-output operation
-        let output_id = if let Some(id) = op.output_operand {
+        let output_id = if let Some(id) = op.output_operand() {
             // Single-output operation
             id
-        } else if !op.output_operands.is_empty() {
+        } else if !op.output_operands().is_empty() {
             // Multi-output operation not handled yet
             return Err(GraphError::ConversionFailed {
                 format: "CoreML MLProgram".to_string(),
@@ -1015,7 +1015,7 @@ impl CoremlMlProgramConverter {
 
         // Get output types
         let outputs: Vec<NamedValueType> = op
-            .output_operands
+            .output_operands()
             .iter()
             .map(|&id| {
                 let (_name, value_type) = Self::create_value(graph, id)?;
@@ -1035,7 +1035,7 @@ impl CoremlMlProgramConverter {
                 // Equal splits - use num_splits (from output count)
                 inputs.insert(
                     "num_splits".to_string(),
-                    Self::create_int_argument(op.output_operands.len() as i32),
+                    Self::create_int_argument(op.output_operands().len() as i32),
                 );
             } else {
                 let split_sizes: Vec<i32> = opts.splits.iter().map(|&u| u as i32).collect();
@@ -2056,7 +2056,7 @@ impl CoremlMlProgramConverter {
                     if opts.splits.is_empty() {
                         inputs.insert(
                             "num_splits".to_string(),
-                            Self::create_immediate_int(op.output_operands.len() as u32),
+                            Self::create_immediate_int(op.output_operands().len() as u32),
                         );
                     } else {
                         inputs.insert(
@@ -2729,12 +2729,12 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             ) {
                 use crate::protos::coreml::mil_spec::DataType as MilDataType;
 
-                let output_id = op
-                    .output_operand
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "CoreML MLProgram".to_string(),
-                        reason: format!("operation '{}' has no output operand", op.op_type()),
-                    })?;
+                let output_id =
+                    op.output_operand()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "CoreML MLProgram".to_string(),
+                            reason: format!("operation '{}' has no output operand", op.op_type()),
+                        })?;
                 let output_operand =
                     graph_info
                         .operand(output_id)
@@ -2866,7 +2866,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 };
 
                 if min_value == max_value {
-                    if op.input_operands().is_empty() || op.output_operand.is_none() {
+                    if op.input_operands().is_empty() || op.output_operand().is_none() {
                         return Err(GraphError::ConversionFailed {
                             format: "coreml_mlprogram".to_string(),
                             reason: "clamp requires input and output operand".to_string(),
@@ -2880,7 +2880,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             reason: format!("Input operand {} not found", input_id),
                         }
                     })?;
-                    let output_id = op.output_operand.expect("checked above");
+                    let output_id = op.output_operand().expect("checked above");
                     let (output_name, output_type) =
                         Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
                     let input_name = operand_name(graph_info, input_id);
@@ -3026,7 +3026,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             if op_type_lower == "hardswish" {
                 // Validate inputs/outputs exist
                 // Note: hardswish uses output_operand (singular), not output_operands
-                if op.input_operands().is_empty() || op.output_operand.is_none() {
+                if op.input_operands().is_empty() || op.output_operand().is_none() {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: "hardswish requires input and output operand".to_string(),
@@ -3097,7 +3097,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     );
 
                     // Get output name (using singular output_operand field)
-                    let output_operand_id = op.output_operand.unwrap();
+                    let output_operand_id = op.output_operand().unwrap();
                     let output_name = operand_name(graph_info, output_operand_id);
                     let output_operand =
                         graph_info.operand(output_operand_id).ok_or_else(|| {
@@ -3144,14 +3144,14 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // Special handling for gemm: y = alpha * op(a) * op(b) + beta * c
             // Lower to matmul + optional mul(alpha) + optional mul(beta, c) + add.
             if op_type_lower == "gemm" {
-                if op.input_operands().len() < 2 || op.output_operand.is_none() {
+                if op.input_operands().len() < 2 || op.output_operand().is_none() {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: "gemm requires at least 2 input operands and 1 output".to_string(),
                     });
                 }
 
-                let output_operand_id = op.output_operand.unwrap();
+                let output_operand_id = op.output_operand().unwrap();
                 let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
                     GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
@@ -3303,7 +3303,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // Special handling for linear: y = alpha * x + beta
             // Lower to mul + add primitives for backend parity.
             if op_type_lower == "linear" {
-                if op.input_operands().is_empty() || op.output_operand.is_none() {
+                if op.input_operands().is_empty() || op.output_operand().is_none() {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: "linear requires input and output operand".to_string(),
@@ -3317,7 +3317,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             reason: format!("Input operand {} not found", op.input_operands()[0]),
                         }
                     })?;
-                let output_operand_id = op.output_operand.unwrap();
+                let output_operand_id = op.output_operand().unwrap();
                 let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
                     GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
@@ -3414,7 +3414,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // Following Chromium: neg = mul(x, -1) with constant matching input dtype
             if op_type_lower == "neg" {
                 // Validate inputs/outputs exist
-                if op.input_operands().is_empty() || op.output_operand.is_none() {
+                if op.input_operands().is_empty() || op.output_operand().is_none() {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: "neg requires input and output operand".to_string(),
@@ -3487,7 +3487,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 mul_inputs.insert("y".to_string(), neg_one_immediate);
 
                 // Get output name
-                let output_operand_id = op.output_operand.unwrap();
+                let output_operand_id = op.output_operand().unwrap();
                 let output_name = operand_name(graph_info, output_operand_id);
                 let output_operand = graph_info.operand(output_operand_id).ok_or_else(|| {
                     GraphError::ConversionFailed {
@@ -3662,13 +3662,17 @@ mod tests {
         output_operands: Vec<u32>,
         attributes: OperatorOptions,
     ) -> Operation {
-        let operator = Operator::from_operator_options(op_type, &input_operands, &attributes)
-            .expect("valid test op");
-        Operation {
-            operator,
-            output_operand,
-            output_operands,
-        }
+        let output_ids: Vec<u32> = if !output_operands.is_empty() {
+            output_operands
+        } else if let Some(o) = output_operand {
+            vec![o]
+        } else {
+            Vec::new()
+        };
+        let operator =
+            Operator::from_operator_options(op_type, &input_operands, &attributes, &output_ids)
+                .expect("valid test op");
+        Operation { operator }
     }
     #[cfg(feature = "dynamic-inputs")]
     use crate::protos::coreml::mil_spec::dimension;

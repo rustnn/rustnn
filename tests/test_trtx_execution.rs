@@ -40,17 +40,23 @@ mod tests {
             &serde_json::Value::Object(attr_obj),
         )
         .unwrap_or_default();
-        let operator = Operator::from_operator_options(webnn_op_type, input_operands, &opts)
-            .unwrap_or_else(|| {
-                panic!(
-                    "trtx_operation: unsupported op {webnn_op_type} for operands {input_operands:?}"
-                )
-            });
-        Operation {
-            operator,
-            output_operand,
-            output_operands,
-        }
+        let output_ids: Vec<u32> = if !output_operands.is_empty() {
+            output_operands
+        } else if let Some(o) = output_operand {
+            vec![o]
+        } else {
+            Vec::new()
+        };
+        let operator = Operator::from_operator_options(
+            webnn_op_type,
+            input_operands,
+            &opts,
+            &output_ids,
+        )
+        .unwrap_or_else(|| {
+            panic!("trtx_operation: unsupported op {webnn_op_type} for operands {input_operands:?}")
+        });
+        Operation { operator }
     }
 
     /// Helper to create a simple unary operation graph
