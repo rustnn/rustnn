@@ -30,7 +30,8 @@ use crate::protos::onnx::{
     tensor_proto::DataType as ProtoDataType, type_proto::Tensor as TensorTypeProto,
 };
 use crate::shape_inference::{
-    broadcast_shapes, infer_matmul_shape, infer_transpose_shape, infer_where_shape,
+    broadcast_shapes, infer_matmul_shape, infer_transpose_shape, infer_unsqueeze_shape,
+    infer_where_shape,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -412,16 +413,21 @@ impl OnnxConverter {
             if rank > 0 {
                 let axis = match &op.operator {
                     Operator::BatchNormalization { options, .. } => {
-                        options.as_ref().map(|o| o.axis as i64).unwrap_or(1)
+                        options.as_ref().map(|o| o.axis).unwrap_or(1)
                     }
                     _ => 1,
                 };
-                let normalized_axis = if axis < 0 {
-                    (rank as i64 + axis).max(0) as usize
-                } else {
-                    axis as usize
+                let axis_u = axis as usize;
+                if axis_u >= rank {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "batchNormalization axis {} out of bounds for rank {}",
+                            axis, rank
+                        ),
+                    });
                 }
-                .min(rank.saturating_sub(1));
+                let normalized_axis = axis_u;
 
                 if rank == 1 {
                     let channels = *input_shape.first().unwrap_or(&1);
@@ -578,11 +584,22 @@ impl OnnxConverter {
                         });
                     } else {
                         let zero_name = format!("{}_zero", op_name);
-                        initializers.push(Self::create_scalar_initializer(
-                            zero_name.clone(),
-                            input_data_type,
-                            0.0,
-                        ));
+                        let shape_i64: Vec<i64> =
+                            normalized_input_shape.iter().map(|&d| d as i64).collect();
+                        if shape_i64.is_empty() {
+                            initializers.push(Self::create_scalar_initializer(
+                                zero_name.clone(),
+                                input_data_type,
+                                0.0,
+                            ));
+                        } else {
+                            initializers.push(Self::create_vector_initializer(
+                                zero_name.clone(),
+                                input_data_type,
+                                shape_i64,
+                                0.0,
+                            ));
+                        }
                         nodes.push(NodeProto {
                             input: vec![zero_name],
                             output: vec![output_name],
@@ -637,11 +654,22 @@ impl OnnxConverter {
                         });
                     } else {
                         let zero_name = format!("{}_zero", op_name);
-                        initializers.push(Self::create_scalar_initializer(
-                            zero_name.clone(),
-                            input_data_type,
-                            0.0,
-                        ));
+                        let shape_i64: Vec<i64> =
+                            normalized_input_shape.iter().map(|&d| d as i64).collect();
+                        if shape_i64.is_empty() {
+                            initializers.push(Self::create_scalar_initializer(
+                                zero_name.clone(),
+                                input_data_type,
+                                0.0,
+                            ));
+                        } else {
+                            initializers.push(Self::create_vector_initializer(
+                                zero_name.clone(),
+                                input_data_type,
+                                shape_i64,
+                                0.0,
+                            ));
+                        }
                         nodes.push(NodeProto {
                             input: vec![zero_name],
                             output: vec![output_name],
@@ -668,11 +696,6 @@ impl OnnxConverter {
             } else {
                 (1..rank_ln as i64).collect::<Vec<i64>>()
             };
-            for axis in &mut axes {
-                if *axis < 0 {
-                    *axis += rank_ln as i64;
-                }
-            }
             axes.retain(|&axis| axis >= 0 && axis < rank_ln as i64);
             let mut seen = std::collections::HashSet::new();
             axes.retain(|axis| seen.insert(*axis));
@@ -732,13 +755,19 @@ impl OnnxConverter {
 
             let first_axis = layernorm_axis_override
                 .or_else(|| axes.and_then(|a| a.first().copied()))
-                .unwrap_or(-1);
-            let actual_axis = if first_axis < 0 {
-                ((normalized_input_shape.len() as i64 + first_axis) as usize)
-                    .min(normalized_input_shape.len())
-            } else {
-                (first_axis as usize).min(normalized_input_shape.len())
-            };
+                .expect("layer norm preprocessing must set axis override");
+            let rank_ln = normalized_input_shape.len();
+            let fa = first_axis as usize;
+            if fa >= rank_ln {
+                return Err(GraphError::ConversionFailed {
+                    format: "onnx".to_string(),
+                    reason: format!(
+                        "layerNormalization axis {} out of bounds for rank {}",
+                        first_axis, rank_ln
+                    ),
+                });
+            }
+            let actual_axis = fa;
 
             let norm_shape: Vec<i64> = normalized_input_shape
                 .iter()
@@ -2421,9 +2450,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             .min(ends.len())
                             .min(steps_vec.len());
                         for i in 0..len {
-                            let axis = axes[i] as isize;
-                            if axis < 0 || (axis as usize) >= in_shape.len() {
-                                continue;
+                            let axis = axes[i] as usize;
+                            if axis >= in_shape.len() {
+                                return Err(GraphError::ConversionFailed {
+                                    format: "onnx".to_string(),
+                                    reason: format!(
+                                        "slice axis index {} out of bounds for input rank {}",
+                                        axis,
+                                        in_shape.len()
+                                    ),
+                                });
                             }
                             let step: i64 = steps_vec[i];
                             if step == 0 {
@@ -2431,12 +2467,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             }
                             let start = starts[i];
                             let end = ends[i];
-                            let dim = in_shape[axis as usize] as i64;
+                            let dim = in_shape[axis] as i64;
                             let s = if start < 0 { dim + start } else { start }.max(0);
                             let e = if end < 0 { dim + end } else { end }.min(dim);
                             let span = (e - s + (step.abs() - 1)) / step.abs();
                             if span > 0 {
-                                in_shape[axis as usize] = span as u32;
+                                in_shape[axis] = span as u32;
                             }
                         }
                         shape_overrides.insert(output_id, in_shape.clone());
@@ -2604,7 +2640,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     let axis = match &op.operator {
                         Operator::Concat { options, .. } => {
-                            options.as_ref().map(|o| o.axis as i64).unwrap_or(0)
+                            options.as_ref().map(|o| o.axis).unwrap_or(0)
                         }
                         _ => 0,
                     };
@@ -2617,25 +2653,28 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .collect();
 
                     if input_shapes.len() == op.input_operands().len() && !input_shapes.is_empty() {
-                        let rank = input_shapes[0].len() as i64;
-                        let mut axis = axis;
-                        if axis < 0 {
-                            axis += rank;
+                        let concat_axis = axis as usize;
+                        let rank = input_shapes[0].len();
+                        if concat_axis >= rank {
+                            return Err(GraphError::ConversionFailed {
+                                format: "onnx".to_string(),
+                                reason: format!(
+                                    "concat axis {} out of bounds for rank {}",
+                                    axis, rank
+                                ),
+                            });
                         }
-                        if axis >= 0 && (axis as usize) < input_shapes[0].len() {
-                            let mut out_shape = input_shapes[0].clone();
-                            let concat_axis = axis as usize;
-                            for shape in &input_shapes[1..] {
-                                out_shape[concat_axis] += shape[concat_axis];
-                            }
-                            debug_print!(
-                                "[CONCAT DEBUG] Concat {} tracked output shape {:?}",
-                                output_name,
-                                out_shape
-                            );
-                            shape_overrides.insert(output_id, out_shape.clone());
-                            operand_shapes.insert(output_id, out_shape);
+                        let mut out_shape = input_shapes[0].clone();
+                        for shape in &input_shapes[1..] {
+                            out_shape[concat_axis] += shape[concat_axis];
                         }
+                        debug_print!(
+                            "[CONCAT DEBUG] Concat {} tracked output shape {:?}",
+                            output_name,
+                            out_shape
+                        );
+                        shape_overrides.insert(output_id, out_shape.clone());
+                        operand_shapes.insert(output_id, out_shape);
                     } else {
                         debug_print!(
                             "[CONCAT WARNING] Concat {} missing input shapes: have {}/{} inputs",
@@ -2674,27 +2713,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let axes_i64: Vec<i64> = axes_opts.axes.iter().map(|&u| u as i64).collect();
 
                     if !axes_i64.is_empty() {
-                        use crate::shape_inference::infer_unsqueeze_shape;
-                        let axes_u32: Vec<u32> = axes_i64
-                            .iter()
-                            .map(|&a| {
-                                if a < 0 {
-                                    ((input_shape.len() as i64 + 1) + a) as u32
-                                } else {
-                                    a as u32
-                                }
-                            })
-                            .collect();
+                        let axes_u32: Vec<u32> = axes_i64.iter().map(|&a| a as u32).collect();
 
-                        if let Ok(out_shape) = infer_unsqueeze_shape(input_shape, &axes_u32) {
-                            shape_overrides.insert(output_id, out_shape.clone());
-                            operand_shapes.insert(output_id, out_shape);
+                        let out_shape = infer_unsqueeze_shape(input_shape, &axes_u32)?;
+                        shape_overrides.insert(output_id, out_shape.clone());
+                        operand_shapes.insert(output_id, out_shape);
 
-                            // Preserve input type for unsqueeze output
-                            if let Some(input_operand) = graph.operand(input_id) {
-                                type_overrides
-                                    .insert(output_id, input_operand.descriptor.data_type);
-                            }
+                        // Preserve input type for unsqueeze output
+                        if let Some(input_operand) = graph.operand(input_id) {
+                            type_overrides.insert(output_id, input_operand.descriptor.data_type);
                         }
                     }
                 }
@@ -2742,22 +2769,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let indices_shape = operand_shapes.get(&op.input_operands()[1]);
                 let axis = match &op.operator {
                     Operator::Gather { options, .. } | Operator::GatherElements { options, .. } => {
-                        options.as_ref().map(|o| o.axis as i64).unwrap_or(0)
+                        options.as_ref().map(|o| o.axis as usize).unwrap_or(0)
                     }
                     _ => 0,
                 };
                 if let (Some(data_shape), Some(indices_shape)) = (data_shape, indices_shape) {
-                    let rank = data_shape.len() as i64;
-                    let mut axis = axis;
-                    if axis < 0 {
-                        axis += rank;
+                    let rank = data_shape.len();
+                    if axis >= rank {
+                        return Err(GraphError::ConversionFailed {
+                            format: "onnx".to_string(),
+                            reason: format!(
+                                "gather axis {} out of bounds for rank {}",
+                                axis, rank
+                            ),
+                        });
                     }
-                    if axis >= 0 && (axis as usize) < data_shape.len() {
-                        let mut out_shape = indices_shape.clone();
-                        out_shape.extend_from_slice(&data_shape[(axis as usize + 1)..]);
-                        shape_overrides.insert(output_id, out_shape.clone());
-                        operand_shapes.insert(output_id, out_shape);
-                    }
+                    let mut out_shape = indices_shape.clone();
+                    out_shape.extend_from_slice(&data_shape[(axis + 1)..]);
+                    shape_overrides.insert(output_id, out_shape.clone());
+                    operand_shapes.insert(output_id, out_shape);
                 }
             }
 
@@ -4806,11 +4836,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let mut normalized_axes = Vec::with_capacity(axes.len());
                 for axis in axes {
-                    let mut axis = axis;
-                    if axis < 0 {
-                        axis += rank_i64;
-                    }
-                    if axis < 0 || axis >= rank_i64 {
+                    if axis >= rank_i64 {
                         return Err(GraphError::ConversionFailed {
                             format: "onnx".to_string(),
                             reason: format!("reverse axis {axis} out of range for rank {rank}"),
@@ -4917,11 +4943,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     Operator::CumulativeSum { options, .. } => options.as_ref(),
                     _ => None,
                 };
-                let mut axis = opts.map(|o| o.axis as i64).unwrap_or(0);
-                if rank > 0 && axis < 0 {
-                    axis += rank;
-                }
-                if rank > 0 && (axis < 0 || axis >= rank) {
+                let axis = opts.map(|o| o.axis as i64).unwrap_or(0);
+                if rank > 0 && axis >= rank {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
                         reason: format!(
@@ -7655,17 +7678,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 let axes: Vec<usize> = resample_opts
                     .filter(|o| o.axes.len() == 2)
-                    .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>())
-                    .unwrap_or_else(|| vec![rank as i64 - 2, rank as i64 - 1])
-                    .into_iter()
-                    .map(|a| {
-                        if a < 0 {
-                            (rank as i64 + a) as usize
-                        } else {
-                            a as usize
-                        }
-                    })
-                    .collect();
+                    .map(|o| o.axes.iter().map(|&u| u as usize).collect())
+                    .unwrap_or_else(|| {
+                        vec![
+                            rank.saturating_sub(2),
+                            rank.saturating_sub(1),
+                        ]
+                    });
                 if axes.len() != 2 || axes.iter().any(|&a| a >= rank) {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
@@ -7801,17 +7820,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             reason: "gatherElements requires rank >= 1 input".to_string(),
                         });
                     }
-                    let mut axis = match &op.operator {
+                    let axis = match &op.operator {
                         Operator::Gather { options, .. }
                         | Operator::GatherElements { options, .. } => {
-                            options.as_ref().map(|o| o.axis as i64).unwrap_or(0)
+                            options.as_ref().map(|o| o.axis as usize).unwrap_or(0)
                         }
                         _ => 0,
                     };
-                    if axis < 0 {
-                        axis += rank as i64;
-                    }
-                    if axis < 0 || axis as usize >= rank {
+                    if axis >= rank {
                         return Err(GraphError::ConversionFailed {
                             format: "onnx".to_string(),
                             reason: format!(
@@ -7821,8 +7837,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         });
                     }
                     let dim_size =
-                        get_static_or_max_size(&data_operand.descriptor.shape[axis as usize])
-                            as i64;
+                        get_static_or_max_size(&data_operand.descriptor.shape[axis]) as i64;
 
                     let indices_i64 = format!("{}_indices_i64", op_name);
                     nodes.push(Self::create_cast_node(
@@ -7868,7 +7883,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         attribute: vec![AttributeProto {
                             name: "axis".to_string(),
                             r#type: AttributeType::Int as i32,
-                            i: axis,
+                            i: axis as i64,
                             ..Default::default()
                         }],
                         ..Default::default()
@@ -8190,7 +8205,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 })?;
                 let input_dtype = Self::data_type_code(input_operand.descriptor.data_type);
                 let input_shape = input_operand.descriptor.static_or_max_shape();
-                let dim_at_axis: i64 = input_shape.get(axis).copied().unwrap_or(0) as i64;
+                let rank = input_shape.len();
+                if axis >= rank {
+                    return Err(GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!(
+                            "split axis {} out of bounds for rank {}",
+                            axis_attr, rank
+                        ),
+                    });
+                }
+                let dim_at_axis: i64 = input_shape[axis] as i64;
 
                 let equal_sizes = || {
                     (0..num_outputs)
@@ -8659,21 +8684,18 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
 
                 if let Some(output_id) = op.output_operand {
-                    let mut output_shape = input_shape.clone();
-                    if op.op_type() == "unsqueeze" {
-                        let mut axes: Vec<usize> = match &op.operator {
+                    let output_shape = if op.op_type() == "unsqueeze" {
+                        let axes: Vec<usize> = match &op.operator {
                             Operator::Unsqueeze { options, .. } => options
                                 .as_ref()
                                 .map(|o| o.axes.iter().map(|&u| u as usize).collect())
                                 .unwrap_or_default(),
                             _ => vec![],
                         };
-                        axes.sort_unstable();
-                        for axis in axes {
-                            let idx = axis.min(output_shape.len());
-                            output_shape.insert(idx, 1);
-                        }
+                        let axes_u32: Vec<u32> = axes.iter().map(|&a| a as u32).collect();
+                        infer_unsqueeze_shape(&input_shape, &axes_u32)?
                     } else {
+                        let mut output_shape = input_shape.clone();
                         let mut axes: Vec<usize> = match &op.operator {
                             Operator::Squeeze { options, .. } => options
                                 .as_ref()
@@ -8693,11 +8715,20 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         };
                         axes.sort_unstable_by(|a, b| b.cmp(a));
                         for axis in axes {
-                            if axis < output_shape.len() {
-                                output_shape.remove(axis);
+                            if axis >= output_shape.len() {
+                                return Err(GraphError::ConversionFailed {
+                                    format: "onnx".to_string(),
+                                    reason: format!(
+                                        "squeeze axis {} out of bounds for rank {}",
+                                        axis,
+                                        output_shape.len()
+                                    ),
+                                });
                             }
+                            output_shape.remove(axis);
                         }
-                    }
+                        output_shape
+                    };
                     operand_shapes.insert(output_id, output_shape);
                 }
 
