@@ -6133,13 +6133,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 }
             } else if matches!(&op, Operation::LstmCell { .. }) {
-                // WebNN lstmCell: input, weight, recurrentWeight, hiddenState, [bias], [recurrentBias], [cellState].
+                // WebNN lstmCell: input, weight, recurrentWeight, hiddenState, cellState; biases in options.
                 // ONNX LSTM: X, W, R, B, sequence_lens?, initial_h?, initial_c? (all 3D where needed).
-                if op.input_operands().len() < 4 {
+                if op.input_operands().len() < 5 {
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
                         reason: format!(
-                            "lstmCell requires at least 4 inputs (input, weight, recurrentWeight, hiddenState), got {}",
+                            "lstmCell requires 5 inputs (input, weight, recurrentWeight, hiddenState, cellState), got {}",
                             op.input_operands().len()
                         ),
                     });
@@ -6148,6 +6148,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let weight_id = op.input_operands()[1];
                 let recurrent_weight_id = op.input_operands()[2];
                 let hidden_state_id = op.input_operands()[3];
+                let cell_state_id = op.input_operands()[4];
                 let output_ids = op.output_operands_slice();
                 if output_ids.is_empty() {
                     return Err(GraphError::ConversionFailed {
@@ -6159,6 +6160,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let weight_name = operand_name(graph, weight_id);
                 let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
                 let hidden_state_name = operand_name(graph, hidden_state_id);
+                let cell_state_name = operand_name(graph, cell_state_id);
                 let output_hidden_name = operand_name(graph, output_ids[0]);
                 let output_cell_name = output_ids.get(1).map(|&id| operand_name(graph, id));
                 let weight_operand = graph.operand(weight_id).ok_or_else(|| {
@@ -6189,20 +6191,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             .to_string(),
                 })?;
                 let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
-                let input_operand = graph.operand(input_id).ok_or_else(|| {
-                    Self::invalid_operand("lstmCell input lookup", input_id, Some((op, idx)))
-                })?;
-                let input_shape = input_operand.descriptor.static_or_max_shape();
-                let batch_size = input_shape.first().copied().unwrap_or(1) as i64;
-                // Identify optional inputs by name (bias, recurrentBias, cellState)
-                // lstmCell optional inputs are in options (MLLstmCellOptions); positionals are [input, weight, recurrentWeight, hiddenState] only.
+                graph
+                    .operand(input_id)
+                    .ok_or_else(|| Self::invalid_operand("lstmCell input lookup", input_id, Some((op, idx))))?;
+                // Optional biases / peephole in MLLstmCellOptions.
                 let lstm_cell_opts = match &op {
                     Operation::LstmCell { options, .. } => options.as_ref(),
                     _ => None,
                 };
                 let bias_operand_id = lstm_cell_opts.and_then(|o| o.bias);
                 let recurrent_bias_operand_id = lstm_cell_opts.and_then(|o| o.recurrent_bias);
-                let cell_state_operand_id: Option<u32> = None; // lstmCell does not have initialCellState in MLLstmCellOptions; add if spec adds it
                 let bias_name = lstm_cell_opts
                     .and_then(|o| o.bias)
                     .map(|id| operand_name(graph, id))
@@ -6356,21 +6354,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op_type: "Unsqueeze".to_string(),
                     ..Default::default()
                 });
-                // initial_c: cellState if present else zero; then Unsqueeze(axis=0) -> [1, batch, hidden]
-                let zero_c = format!("{}_initial_c_zero", op_name);
-                initializers.push(Self::create_vector_initializer(
-                    zero_c.clone(),
-                    input_dtype,
-                    vec![batch_size, hidden_size as i64],
-                    0.0,
-                ));
-                let c_source = if let Some(id) = cell_state_operand_id {
-                    operand_name(graph, id)
-                } else {
-                    zero_c
-                };
+                // initial_c: cellState 2D -> Unsqueeze(axis=0) -> [1, batch, hidden]
                 nodes.push(NodeProto {
-                    input: vec![c_source, axes0_name.clone()],
+                    input: vec![cell_state_name.clone(), axes0_name.clone()],
                     output: vec![c_3d_name.clone()],
                     name: format!("{}_unsqueeze_c", op_name),
                     op_type: "Unsqueeze".to_string(),

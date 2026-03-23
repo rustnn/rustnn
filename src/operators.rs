@@ -503,6 +503,8 @@ pub enum Operation {
         input: OperandIndex,
         weight: OperandIndex,
         recurrence: OperandIndex,
+        hidden_state: OperandIndex,
+        cell_state: OperandIndex,
         options: Option<MLLstmCellOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -1645,11 +1647,19 @@ impl Operation {
                 input,
                 weight,
                 recurrence,
+                hidden_state,
+                cell_state,
                 options,
                 ..
             } => (
                 tag.clone(),
-                vec![*input, *weight, *recurrence],
+                vec![
+                    *input,
+                    *weight,
+                    *recurrence,
+                    *hidden_state,
+                    *cell_state,
+                ],
                 OO::LstmCell(options.clone().unwrap_or_default()),
             ),
             Operation::Pad { input, options, .. } => (
@@ -2288,10 +2298,12 @@ impl Operation {
                 options: attributes.as_lstm().cloned(),
                 outputs: outputs.to_vec(),
             }),
-            "lstmCell" if input_operands.len() >= 3 => Some(Operation::LstmCell {
+            "lstmCell" if input_operands.len() >= 5 => Some(Operation::LstmCell {
                 input: at(input_operands, 0)?,
                 weight: at(input_operands, 1)?,
                 recurrence: at(input_operands, 2)?,
+                hidden_state: at(input_operands, 3)?,
+                cell_state: at(input_operands, 4)?,
                 options: attributes.as_lstm_cell().cloned(),
                 outputs: outputs.to_vec(),
             }),
