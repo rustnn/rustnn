@@ -6191,9 +6191,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             .to_string(),
                 })?;
                 let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
-                graph
-                    .operand(input_id)
-                    .ok_or_else(|| Self::invalid_operand("lstmCell input lookup", input_id, Some((op, idx))))?;
+                graph.operand(input_id).ok_or_else(|| {
+                    Self::invalid_operand("lstmCell input lookup", input_id, Some((op, idx)))
+                })?;
                 // Optional biases / peephole in MLLstmCellOptions.
                 let lstm_cell_opts = match &op {
                     Operation::LstmCell { options, .. } => options.as_ref(),

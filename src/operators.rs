@@ -1653,13 +1653,7 @@ impl Operation {
                 ..
             } => (
                 tag.clone(),
-                vec![
-                    *input,
-                    *weight,
-                    *recurrence,
-                    *hidden_state,
-                    *cell_state,
-                ],
+                vec![*input, *weight, *recurrence, *hidden_state, *cell_state],
                 OO::LstmCell(options.clone().unwrap_or_default()),
             ),
             Operation::Pad { input, options, .. } => (
