@@ -74,12 +74,14 @@ pub struct MLOperatorOptions {
 // Dictionaries extending MLOperatorOptions (spec order)
 // ---------------------------------------------------------------------------
 
+/// TODO MTAX put in link to w3c spec for all structss
 /// MLArgMinMaxOptions. argMin / argMax.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
     #[serde(default)]
     pub label: String,
+    // TODO MTAX axis and keep_dimensions is not part of the orignal struct
     #[serde(default)]
     pub axis: u32,
     #[serde(default)]
@@ -102,6 +104,7 @@ fn default_batch_norm_epsilon() -> f64 {
 pub struct MLBatchNormalizationOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX scale and bias are not optional
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
     #[serde(default = "default_batch_norm_axis")]
@@ -123,14 +126,16 @@ impl Default for MLBatchNormalizationOptions {
 }
 
 /// MLCastOptions. cast.
+/// TODO MTAX there is no MLCastOptions. The operator uses MLOperatorOptions
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLCastOptions {
     #[serde(default)]
     pub label: String,
     /// Target data type (e.g. "float32", "int32").
+    /// TODO MTAX to is part of the operator
     #[serde(default)]
-    pub to: String,
+    pub to: String, 
 }
 
 /// MLClampOptions. clamp.
@@ -139,6 +144,7 @@ pub struct MLCastOptions {
 pub struct MLClampOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX min_value and max_value are not optional
     pub min_value: Option<serde_json::Value>, // MLNumber
     pub max_value: Option<serde_json::Value>, // MLNumber
 }
@@ -165,6 +171,7 @@ pub struct MLConv2dOptions {
     pub input_layout: String, // "nchw" | "nhwc"
     #[serde(default)]
     pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
+    /// TODO MTAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -198,6 +205,7 @@ pub struct MLConvTranspose2dOptions {
     #[serde(default)]
     pub output_padding: Vec<u32>,
     /// Output spatial shape [H, W]. WebNN camelCase: outputSizes.
+    /// TOOD MTAX outputSizes is not optional
     pub output_sizes: Option<Vec<u32>>,
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
@@ -205,6 +213,7 @@ pub struct MLConvTranspose2dOptions {
     pub input_layout: String,
     #[serde(default)]
     pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
+    /// TODO MTAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -226,6 +235,7 @@ impl Default for MLConvTranspose2dOptions {
 }
 
 /// MLConstantOptions. constant (interchange: init, data, dataType, shape).
+/// TODO MTAX non-existing struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
@@ -240,6 +250,7 @@ pub struct MLConstantOptions {
 }
 
 /// MLConcatOptions. concat.
+/// TODO MTAX non-existing struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConcatOptions {
@@ -255,8 +266,10 @@ pub struct MLConcatOptions {
 pub struct MLCumulativeSumOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX axis is not part of the struct
     #[serde(default)]
     pub axis: u32,
+    /// TODO MTAX exclusive and reserved have a default value of false
     #[serde(default)]
     pub exclusive: bool,
     #[serde(default)]
@@ -265,6 +278,7 @@ pub struct MLCumulativeSumOptions {
 
 /// MLExpandOptions. expand (newShape or axes from attributes for interchange).
 /// newShape uses MLDimension (static or dynamic) per WebNN IDL.
+/// TODO MTAX MLExpandOptions does not exist
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLExpandOptions {
@@ -272,6 +286,7 @@ pub struct MLExpandOptions {
     pub label: String,
     #[serde(default, rename = "newShape")]
     pub new_shape: Vec<MLDimension>,
+    /// TODO axis is not part of expand?
     #[serde(default)]
     pub axes: Vec<u32>,
 }
@@ -318,6 +333,7 @@ pub struct MLGatherOptions {
     #[serde(default)]
     pub axis: u32,
     /// gatherElements: batchDimensions (optional).
+    /// TODO MTAX batch_dimensions is not part of this struct
     pub batch_dimensions: Option<u32>,
 }
 
@@ -365,6 +381,7 @@ impl Default for MLGemmOptions {
 pub struct MLGruOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX none of the arguments in this struct is optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub initial_hidden_state: Option<OperandIndex>,
@@ -377,6 +394,7 @@ pub struct MLGruOptions {
     #[serde(default)]
     pub layout: String, // "zrn" | "rzn"
     pub activations: Option<Vec<String>>, // MLRecurrentNetworkActivation
+    /// TODO MTAX hidden_size is not part of this struct. it is passed to the operator.
     pub hidden_size: Option<u32>,
 }
 
@@ -386,13 +404,16 @@ pub struct MLGruOptions {
 pub struct MLGruCellOptions {
     #[serde(default)]
     pub label: String,
+    // TODO MTAX bias and recurrent_bias is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     #[serde(default)]
     pub reset_after: bool,
     #[serde(default)]
     pub layout: String,
+    /// TODO MTAX activations is not optional. does it make sense to have an option instead of an empty vector
     pub activations: Option<Vec<String>>,
+    /// TODO MTAX hidden_size is not part of this struct. it is part of the operator.
     pub hidden_size: Option<u32>,
 }
 
@@ -440,6 +461,7 @@ fn default_hard_swish_beta() -> f64 {
 pub struct MLHardSwishOptions {
     #[serde(default)]
     pub label: String,
+    // TODO MTAX alpha and beta are not part of this struct. the default functions could go as well.
     #[serde(default = "default_hard_swish_alpha")]
     pub alpha: f64,
     #[serde(default = "default_hard_swish_beta")]
@@ -466,10 +488,12 @@ fn default_instance_norm_epsilon() -> f64 {
 pub struct MLInstanceNormalizationOptions {
     #[serde(default)]
     pub label: String,
+    // TODO MTAX scale and bias are not optional
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
     /// When exactly one of scale/bias is provided (2 operands), disambiguates so converters
     /// know which optional is present. Omitted when 1 or 3 operands.
+    /// TODO MTAX has_Scale, has_bias are not part of this struct
     #[serde(default)]
     pub has_scale: Option<bool>,
     #[serde(default)]
@@ -489,7 +513,7 @@ impl Default for MLInstanceNormalizationOptions {
             has_scale: None,
             has_bias: None,
             epsilon: default_instance_norm_epsilon(),
-            layout: String::new(),
+            layout: String::new(), /// TODO MTAX the default is "nchw"
         }
     }
 }
@@ -505,6 +529,7 @@ fn default_layer_norm_epsilon() -> f64 {
 pub struct MLLayerNormalizationOptions {
     #[serde(default)]
     pub label: String,
+    // TODO MTAX scale and bias are not optional, has_scale and has_bias has to go
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
     /// When exactly one of scale/bias is provided (2 operands), disambiguates for converters.
@@ -513,6 +538,7 @@ pub struct MLLayerNormalizationOptions {
     #[serde(default)]
     pub has_bias: Option<bool>,
     /// Omitted in JSON => None => use spec default [1..rank). Present (including []) => use as-is.
+    /// TODO MTAX axis is not an option. 
     pub axes: Option<Vec<u32>>,
     #[serde(default = "default_layer_norm_epsilon")]
     pub epsilon: f64,
@@ -586,11 +612,13 @@ impl Default for MLLinearOptions {
 }
 
 /// MLLstmOptions. lstm.
+/// TODO MTAX where is the default implementation for this struct?
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
@@ -611,11 +639,14 @@ pub struct MLLstmOptions {
 pub struct MLLstmCellOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
+    /// TODO MTAX verify default
     #[serde(default)]
     pub layout: String,
+    /// TODO MTAX does not make sense to have an optional vector?
     pub activations: Option<Vec<String>>,
 }
 
@@ -627,9 +658,11 @@ pub struct MLLstmCellOptions {
 pub struct MLPadOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX mode is an enum of type MLPaddingMode
     #[serde(default)]
     pub mode: String, // "constant" | "edge" | "reflection"
     pub value: Option<serde_json::Value>, // MLNumber
+    /// TODO MTAX beginning_padding and ending_pading are part of the Operator
     #[serde(default, rename = "beginningPadding")]
     pub beginning_padding: Vec<u32>,
     #[serde(default, rename = "endingPadding")]
@@ -642,18 +675,27 @@ pub struct MLPadOptions {
 pub struct MLPool2dOptions {
     #[serde(default)]
     pub label: String,
+    /// TODOX MTAX the spec is below. I guess this can be interpreted as optional? 
+    /// windowDimensions, of type sequence<[EnforceRange] unsigned long>
+    /// A list of length 2: [windowHeight, windowWidth]. Specifies the dimensions of the sliding window. The default value for the window dimensions are the height and width dimensions of the input shape.
     pub window_dimensions: Option<Vec<u32>>,
+    /// TODO MTAX check default value
     #[serde(default)]
     pub padding: Vec<u32>,
     #[serde(default)]
     pub strides: Vec<u32>,
     #[serde(default)]
     pub dilations: Vec<u32>,
+    /// TODO MTAX layout is enum MLInputOperandLayout
     #[serde(default)]
     pub layout: String,
     /// "floor" | "ceil". WebNN spec and WPT use "roundingType"; we accept both keys.
+    /// TODO MTAX enum MLRoundingType
     #[serde(default, alias = "roundingType")]
     pub output_shape_rounding: String,
+    /// TODO MTAX the specs reads 'if specified'. it's unclear what unspecified means
+    /// outputSizes, of type sequence<[EnforceRange] unsigned long>
+    /// A list of length 2: [outputHeight, outputWidth] Specifies the sizes of the two spatial dimensions of the output tensor. When the output sizes are explicitly specified, the outputShapeRounding is ignored. If not specified, the output sizes are automatically computed.
     pub output_sizes: Option<Vec<u32>>,
 }
 
@@ -672,6 +714,7 @@ pub struct MLReduceOptions {
 
 /// MLReshapeOptions. reshape (newShape from attributes for interchange).
 /// newShape uses MLDimension (static or dynamic) per WebNN IDL.
+/// TODO MTAX this enum does not exist
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReshapeOptions {
@@ -697,11 +740,14 @@ impl MLReshapeOptions {
 pub struct MLResample2dOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX enum MLInterpolationMode
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
+    /// TODO MTAX defaults for scales and sizes?
     #[serde(default)]
     pub scales: Vec<f32>,
     pub sizes: Option<Vec<u32>>,
+
     #[serde(default)]
     pub axes: Vec<u32>,
 }
@@ -718,6 +764,7 @@ pub struct MLReverseOptions {
 }
 
 /// MLSoftmaxOptions. softmax.
+/// TODO MTAX not actual struct, axis is part of the operator
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSoftmaxOptions {
@@ -727,12 +774,12 @@ pub struct MLSoftmaxOptions {
     pub axis: u32,
 }
 
-/// MLScatterOptions. scatterElements.
+/// MLScatterOptions. scatterElements
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLScatterOptions {
     #[serde(default)]
-    pub label: String,
+    pub label: String,  
     #[serde(default)]
     pub axis: u32,
 }
@@ -745,6 +792,7 @@ pub struct MLScatterOptions {
 pub struct MLSliceOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO MTAX starts, sizes are part of the operator.
     #[serde(default)]
     pub starts: Vec<u32>,
     #[serde(default)]
@@ -796,6 +844,7 @@ pub struct MLSplitOptions {
     pub label: String,
     #[serde(default)]
     pub axis: u32,
+    /// TODO MTAX splits are part of the operator
     #[serde(default, deserialize_with = "deserialize_splits")]
     pub splits: Vec<u32>,
 }
@@ -815,6 +864,8 @@ pub struct MLTransposeOptions {
 // These ops are not part of the official WebNN API; they are defined in
 // § 11 Operation Emulation and can be implemented via reshape().
 // ---------------------------------------------------------------------------
+
+/// TODO MTAX remove the unofficial ops!
 
 /// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -836,7 +887,10 @@ pub struct MLUnsqueezeOptions {
     pub axes: Vec<u32>,
 }
 
+/// TODO MTAX do not forget to remove flatten as well which is somewhere else
+
 /// MLTileOptions. tile (repetitions from attributes for interchange).
+/// TODO MTAX tile options is not part of the spec
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTileOptions {
@@ -853,6 +907,7 @@ pub struct MLTileOptions {
 pub struct MLTriangularOptions {
     #[serde(default)]
     pub label: String,
+    /// TODO upper is not optional
     /// None = not present => default true (upper). Some(b) => use b.
     pub upper: Option<bool>,
     #[serde(default)]
