@@ -12,7 +12,7 @@ mod tests {
     use rustnn::graph::{
         ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
     };
-    use rustnn::operator_options::{MLConv2dOptions, OperatorOptions};
+    use rustnn::operator_options::MLConv2dOptions;
     use rustnn::operators::Operation;
     use std::collections::HashMap;
     use trtx::cuda::DeviceBuffer;
@@ -35,11 +35,6 @@ mod tests {
         if let Some(l) = label {
             attr_obj.insert("label".to_string(), serde_json::Value::String(l));
         }
-        let opts = OperatorOptions::from_json_with_op_type(
-            webnn_op_type,
-            &serde_json::Value::Object(attr_obj),
-        )
-        .unwrap_or_default();
         let output_ids: Vec<u32> = if !output_operands.is_empty() {
             output_operands
         } else if let Some(o) = output_operand {
@@ -47,16 +42,15 @@ mod tests {
         } else {
             Vec::new()
         };
-        let operator = Operation::from_operator_options(
+        Operation::from_json_attributes(
             webnn_op_type,
             input_operands,
-            &opts,
             &output_ids,
+            &serde_json::Value::Object(attr_obj),
         )
         .unwrap_or_else(|| {
             panic!("trtx_operation: unsupported op {webnn_op_type} for operands {input_operands:?}")
-        });
-        operator
+        })
     }
 
     /// Helper to create a simple unary operation graph

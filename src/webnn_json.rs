@@ -376,19 +376,12 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        // Convert options to attributes (tagged union) and build operator
         let attrs_value = serde_json::Value::Object(node.options.clone());
-        let attributes = crate::operator_options::OperatorOptions::from_json_with_op_type(
-            &node.op,
-            &attrs_value,
-        )
-        .unwrap_or_default();
-
-        let operator = Operation::from_operator_options(
+        let operator = Operation::from_json_attributes(
             &node.op,
             &input_operands,
-            &attributes,
             &output_operand_ids,
+            &attrs_value,
         )
         .expect("unknown op type in JSON");
 
@@ -571,8 +564,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         Some(hidden_state_shape.clone())
                     } else if let Some(input_shape) = input_shapes.first() {
                         let hidden_size = match &op {
-                            Operation::GruCell { options, .. } => {
-                                options.as_ref().and_then(|o| o.hidden_size)
+                            Operation::GruCell { hidden_size, .. } => {
+                                (*hidden_size > 0).then_some(*hidden_size)
                             }
                             _ => None,
                         };
@@ -845,26 +838,25 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     }
                 }
 
-                // Slice: use starts/sizes from operator options (WebNN slice has no axes/ends/steps)
+                // Slice: starts/sizes are operation parameters (not MLSliceOptions).
                 "slice" => {
                     if let Some(input_shape) = input_shapes.first() {
                         match &op {
-                            Operation::Slice { options, .. } => options.as_ref().and_then(|opts| {
-                                if opts.starts.is_empty() || opts.sizes.is_empty() {
-                                    return None;
-                                }
-                                let sizes_u32 = opts.sizes_static_or_max();
-                                if opts.starts.len() != sizes_u32.len() {
-                                    return None;
-                                }
-                                let mut output = input_shape.clone();
-                                for (i, &sz) in sizes_u32.iter().enumerate() {
-                                    if i < output.len() {
-                                        output[i] = Dimension::Static(sz);
+                            Operation::Slice { starts, sizes, .. } => {
+                                if starts.is_empty() || sizes.is_empty() {
+                                    None
+                                } else if starts.len() != sizes.len() {
+                                    None
+                                } else {
+                                    let mut output = input_shape.clone();
+                                    for (i, sz) in sizes.iter().enumerate() {
+                                        if i < output.len() {
+                                            output[i] = Dimension::Static(sz.static_or_max());
+                                        }
                                     }
+                                    Some(output)
                                 }
-                                Some(output)
-                            }),
+                            }
                             _ => None,
                         }
                     } else {
@@ -918,9 +910,13 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         _ => None,
                     },
                     "cast" => match &op {
-                        Operation::Cast { options, .. } => options
-                            .as_ref()
-                            .and_then(|o| parse_dtype(&serde_json::Value::String(o.to.clone()))),
+                        Operation::Cast { to, .. } => {
+                            if to.is_empty() {
+                                None
+                            } else {
+                                parse_dtype(&serde_json::Value::String(to.clone()))
+                            }
+                        }
                         _ => None,
                     },
                     "dequantizelinear" => input_types.get(1).cloned().or(Some(DataType::Float32)),

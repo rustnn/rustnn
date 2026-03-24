@@ -58,6 +58,117 @@ impl MLDimension {
     }
 }
 
+/// Scalar and sequence parameters that belong on the WebNN graph builder operation
+/// (method arguments) rather than in the options dictionary, as extracted from interchange JSON.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OperationExtras {
+    pub axis: Option<u32>,
+    pub to_data_type: Option<String>,
+    pub batch_dimensions: Option<u32>,
+    pub steps: Option<u32>,
+    pub hidden_size: Option<u32>,
+    pub beginning_padding: Vec<u32>,
+    pub ending_padding: Vec<u32>,
+    pub starts: Vec<u32>,
+    pub sizes: Vec<MLDimension>,
+    pub splits: Vec<u32>,
+    pub split_equal_parts: Option<u32>,
+}
+
+impl OperationExtras {
+    /// Remove operation-level keys from `v` (must be a JSON object) and return their values.
+    pub fn extract_and_strip(op_type: &str, v: &mut serde_json::Value) -> Self {
+        let mut out = Self::default();
+        let Some(obj) = v.as_object_mut() else {
+            return out;
+        };
+        let op = op_type.trim();
+        fn remove_u32(
+            obj: &mut serde_json::Map<String, serde_json::Value>,
+            key: &str,
+        ) -> Option<u32> {
+            obj.remove(key).and_then(|x| x.as_u64().map(|n| n as u32))
+        }
+        fn remove_u32_vec(
+            obj: &mut serde_json::Map<String, serde_json::Value>,
+            key: &str,
+        ) -> Vec<u32> {
+            obj.remove(key)
+                .and_then(|x| serde_json::from_value::<Vec<u32>>(x).ok())
+                .unwrap_or_default()
+        }
+        match op {
+            "argMin" | "argMax" => {
+                out.axis = remove_u32(obj, "axis");
+            }
+            "cast" => {
+                if let Some(s) = obj.remove("to").and_then(|x| x.as_str().map(|s| s.to_string())) {
+                    out.to_data_type = Some(s);
+                } else if let Some(s) = obj
+                    .remove("dataType")
+                    .and_then(|x| x.as_str().map(|s| s.to_string()))
+                {
+                    out.to_data_type = Some(s);
+                }
+            }
+            "cumulativeSum" => {
+                out.axis = remove_u32(obj, "axis");
+            }
+            "gather" | "gatherElements" => {
+                out.batch_dimensions = remove_u32(obj, "batchDimensions")
+                    .or_else(|| remove_u32(obj, "batch_dimensions"));
+            }
+            "gru" => {
+                out.steps = remove_u32(obj, "steps");
+                out.hidden_size = remove_u32(obj, "hiddenSize")
+                    .or_else(|| remove_u32(obj, "hidden_size"));
+            }
+            "gruCell" => {
+                out.hidden_size = remove_u32(obj, "hiddenSize")
+                    .or_else(|| remove_u32(obj, "hidden_size"));
+            }
+            "pad" => {
+                out.beginning_padding = remove_u32_vec(obj, "beginningPadding");
+                if out.beginning_padding.is_empty() {
+                    out.beginning_padding = remove_u32_vec(obj, "beginning_padding");
+                }
+                out.ending_padding = remove_u32_vec(obj, "endingPadding");
+                if out.ending_padding.is_empty() {
+                    out.ending_padding = remove_u32_vec(obj, "ending_padding");
+                }
+            }
+            "softmax" => {
+                out.axis = remove_u32(obj, "axis");
+            }
+            "slice" => {
+                out.starts = remove_u32_vec(obj, "starts");
+                if let Some(s) = obj.remove("sizes") {
+                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                        out.sizes = parsed;
+                    }
+                }
+            }
+            "split" => {
+                if let Some(sv) = obj.remove("splits") {
+                    match sv {
+                        serde_json::Value::Number(n) => {
+                            out.split_equal_parts = n.as_u64().map(|u| u as u32);
+                        }
+                        serde_json::Value::Array(_) => {
+                            if let Ok(parsed) = serde_json::from_value::<Vec<u32>>(sv) {
+                                out.splits = parsed;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Base: MLOperatorOptions
 // ---------------------------------------------------------------------------
@@ -74,16 +185,12 @@ pub struct MLOperatorOptions {
 // Dictionaries extending MLOperatorOptions (spec order)
 // ---------------------------------------------------------------------------
 
-/// TODO MTAX put in link to w3c spec for all structss
-/// MLArgMinMaxOptions. argMin / argMax.
+/// MLArgMinMaxOptions. argMin / argMax (axis is a builder method parameter, not in this dictionary).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
     #[serde(default)]
     pub label: String,
-    // TODO MTAX axis and keep_dimensions is not part of the orignal struct
-    #[serde(default)]
-    pub axis: u32,
     #[serde(default)]
     pub keep_dimensions: bool,
     #[serde(default)]
@@ -104,7 +211,7 @@ fn default_batch_norm_epsilon() -> f64 {
 pub struct MLBatchNormalizationOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX scale and bias are not optional
+    // TODO TMAX scale and bias are not optional
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
     #[serde(default = "default_batch_norm_axis")]
@@ -125,26 +232,13 @@ impl Default for MLBatchNormalizationOptions {
     }
 }
 
-/// MLCastOptions. cast.
-/// TODO MTAX there is no MLCastOptions. The operator uses MLOperatorOptions
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLCastOptions {
-    #[serde(default)]
-    pub label: String,
-    /// Target data type (e.g. "float32", "int32").
-    /// TODO MTAX to is part of the operator
-    #[serde(default)]
-    pub to: String, 
-}
-
 /// MLClampOptions. clamp.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLClampOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX min_value and max_value are not optional
+    // TODO TMAX min_value and max_value are not optional
     pub min_value: Option<serde_json::Value>, // MLNumber
     pub max_value: Option<serde_json::Value>, // MLNumber
 }
@@ -171,7 +265,7 @@ pub struct MLConv2dOptions {
     pub input_layout: String, // "nchw" | "nhwc"
     #[serde(default)]
     pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
-    /// TODO MTAX bias is not optional
+    // TODO TMAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -213,7 +307,7 @@ pub struct MLConvTranspose2dOptions {
     pub input_layout: String,
     #[serde(default)]
     pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
-    /// TODO MTAX bias is not optional
+    // TODO TMAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -235,7 +329,7 @@ impl Default for MLConvTranspose2dOptions {
 }
 
 /// MLConstantOptions. constant (interchange: init, data, dataType, shape).
-/// TODO MTAX non-existing struct
+// TODO TMAX non-existing struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
@@ -250,7 +344,7 @@ pub struct MLConstantOptions {
 }
 
 /// MLConcatOptions. concat.
-/// TODO MTAX non-existing struct
+// TODO TMAX non-existing struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConcatOptions {
@@ -260,16 +354,12 @@ pub struct MLConcatOptions {
     pub axis: u32,
 }
 
-/// MLCumulativeSumOptions. cumulativeSum.
+/// MLCumulativeSumOptions. cumulativeSum (axis is a builder method parameter).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLCumulativeSumOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX axis is not part of the struct
-    #[serde(default)]
-    pub axis: u32,
-    /// TODO MTAX exclusive and reserved have a default value of false
     #[serde(default)]
     pub exclusive: bool,
     #[serde(default)]
@@ -278,7 +368,7 @@ pub struct MLCumulativeSumOptions {
 
 /// MLExpandOptions. expand (newShape or axes from attributes for interchange).
 /// newShape uses MLDimension (static or dynamic) per WebNN IDL.
-/// TODO MTAX MLExpandOptions does not exist
+// TODO TMAX MLExpandOptions does not exist
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLExpandOptions {
@@ -324,7 +414,7 @@ impl Default for MLEluOptions {
     }
 }
 
-/// MLGatherOptions. gather / gatherElements.
+/// MLGatherOptions. gather / gatherElements (batchDimensions is a gatherElements parameter in WebNN).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGatherOptions {
@@ -332,9 +422,6 @@ pub struct MLGatherOptions {
     pub label: String,
     #[serde(default)]
     pub axis: u32,
-    /// gatherElements: batchDimensions (optional).
-    /// TODO MTAX batch_dimensions is not part of this struct
-    pub batch_dimensions: Option<u32>,
 }
 
 fn default_gemm_alpha() -> f64 {
@@ -381,7 +468,7 @@ impl Default for MLGemmOptions {
 pub struct MLGruOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX none of the arguments in this struct is optional
+    // TODO TMAX none of the arguments in this struct is optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub initial_hidden_state: Option<OperandIndex>,
@@ -394,8 +481,6 @@ pub struct MLGruOptions {
     #[serde(default)]
     pub layout: String, // "zrn" | "rzn"
     pub activations: Option<Vec<String>>, // MLRecurrentNetworkActivation
-    /// TODO MTAX hidden_size is not part of this struct. it is passed to the operator.
-    pub hidden_size: Option<u32>,
 }
 
 /// MLGruCellOptions. gruCell.
@@ -411,10 +496,8 @@ pub struct MLGruCellOptions {
     pub reset_after: bool,
     #[serde(default)]
     pub layout: String,
-    /// TODO MTAX activations is not optional. does it make sense to have an option instead of an empty vector
+    // TODO TMAX activations is not optional. does it make sense to have an option instead of an empty vector
     pub activations: Option<Vec<String>>,
-    /// TODO MTAX hidden_size is not part of this struct. it is part of the operator.
-    pub hidden_size: Option<u32>,
 }
 
 fn default_hard_sigmoid_alpha() -> f64 {
@@ -447,37 +530,6 @@ impl Default for MLHardSigmoidOptions {
     }
 }
 
-fn default_hard_swish_alpha() -> f64 {
-    1.0 / 6.0
-}
-
-fn default_hard_swish_beta() -> f64 {
-    0.5
-}
-
-/// MLHardSwishOptions. hardSwish (optional alpha/beta for interchange).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLHardSwishOptions {
-    #[serde(default)]
-    pub label: String,
-    // TODO MTAX alpha and beta are not part of this struct. the default functions could go as well.
-    #[serde(default = "default_hard_swish_alpha")]
-    pub alpha: f64,
-    #[serde(default = "default_hard_swish_beta")]
-    pub beta: f64,
-}
-
-impl Default for MLHardSwishOptions {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            alpha: default_hard_swish_alpha(),
-            beta: default_hard_swish_beta(),
-        }
-    }
-}
-
 fn default_instance_norm_epsilon() -> f64 {
     1e-5
 }
@@ -493,7 +545,7 @@ pub struct MLInstanceNormalizationOptions {
     pub bias: Option<OperandIndex>,
     /// When exactly one of scale/bias is provided (2 operands), disambiguates so converters
     /// know which optional is present. Omitted when 1 or 3 operands.
-    /// TODO MTAX has_Scale, has_bias are not part of this struct
+    // TODO TMAX has_Scale, has_bias are not part of this struct
     #[serde(default)]
     pub has_scale: Option<bool>,
     #[serde(default)]
@@ -513,7 +565,7 @@ impl Default for MLInstanceNormalizationOptions {
             has_scale: None,
             has_bias: None,
             epsilon: default_instance_norm_epsilon(),
-            layout: String::new(), /// TODO MTAX the default is "nchw"
+            layout: String::new(), // TODO TMAX the default is "nchw"
         }
     }
 }
@@ -538,7 +590,7 @@ pub struct MLLayerNormalizationOptions {
     #[serde(default)]
     pub has_bias: Option<bool>,
     /// Omitted in JSON => None => use spec default [1..rank). Present (including []) => use as-is.
-    /// TODO MTAX axis is not an option. 
+    // TODO TMAX axis is not an option. 
     pub axes: Option<Vec<u32>>,
     #[serde(default = "default_layer_norm_epsilon")]
     pub epsilon: f64,
@@ -612,13 +664,13 @@ impl Default for MLLinearOptions {
 }
 
 /// MLLstmOptions. lstm.
-/// TODO MTAX where is the default implementation for this struct?
+// TODO TMAX where is the default implementation for this struct?
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX bias, recurrent_bias and peephole_weight is not optional
+    // TODO TMAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
@@ -639,34 +691,27 @@ pub struct MLLstmOptions {
 pub struct MLLstmCellOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX bias, recurrent_bias and peephole_weight is not optional
+    // TODO TMAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
-    /// TODO MTAX verify default
+    // TODO TMAX verify default
     #[serde(default)]
     pub layout: String,
-    /// TODO MTAX does not make sense to have an optional vector?
+    // TODO TMAX does not make sense to have an optional vector?
     pub activations: Option<Vec<String>>,
 }
 
-/// MLPadOptions. pad.
-/// Note: In WebNN, padding lengths are MLOperands; we also support serializing them as
-/// beginning_padding/ending_padding arrays for graph interchange.
+/// MLPadOptions. pad (beginning/ending padding are builder method parameters).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPadOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX mode is an enum of type MLPaddingMode
+    // TODO TMAX mode is an enum of type MLPaddingMode
     #[serde(default)]
     pub mode: String, // "constant" | "edge" | "reflection"
     pub value: Option<serde_json::Value>, // MLNumber
-    /// TODO MTAX beginning_padding and ending_pading are part of the Operator
-    #[serde(default, rename = "beginningPadding")]
-    pub beginning_padding: Vec<u32>,
-    #[serde(default, rename = "endingPadding")]
-    pub ending_padding: Vec<u32>,
 }
 
 /// MLPool2dOptions. averagePool2d / l2Pool2d / maxPool2d.
@@ -679,21 +724,21 @@ pub struct MLPool2dOptions {
     /// windowDimensions, of type sequence<[EnforceRange] unsigned long>
     /// A list of length 2: [windowHeight, windowWidth]. Specifies the dimensions of the sliding window. The default value for the window dimensions are the height and width dimensions of the input shape.
     pub window_dimensions: Option<Vec<u32>>,
-    /// TODO MTAX check default value
+    // TODO TMAX check default value
     #[serde(default)]
     pub padding: Vec<u32>,
     #[serde(default)]
     pub strides: Vec<u32>,
     #[serde(default)]
     pub dilations: Vec<u32>,
-    /// TODO MTAX layout is enum MLInputOperandLayout
+    // TODO TMAX layout is enum MLInputOperandLayout
     #[serde(default)]
     pub layout: String,
     /// "floor" | "ceil". WebNN spec and WPT use "roundingType"; we accept both keys.
-    /// TODO MTAX enum MLRoundingType
+    // TODO TMAX enum MLRoundingType
     #[serde(default, alias = "roundingType")]
     pub output_shape_rounding: String,
-    /// TODO MTAX the specs reads 'if specified'. it's unclear what unspecified means
+    // TODO TMAX the specs reads 'if specified'. it's unclear what unspecified means
     /// outputSizes, of type sequence<[EnforceRange] unsigned long>
     /// A list of length 2: [outputHeight, outputWidth] Specifies the sizes of the two spatial dimensions of the output tensor. When the output sizes are explicitly specified, the outputShapeRounding is ignored. If not specified, the output sizes are automatically computed.
     pub output_sizes: Option<Vec<u32>>,
@@ -714,7 +759,7 @@ pub struct MLReduceOptions {
 
 /// MLReshapeOptions. reshape (newShape from attributes for interchange).
 /// newShape uses MLDimension (static or dynamic) per WebNN IDL.
-/// TODO MTAX this enum does not exist
+// TODO TMAX this enum does not exist
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReshapeOptions {
@@ -740,10 +785,10 @@ impl MLReshapeOptions {
 pub struct MLResample2dOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX enum MLInterpolationMode
+    // TODO TMAX enum MLInterpolationMode
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
-    /// TODO MTAX defaults for scales and sizes?
+    // TODO TMAX defaults for scales and sizes?
     #[serde(default)]
     pub scales: Vec<f32>,
     pub sizes: Option<Vec<u32>>,
@@ -763,17 +808,6 @@ pub struct MLReverseOptions {
     pub axes: Option<Vec<u32>>,
 }
 
-/// MLSoftmaxOptions. softmax.
-/// TODO MTAX not actual struct, axis is part of the operator
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLSoftmaxOptions {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub axis: u32,
-}
-
 /// MLScatterOptions. scatterElements
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -784,59 +818,17 @@ pub struct MLScatterOptions {
     pub axis: u32,
 }
 
-/// MLSliceOptions. slice.
-/// In WebNN, starts/sizes are MLOperands; we also support them as arrays for interchange.
-/// `sizes` uses MLDimension (static or dynamic) per WebNN IDL.
+/// MLSliceOptions. slice (starts and sizes are builder method parameters).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSliceOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX starts, sizes are part of the operator.
-    #[serde(default)]
-    pub starts: Vec<u32>,
-    #[serde(default)]
-    pub sizes: Vec<MLDimension>,
     #[serde(default)]
     pub strides: Vec<u32>,
 }
 
-impl MLSliceOptions {
-    /// Returns each size dimension as u32 (static value or dynamic maxSize).
-    pub fn sizes_static_or_max(&self) -> Vec<u32> {
-        self.sizes.iter().map(MLDimension::static_or_max).collect()
-    }
-}
-
-/// Deserialize splits as either a number (equal-split count; store empty vec, TRTX uses output count)
-/// or an array of sizes.
-fn deserialize_splits<'de, D>(d: D) -> Result<Vec<u32>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let v = serde_json::Value::deserialize(d)?;
-    match v {
-        serde_json::Value::Number(n) => {
-            let _ = n
-                .as_u64()
-                .ok_or_else(|| D::Error::custom("splits number out of range"))?;
-            Ok(Vec::new())
-        }
-        serde_json::Value::Array(arr) => arr
-            .iter()
-            .map(|e| {
-                e.as_u64()
-                    .ok_or_else(|| D::Error::custom("splits array element not u64"))
-                    .map(|u| u as u32)
-            })
-            .collect::<Result<Vec<u32>, _>>(),
-        serde_json::Value::Null => Ok(Vec::new()),
-        _ => Err(D::Error::custom("splits must be number or array")),
-    }
-}
-
-/// MLSplitOptions. split.
-/// Splits array from attributes for interchange (WebNN also has splits as MLOperand or number).
+/// MLSplitOptions. split (splits is a builder method parameter).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSplitOptions {
@@ -844,9 +836,6 @@ pub struct MLSplitOptions {
     pub label: String,
     #[serde(default)]
     pub axis: u32,
-    /// TODO MTAX splits are part of the operator
-    #[serde(default, deserialize_with = "deserialize_splits")]
-    pub splits: Vec<u32>,
 }
 
 /// MLTransposeOptions. transpose.
@@ -865,7 +854,7 @@ pub struct MLTransposeOptions {
 // § 11 Operation Emulation and can be implemented via reshape().
 // ---------------------------------------------------------------------------
 
-/// TODO MTAX remove the unofficial ops!
+// TODO TMAX remove the unofficial ops!
 
 /// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -887,10 +876,10 @@ pub struct MLUnsqueezeOptions {
     pub axes: Vec<u32>,
 }
 
-/// TODO MTAX do not forget to remove flatten as well which is somewhere else
+// TODO TMAX do not forget to remove flatten as well which is somewhere else
 
 /// MLTileOptions. tile (repetitions from attributes for interchange).
-/// TODO MTAX tile options is not part of the spec
+// TODO TMAX tile options is not part of the spec
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTileOptions {
@@ -934,9 +923,6 @@ pub enum OperatorOptions {
     /// MLBatchNormalizationOptions.
     BatchNormalization(MLBatchNormalizationOptions),
 
-    /// MLCastOptions.
-    Cast(MLCastOptions),
-
     /// MLClampOptions.
     Clamp(MLClampOptions),
 
@@ -976,9 +962,6 @@ pub enum OperatorOptions {
     /// MLHardSigmoidOptions.
     HardSigmoid(MLHardSigmoidOptions),
 
-    /// MLHardSwishOptions.
-    HardSwish(MLHardSwishOptions),
-
     /// MLInstanceNormalizationOptions.
     InstanceNormalization(MLInstanceNormalizationOptions),
 
@@ -1017,9 +1000,6 @@ pub enum OperatorOptions {
 
     /// MLScatterOptions.
     ScatterElements(MLScatterOptions),
-
-    /// MLSoftmaxOptions.
-    Softmax(MLSoftmaxOptions),
 
     /// MLSliceOptions.
     Slice(MLSliceOptions),
@@ -1069,7 +1049,7 @@ impl OperatorOptions {
             match normalized {
                 "argMin" | "argMax" => try_opt!(MLArgMinMaxOptions, ArgMinMax),
                 "batchNormalization" => try_opt!(MLBatchNormalizationOptions, BatchNormalization),
-                "cast" => try_opt!(MLCastOptions, Cast),
+                "cast" => try_opt!(MLOperatorOptions, Operator),
                 "clamp" => try_opt!(MLClampOptions, Clamp),
                 "conv2d" => try_opt!(MLConv2dOptions, Conv2d),
                 "convTranspose2d" => try_opt!(MLConvTranspose2dOptions, ConvTranspose2d),
@@ -1083,7 +1063,7 @@ impl OperatorOptions {
                 "gru" => try_opt!(MLGruOptions, Gru),
                 "gruCell" => try_opt!(MLGruCellOptions, GruCell),
                 "hardSigmoid" => try_opt!(MLHardSigmoidOptions, HardSigmoid),
-                "hardSwish" => try_opt!(MLHardSwishOptions, HardSwish),
+                "hardSwish" => try_opt!(MLOperatorOptions, Operator),
                 "instanceNormalization" => {
                     try_opt!(MLInstanceNormalizationOptions, InstanceNormalization)
                 }
@@ -1103,7 +1083,7 @@ impl OperatorOptions {
                 "resample2d" => try_opt!(MLResample2dOptions, Resample2d),
                 "reverse" => try_opt!(MLReverseOptions, Reverse),
                 "scatterElements" => try_opt!(MLScatterOptions, ScatterElements),
-                "softmax" => try_opt!(MLSoftmaxOptions, Softmax),
+                "softmax" => try_opt!(MLOperatorOptions, Operator),
                 "slice" => try_opt!(MLSliceOptions, Slice),
                 "split" => try_opt!(MLSplitOptions, Split),
                 "transpose" => try_opt!(MLTransposeOptions, Transpose),
@@ -1119,6 +1099,21 @@ impl OperatorOptions {
             None
         };
         try_from(value).or_else(|| Some(OperatorOptions::Operator(MLOperatorOptions::default())))
+    }
+
+    /// Like [`Self::from_json_with_op_type`], but strips operation-level fields into [`OperationExtras`]
+    /// (axis, cast target type, padding lengths, etc.) before deserializing the options dictionary.
+    ///
+    /// For building an [`crate::operators::Operation`], prefer [`crate::operators::Operation::from_json_attributes`],
+    /// which calls this and [`crate::operators::Operation::from_operator_options`] in one step.
+    pub fn from_json_with_op_type_and_extras(
+        op_type: &str,
+        value: &serde_json::Value,
+    ) -> (Self, OperationExtras) {
+        let mut v = value.clone();
+        let extras = OperationExtras::extract_and_strip(op_type, &mut v);
+        let opts = Self::from_json_with_op_type(op_type, &v).unwrap_or_default();
+        (opts, extras)
     }
 
     /// Return attributes as a JSON value (for code that expects a `serde_json::Value`).
@@ -1152,12 +1147,6 @@ impl OperatorOptions {
     pub fn as_batch_normalization(&self) -> Option<&MLBatchNormalizationOptions> {
         match self {
             OperatorOptions::BatchNormalization(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_cast(&self) -> Option<&MLCastOptions> {
-        match self {
-            OperatorOptions::Cast(o) => Some(o),
             _ => None,
         }
     }
@@ -1230,12 +1219,6 @@ impl OperatorOptions {
     pub fn as_hard_sigmoid(&self) -> Option<&MLHardSigmoidOptions> {
         match self {
             OperatorOptions::HardSigmoid(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_hard_swish(&self) -> Option<&MLHardSwishOptions> {
-        match self {
-            OperatorOptions::HardSwish(o) => Some(o),
             _ => None,
         }
     }
@@ -1314,12 +1297,6 @@ impl OperatorOptions {
     pub fn as_scatter_elements(&self) -> Option<&MLScatterOptions> {
         match self {
             OperatorOptions::ScatterElements(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_softmax(&self) -> Option<&MLSoftmaxOptions> {
-        match self {
-            OperatorOptions::Softmax(o) => Some(o),
             _ => None,
         }
     }

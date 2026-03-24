@@ -1002,7 +1002,13 @@ impl CoremlMlProgramConverter {
         graph: &GraphInfo,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
-        let Operation::Split { input, options, .. } = &op else {
+        let Operation::Split {
+            input,
+            splits,
+            options,
+            ..
+        } = &op
+        else {
             return Err(GraphError::ConversionFailed {
                 format: "CoreML MLProgram".to_string(),
                 reason: "expected Split operator".to_string(),
@@ -1029,26 +1035,24 @@ impl CoremlMlProgramConverter {
         // Add main input (x)
         inputs.insert("x".to_string(), Self::create_name_argument(input_name));
 
-        // Add num_splits or split_sizes from typed options
-        if let Some(opts) = options {
-            if opts.splits.is_empty() {
-                // Equal splits - use num_splits (from output count)
-                inputs.insert(
-                    "num_splits".to_string(),
-                    Self::create_int_argument(op.output_operands().len() as i32),
-                );
-            } else {
-                let split_sizes: Vec<i32> = opts.splits.iter().map(|&u| u as i32).collect();
-                inputs.insert(
-                    "split_sizes".to_string(),
-                    Self::create_int_array_argument(split_sizes),
-                );
-            }
+        // num_splits or split_sizes from operation; axis from MLSplitOptions.
+        let axis = options.as_ref().map(|o| o.axis).unwrap_or(0);
+        if splits.is_empty() {
             inputs.insert(
-                "axis".to_string(),
-                Self::create_int_argument(opts.axis as i32),
+                "num_splits".to_string(),
+                Self::create_int_argument(op.output_operands().len() as i32),
+            );
+        } else {
+            let split_sizes: Vec<i32> = splits.iter().map(|&u| u as i32).collect();
+            inputs.insert(
+                "split_sizes".to_string(),
+                Self::create_int_array_argument(split_sizes),
             );
         }
+        inputs.insert(
+            "axis".to_string(),
+            Self::create_int_argument(axis as i32),
+        );
 
         Ok(Self::create_mil_operation("split", inputs, outputs))
     }
@@ -1288,18 +1292,11 @@ impl CoremlMlProgramConverter {
             }
 
             // Softmax operation (axis is required by WebNN spec)
-            Operation::Softmax { options, .. } => {
+            Operation::Softmax { axis, .. } => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                let axis = options
-                    .as_ref()
-                    .ok_or_else(|| GraphError::ConversionFailed {
-                        format: "coreml_mlprogram".to_string(),
-                        reason: "softmax operation must have options with axis".to_string(),
-                    })?
-                    .axis;
-                inputs.insert("axis".to_string(), Self::create_immediate_int(axis));
+                inputs.insert("axis".to_string(), Self::create_immediate_int(*axis));
             }
 
             // Neg operation: implemented as mul by -1, requires x and y parameters
@@ -1924,27 +1921,31 @@ impl CoremlMlProgramConverter {
                 inputs.insert("interleave".to_string(), Self::create_immediate_bool(false));
             }
 
-            Operation::Slice { options, .. } => {
+            Operation::Slice {
+                starts,
+                sizes,
+                options,
+                ..
+            } => {
                 // slice_by_size: x, begin, size
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(opts) = options {
-                    if !opts.starts.is_empty() {
-                        inputs.insert(
-                            "begin".to_string(),
-                            Self::create_immediate_int_array(&opts.starts),
-                        );
-                    }
-                    if !opts.sizes.is_empty() {
-                        let sizes_u32 = opts.sizes_static_or_max();
-                        inputs.insert(
-                            "size".to_string(),
-                            Self::create_immediate_int_array(&sizes_u32),
-                        );
-                    }
+                if !starts.is_empty() {
+                    inputs.insert(
+                        "begin".to_string(),
+                        Self::create_immediate_int_array(starts),
+                    );
                 }
+                if !sizes.is_empty() {
+                    let sizes_u32: Vec<u32> = sizes.iter().map(|d| d.static_or_max()).collect();
+                    inputs.insert(
+                        "size".to_string(),
+                        Self::create_immediate_int_array(&sizes_u32),
+                    );
+                }
+                let _ = options;
             }
 
             Operation::Expand { options, .. } => {
@@ -2047,13 +2048,17 @@ impl CoremlMlProgramConverter {
                 );
             }
 
-            Operation::Split { options, .. } => {
+            Operation::Split {
+                splits,
+                options,
+                ..
+            } => {
                 // split: x, num_splits or split_sizes, axis
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
                 if let Some(opts) = options {
-                    if opts.splits.is_empty() {
+                    if splits.is_empty() {
                         inputs.insert(
                             "num_splits".to_string(),
                             Self::create_immediate_int(op.output_operands().len() as u32),
@@ -2061,7 +2066,7 @@ impl CoremlMlProgramConverter {
                     } else {
                         inputs.insert(
                             "split_sizes".to_string(),
-                            Self::create_immediate_int_array(&opts.splits),
+                            Self::create_immediate_int_array(splits),
                         );
                     }
                     inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
@@ -2077,17 +2082,21 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::Pad { options, .. } => {
+            Operation::Pad {
+                beginning_padding,
+                ending_padding,
+                options,
+                ..
+            } => {
                 // pad: x, pad, mode, constant_val
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
                 if let Some(opts) = options {
                     // CoreML expects pad as [begin_0, end_0, begin_1, end_1, ...]
-                    let pad: Vec<u32> = opts
-                        .beginning_padding
+                    let pad: Vec<u32> = beginning_padding
                         .iter()
-                        .zip(opts.ending_padding.iter())
+                        .zip(ending_padding.iter())
                         .flat_map(|(a, b)| [*a, *b])
                         .collect();
                     if !pad.is_empty() {
@@ -2144,14 +2153,14 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::ArgMax { options, .. } | Operation::ArgMin { options, .. } => {
+            Operation::ArgMax { axis, options, .. } | Operation::ArgMin { axis, options, .. } => {
                 // reduce_argmax/reduce_argmin: x, axis, keep_dims
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
+                inputs.insert("axis".to_string(), Self::create_immediate_int(*axis));
                 if let Some(opts) = options {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
                     inputs.insert(
                         "keep_dims".to_string(),
                         Self::create_immediate_bool(opts.keep_dimensions),
@@ -2160,17 +2169,15 @@ impl CoremlMlProgramConverter {
                 // Note: outputDataType is handled by the output tensor's data type
             }
 
-            Operation::Cast { options, .. } => {
+            Operation::Cast { to, .. } => {
                 // cast: x, dtype
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
                 // Add dtype parameter (required)
-                if let Some(opts) = options
-                    && !opts.to.is_empty()
-                {
-                    let to_type = &opts.to;
+                if !to.is_empty() {
+                    let to_type = to;
                     let dtype_string = match to_type.as_str() {
                         "float32" => "fp32",
                         "float16" => "fp16",
@@ -2238,17 +2245,17 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::CumulativeSum { options, .. } => {
+            Operation::CumulativeSum { axis, options, .. } => {
                 // cumsum: x, axis, exclusive, reverse
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
+                inputs.insert(
+                    "axis".to_string(),
+                    Self::create_int_argument(*axis as i32),
+                );
                 if let Some(opts) = options {
-                    inputs.insert(
-                        "axis".to_string(),
-                        Self::create_int_argument(opts.axis as i32),
-                    );
                     inputs.insert(
                         "exclusive".to_string(),
                         Self::create_immediate_bool(opts.exclusive),
@@ -3649,7 +3656,7 @@ mod tests {
     #[cfg(feature = "dynamic-inputs")]
     use crate::graph::DynamicDimension;
     use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind};
-    use crate::operator_options::OperatorOptions;
+    use crate::operator_options::{OperationExtras, OperatorOptions};
     use crate::operators::Operation;
 
     /// Build an `Operation` from WebNN-style `op` name, operand indices, and parsed options (tests).
@@ -3667,9 +3674,14 @@ mod tests {
         } else {
             Vec::new()
         };
-        let operator =
-            Operation::from_operator_options(op_type, &input_operands, &attributes, &output_ids)
-                .expect("valid test op");
+        let operator = Operation::from_operator_options(
+            op_type,
+            &input_operands,
+            &attributes,
+            &output_ids,
+            OperationExtras::default(),
+        )
+        .expect("valid test op");
         operator
     }
     #[cfg(feature = "dynamic-inputs")]

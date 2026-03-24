@@ -22,6 +22,10 @@
 //! ambiguity), and the corresponding ML*Options struct. All option types and MLDimension
 //! are reused from [crate::operator_options].
 //!
+//! Graph interchange JSON should use [`Operation::from_json_attributes`] (op type string,
+//! input/output operand ids, and one attributes object); it parses options and method-level
+//! fields and returns a complete [`Operation`].
+//!
 //! # Spec reference
 //!
 //! - [Web Neural Network API](https://www.w3.org/TR/webnn/)
@@ -37,16 +41,15 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::operator_options::{
-    MLArgMinMaxOptions, MLBatchNormalizationOptions, MLCastOptions, MLClampOptions,
-    MLConcatOptions, MLConstantOptions, MLConv2dOptions, MLConvTranspose2dOptions,
-    MLCumulativeSumOptions, MLEluOptions, MLExpandOptions, MLGatherOptions, MLGemmOptions,
-    MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions, MLHardSwishOptions,
-    MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
-    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
-    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions, MLReverseOptions,
-    MLScatterOptions, MLSliceOptions, MLSoftmaxOptions, MLSplitOptions, MLSqueezeOptions,
+    MLDimension, MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConcatOptions,
+    MLConstantOptions, MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions,
+    MLEluOptions, MLExpandOptions, MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions,
+    MLHardSigmoidOptions, MLInstanceNormalizationOptions, MLLayerNormalizationOptions,
+    MLLeakyReluOptions, MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions,
+    MLPadOptions, MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions,
+    MLReverseOptions, MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions,
     MLTileOptions, MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions, OperandIndex,
-    OperatorOptions,
+    OperationExtras, OperatorOptions,
 };
 
 // ---------------------------------------------------------------------------
@@ -306,12 +309,14 @@ pub enum Operation {
     /// [argMin()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-argmin)
     ArgMin {
         input: OperandIndex,
+        axis: u32,
         options: Option<MLArgMinMaxOptions>,
         outputs: Vec<OperandIndex>,
     },
     /// [argMax()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-argmax)
     ArgMax {
         input: OperandIndex,
+        axis: u32,
         options: Option<MLArgMinMaxOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -330,7 +335,8 @@ pub enum Operation {
     /// [cast()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-cast)
     Cast {
         input: OperandIndex,
-        options: Option<MLCastOptions>,
+        to: String,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -379,6 +385,7 @@ pub enum Operation {
     /// [cumulativeSum()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-cumulativesum)
     CumulativeSum {
         input: OperandIndex,
+        axis: u32,
         options: Option<MLCumulativeSumOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -404,6 +411,7 @@ pub enum Operation {
     Gather {
         input: OperandIndex,
         indices: OperandIndex,
+        batch_dimensions: Option<u32>,
         options: Option<MLGatherOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -411,6 +419,7 @@ pub enum Operation {
     GatherElements {
         input: OperandIndex,
         indices: OperandIndex,
+        batch_dimensions: Option<u32>,
         options: Option<MLGatherOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -430,6 +439,8 @@ pub enum Operation {
         input: OperandIndex,
         weight: OperandIndex,
         recurrence: OperandIndex,
+        steps: u32,
+        hidden_size: u32,
         options: Option<MLGruOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -439,6 +450,7 @@ pub enum Operation {
         weight: OperandIndex,
         recurrence: OperandIndex,
         hidden_state: OperandIndex,
+        hidden_size: u32,
         options: Option<MLGruCellOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -453,7 +465,7 @@ pub enum Operation {
     /// [hardSwish()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-hardswish)
     HardSwish {
         input: OperandIndex,
-        options: Option<MLHardSwishOptions>,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -513,6 +525,8 @@ pub enum Operation {
     /// [pad()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-pad)
     Pad {
         input: OperandIndex,
+        beginning_padding: Vec<u32>,
+        ending_padding: Vec<u32>,
         options: Option<MLPadOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -649,7 +663,8 @@ pub enum Operation {
     /// [softmax()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-softmax)
     Softmax {
         input: OperandIndex,
-        options: Option<MLSoftmaxOptions>,
+        axis: u32,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -657,6 +672,8 @@ pub enum Operation {
     /// [slice()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-slice)
     Slice {
         input: OperandIndex,
+        starts: Vec<u32>,
+        sizes: Vec<MLDimension>,
         options: Option<MLSliceOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -665,6 +682,8 @@ pub enum Operation {
     /// [split()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-split)
     Split {
         input: OperandIndex,
+        splits: Vec<u32>,
+        split_equal_parts: Option<u32>,
         options: Option<MLSplitOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -829,7 +848,8 @@ impl Serialize for Operation {
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        let (op_type, input_operands, attributes) = self.to_legacy();
+        let (op_type, input_operands, _) = self.to_legacy();
+        let attributes = self.attributes_json_value();
         let outs = self.outputs();
         let output_operands: Vec<u32> = outs.to_vec();
         let output_operand = outs.first().copied();
@@ -865,19 +885,6 @@ impl<'de> Deserialize<'de> for Operation {
         }
         let h = OperationHelper::deserialize(deserializer)?;
         let attributes_value = merge_top_level_label_into_attributes(h.attributes, h.label);
-        let attributes = if attributes_value.is_null() {
-            OperatorOptions::default()
-        } else if let Some(obj) = attributes_value.as_object() {
-            if obj.is_empty() {
-                OperatorOptions::default()
-            } else {
-                OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value)
-                    .unwrap_or_default()
-            }
-        } else {
-            OperatorOptions::from_json_with_op_type(&h.op_type, &attributes_value)
-                .unwrap_or_default()
-        };
         let output_ids: Vec<u32> = if !h.output_operands.is_empty() {
             h.output_operands.clone()
         } else if let Some(o) = h.output_operand {
@@ -885,7 +892,7 @@ impl<'de> Deserialize<'de> for Operation {
         } else {
             Vec::new()
         };
-        Operation::from_operator_options(&h.op_type, &h.input_operands, &attributes, &output_ids)
+        Operation::from_json_attributes(&h.op_type, &h.input_operands, &output_ids, &attributes_value)
             .ok_or_else(|| {
                 serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
             })
@@ -1264,6 +1271,83 @@ impl Operation {
         self.attributes().to_value()
     }
 
+    /// Serialized `attributes` for JSON interchange: options dictionary plus operation-level parameters
+    /// (axis, cast target type, padding lengths, etc.).
+    pub fn attributes_json_value(&self) -> serde_json::Value {
+        let mut v = self.to_legacy().2.to_value();
+        let Some(obj) = v.as_object_mut() else {
+            return v;
+        };
+        match self {
+            Operation::ArgMin { axis, .. } | Operation::ArgMax { axis, .. } => {
+                obj.insert("axis".to_string(), serde_json::json!(axis));
+            }
+            Operation::Cast { to, .. } => {
+                if !to.is_empty() {
+                    obj.insert("to".to_string(), serde_json::Value::String(to.clone()));
+                }
+            }
+            Operation::CumulativeSum { axis, .. } => {
+                obj.insert("axis".to_string(), serde_json::json!(axis));
+            }
+            Operation::Gather {
+                batch_dimensions, ..
+            }
+            | Operation::GatherElements {
+                batch_dimensions, ..
+            } => {
+                if let Some(bd) = batch_dimensions {
+                    obj.insert("batchDimensions".to_string(), serde_json::json!(bd));
+                }
+            }
+            Operation::Gru {
+                steps,
+                hidden_size,
+                ..
+            } => {
+                obj.insert("steps".to_string(), serde_json::json!(steps));
+                obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
+            }
+            Operation::GruCell { hidden_size, .. } => {
+                obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
+            }
+            Operation::Pad {
+                beginning_padding,
+                ending_padding,
+                ..
+            } => {
+                obj.insert(
+                    "beginningPadding".to_string(),
+                    serde_json::json!(beginning_padding),
+                );
+                obj.insert(
+                    "endingPadding".to_string(),
+                    serde_json::json!(ending_padding),
+                );
+            }
+            Operation::Softmax { axis, .. } => {
+                obj.insert("axis".to_string(), serde_json::json!(axis));
+            }
+            Operation::Slice { starts, sizes, .. } => {
+                obj.insert("starts".to_string(), serde_json::json!(starts));
+                obj.insert("sizes".to_string(), serde_json::json!(sizes));
+            }
+            Operation::Split {
+                splits,
+                split_equal_parts,
+                ..
+            } => {
+                if let Some(n) = split_equal_parts {
+                    obj.insert("splits".to_string(), serde_json::json!(n));
+                } else if !splits.is_empty() {
+                    obj.insert("splits".to_string(), serde_json::json!(splits));
+                }
+            }
+            _ => {}
+        }
+        v
+    }
+
     /// Get a single attribute by key as JSON value. Use for code that still expects key-based lookup.
     pub fn get_attr(&self, key: &str) -> Option<serde_json::Value> {
         self.attributes().get(key)
@@ -1494,7 +1578,7 @@ impl Operation {
             Operation::Cast { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::Cast(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Clamp { input, options, .. } => (
                 tag.clone(),
@@ -1610,7 +1694,7 @@ impl Operation {
             Operation::HardSwish { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::HardSwish(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::InstanceNormalization { input, options, .. } => (
                 tag.clone(),
@@ -1765,7 +1849,7 @@ impl Operation {
             Operation::Softmax { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::Softmax(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Slice { input, options, .. } => (
                 tag.clone(),
@@ -1905,11 +1989,40 @@ impl Operation {
         }
     }
 
+    /// Parse WebNN-style attributes JSON (method parameters and options keys in one object),
+    /// wire operand indices, and return a fully built [`Operation`].
+    ///
+    /// This is the preferred entry point for graph interchange: callers do not handle
+    /// [`OperatorOptions`] or [`OperationExtras`] separately. Null or empty object attributes
+    /// deserialize as default options with no stripped extras.
+    ///
+    /// Returns `None` if `op_type` is unknown or operand lengths do not match.
+    pub fn from_json_attributes(
+        op_type: &str,
+        input_operands: &[u32],
+        outputs: &[OperandIndex],
+        attributes: &serde_json::Value,
+    ) -> Option<Self> {
+        let (opts, extras) = if attributes.is_null() {
+            (OperatorOptions::default(), OperationExtras::default())
+        } else if let Some(obj) = attributes.as_object() {
+            if obj.is_empty() {
+                (OperatorOptions::default(), OperationExtras::default())
+            } else {
+                OperatorOptions::from_json_with_op_type_and_extras(op_type, attributes)
+            }
+        } else {
+            OperatorOptions::from_json_with_op_type_and_extras(op_type, attributes)
+        };
+        Self::from_operator_options(op_type, input_operands, &opts, outputs, extras)
+    }
+
     /// Parses WebNN interchange: builder/JSON `op_type` string (e.g. camelCase `batchNormalization`
     /// or lowercase `add`), operand indices in spec order, and typed [`OperatorOptions`].
     ///
-    /// This is the **supported** way to construct an [`Operation`] from serialized graphs (JSON, WPT,
-    /// etc.). Prefer constructing enum variants directly only in native Rust graph builders.
+    /// For JSON that mixes method-level keys with options, use [`Self::from_json_attributes`]
+    /// instead; this function is for callers that already have [`OperatorOptions`] and
+    /// [`OperationExtras`] (e.g. custom tooling).
     ///
     /// Returns `None` if `op_type` is unknown or operand lengths do not match.
     pub fn from_operator_options(
@@ -1917,6 +2030,7 @@ impl Operation {
         input_operands: &[u32],
         attributes: &OperatorOptions,
         outputs: &[OperandIndex],
+        extras: OperationExtras,
     ) -> Option<Self> {
         fn at(inputs: &[u32], i: usize) -> Option<u32> {
             inputs.get(i).copied()
@@ -2135,11 +2249,13 @@ impl Operation {
             }),
             "argMax" if !input_operands.is_empty() => Some(Operation::ArgMax {
                 input: at(input_operands, 0)?,
+                axis: extras.axis.unwrap_or(0),
                 options: attributes.as_arg_min_max().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "argMin" if !input_operands.is_empty() => Some(Operation::ArgMin {
                 input: at(input_operands, 0)?,
+                axis: extras.axis.unwrap_or(0),
                 options: attributes.as_arg_min_max().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2154,7 +2270,8 @@ impl Operation {
             }
             "cast" if !input_operands.is_empty() => Some(Operation::Cast {
                 input: at(input_operands, 0)?,
-                options: attributes.as_cast().cloned(),
+                to: extras.to_data_type.unwrap_or_default(),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "clamp" if !input_operands.is_empty() => Some(Operation::Clamp {
@@ -2185,6 +2302,7 @@ impl Operation {
             }),
             "cumulativeSum" if !input_operands.is_empty() => Some(Operation::CumulativeSum {
                 input: at(input_operands, 0)?,
+                axis: extras.axis.unwrap_or(0),
                 options: attributes.as_cumulative_sum().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2201,12 +2319,14 @@ impl Operation {
             "gather" if input_operands.len() >= 2 => Some(Operation::Gather {
                 input: at(input_operands, 0)?,
                 indices: at(input_operands, 1)?,
+                batch_dimensions: extras.batch_dimensions,
                 options: attributes.as_gather().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "gatherElements" if input_operands.len() >= 2 => Some(Operation::GatherElements {
                 input: at(input_operands, 0)?,
                 indices: at(input_operands, 1)?,
+                batch_dimensions: extras.batch_dimensions,
                 options: attributes.as_gather().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2220,6 +2340,8 @@ impl Operation {
                 input: at(input_operands, 0)?,
                 weight: at(input_operands, 1)?,
                 recurrence: at(input_operands, 2)?,
+                steps: extras.steps.unwrap_or(0),
+                hidden_size: extras.hidden_size.unwrap_or(0),
                 options: attributes.as_gru().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2247,6 +2369,7 @@ impl Operation {
                     weight: at(input_operands, 1)?,
                     recurrence: at(input_operands, 2)?,
                     hidden_state: at(input_operands, 3)?,
+                    hidden_size: extras.hidden_size.unwrap_or(0),
                     options,
                     outputs: outputs.to_vec(),
                 })
@@ -2258,7 +2381,7 @@ impl Operation {
             }),
             "hardSwish" if !input_operands.is_empty() => Some(Operation::HardSwish {
                 input: at(input_operands, 0)?,
-                options: attributes.as_hard_swish().cloned(),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "instanceNormalization" if !input_operands.is_empty() => {
@@ -2303,6 +2426,8 @@ impl Operation {
             }),
             "pad" if !input_operands.is_empty() => Some(Operation::Pad {
                 input: at(input_operands, 0)?,
+                beginning_padding: extras.beginning_padding,
+                ending_padding: extras.ending_padding,
                 options: attributes.as_pad().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2417,16 +2542,21 @@ impl Operation {
             }),
             "softmax" if !input_operands.is_empty() => Some(Operation::Softmax {
                 input: at(input_operands, 0)?,
-                options: attributes.as_softmax().cloned(),
+                axis: extras.axis.unwrap_or(0),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "slice" if !input_operands.is_empty() => Some(Operation::Slice {
                 input: at(input_operands, 0)?,
+                starts: extras.starts,
+                sizes: extras.sizes,
                 options: attributes.as_slice().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "split" if !input_operands.is_empty() => Some(Operation::Split {
                 input: at(input_operands, 0)?,
+                splits: extras.splits,
+                split_equal_parts: extras.split_equal_parts,
                 options: attributes.as_split().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2555,6 +2685,6 @@ impl Operation {
         input_operands: &[u32],
         attributes: &OperatorOptions,
     ) -> Option<Self> {
-        Self::from_operator_options(op_type, input_operands, attributes, &[])
+        Self::from_operator_options(op_type, input_operands, attributes, &[], OperationExtras::default())
     }
 }
