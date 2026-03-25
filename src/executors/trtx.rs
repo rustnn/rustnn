@@ -6,6 +6,9 @@ use std::sync::Once;
 use crate::error::GraphError;
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
 
+// Reexport to allow downstream users (e.g. pywebnn) to set path to TensorRT RTX lib
+pub use trtx::dynamically_load_tensorrt;
+
 /// Bytes per element for TensorRT tensor data types (used for buffer sizing).
 fn trt_dtype_bytes_per_element(dtype: &trtx::DataType) -> usize {
     use trtx::DataType;
