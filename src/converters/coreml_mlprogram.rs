@@ -1489,14 +1489,14 @@ impl CoremlMlProgramConverter {
             }
 
             // Reshape: x, shape
-            Operation::Reshape { options, .. } => {
+            Operation::Reshape { new_shape, .. } => {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                // Add shape parameter from operator options (required by CoreML)
-                if let Some(opts) = options {
-                    let shape_values = opts.new_shape_static_or_max();
+                if !new_shape.is_empty() {
+                    let shape_values =
+                        crate::operator_options::mldimensions_static_or_max(new_shape);
                     inputs.insert(
                         "shape".to_string(),
                         Self::create_immediate_int_array(&shape_values),

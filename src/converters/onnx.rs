@@ -20,7 +20,7 @@ use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size};
-use crate::operator_options::{MLDimension, MLPool2dOptions};
+use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
 use crate::protos::onnx::{
     AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
@@ -2639,13 +2639,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
             // Reshape: if newShape is present, set output shape (static or max for dynamic)
             else if matches!(&op, Operation::Reshape { .. }) {
                 if let Some(output_id) = op.output_operand()
-                    && let Operation::Reshape {
-                        options: Some(opts),
-                        ..
-                    } = &op
-                    && !opts.new_shape.is_empty()
+                    && let Operation::Reshape { new_shape, .. } = &op
+                    && !new_shape.is_empty()
                 {
-                    let shape = opts.new_shape_static_or_max();
+                    let shape = mldimensions_static_or_max(new_shape);
                     shape_overrides.insert(output_id, shape.clone());
                     operand_shapes.insert(output_id, shape);
                 }
@@ -6946,14 +6943,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|id| operand_name(graph, *id))
                     .collect();
 
-                // Handle newShape from typed options - can be array (static/dynamic), string (operand reference), or missing
+                // Handle newShape from the operation - can be array (static/dynamic), string (operand reference), or missing
                 let new_shape_attr = match &op {
-                    Operation::Reshape { options, .. } => {
-                        options.as_ref().filter(|o| !o.new_shape.is_empty())
-                    }
+                    Operation::Reshape { new_shape, .. } => (!new_shape.is_empty())
+                        .then(|| serde_json::to_value(new_shape).ok())
+                        .flatten(),
                     _ => None,
-                }
-                .and_then(|o| serde_json::to_value(&o.new_shape).ok());
+                };
                 if let Some(new_shape_attr) = new_shape_attr {
                     if let Some(shape_dims) = Self::parse_dimension_array(&new_shape_attr) {
                         // Case 1: newShape is an array (static or dynamic)
@@ -10576,8 +10572,10 @@ mod tests {
             },
         ];
 
-        let attrs = OperatorOptions::from_json_with_op_type(
+        let operator = Operation::from_json_attributes(
             "reshape",
+            &[0],
+            &[1],
             &serde_json::json!({
                 "newShape": [
                     { "name": "batch", "maxSize": 8 },
@@ -10585,12 +10583,7 @@ mod tests {
                 ]
             }),
         )
-        .unwrap_or_default();
-        let operator = Operation::Reshape {
-            input: 0,
-            options: attrs.as_reshape().cloned(),
-            outputs: vec![1],
-        };
+        .expect("reshape from_json_attributes");
         let operations = vec![operator];
 
         let graph = GraphInfo {

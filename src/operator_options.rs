@@ -57,6 +57,12 @@ impl MLDimension {
     }
 }
 
+/// Static size or dynamic `maxSize` for each `MLDimension` (shape hints, CoreML, TRT static paths).
+#[inline]
+pub fn mldimensions_static_or_max(dims: &[MLDimension]) -> Vec<u32> {
+    dims.iter().map(MLDimension::static_or_max).collect()
+}
+
 /// Scalar and sequence parameters that belong on the WebNN graph builder operation
 /// (method arguments) rather than in the options dictionary, as extracted from interchange JSON.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -76,6 +82,8 @@ pub struct OperationExtras {
     pub expand_new_shape: Vec<MLDimension>,
     /// `tile()` method argument `repetitions` (not part of MLOperatorOptions).
     pub repetitions: Vec<u32>,
+    /// `reshape()` method argument `newShape` (not part of MLOperatorOptions).
+    pub reshape_new_shape: Vec<MLDimension>,
 }
 
 impl OperationExtras {
@@ -196,6 +204,13 @@ impl OperationExtras {
             "tile" => {
                 out.repetitions = remove_u32_vec(obj, "repetitions");
             }
+            "reshape" => {
+                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape")) {
+                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                        out.reshape_new_shape = parsed;
+                    }
+                }
+            }
             _ => {}
         }
         out
@@ -244,7 +259,6 @@ fn default_batch_norm_epsilon() -> f64 {
 pub struct MLBatchNormalizationOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX scale and bias are not optional
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
     #[serde(default = "default_batch_norm_axis")]
@@ -271,7 +285,7 @@ impl Default for MLBatchNormalizationOptions {
 pub struct MLClampOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX min_value and max_value are not optional
+    // TODO MTAX MLNumber is an union of any floating point or integral type
     pub min_value: Option<serde_json::Value>, // MLNumber
     pub max_value: Option<serde_json::Value>, // MLNumber
 }
@@ -298,7 +312,6 @@ pub struct MLConv2dOptions {
     pub input_layout: String, // "nchw" | "nhwc"
     #[serde(default)]
     pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
-    // TODO TMAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -462,7 +475,6 @@ impl Default for MLGemmOptions {
 pub struct MLGruOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX none of the arguments in this struct is optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub initial_hidden_state: Option<OperandIndex>,
@@ -667,7 +679,6 @@ pub struct MLLstmCellOptions {
     // TODO TMAX verify default
     #[serde(default)]
     pub layout: String,
-    // TODO TMAX does not make sense to have an optional vector?
     pub activations: Option<Vec<String>>,
 }
 
@@ -716,28 +727,6 @@ pub struct MLReduceOptions {
     pub axes: Option<Vec<u32>>,
     #[serde(default)]
     pub keep_dimensions: bool,
-}
-
-/// MLReshapeOptions. reshape (newShape from attributes for interchange).
-/// newShape uses MLDimension (static or dynamic) per WebNN IDL.
-// TODO TMAX this enum does not exist
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLReshapeOptions {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default, rename = "newShape")]
-    pub new_shape: Vec<MLDimension>,
-}
-
-impl MLReshapeOptions {
-    /// Returns each dimension as u32 (static value or dynamic maxSize).
-    pub fn new_shape_static_or_max(&self) -> Vec<u32> {
-        self.new_shape
-            .iter()
-            .map(MLDimension::static_or_max)
-            .collect()
-    }
 }
 
 /// MLResample2dOptions. resample2d.
@@ -931,9 +920,6 @@ pub enum OperatorOptions {
     /// MLReduceOptions.
     Reduce(MLReduceOptions),
 
-    /// MLReshapeOptions.
-    Reshape(MLReshapeOptions),
-
     /// MLResample2dOptions.
     Resample2d(MLResample2dOptions),
 
@@ -1019,7 +1005,7 @@ impl OperatorOptions {
                 | "reduceSumSquare" => {
                     try_opt!(MLReduceOptions, Reduce)
                 }
-                "reshape" => try_opt!(MLReshapeOptions, Reshape),
+                "reshape" => try_opt!(MLOperatorOptions, Operator),
                 "resample2d" => try_opt!(MLResample2dOptions, Resample2d),
                 "reverse" => try_opt!(MLReverseOptions, Reverse),
                 "scatterElements" => try_opt!(MLScatterOptions, ScatterElements),
@@ -1207,12 +1193,6 @@ impl OperatorOptions {
     pub fn as_reduce(&self) -> Option<&MLReduceOptions> {
         match self {
             OperatorOptions::Reduce(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_reshape(&self) -> Option<&MLReshapeOptions> {
-        match self {
-            OperatorOptions::Reshape(o) => Some(o),
             _ => None,
         }
     }

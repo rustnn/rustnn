@@ -7985,19 +7985,25 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        // Parse newShape attribute
-        let new_shape = operation
-            .attributes()
-            .get("newShape")
-            .and_then(|v| v.as_array().cloned())
-            .ok_or_else(|| GraphError::ConversionFailed {
+        let new_shape = match operation {
+            Operation::Reshape { new_shape, .. } => new_shape,
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "reshape operation expected".to_string(),
+                });
+            }
+        };
+        if new_shape.is_empty() {
+            return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "reshape operation missing 'newShape' attribute".to_string(),
-            })?;
+                reason: "reshape operation missing 'newShape'".to_string(),
+            });
+        }
 
-        let dims: Vec<i32> = new_shape
-            .iter()
-            .map(|v| v.as_i64().unwrap_or(0) as i32)
+        let dims: Vec<i32> = crate::operator_options::mldimensions_static_or_max(new_shape)
+            .into_iter()
+            .map(|u| u as i32)
             .collect();
 
         // Use shuffle layer for reshape

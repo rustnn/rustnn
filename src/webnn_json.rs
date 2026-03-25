@@ -611,10 +611,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     }
                 }
 
-                // Reshape - use newShape from operator options if available
+                // Reshape - use newShape from the operation (builder method argument).
                 "reshape" => match &op {
-                    Operation::Reshape { options, .. } => options.as_ref().map(|o| {
-                        o.new_shape
+                    Operation::Reshape { new_shape, .. } => (!new_shape.is_empty()).then(|| {
+                        new_shape
                             .iter()
                             .map(|d| Dimension::from(d.clone()))
                             .collect::<Vec<_>>()

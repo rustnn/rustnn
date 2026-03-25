@@ -46,10 +46,9 @@ use crate::operator_options::{
     MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions,
     MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
     MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
-    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions, MLReverseOptions,
-    MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions,
-    MLTriangularOptions, MLUnsqueezeOptions, OperandIndex, OperationExtras,
-    OperatorOptions,
+    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions, MLScatterOptions,
+    MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions, MLTriangularOptions,
+    MLUnsqueezeOptions, OperandIndex, OperationExtras, OperatorOptions,
 };
 
 // ---------------------------------------------------------------------------
@@ -632,7 +631,8 @@ pub enum Operation {
     /// [reshape()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-reshape)
     Reshape {
         input: OperandIndex,
-        options: Option<MLReshapeOptions>,
+        new_shape: Vec<MLDimension>,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -1365,6 +1365,13 @@ impl Operation {
                     obj.insert("repetitions".to_string(), serde_json::json!(repetitions));
                 }
             }
+            Operation::Reshape { new_shape, .. } => {
+                if !new_shape.is_empty() {
+                    if let Ok(val) = serde_json::to_value(new_shape) {
+                        obj.insert("newShape".to_string(), val);
+                    }
+                }
+            }
             _ => {}
         }
         v
@@ -1845,7 +1852,7 @@ impl Operation {
             Operation::Reshape { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::Reshape(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Resample2d { input, options, .. } => (
                 tag.clone(),
@@ -2541,7 +2548,8 @@ impl Operation {
             }
             "reshape" if !input_operands.is_empty() => Some(Operation::Reshape {
                 input: at(input_operands, 0)?,
-                options: attributes.as_reshape().cloned(),
+                new_shape: extras.reshape_new_shape.clone(),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "resample2d" if !input_operands.is_empty() => Some(Operation::Resample2d {
