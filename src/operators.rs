@@ -42,14 +42,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
-    MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions,
-    MLDimension, MLEluOptions, MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions,
-    MLHardSigmoidOptions, MLInstanceNormalizationOptions, MLLayerNormalizationOptions,
-    MLLeakyReluOptions, MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions,
-    MLPadOptions, MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions,
-    MLReverseOptions, MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions,
-    MLTileOptions, MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions, OperandIndex,
-    OperationExtras, OperatorOptions,
+    MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions,
+    MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions,
+    MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
+    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
+    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions, MLReverseOptions,
+    MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTileOptions,
+    MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions, OperandIndex, OperationExtras,
+    OperatorOptions,
 };
 
 // ---------------------------------------------------------------------------

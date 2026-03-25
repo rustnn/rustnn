@@ -142,6 +142,13 @@ impl OperationExtras {
                 out.hidden_size =
                     remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
             }
+            "instanceNormalization" => {
+                // Legacy interchange; not part of MLInstanceNormalizationOptions.
+                let _ = obj.remove("hasScale");
+                let _ = obj.remove("hasBias");
+                let _ = obj.remove("has_scale");
+                let _ = obj.remove("has_bias");
+            }
             "pad" => {
                 out.beginning_padding = remove_u32_vec(obj, "beginningPadding");
                 if out.beginning_padding.is_empty() {
@@ -465,14 +472,12 @@ pub struct MLGruOptions {
 pub struct MLGruCellOptions {
     #[serde(default)]
     pub label: String,
-    // TODO MTAX bias and recurrent_bias is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     #[serde(default)]
     pub reset_after: bool,
     #[serde(default)]
     pub layout: String,
-    // TODO TMAX activations is not optional. does it make sense to have an option instead of an empty vector
     pub activations: Option<Vec<String>>,
 }
 
@@ -516,16 +521,8 @@ fn default_instance_norm_epsilon() -> f64 {
 pub struct MLInstanceNormalizationOptions {
     #[serde(default)]
     pub label: String,
-    // TODO MTAX scale and bias are not optional
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
-    /// When exactly one of scale/bias is provided (2 operands), disambiguates so converters
-    /// know which optional is present. Omitted when 1 or 3 operands.
-    // TODO TMAX has_Scale, has_bias are not part of this struct
-    #[serde(default)]
-    pub has_scale: Option<bool>,
-    #[serde(default)]
-    pub has_bias: Option<bool>,
     #[serde(default = "default_instance_norm_epsilon")]
     pub epsilon: f64,
     #[serde(default)]
@@ -538,8 +535,6 @@ impl Default for MLInstanceNormalizationOptions {
             label: String::new(),
             scale: None,
             bias: None,
-            has_scale: None,
-            has_bias: None,
             epsilon: default_instance_norm_epsilon(),
             layout: String::new(), // TODO TMAX the default is "nchw"
         }

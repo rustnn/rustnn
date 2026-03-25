@@ -846,13 +846,6 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             if !ordered.is_empty() {
                 input_ids = ordered;
             }
-            // When exactly one of scale/bias is provided, set hasScale/hasBias for converter disambiguation.
-            let has_scale = args.get("scale").and_then(|v| v.as_str()).is_some();
-            let has_bias = args.get("bias").and_then(|v| v.as_str()).is_some();
-            if has_scale ^ has_bias {
-                attributes.insert("hasScale".to_string(), serde_json::Value::Bool(has_scale));
-                attributes.insert("hasBias".to_string(), serde_json::Value::Bool(has_bias));
-            }
         }
         // conv2d / conv_transpose2d: only input and filter are positional; bias is in options.
         if op_type == "conv2d" || op_type == "conv_transpose2d" {

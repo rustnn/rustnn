@@ -3235,19 +3235,21 @@ impl TrtxConverter {
             vec![1]
         };
 
-        // Classify optional operands by name: WPT can pass [input, bias] or [input, scale] or [input, scale, bias].
-        let mut scale_id: Option<u32> = None;
-        let mut bias_id: Option<u32> = None;
-        for &operand_id in &operation.input_operands()[1..] {
-            let name = graph
-                .operand(operand_id)
-                .and_then(|o| o.name.as_deref())
-                .unwrap_or("");
-            let name_lower = name.to_lowercase();
-            if name_lower.contains("scale") {
-                scale_id = Some(operand_id);
-            } else if name_lower.contains("bias") {
-                bias_id = Some(operand_id);
+        // Scale/bias operand indices (WebNN MLInstanceNormalizationOptions); optional extras on legacy graphs.
+        let mut scale_id = opts.and_then(|o| o.scale);
+        let mut bias_id = opts.and_then(|o| o.bias);
+        if scale_id.is_none() || bias_id.is_none() {
+            for &operand_id in &operation.input_operands()[1..] {
+                let name = graph
+                    .operand(operand_id)
+                    .and_then(|o| o.name.as_deref())
+                    .unwrap_or("");
+                let name_lower = name.to_lowercase();
+                if scale_id.is_none() && name_lower.contains("scale") {
+                    scale_id = Some(operand_id);
+                } else if bias_id.is_none() && name_lower.contains("bias") {
+                    bias_id = Some(operand_id);
+                }
             }
         }
 
