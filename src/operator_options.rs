@@ -222,6 +222,8 @@ impl OperationExtras {
 // ---------------------------------------------------------------------------
 
 /// MLOperatorOptions. Base type for all operator options (label only).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mloperatoroptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLOperatorOptions {
@@ -234,6 +236,8 @@ pub struct MLOperatorOptions {
 // ---------------------------------------------------------------------------
 
 /// MLArgMinMaxOptions. argMin / argMax (axis is a builder method parameter, not in this dictionary).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlargminmaxoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
@@ -254,6 +258,8 @@ fn default_batch_norm_epsilon() -> f64 {
 }
 
 /// MLBatchNormalizationOptions. batchNormalization.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlbatchnormalizationoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLBatchNormalizationOptions {
@@ -280,6 +286,8 @@ impl Default for MLBatchNormalizationOptions {
 }
 
 /// MLClampOptions. clamp.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlclampoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLClampOptions {
@@ -295,6 +303,8 @@ fn default_conv_groups() -> u32 {
 }
 
 /// MLConv2dOptions. conv2d.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlconv2doptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConv2dOptions {
@@ -372,7 +382,9 @@ impl Default for MLConvTranspose2dOptions {
 }
 
 /// MLConstantOptions. constant (interchange: init, data, dataType, shape).
-// TODO MTAX non-existing struct
+///
+/// Not an IDL dictionary; closest normative API is [`MLGraphBuilder`](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder) (`constant()` methods).
+// TODO MTAX non-existing struct. defer removal for now since it's not like any other operation.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
@@ -387,6 +399,8 @@ pub struct MLConstantOptions {
 }
 
 /// MLCumulativeSumOptions. cumulativeSum (axis is a builder method parameter).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlcumulativesumoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLCumulativeSumOptions {
@@ -403,6 +417,8 @@ fn default_elu_alpha() -> f64 {
 }
 
 /// MLEluOptions. elu.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mleluoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLEluOptions {
@@ -422,6 +438,8 @@ impl Default for MLEluOptions {
 }
 
 /// MLGatherOptions. gather / gatherElements (batchDimensions is a gatherElements parameter in WebNN).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgatheroptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGatherOptions {
@@ -440,6 +458,8 @@ fn default_gemm_beta() -> f64 {
 }
 
 /// MLGemmOptions. gemm.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgemmoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGemmOptions {
@@ -470,6 +490,8 @@ impl Default for MLGemmOptions {
 }
 
 /// MLGruOptions. gru.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgruoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruOptions {
@@ -490,6 +512,8 @@ pub struct MLGruOptions {
 }
 
 /// MLGruCellOptions. gruCell.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgrucelloptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruCellOptions {
@@ -513,6 +537,8 @@ fn default_hard_sigmoid_beta() -> f64 {
 }
 
 /// MLHardSigmoidOptions. hardSigmoid.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlhardsigmoidoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLHardSigmoidOptions {
@@ -539,6 +565,8 @@ fn default_instance_norm_epsilon() -> f64 {
 }
 
 /// MLInstanceNormalizationOptions. instanceNormalization.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlinstancenormalizationoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLInstanceNormalizationOptions {
@@ -570,6 +598,8 @@ fn default_layer_norm_epsilon() -> f64 {
 
 /// MLLayerNormalizationOptions. layerNormalization.
 /// `axes`: None = key omitted (spec default [1..rank)); Some(v) = use v (Some(vec![]) = reduce over no axes).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllayernormalizationoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLayerNormalizationOptions {
@@ -599,6 +629,8 @@ fn default_leaky_relu_alpha() -> f64 {
 }
 
 /// MLLeakyReluOptions. leakyRelu.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlleakyreluoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLeakyReluOptions {
@@ -626,6 +658,8 @@ fn default_linear_beta() -> f64 {
 }
 
 /// MLLinearOptions. linear.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllinearoptions>
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLinearOptions {
@@ -648,6 +682,8 @@ impl Default for MLLinearOptions {
 }
 
 /// MLLstmOptions. lstm.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllstmoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
@@ -668,6 +704,8 @@ pub struct MLLstmOptions {
 }
 
 /// MLLstmCellOptions. lstmCell.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllstmcelloptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmCellOptions {
@@ -683,6 +721,8 @@ pub struct MLLstmCellOptions {
 }
 
 /// MLPadOptions. pad (beginning/ending padding are builder method parameters).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlpadoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPadOptions {
@@ -695,6 +735,8 @@ pub struct MLPadOptions {
 }
 
 /// MLPool2dOptions. averagePool2d / l2Pool2d / maxPool2d.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlpool2doptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPool2dOptions {
@@ -719,6 +761,8 @@ pub struct MLPool2dOptions {
 
 /// MLReduceOptions. reduceL1, reduceL2, reduceLogSum, etc.
 /// `axes`: None = key omitted (spec default: all axes); Some(v) = use v (Some(vec![]) = reduce over no axes).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlreduceoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReduceOptions {
@@ -730,6 +774,8 @@ pub struct MLReduceOptions {
 }
 
 /// MLResample2dOptions. resample2d.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlresample2doptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLResample2dOptions {
@@ -749,6 +795,8 @@ pub struct MLResample2dOptions {
 
 /// MLReverseOptions. reverse.
 /// axes: omitted => reverse all dimensions; present and [] => reverse none (identity); present and [..] => reverse those axes.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlreverseoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReverseOptions {
@@ -758,7 +806,9 @@ pub struct MLReverseOptions {
     pub axes: Option<Vec<u32>>,
 }
 
-/// MLScatterOptions. scatterElements
+/// MLScatterOptions. scatterElements / scatterND.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlscatteroptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLScatterOptions {
@@ -769,6 +819,8 @@ pub struct MLScatterOptions {
 }
 
 /// MLSliceOptions. slice (starts and sizes are builder method parameters).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlsliceoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSliceOptions {
@@ -779,6 +831,8 @@ pub struct MLSliceOptions {
 }
 
 /// MLSplitOptions. split (splits is a builder method parameter).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlsplitoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSplitOptions {
@@ -789,6 +843,8 @@ pub struct MLSplitOptions {
 }
 
 /// MLTransposeOptions. transpose.
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mltransposeoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTransposeOptions {
@@ -807,6 +863,8 @@ pub struct MLTransposeOptions {
 // TODO TMAX remove the unofficial ops!
 
 /// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
+///
+/// WebNN emulation: <https://www.w3.org/TR/webnn/#squeeze>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSqueezeOptions {
@@ -817,6 +875,8 @@ pub struct MLSqueezeOptions {
 }
 
 /// MLUnsqueezeOptions. unsqueeze (emulation-only; not in WebNN IDL).
+///
+/// WebNN emulation: <https://www.w3.org/TR/webnn/#unsqueeze>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLUnsqueezeOptions {
@@ -828,13 +888,13 @@ pub struct MLUnsqueezeOptions {
 
 /// MLTriangularOptions. triangular.
 /// WebNN: when "upper" is not present, default is true (keep upper triangular).
+///
+/// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mltriangularoptions>
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTriangularOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO upper is not optional
-    /// None = not present => default true (upper). Some(b) => use b.
     pub upper: Option<bool>,
     #[serde(default)]
     pub diagonal: i32,
