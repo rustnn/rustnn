@@ -631,13 +631,11 @@ impl Default for MLLinearOptions {
 }
 
 /// MLLstmOptions. lstm.
-// TODO TMAX where is the default implementation for this struct?
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
@@ -658,7 +656,6 @@ pub struct MLLstmOptions {
 pub struct MLLstmCellOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX bias, recurrent_bias and peephole_weight is not optional
     pub bias: Option<OperandIndex>,
     pub recurrent_bias: Option<OperandIndex>,
     pub peephole_weight: Option<OperandIndex>,
@@ -675,7 +672,7 @@ pub struct MLLstmCellOptions {
 pub struct MLPadOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX mode is an enum of type MLPaddingMode
+    // TODO MTAX mode is an enum of type MLPaddingMode
     #[serde(default)]
     pub mode: String, // "constant" | "edge" | "reflection"
     pub value: Option<serde_json::Value>, // MLNumber
@@ -687,27 +684,20 @@ pub struct MLPadOptions {
 pub struct MLPool2dOptions {
     #[serde(default)]
     pub label: String,
-    /// TODO MTAX the spec is below. I guess this can be interpreted as optional?
-    /// windowDimensions, of type sequence<[EnforceRange] unsigned long>
-    /// A list of length 2: [windowHeight, windowWidth]. Specifies the dimensions of the sliding window. The default value for the window dimensions are the height and width dimensions of the input shape.
     pub window_dimensions: Option<Vec<u32>>,
-    // TODO TMAX check default value
+    // TODO MTAX check default value
     #[serde(default)]
     pub padding: Vec<u32>,
     #[serde(default)]
     pub strides: Vec<u32>,
     #[serde(default)]
     pub dilations: Vec<u32>,
-    // TODO TMAX layout is enum MLInputOperandLayout
+    // TODO MTAX layout is enum MLInputOperandLayout
     #[serde(default)]
     pub layout: String,
-    /// "floor" | "ceil". WebNN spec and WPT use "roundingType"; we accept both keys.
-    // TODO TMAX enum MLRoundingType
-    #[serde(default, alias = "roundingType")]
+    // TODO MTAX enum MLRoundingType
+    #[serde(default)]
     pub output_shape_rounding: String,
-    // TODO TMAX the specs reads 'if specified'. it's unclear what unspecified means
-    /// outputSizes, of type sequence<[EnforceRange] unsigned long>
-    /// A list of length 2: [outputHeight, outputWidth] Specifies the sizes of the two spatial dimensions of the output tensor. When the output sizes are explicitly specified, the outputShapeRounding is ignored. If not specified, the output sizes are automatically computed.
     pub output_sizes: Option<Vec<u32>>,
 }
 
@@ -718,7 +708,6 @@ pub struct MLPool2dOptions {
 pub struct MLReduceOptions {
     #[serde(default)]
     pub label: String,
-    /// Omitted in JSON => None => reduce over all axes. Present (including []) => use as-is ([] = no reduction).
     pub axes: Option<Vec<u32>>,
     #[serde(default)]
     pub keep_dimensions: bool,
