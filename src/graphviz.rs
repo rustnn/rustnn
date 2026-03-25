@@ -52,11 +52,9 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
     for (idx, operation) in graph.operations.iter().enumerate() {
         let node_id = format!("op_{}", idx);
         let mut label_lines = vec![format!("{} (#{})", operation.display_name(), idx)];
-        if let Some(label) = &operation.label
-            && !label.is_empty()
-            && label != &operation.op_type
-        {
-            label_lines.push(label.clone());
+        let op_label = operation.label();
+        if !op_label.is_empty() && op_label != operation.op_type() {
+            label_lines.push(op_label.to_string());
         }
         let label = escape_label(&label_lines.join("\n"));
         let _ = writeln!(
@@ -65,7 +63,7 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
             node_id, label
         );
 
-        for (input_idx, operand_id) in operation.input_operands.iter().enumerate() {
+        for (input_idx, operand_id) in operation.input_operands().iter().enumerate() {
             let _ = writeln!(
                 dot,
                 "  operand_{} -> {} [label=\"in{}\"];",
@@ -118,10 +116,9 @@ fn format_shape(shape: &[Dimension]) -> String {
 mod tests {
     use super::graph_to_dot;
     use crate::graph::{
-        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
-        to_dimension_vector,
+        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
     };
-    use crate::operator_options::OperatorOptions;
+    use crate::operators::Operation;
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {
@@ -157,13 +154,11 @@ mod tests {
             ],
             input_operands: vec![0, 1],
             output_operands: vec![2],
-            operations: vec![Operation {
-                op_type: "add".to_string(),
-                input_operands: vec![0, 1],
-                output_operand: Some(2),
-                output_operands: Vec::new(),
-                attributes: OperatorOptions::default(),
-                label: None,
+            operations: vec![Operation::Add {
+                a: 0,
+                b: 1,
+                options: None,
+                outputs: vec![2],
             }],
             constant_operand_ids_to_handles: Default::default(),
             id_to_constant_tensor_operand_map: Default::default(),

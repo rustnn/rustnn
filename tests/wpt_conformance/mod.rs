@@ -13,10 +13,11 @@ use tolerance::get_operation_tolerance;
 use wpt_to_graph::wpt_data_dir;
 use wpt_types::load_wpt_file;
 
+use rustnn::converters::GraphConverter;
 #[cfg(feature = "onnx-runtime")]
-use rustnn::converters::{GraphConverter, OnnxConverter};
+use rustnn::converters::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::converters::{GraphConverter, TrtxConverter};
+use rustnn::converters::TrtxConverter;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::run_onnx_with_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]

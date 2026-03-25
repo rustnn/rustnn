@@ -718,11 +718,12 @@ pub struct MLReverseOptions {
 }
 
 /// MLSoftmaxOptions. softmax.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSoftmaxOptions {
     #[serde(default)]
     pub label: String,
+    #[serde(default)]
     pub axis: u32,
 }
 
@@ -810,9 +811,9 @@ pub struct MLTransposeOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Operator Emulation (squeeze, unsqueeze, flatten)
+// Operation Emulation (squeeze, unsqueeze, flatten)
 // These ops are not part of the official WebNN API; they are defined in
-// § 11 Operator Emulation and can be implemented via reshape().
+// § 11 Operation Emulation and can be implemented via reshape().
 // ---------------------------------------------------------------------------
 
 /// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
@@ -974,7 +975,7 @@ pub enum OperatorOptions {
     /// MLTransposeOptions.
     Transpose(MLTransposeOptions),
 
-    // Operator Emulation (not part of official WebNN API; § 11).
+    // Operation Emulation (not part of official WebNN API; § 11).
     /// MLSqueezeOptions. squeeze.
     Squeeze(MLSqueezeOptions),
     /// MLUnsqueezeOptions. unsqueeze.
@@ -1081,6 +1082,12 @@ impl OperatorOptions {
     // Typed accessors: return the options struct when the variant matches.
     // ---------------------------------------------------------------------------
 
+    pub fn as_operator(&self) -> Option<&MLOperatorOptions> {
+        match self {
+            OperatorOptions::Operator(o) => Some(o),
+            _ => None,
+        }
+    }
     pub fn as_arg_min_max(&self) -> Option<&MLArgMinMaxOptions> {
         match self {
             OperatorOptions::ArgMinMax(o) => Some(o),

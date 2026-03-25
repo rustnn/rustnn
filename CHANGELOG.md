@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a single history.
 
+## [Unreleased]
+
+### Changed
+- **WebNN spec alignment:** Replaced `round` with `roundEven` (spec name). Legacy JSON with `op_type: "round"` is still accepted and treated as `roundEven`.
+- **Removed non-spec operators:** Dropped operators not in the current WebNN API: `asin`, `acos`, `atan`, `sinh`, `cosh`, `asinh`, `acosh`, `atanh`. Use only spec-defined operations for new graphs.
+
 ## [0.5.2] - 2025-12-28
 
 ### Overview

@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
-use crate::operator_options::{MLDimension, MLDynamicDimension, OperatorOptions};
+use crate::operator_options::{MLDimension, MLDynamicDimension};
+use crate::operators::Operation;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -172,99 +173,6 @@ pub struct Operand {
     pub descriptor: OperandDescriptor,
     #[serde(default)]
     pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Operation {
-    #[serde(rename = "type")]
-    pub op_type: String,
-    #[serde(default)]
-    pub input_operands: Vec<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_operand: Option<u32>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub output_operands: Vec<u32>,
-    #[serde(default)]
-    pub attributes: OperatorOptions,
-    #[serde(default)]
-    pub label: Option<String>,
-}
-
-impl<'de> Deserialize<'de> for Operation {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        struct OperationHelper {
-            #[serde(rename = "type")]
-            op_type: String,
-            #[serde(default)]
-            input_operands: Vec<u32>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            output_operand: Option<u32>,
-            #[serde(default)]
-            output_operands: Vec<u32>,
-            #[serde(default)]
-            attributes: serde_json::Value,
-            #[serde(default)]
-            label: Option<String>,
-        }
-        let h = OperationHelper::deserialize(deserializer)?;
-        let attributes = if h.attributes.is_null() {
-            OperatorOptions::default()
-        } else if let Some(obj) = h.attributes.as_object() {
-            if obj.is_empty() {
-                OperatorOptions::default()
-            } else {
-                OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes)
-                    .unwrap_or_default()
-            }
-        } else {
-            OperatorOptions::from_json_with_op_type(&h.op_type, &h.attributes).unwrap_or_default()
-        };
-        Ok(Operation {
-            op_type: h.op_type,
-            input_operands: h.input_operands,
-            output_operand: h.output_operand,
-            output_operands: h.output_operands,
-            attributes,
-            label: h.label,
-        })
-    }
-}
-
-impl Operation {
-    /// Borrow all output operand IDs (handles single- and multi-output operations)
-    pub fn output_operands_slice(&self) -> &[u32] {
-        if !self.output_operands.is_empty() {
-            &self.output_operands
-        } else {
-            self.output_operand.as_slice()
-        }
-    }
-
-    /// Get all output operand IDs (handles both single and multi-output operations)
-    pub fn get_output_operands(&self) -> Vec<u32> {
-        self.output_operands_slice().to_vec()
-    }
-
-    /// Attributes as a JSON value for code that expects `serde_json::Value` (e.g. parse_json_ints).
-    /// Returns `Value::Null` when there are no attributes.
-    pub fn attributes_value(&self) -> serde_json::Value {
-        self.attributes.to_value()
-    }
-
-    /// Get a single attribute by key as JSON value. Use for code that still expects key-based lookup.
-    pub fn get_attr(&self, key: &str) -> Option<serde_json::Value> {
-        self.attributes.get(key)
-    }
-}
-
-impl Operation {
-    pub fn display_name(&self) -> String {
-        self.label.clone().unwrap_or_else(|| self.op_type.clone())
-    }
 }
 
 #[serde_as]

@@ -16,18 +16,49 @@
  * limitations under the License.
  */
 //! Convert WPT graph description to rustnn GraphInfo and prepare ONNX inputs.
+//!
+//! Operations are built as [`rustnn::operators::Operation`] with [`rustnn::operator_options::OperatorOptions`]:
+//! options are deserialized via [`OperatorOptions::from_json_with_op_type`], then operands are wired with
+//! [`Operation::from_operator_options`] (WebNN camelCase op names, as in JSON).
 
 use rustnn::graph::{
-    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
+    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
     get_static_or_max_size, to_dimension_vector,
 };
 use rustnn::operator_options::OperatorOptions;
+use rustnn::operators::Operation;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
 use std::path::Path;
 
 use super::wpt_types::{WptGraph, WptOperator, WptTensorSpec};
+
+/// Build an [`Operation`] from WebNN JSON op name (camelCase), ordered operand ids, typed options,
+/// and output operand ids for this operation.
+fn operator_from_wpt_parts(
+    webnn_op_type: &str,
+    operand_ids: &[u32],
+    operator_options: &OperatorOptions,
+    output_ids: &[u32],
+) -> Result<Operation, String> {
+    Operation::from_operator_options(webnn_op_type, operand_ids, operator_options, output_ids)
+        .ok_or_else(|| {
+            format!(
+                "unsupported WPT op or operand layout for Operation::from_operator_options: {webnn_op_type} (operands: {operand_ids:?})"
+            )
+        })
+}
+
+/// Deserialize attributes map using the WebNN camelCase operation name expected by
+/// [`rustnn::operator_options::OperatorOptions`].
+fn operator_options_from_wpt_attrs(
+    webnn_op_type: &str,
+    attributes: serde_json::Map<String, serde_json::Value>,
+) -> OperatorOptions {
+    let attrs_value = serde_json::Value::Object(attributes);
+    OperatorOptions::from_json_with_op_type(webnn_op_type, &attrs_value).unwrap_or_default()
+}
 
 /// WPT camelCase operation name to rustnn snake_case op_type (matches Python method_name_map).
 fn wpt_op_name_to_rustnn(name: &str) -> String {
@@ -89,16 +120,8 @@ fn wpt_op_name_to_rustnn(name: &str) -> String {
         "sin" => "sin",
         "sqrt" => "sqrt",
         "tan" => "tan",
-        "acos" => "acos",
-        "asin" => "asin",
-        "atan" => "atan",
-        "acosh" => "acosh",
-        "asinh" => "asinh",
-        "atanh" => "atanh",
-        "cosh" => "cosh",
-        "sinh" => "sinh",
         "erf" => "erf",
-        "round" => "round",
+        "roundEven" => "round_even",
         "reshape" => "reshape",
         "transpose" => "transpose",
         "concat" => "concat",
@@ -123,6 +146,8 @@ fn wpt_op_name_to_rustnn(name: &str) -> String {
         "argMax" => "arg_max",
         "argMin" => "arg_min",
         "pow" => "pow",
+        "max" => "max",
+        "min" => "min",
         _ => return name.to_string(),
     };
     s.to_string()
@@ -601,7 +626,7 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
         // Apply canonical input ordering for all operators with named inputs.
         // HashMap iteration order is non-deterministic; converters expect fixed operand order.
         let canonical_order = match op_type.as_str() {
-            "add" | "sub" | "mul" | "div" | "pow" => Some(["a", "b"].as_slice()),
+            "add" | "sub" | "mul" | "div" | "pow" | "max" | "min" => Some(["a", "b"].as_slice()),
             "equal" | "greater" | "greater_or_equal" | "lesser" | "lesser_or_equal"
             | "logical_and" | "logical_or" | "logical_xor" => Some(["a", "b"].as_slice()),
             "matmul" => Some(["a", "b"].as_slice()),
@@ -904,16 +929,9 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             output_ids.push(id);
         }
 
-        let output_operand = if output_ids.len() == 1 {
-            Some(output_ids[0])
-        } else {
-            None
-        };
-        // Always set output_operands so converters can use output_operands_slice() safely
-        let output_operands = output_ids;
-
-        // ONNX/TRTX converters expect camelCase for these ops (WPT JSON uses camelCase; we store snake_case via wpt_op_name_to_rustnn, then map back here)
-        let op_type_for_graph = match op_type.as_str() {
+        // WebNN JSON / OperatorOptions::from_json_with_op_type expect camelCase op names.
+        // Internal control flow uses snake_case `op_type`; map back for typed options + Operation.
+        let webnn_op_type = match op_type.as_str() {
             "batch_normalization" => "batchNormalization",
             "instance_normalization" => "instanceNormalization",
             "layer_normalization" => "layerNormalization",
@@ -949,18 +967,14 @@ pub fn wpt_graph_to_graph_info(graph: &WptGraph) -> Result<(GraphInfo, Vec<Strin
             "arg_min" => "argMin",
             _ => op_type.as_str(),
         };
-        let attrs_value = serde_json::Value::Object(attributes);
-        let attributes_opts =
-            OperatorOptions::from_json_with_op_type(&op_type_for_graph, &attrs_value)
-                .unwrap_or_default();
-        operations.push(Operation {
-            op_type: op_type_for_graph.to_string(),
-            input_operands: input_ids,
-            output_operand,
-            output_operands,
-            attributes: attributes_opts,
-            label: Some(format!("{}_op", op.name)),
-        });
+        attributes.insert(
+            "label".to_string(),
+            serde_json::Value::String(format!("{}_op", op.name)),
+        );
+        let operator_options = operator_options_from_wpt_attrs(webnn_op_type, attributes);
+        let operator =
+            operator_from_wpt_parts(webnn_op_type, &input_ids, &operator_options, &output_ids)?;
+        operations.push(operator);
     }
 
     let output_operands: Vec<u32> = graph

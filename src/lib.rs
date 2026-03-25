@@ -6,6 +6,7 @@ pub mod graph;
 pub mod graphviz;
 pub mod loader;
 pub mod operator_options;
+pub mod operators;
 pub mod protos;
 pub mod runtime_checks;
 pub mod shape_inference;
@@ -28,9 +29,8 @@ pub use executors::onnx::{
 pub use executors::trtx::{
     TrtxInput, TrtxOutput, TrtxOutputWithData, run_trtx_with_inputs, run_trtx_zeroed,
 };
-pub use graph::{
-    ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, Operation,
-};
+pub use graph::{ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind};
 pub use graphviz::graph_to_dot;
 pub use loader::load_graph_from_path;
+pub use operators::Operation;
 pub use validator::{ContextProperties, GraphValidator, ValidationArtifacts};

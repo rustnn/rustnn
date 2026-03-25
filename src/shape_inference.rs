@@ -970,7 +970,7 @@ pub fn infer_floor_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
-pub fn infer_round_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
+pub fn infer_round_even_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
@@ -1007,38 +1007,6 @@ pub fn infer_cos_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
 }
 
 pub fn infer_tan_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_asin_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_acos_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_atan_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_sinh_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_cosh_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_asinh_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_acosh_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    Ok(input_shape.to_vec())
-}
-
-pub fn infer_atanh_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
