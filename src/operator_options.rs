@@ -74,6 +74,8 @@ pub struct OperationExtras {
     pub split_equal_parts: Option<u32>,
     /// `expand()` method argument `newShape` (not part of MLOperatorOptions).
     pub expand_new_shape: Vec<MLDimension>,
+    /// `tile()` method argument `repetitions` (not part of MLOperatorOptions).
+    pub repetitions: Vec<u32>,
 }
 
 impl OperationExtras {
@@ -190,6 +192,9 @@ impl OperationExtras {
                         _ => {}
                     }
                 }
+            }
+            "tile" => {
+                out.repetitions = remove_u32_vec(obj, "repetitions");
             }
             _ => {}
         }
@@ -741,12 +746,12 @@ impl MLReshapeOptions {
 pub struct MLResample2dOptions {
     #[serde(default)]
     pub label: String,
-    // TODO TMAX enum MLInterpolationMode
+    // TODO MTAX enum MLInterpolationMode
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
-    // TODO TMAX defaults for scales and sizes?
     #[serde(default)]
     pub scales: Vec<f32>,
+    #[serde(default)]
     pub sizes: Option<Vec<u32>>,
 
     #[serde(default)]
@@ -830,19 +835,6 @@ pub struct MLUnsqueezeOptions {
     pub label: String,
     #[serde(default)]
     pub axes: Vec<u32>,
-}
-
-// TODO TMAX do not forget to remove flatten as well which is somewhere else
-
-/// MLTileOptions. tile (repetitions from attributes for interchange).
-// TODO TMAX tile options is not part of the spec
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLTileOptions {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub repetitions: Vec<u32>,
 }
 
 /// MLTriangularOptions. triangular.
@@ -966,9 +958,6 @@ pub enum OperatorOptions {
     /// MLUnsqueezeOptions. unsqueeze.
     Unsqueeze(MLUnsqueezeOptions),
 
-    /// MLTileOptions.
-    Tile(MLTileOptions),
-
     /// MLTriangularOptions.
     Triangular(MLTriangularOptions),
 }
@@ -1040,7 +1029,7 @@ impl OperatorOptions {
                 "transpose" => try_opt!(MLTransposeOptions, Transpose),
                 "squeeze" => try_opt!(MLSqueezeOptions, Squeeze),
                 "unsqueeze" => try_opt!(MLUnsqueezeOptions, Unsqueeze),
-                "tile" => try_opt!(MLTileOptions, Tile),
+                "tile" => try_opt!(MLOperatorOptions, Operator),
                 "triangular" => try_opt!(MLTriangularOptions, Triangular),
                 _ => {}
             }
@@ -1272,12 +1261,6 @@ impl OperatorOptions {
     pub fn as_unsqueeze(&self) -> Option<&MLUnsqueezeOptions> {
         match self {
             OperatorOptions::Unsqueeze(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_tile(&self) -> Option<&MLTileOptions> {
-        match self {
-            OperatorOptions::Tile(o) => Some(o),
             _ => None,
         }
     }

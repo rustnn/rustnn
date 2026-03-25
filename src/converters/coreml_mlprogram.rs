@@ -2224,18 +2224,16 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::Tile { options, .. } => {
+            Operation::Tile { repetitions, .. } => {
                 // tile: x, reps
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                if let Some(opts) = options
-                    && !opts.repetitions.is_empty()
-                {
+                if !repetitions.is_empty() {
                     inputs.insert(
                         "reps".to_string(),
-                        Self::create_immediate_int_array(&opts.repetitions),
+                        Self::create_immediate_int_array(repetitions),
                     );
                 }
             }

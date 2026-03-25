@@ -6740,10 +6740,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Repeats come from typed options or attribute. repetitions=[] or all 1s => no-op (Identity).
                 let repeats: Vec<i64> = match &op {
-                    Operation::Tile { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.repetitions.iter().map(|&u| u as i64).collect())
-                        .unwrap_or_default(),
+                    Operation::Tile { repetitions, .. } => {
+                        repetitions.iter().map(|&u| u as i64).collect()
+                    }
                     _ => vec![],
                 };
 

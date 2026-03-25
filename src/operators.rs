@@ -47,8 +47,8 @@ use crate::operator_options::{
     MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
     MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
     MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions, MLReverseOptions,
-    MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTileOptions,
-    MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions, OperandIndex, OperationExtras,
+    MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions,
+    MLTriangularOptions, MLUnsqueezeOptions, OperandIndex, OperationExtras,
     OperatorOptions,
 };
 
@@ -717,7 +717,8 @@ pub enum Operation {
     /// [tile()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-tile)
     Tile {
         input: OperandIndex,
-        options: Option<MLTileOptions>,
+        repetitions: Vec<u32>,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -1359,6 +1360,11 @@ impl Operation {
                     obj.insert("splits".to_string(), serde_json::json!(splits));
                 }
             }
+            Operation::Tile { repetitions, .. } => {
+                if !repetitions.is_empty() {
+                    obj.insert("repetitions".to_string(), serde_json::json!(repetitions));
+                }
+            }
             _ => {}
         }
         v
@@ -1895,7 +1901,7 @@ impl Operation {
             Operation::Tile { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::Tile(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Triangular { input, options, .. } => (
                 tag.clone(),
@@ -2592,7 +2598,8 @@ impl Operation {
             }),
             "tile" if !input_operands.is_empty() => Some(Operation::Tile {
                 input: at(input_operands, 0)?,
-                options: attributes.as_tile().cloned(),
+                repetitions: extras.repetitions.clone(),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "triangular" if !input_operands.is_empty() => Some(Operation::Triangular {

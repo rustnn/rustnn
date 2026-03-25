@@ -502,8 +502,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             // Normalize tile inputs: if shape rank is missing, set to repeats length (filled with 1s)
             if op_type == "tile"
                 && let Some(repeats_len) = match &op {
-                    Operation::Tile { options, .. } => {
-                        options.as_ref().map(|o| o.repetitions.len())
+                    Operation::Tile { repetitions, .. } => {
+                        (!repetitions.is_empty()).then_some(repetitions.len())
                     }
                     _ => None,
                 }

@@ -4919,14 +4919,15 @@ impl TrtxConverter {
         tensor_map: &mut HashMap<u32, trtx::Tensor>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let attrs = operation.attributes();
-        let opts = attrs
-            .as_tile()
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Tile operation missing options".to_string(),
-            })?;
-        let repetitions = opts.repetitions.clone();
+        let repetitions = match operation {
+            Operation::Tile { repetitions, .. } => repetitions.clone(),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Tile operation expected".to_string(),
+                });
+            }
+        };
         if repetitions.is_empty() {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
