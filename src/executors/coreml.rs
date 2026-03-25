@@ -576,7 +576,7 @@ unsafe fn prepare_compiled_model(
     unsafe { prepare_compiled_model_with_weights(model_bytes, None, cached_compiled) }
 }
 
-unsafe fn prepare_compiled_model_with_weights(
+pub unsafe fn prepare_compiled_model_with_weights(
     model_bytes: &[u8],
     weights_data: Option<&[u8]>,
     cached_compiled: Option<&Path>,
