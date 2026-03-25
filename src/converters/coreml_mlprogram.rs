@@ -28,6 +28,7 @@
 use crate::converters::operand_name;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo};
+use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use crate::protos::coreml::mil_spec::{
     Argument, Block, Dimension, Function, NamedValueType, Operation as MilOperation, Program,
@@ -1049,10 +1050,7 @@ impl CoremlMlProgramConverter {
                 Self::create_int_array_argument(split_sizes),
             );
         }
-        inputs.insert(
-            "axis".to_string(),
-            Self::create_int_argument(axis as i32),
-        );
+        inputs.insert("axis".to_string(), Self::create_int_argument(axis as i32));
 
         Ok(Self::create_mil_operation("split", inputs, outputs))
     }
@@ -1905,7 +1903,7 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::Concat { options, .. } => {
+            Operation::Concat { axis, .. } => {
                 // concat: values (variadic list of tensors), axis
                 // CoreML expects a single 'values' parameter containing a tuple of all inputs
                 if !input_names.is_empty() {
@@ -1915,9 +1913,7 @@ impl CoremlMlProgramConverter {
                     );
                 }
 
-                if let Some(opts) = options {
-                    inputs.insert("axis".to_string(), Self::create_immediate_int(opts.axis));
-                }
+                inputs.insert("axis".to_string(), Self::create_immediate_int(*axis));
                 inputs.insert("interleave".to_string(), Self::create_immediate_bool(false));
             }
 
@@ -1948,16 +1944,17 @@ impl CoremlMlProgramConverter {
                 let _ = options;
             }
 
-            Operation::Expand { options, .. } => {
+            Operation::Expand { new_shape, .. } => {
                 // CoreML tile operation requires input rank to match reps length
                 // If reshape was added before this operation, use reshaped input name
                 //  Otherwise use original input
 
-                if let Some(new_shape_u32) = options
-                    .as_ref()
-                    .map(|o| o.new_shape_static_or_max())
-                    .filter(|s| !s.is_empty())
-                {
+                if let Some(new_shape_u32) = (!new_shape.is_empty()).then(|| {
+                    new_shape
+                        .iter()
+                        .map(MLDimension::static_or_max)
+                        .collect::<Vec<u32>>()
+                }) {
                     // Get input operand shape
                     if !op.input_operands().is_empty()
                         && let Some(input_operand) = _graph.operand(op.input_operands()[0])
@@ -2049,9 +2046,7 @@ impl CoremlMlProgramConverter {
             }
 
             Operation::Split {
-                splits,
-                options,
-                ..
+                splits, options, ..
             } => {
                 // split: x, num_splits or split_sizes, axis
                 if !input_names.is_empty() {
@@ -2251,10 +2246,7 @@ impl CoremlMlProgramConverter {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
-                inputs.insert(
-                    "axis".to_string(),
-                    Self::create_int_argument(*axis as i32),
-                );
+                inputs.insert("axis".to_string(), Self::create_int_argument(*axis as i32));
                 if let Some(opts) = options {
                     inputs.insert(
                         "exclusive".to_string(),
@@ -2956,19 +2948,23 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
             // Special handling for expand operation (may need reshape first)
             if let Operation::Expand {
-                options: Some(opts),
+                new_shape: expand_shape,
                 ..
             } = &op
                 && !op.input_operands().is_empty()
+                && !expand_shape.is_empty()
                 && let Some(input_operand) = graph_info.operand(op.input_operands()[0])
             {
-                let new_shape = opts.new_shape_static_or_max();
+                let new_shape_u32: Vec<u32> = expand_shape
+                    .iter()
+                    .map(MLDimension::static_or_max)
+                    .collect();
                 let input_shape = input_operand.descriptor.static_or_max_shape();
                 let input_rank = input_shape.len();
-                let output_rank = new_shape.len();
+                let output_rank = new_shape_u32.len();
 
                 #[allow(clippy::collapsible_if)]
-                if !new_shape.is_empty() && input_rank < output_rank {
+                if input_rank < output_rank {
                     let mut reshaped_dims = vec![1u32; output_rank];
                     for i in 0..input_rank {
                         reshaped_dims[output_rank - i - 1] = input_shape[input_rank - i - 1];

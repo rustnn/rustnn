@@ -29,6 +29,7 @@ use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
 use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use trtx::network::Layer;
 use trtx::{
@@ -4518,10 +4519,12 @@ impl TrtxConverter {
             } => (
                 starts,
                 sizes,
-                options.as_ref().ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Slice operation missing options".to_string(),
-                })?,
+                options
+                    .as_ref()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: "Slice operation missing options".to_string(),
+                    })?,
             ),
             _ => {
                 return Err(GraphError::ConversionFailed {
@@ -4550,10 +4553,7 @@ impl TrtxConverter {
             return Ok(());
         }
         let starts: Vec<i32> = starts_u32.iter().map(|&u| u as i32).collect();
-        let sizes: Vec<i32> = sizes_ml
-            .iter()
-            .map(|d| d.static_or_max() as i32)
-            .collect();
+        let sizes: Vec<i32> = sizes_ml.iter().map(|d| d.static_or_max() as i32).collect();
         let strides: Vec<i32> = if opts.strides.is_empty() {
             vec![1; starts.len()]
         } else {
@@ -4824,18 +4824,18 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let attrs = operation.attributes();
-        let opts = attrs
-            .as_expand()
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Expand operation missing options".to_string(),
-            })?;
-        let new_shape: Vec<i32> = opts
-            .new_shape_static_or_max()
-            .into_iter()
-            .map(|u| u as i32)
-            .collect();
+        let new_shape: Vec<i32> = match operation {
+            Operation::Expand { new_shape, .. } => new_shape
+                .iter()
+                .map(|d| MLDimension::static_or_max(d) as i32)
+                .collect(),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Internal error: add_expand_op called for non-expand".to_string(),
+                });
+            }
+        };
 
         if new_shape.is_empty() {
             return Err(GraphError::ConversionFailed {
@@ -6197,10 +6197,12 @@ impl TrtxConverter {
             } => (
                 beginning_padding,
                 ending_padding,
-                options.as_ref().ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Pad operation missing options".to_string(),
-                })?,
+                options
+                    .as_ref()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: "Pad operation missing options".to_string(),
+                    })?,
             ),
             _ => {
                 return Err(GraphError::ConversionFailed {
@@ -7851,18 +7853,15 @@ impl TrtxConverter {
                     reason: format!("Failed to add concatenation: {}", e),
                 })?;
 
-        // WebNN axis (default 0 per spec); use typed options when available
-        let axis_raw = operation
-            .attributes()
-            .as_concat()
-            .map(|opts| opts.axis as i64)
-            .or_else(|| {
-                operation
-                    .attributes()
-                    .get("axis")
-                    .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
-            })
-            .unwrap_or(0);
+        // WebNN `axis` is a concat() method parameter (see spec).
+        let axis_raw = match operation {
+            Operation::Concat { axis, .. } => *axis as i64,
+            _ => operation
+                .attributes()
+                .get("axis")
+                .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+                .unwrap_or(0),
+        };
         let ndim = inputs[0]
             .dimensions()
             .map_err(|e| GraphError::ConversionFailed {

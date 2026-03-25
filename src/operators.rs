@@ -41,9 +41,9 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::operator_options::{
-    MLDimension, MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConcatOptions,
-    MLConstantOptions, MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions,
-    MLEluOptions, MLExpandOptions, MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions,
+    MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
+    MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions,
+    MLDimension, MLEluOptions, MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions,
     MLHardSigmoidOptions, MLInstanceNormalizationOptions, MLLayerNormalizationOptions,
     MLLeakyReluOptions, MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions,
     MLPadOptions, MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReshapeOptions,
@@ -374,10 +374,12 @@ pub enum Operation {
     },
 
     // ---------- Concat ----------
-    /// [concat()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-concat)
+    /// [concat()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-concat) —
+    /// `axis` is a method parameter; `options` is [`MLOperatorOptions`] (label only).
     Concat {
         inputs: Vec<OperandIndex>,
-        options: Option<MLConcatOptions>,
+        axis: u32,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -394,7 +396,8 @@ pub enum Operation {
     /// [expand()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-expand)
     Expand {
         input: OperandIndex,
-        options: Option<MLExpandOptions>,
+        new_shape: Vec<MLDimension>,
+        options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
 
@@ -892,10 +895,15 @@ impl<'de> Deserialize<'de> for Operation {
         } else {
             Vec::new()
         };
-        Operation::from_json_attributes(&h.op_type, &h.input_operands, &output_ids, &attributes_value)
-            .ok_or_else(|| {
-                serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
-            })
+        Operation::from_json_attributes(
+            &h.op_type,
+            &h.input_operands,
+            &output_ids,
+            &attributes_value,
+        )
+        .ok_or_else(|| {
+            serde::de::Error::custom(format!("unknown or invalid op_type: {}", h.op_type))
+        })
     }
 }
 
@@ -1290,6 +1298,16 @@ impl Operation {
             Operation::CumulativeSum { axis, .. } => {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
+            Operation::Concat { axis, .. } => {
+                obj.insert("axis".to_string(), serde_json::json!(axis));
+            }
+            Operation::Expand { new_shape, .. } => {
+                if !new_shape.is_empty() {
+                    if let Ok(v) = serde_json::to_value(new_shape) {
+                        obj.insert("newShape".to_string(), v);
+                    }
+                }
+            }
             Operation::Gather {
                 batch_dimensions, ..
             }
@@ -1301,9 +1319,7 @@ impl Operation {
                 }
             }
             Operation::Gru {
-                steps,
-                hidden_size,
-                ..
+                steps, hidden_size, ..
             } => {
                 obj.insert("steps".to_string(), serde_json::json!(steps));
                 obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
@@ -1615,7 +1631,7 @@ impl Operation {
             } => (
                 tag.clone(),
                 inputs.clone(),
-                OO::Concat(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::CumulativeSum { input, options, .. } => (
                 tag.clone(),
@@ -1625,7 +1641,7 @@ impl Operation {
             Operation::Expand { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
-                OO::Expand(options.clone().unwrap_or_default()),
+                OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Elu { input, options, .. } => (
                 tag.clone(),
@@ -2003,14 +2019,11 @@ impl Operation {
         outputs: &[OperandIndex],
         attributes: &serde_json::Value,
     ) -> Option<Self> {
+        // Null must not map to OperatorOptions::default() (generic MLOperatorOptions): ops like
+        // averagePool2d need Pool2d(MLPool2dOptions::default()) so ONNX can infer kernel_shape.
+        let empty_obj = serde_json::Value::Object(Default::default());
         let (opts, extras) = if attributes.is_null() {
-            (OperatorOptions::default(), OperationExtras::default())
-        } else if let Some(obj) = attributes.as_object() {
-            if obj.is_empty() {
-                (OperatorOptions::default(), OperationExtras::default())
-            } else {
-                OperatorOptions::from_json_with_op_type_and_extras(op_type, attributes)
-            }
+            OperatorOptions::from_json_with_op_type_and_extras(op_type, &empty_obj)
         } else {
             OperatorOptions::from_json_with_op_type_and_extras(op_type, attributes)
         };
@@ -2297,7 +2310,8 @@ impl Operation {
             }),
             "concat" => Some(Operation::Concat {
                 inputs: input_operands.to_vec(),
-                options: attributes.as_concat().cloned(),
+                axis: extras.axis.unwrap_or(0),
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "cumulativeSum" if !input_operands.is_empty() => Some(Operation::CumulativeSum {
@@ -2308,7 +2322,8 @@ impl Operation {
             }),
             "expand" if !input_operands.is_empty() => Some(Operation::Expand {
                 input: at(input_operands, 0)?,
-                options: attributes.as_expand().cloned(),
+                new_shape: extras.expand_new_shape,
+                options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
             "elu" if !input_operands.is_empty() => Some(Operation::Elu {
@@ -2685,6 +2700,12 @@ impl Operation {
         input_operands: &[u32],
         attributes: &OperatorOptions,
     ) -> Option<Self> {
-        Self::from_operator_options(op_type, input_operands, attributes, &[], OperationExtras::default())
+        Self::from_operator_options(
+            op_type,
+            input_operands,
+            attributes,
+            &[],
+            OperationExtras::default(),
+        )
     }
 }

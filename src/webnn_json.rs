@@ -579,101 +579,33 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     }
                 }
 
-                // Concat
                 "concat" => {
-                    let axis_u32 = {
-                        let axis_i64 = match &op {
-                            Operation::Concat { options, .. } => {
-                                options.as_ref().map(|o| o.axis as i64)
-                            }
-                            _ => None,
-                        };
-                        if let Some(axis) = axis_i64 {
-                            // Convert to u32, handling negative indices
-                            if axis < 0 {
-                                // Negative index: convert relative to rank
-                                if !input_shapes.is_empty() {
-                                    let rank = input_shapes[0].len() as i64;
-                                    if axis + rank >= 0 {
-                                        Some((axis + rank) as u32)
-                                    } else {
-                                        None // Invalid negative index
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                Some(axis as u32)
-                            }
-                        } else {
-                            None
-                        }
+                    let axis_val = match &op {
+                        Operation::Concat { axis, .. } => *axis,
+                        _ => 0,
                     };
-
-                    if let Some(axis_val) = axis_u32 {
-                        if input_shapes.iter().all(|s| s.is_empty()) && axis_val == 0 {
-                            Some(vec![Dimension::Static(input_shapes.len() as u32)])
-                        } else {
-                            infer_concat_shape_dimensions(&input_shapes, axis_val).ok()
-                        }
+                    if input_shapes.iter().all(|s| s.is_empty()) && axis_val == 0 {
+                        Some(vec![Dimension::Static(input_shapes.len() as u32)])
                     } else {
-                        None
+                        infer_concat_shape_dimensions(&input_shapes, axis_val).ok()
                     }
                 }
 
-                // Expand: use axes for unsqueeze-style or newShape for broadcast
-                // Only use axes path when axes is non-empty; otherwise use newShape (default axes is []).
+                // Expand: `newShape` is a method argument (see expand() in the WebNN spec).
                 "expand" => {
                     if input_shapes.len() == 1 {
-                        let (axes_opt, new_shape_opt) = match &op {
-                            Operation::Expand { options, .. } => options
-                                .as_ref()
-                                .map(|o| {
-                                    let axes: Vec<i64> = o.axes.iter().map(|&u| u as i64).collect();
-                                    let new_shape: Vec<Dimension> = o
-                                        .new_shape
-                                        .iter()
-                                        .map(|d| Dimension::from(d.clone()))
-                                        .collect();
-                                    (
-                                        if axes.is_empty() { None } else { Some(axes) },
-                                        if new_shape.is_empty() {
-                                            None
-                                        } else {
-                                            Some(new_shape)
-                                        },
-                                    )
-                                })
-                                .unwrap_or((None, None)),
-                            _ => (None, None),
+                        let new_shape_opt: Option<Vec<Dimension>> = match &op {
+                            Operation::Expand { new_shape, .. } if !new_shape.is_empty() => Some(
+                                new_shape
+                                    .iter()
+                                    .map(|d| Dimension::from(d.clone()))
+                                    .collect(),
+                            ),
+                            _ => None,
                         };
-                        if let Some(axes) = axes_opt
-                            && !axes.is_empty()
-                        {
-                            let rank = input_shapes[0].len() as i64;
-                            let mut normalized = Vec::with_capacity(axes.len());
-                            let mut valid = true;
-                            for axis in axes {
-                                let mut axis = axis;
-                                if axis < 0 {
-                                    axis += rank + 1;
-                                }
-                                if axis < 0 || axis > rank {
-                                    valid = false;
-                                    break;
-                                }
-                                normalized.push(axis as u32);
-                            }
-                            if valid {
-                                infer_unsqueeze_shape_dimensions(&input_shapes[0], &normalized).ok()
-                            } else {
-                                None
-                            }
-                        } else if let Some(new_shape) = new_shape_opt {
+                        new_shape_opt.and_then(|new_shape| {
                             infer_expand_shape_dimensions(&input_shapes[0], &new_shape).ok()
-                        } else {
-                            None
-                        }
+                        })
                     } else {
                         None
                     }

@@ -21,8 +21,7 @@
 //! [Web Neural Network API](https://www.w3.org/TR/webnn/) are represented
 //! as an enum: each variant holds the corresponding options struct.
 
-use serde::de::Error;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
 pub type OperandIndex = u32;
@@ -73,6 +72,8 @@ pub struct OperationExtras {
     pub sizes: Vec<MLDimension>,
     pub splits: Vec<u32>,
     pub split_equal_parts: Option<u32>,
+    /// `expand()` method argument `newShape` (not part of MLOperatorOptions).
+    pub expand_new_shape: Vec<MLDimension>,
 }
 
 impl OperationExtras {
@@ -102,13 +103,27 @@ impl OperationExtras {
                 out.axis = remove_u32(obj, "axis");
             }
             "cast" => {
-                if let Some(s) = obj.remove("to").and_then(|x| x.as_str().map(|s| s.to_string())) {
+                if let Some(s) = obj
+                    .remove("to")
+                    .and_then(|x| x.as_str().map(|s| s.to_string()))
+                {
                     out.to_data_type = Some(s);
                 } else if let Some(s) = obj
                     .remove("dataType")
                     .and_then(|x| x.as_str().map(|s| s.to_string()))
                 {
                     out.to_data_type = Some(s);
+                }
+            }
+            "concat" => {
+                out.axis = remove_u32(obj, "axis");
+            }
+            "expand" => {
+                let _ = obj.remove("axes");
+                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape")) {
+                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                        out.expand_new_shape = parsed;
+                    }
                 }
             }
             "cumulativeSum" => {
@@ -120,12 +135,12 @@ impl OperationExtras {
             }
             "gru" => {
                 out.steps = remove_u32(obj, "steps");
-                out.hidden_size = remove_u32(obj, "hiddenSize")
-                    .or_else(|| remove_u32(obj, "hidden_size"));
+                out.hidden_size =
+                    remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
             }
             "gruCell" => {
-                out.hidden_size = remove_u32(obj, "hiddenSize")
-                    .or_else(|| remove_u32(obj, "hidden_size"));
+                out.hidden_size =
+                    remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
             }
             "pad" => {
                 out.beginning_padding = remove_u32_vec(obj, "beginningPadding");
@@ -298,8 +313,6 @@ pub struct MLConvTranspose2dOptions {
     pub dilations: Vec<u32>,
     #[serde(default)]
     pub output_padding: Vec<u32>,
-    /// Output spatial shape [H, W]. WebNN camelCase: outputSizes.
-    /// TOOD MTAX outputSizes is not optional
     pub output_sizes: Option<Vec<u32>>,
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
@@ -307,7 +320,6 @@ pub struct MLConvTranspose2dOptions {
     pub input_layout: String,
     #[serde(default)]
     pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
-    // TODO TMAX bias is not optional
     pub bias: Option<OperandIndex>,
 }
 
@@ -329,7 +341,7 @@ impl Default for MLConvTranspose2dOptions {
 }
 
 /// MLConstantOptions. constant (interchange: init, data, dataType, shape).
-// TODO TMAX non-existing struct
+// TODO MTAX non-existing struct
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
@@ -343,17 +355,6 @@ pub struct MLConstantOptions {
     pub shape: Vec<u32>,
 }
 
-/// MLConcatOptions. concat.
-// TODO TMAX non-existing struct
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLConcatOptions {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default)]
-    pub axis: u32,
-}
-
 /// MLCumulativeSumOptions. cumulativeSum (axis is a builder method parameter).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -364,31 +365,6 @@ pub struct MLCumulativeSumOptions {
     pub exclusive: bool,
     #[serde(default)]
     pub reversed: bool,
-}
-
-/// MLExpandOptions. expand (newShape or axes from attributes for interchange).
-/// newShape uses MLDimension (static or dynamic) per WebNN IDL.
-// TODO TMAX MLExpandOptions does not exist
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MLExpandOptions {
-    #[serde(default)]
-    pub label: String,
-    #[serde(default, rename = "newShape")]
-    pub new_shape: Vec<MLDimension>,
-    /// TODO axis is not part of expand?
-    #[serde(default)]
-    pub axes: Vec<u32>,
-}
-
-impl MLExpandOptions {
-    /// Returns each dimension as u32 (static value or dynamic maxSize).
-    pub fn new_shape_static_or_max(&self) -> Vec<u32> {
-        self.new_shape
-            .iter()
-            .map(MLDimension::static_or_max)
-            .collect()
-    }
 }
 
 fn default_elu_alpha() -> f64 {
@@ -590,7 +566,7 @@ pub struct MLLayerNormalizationOptions {
     #[serde(default)]
     pub has_bias: Option<bool>,
     /// Omitted in JSON => None => use spec default [1..rank). Present (including []) => use as-is.
-    // TODO TMAX axis is not an option. 
+    // TODO TMAX axis is not an option.
     pub axes: Option<Vec<u32>>,
     #[serde(default = "default_layer_norm_epsilon")]
     pub epsilon: f64,
@@ -720,7 +696,7 @@ pub struct MLPadOptions {
 pub struct MLPool2dOptions {
     #[serde(default)]
     pub label: String,
-    /// TODOX MTAX the spec is below. I guess this can be interpreted as optional? 
+    /// TODO MTAX the spec is below. I guess this can be interpreted as optional?
     /// windowDimensions, of type sequence<[EnforceRange] unsigned long>
     /// A list of length 2: [windowHeight, windowWidth]. Specifies the dimensions of the sliding window. The default value for the window dimensions are the height and width dimensions of the input shape.
     pub window_dimensions: Option<Vec<u32>>,
@@ -813,7 +789,7 @@ pub struct MLReverseOptions {
 #[serde(rename_all = "camelCase")]
 pub struct MLScatterOptions {
     #[serde(default)]
-    pub label: String,  
+    pub label: String,
     #[serde(default)]
     pub axis: u32,
 }
@@ -935,14 +911,8 @@ pub enum OperatorOptions {
     /// MLConvTranspose2dOptions.
     ConvTranspose2d(MLConvTranspose2dOptions),
 
-    /// MLConcatOptions.
-    Concat(MLConcatOptions),
-
     /// MLCumulativeSumOptions.
     CumulativeSum(MLCumulativeSumOptions),
-
-    /// MLExpandOptions.
-    Expand(MLExpandOptions),
 
     /// MLEluOptions.
     Elu(MLEluOptions),
@@ -1053,10 +1023,10 @@ impl OperatorOptions {
                 "clamp" => try_opt!(MLClampOptions, Clamp),
                 "conv2d" => try_opt!(MLConv2dOptions, Conv2d),
                 "convTranspose2d" => try_opt!(MLConvTranspose2dOptions, ConvTranspose2d),
-                "concat" => try_opt!(MLConcatOptions, Concat),
+                "concat" => try_opt!(MLOperatorOptions, Operator),
                 "constant" => try_opt!(MLConstantOptions, Constant),
                 "cumulativeSum" => try_opt!(MLCumulativeSumOptions, CumulativeSum),
-                "expand" => try_opt!(MLExpandOptions, Expand),
+                "expand" => try_opt!(MLOperatorOptions, Operator),
                 "elu" => try_opt!(MLEluOptions, Elu),
                 "gather" | "gatherElements" => try_opt!(MLGatherOptions, Gather),
                 "gemm" => try_opt!(MLGemmOptions, Gemm),
@@ -1073,7 +1043,8 @@ impl OperatorOptions {
                 "lstm" => try_opt!(MLLstmOptions, Lstm),
                 "lstmCell" => try_opt!(MLLstmCellOptions, LstmCell),
                 "pad" => try_opt!(MLPadOptions, Pad),
-                "averagePool2d" | "maxPool2d" | "l2Pool2d" => try_opt!(MLPool2dOptions, Pool2d),
+                "averagePool2d" | "maxPool2d" | "l2Pool2d" | "globalAveragePool"
+                | "globalMaxPool" => try_opt!(MLPool2dOptions, Pool2d),
                 "reduceSum" | "reduceMean" | "reduceMax" | "reduceMin" | "reduceProduct"
                 | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp"
                 | "reduceSumSquare" => {
@@ -1159,12 +1130,6 @@ impl OperatorOptions {
     pub fn as_conv2d(&self) -> Option<&MLConv2dOptions> {
         match self {
             OperatorOptions::Conv2d(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_concat(&self) -> Option<&MLConcatOptions> {
-        match self {
-            OperatorOptions::Concat(o) => Some(o),
             _ => None,
         }
     }
@@ -1339,12 +1304,6 @@ impl OperatorOptions {
     pub fn as_triangular(&self) -> Option<&MLTriangularOptions> {
         match self {
             OperatorOptions::Triangular(o) => Some(o),
-            _ => None,
-        }
-    }
-    pub fn as_expand(&self) -> Option<&MLExpandOptions> {
-        match self {
-            OperatorOptions::Expand(o) => Some(o),
             _ => None,
         }
     }
