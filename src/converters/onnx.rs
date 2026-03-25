@@ -525,30 +525,6 @@ impl OnnxConverter {
 
         let mut inputs: Vec<String> = vec![normalized_input_name.clone()];
 
-        let (_has_scale, has_bias_norm) = match &op {
-            Operation::BatchNormalization { options, .. } => (
-                options.as_ref().and_then(|o| o.scale).is_some(),
-                options.as_ref().and_then(|o| o.bias).is_some(),
-            ),
-            Operation::InstanceNormalization { options, .. } => (
-                options.as_ref().and_then(|o| o.scale).is_some(),
-                options.as_ref().and_then(|o| o.bias).is_some(),
-            ),
-            Operation::LayerNormalization { options, .. } => {
-                let o = options.as_ref();
-                let scale_present = o.and_then(|x| x.scale).is_some();
-                let bias_present = o.and_then(|x| x.bias).is_some();
-                // Respect hasScale/hasBias when operands are omitted (WebNN 2-operand forms).
-                let scale_requested = !matches!(o.and_then(|x| x.has_scale), Some(false));
-                let bias_requested = !matches!(o.and_then(|x| x.has_bias), Some(false));
-                (
-                    scale_present || scale_requested,
-                    bias_present || bias_requested,
-                )
-            }
-            _ => (false, false),
-        };
-
         if is_layer_norm {
             let rank_ln = input_shape.len();
             let axes_raw: Option<Vec<serde_json::Value>> = match &op {
@@ -567,53 +543,43 @@ impl OnnxConverter {
                     op.output_operand()
                         .expect("Single-output operation expected"),
                 );
-                if has_bias_norm {
-                    let bias_id = match &op {
-                        Operation::LayerNormalization { options, .. } => {
-                            options.as_ref().and_then(|o| o.bias)
-                        }
-                        _ => None,
-                    };
-                    if let Some(id) = bias_id {
-                        nodes.push(NodeProto {
-                            input: vec![operand_name(graph, id)],
-                            output: vec![output_name],
-                            name: op_name.clone(),
-                            op_type: "Identity".to_string(),
-                            ..Default::default()
-                        });
-                    } else {
-                        let zero_name = format!("{}_zero", op_name);
-                        let shape_i64: Vec<i64> =
-                            normalized_input_shape.iter().map(|&d| d as i64).collect();
-                        if shape_i64.is_empty() {
-                            initializers.push(Self::create_scalar_initializer(
-                                zero_name.clone(),
-                                input_data_type,
-                                0.0,
-                            ));
-                        } else {
-                            initializers.push(Self::create_vector_initializer(
-                                zero_name.clone(),
-                                input_data_type,
-                                shape_i64,
-                                0.0,
-                            ));
-                        }
-                        nodes.push(NodeProto {
-                            input: vec![zero_name],
-                            output: vec![output_name],
-                            name: op_name.clone(),
-                            op_type: "Identity".to_string(),
-                            ..Default::default()
-                        });
+                let bias_id = match &op {
+                    Operation::LayerNormalization { options, .. } => {
+                        options.as_ref().and_then(|o| o.bias)
                     }
-                } else {
+                    _ => None,
+                };
+                if let Some(id) = bias_id {
                     nodes.push(NodeProto {
-                        input: vec![operand_name(graph, input_id), operand_name(graph, input_id)],
+                        input: vec![operand_name(graph, id)],
                         output: vec![output_name],
                         name: op_name.clone(),
-                        op_type: "Sub".to_string(),
+                        op_type: "Identity".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    let zero_name = format!("{}_zero", op_name);
+                    let shape_i64: Vec<i64> =
+                        normalized_input_shape.iter().map(|&d| d as i64).collect();
+                    if shape_i64.is_empty() {
+                        initializers.push(Self::create_scalar_initializer(
+                            zero_name.clone(),
+                            input_data_type,
+                            0.0,
+                        ));
+                    } else {
+                        initializers.push(Self::create_vector_initializer(
+                            zero_name.clone(),
+                            input_data_type,
+                            shape_i64,
+                            0.0,
+                        ));
+                    }
+                    nodes.push(NodeProto {
+                        input: vec![zero_name],
+                        output: vec![output_name],
+                        name: op_name.clone(),
+                        op_type: "Identity".to_string(),
                         ..Default::default()
                     });
                 }
@@ -628,64 +594,53 @@ impl OnnxConverter {
                     op.output_operand()
                         .expect("Single-output operation expected"),
                 );
-                if has_bias_norm {
-                    let bias_id = match &op {
-                        Operation::LayerNormalization { options, .. } => {
-                            options.as_ref().and_then(|o| o.bias)
-                        }
-                        _ => None,
-                    };
-                    if let Some(id) = bias_id {
-                        let bias_name = operand_name(graph, id);
-                        let input_nm = operand_name(graph, input_id);
-                        let zero_like_name = format!("{}_zero_like", op_name);
-                        nodes.push(NodeProto {
-                            input: vec![input_nm.clone(), input_nm],
-                            output: vec![zero_like_name.clone()],
-                            name: format!("{}_zero_like_sub", op_name),
-                            op_type: "Sub".to_string(),
-                            ..Default::default()
-                        });
-                        nodes.push(NodeProto {
-                            input: vec![zero_like_name, bias_name],
-                            output: vec![output_name],
-                            name: op_name.clone(),
-                            op_type: "Add".to_string(),
-                            ..Default::default()
-                        });
-                    } else {
-                        let zero_name = format!("{}_zero", op_name);
-                        let shape_i64: Vec<i64> =
-                            normalized_input_shape.iter().map(|&d| d as i64).collect();
-                        if shape_i64.is_empty() {
-                            initializers.push(Self::create_scalar_initializer(
-                                zero_name.clone(),
-                                input_data_type,
-                                0.0,
-                            ));
-                        } else {
-                            initializers.push(Self::create_vector_initializer(
-                                zero_name.clone(),
-                                input_data_type,
-                                shape_i64,
-                                0.0,
-                            ));
-                        }
-                        nodes.push(NodeProto {
-                            input: vec![zero_name],
-                            output: vec![output_name],
-                            name: op_name.clone(),
-                            op_type: "Identity".to_string(),
-                            ..Default::default()
-                        });
+                let bias_id = match &op {
+                    Operation::LayerNormalization { options, .. } => {
+                        options.as_ref().and_then(|o| o.bias)
                     }
-                } else {
+                    _ => None,
+                };
+                if let Some(id) = bias_id {
+                    let bias_name = operand_name(graph, id);
                     let input_nm = operand_name(graph, input_id);
+                    let zero_like_name = format!("{}_zero_like", op_name);
                     nodes.push(NodeProto {
                         input: vec![input_nm.clone(), input_nm],
+                        output: vec![zero_like_name.clone()],
+                        name: format!("{}_zero_like_sub", op_name),
+                        op_type: "Sub".to_string(),
+                        ..Default::default()
+                    });
+                    nodes.push(NodeProto {
+                        input: vec![zero_like_name, bias_name],
                         output: vec![output_name],
                         name: op_name.clone(),
-                        op_type: "Sub".to_string(),
+                        op_type: "Add".to_string(),
+                        ..Default::default()
+                    });
+                } else {
+                    let zero_name = format!("{}_zero", op_name);
+                    let shape_i64: Vec<i64> =
+                        normalized_input_shape.iter().map(|&d| d as i64).collect();
+                    if shape_i64.is_empty() {
+                        initializers.push(Self::create_scalar_initializer(
+                            zero_name.clone(),
+                            input_data_type,
+                            0.0,
+                        ));
+                    } else {
+                        initializers.push(Self::create_vector_initializer(
+                            zero_name.clone(),
+                            input_data_type,
+                            shape_i64,
+                            0.0,
+                        ));
+                    }
+                    nodes.push(NodeProto {
+                        input: vec![zero_name],
+                        output: vec![output_name],
+                        name: op_name.clone(),
+                        op_type: "Identity".to_string(),
                         ..Default::default()
                     });
                 }
@@ -784,7 +739,7 @@ impl OnnxConverter {
                 _ => (None, None),
             };
             let ln_defaults_need_runtime = crate::graph::dynamic_inputs_enabled()
-                && (ln_scale_id.is_none() || has_bias_norm && ln_bias_id.is_none())
+                && (ln_scale_id.is_none() || ln_bias_id.is_none())
                 && input_operand.descriptor.has_dynamic_dimensions();
             let has_dynamic_norm_dims = match layernorm_axis_override {
                 Some(ln_axis) => {
@@ -950,7 +905,7 @@ impl OnnxConverter {
 
             if let Some(bias_input_id) = bias_input_id {
                 inputs.push(operand_name(graph, bias_input_id));
-            } else if !is_layer_norm || has_bias_norm {
+            } else {
                 let bias_name = if let Some(shape_vec) = &norm_dynamic_defaults_shape {
                     Self::create_runtime_filled_tensor(
                         &format!("{}_bias_default", op_name),
@@ -11123,8 +11078,6 @@ mod tests {
             "layerNormalization",
             &serde_json::json!({
                 "axes": [1],
-                "hasScale": false,
-                "hasBias": true,
                 "epsilon": 1e-5
             }),
         )

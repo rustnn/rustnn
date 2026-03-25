@@ -149,6 +149,12 @@ impl OperationExtras {
                 let _ = obj.remove("has_scale");
                 let _ = obj.remove("has_bias");
             }
+            "layerNormalization" => {
+                let _ = obj.remove("hasScale");
+                let _ = obj.remove("hasBias");
+                let _ = obj.remove("has_scale");
+                let _ = obj.remove("has_bias");
+            }
             "pad" => {
                 out.beginning_padding = remove_u32_vec(obj, "beginningPadding");
                 if out.beginning_padding.is_empty() {
@@ -552,16 +558,8 @@ fn default_layer_norm_epsilon() -> f64 {
 pub struct MLLayerNormalizationOptions {
     #[serde(default)]
     pub label: String,
-    // TODO MTAX scale and bias are not optional, has_scale and has_bias has to go
     pub scale: Option<OperandIndex>,
     pub bias: Option<OperandIndex>,
-    /// When exactly one of scale/bias is provided (2 operands), disambiguates for converters.
-    #[serde(default)]
-    pub has_scale: Option<bool>,
-    #[serde(default)]
-    pub has_bias: Option<bool>,
-    /// Omitted in JSON => None => use spec default [1..rank). Present (including []) => use as-is.
-    // TODO TMAX axis is not an option.
     pub axes: Option<Vec<u32>>,
     #[serde(default = "default_layer_norm_epsilon")]
     pub epsilon: f64,
@@ -573,8 +571,6 @@ impl Default for MLLayerNormalizationOptions {
             label: String::new(),
             scale: None,
             bias: None,
-            has_scale: None,
-            has_bias: None,
             axes: None,
             epsilon: default_layer_norm_epsilon(),
         }
