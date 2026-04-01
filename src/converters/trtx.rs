@@ -3150,7 +3150,7 @@ impl TrtxConverter {
                 (data, trtx::DataType::kFLOAT)
             }
         };
-        let var_shape: Vec<_> = var_dims.iter().copied().collect();
+        let var_shape: Vec<_> = var_dims;
         let epsilon_const = network
             .add_small_constant_copied(&var_shape, &epsilon_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
@@ -3677,7 +3677,7 @@ impl TrtxConverter {
                 reason: format!("LayerNorm: failed to get variance dimensions: {}", e),
             })?;
         let var_shape: Vec<i64> = var_dims;
-        let num_var_el: usize = var_dims.iter().map(|&d| d as usize).product();
+        let num_var_el: usize = var_shape.iter().map(|&d| d as usize).product();
         let input_operand = graph
             .operand(operation.input_operands()[0])
             .ok_or_else(|| GraphError::ConversionFailed {
