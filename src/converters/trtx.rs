@@ -428,7 +428,7 @@ impl TrtxConverter {
                     };
 
                 let layer = network
-                    .add_small_constant_copied(&add_dims, &data_to_use, trt_dtype)
+                    .add_constant_owned(&add_dims, data_to_use, trt_dtype)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add constant (operand {}): {}", operand_id, e),
@@ -1223,7 +1223,7 @@ impl TrtxConverter {
                         .map(|&b| if b == 0 { 0u8 } else { 1u8 })
                         .collect();
                     let const_layer = network
-                        .add_small_constant_copied(&shape, &bool_bytes, TrtDataType::kBOOL)
+                        .add_constant_owned(&shape, bool_bytes, TrtDataType::kBOOL)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!("LogicalNot: failed to add BOOL constant: {}", e),
@@ -1383,7 +1383,7 @@ impl TrtxConverter {
                 })?;
 
         let one_const = network
-            .add_small_constant_copied(&broadcast_shape, &one_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, one_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create one constant for elu: {}", e),
@@ -1414,7 +1414,7 @@ impl TrtxConverter {
                 })?;
 
         let zero_const = network
-            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, zero_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create zero constant for elu: {}", e),
@@ -1445,7 +1445,7 @@ impl TrtxConverter {
                 })?;
 
         let alpha_const = network
-            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, alpha_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create alpha constant for elu: {}", e),
@@ -1577,7 +1577,7 @@ impl TrtxConverter {
         };
 
         let alpha_const = network
-            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, alpha_dtype)
+            .add_constant_owned(&broadcast_shape, alpha_bytes, alpha_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("LeakyReLU: failed to add alpha constant: {}", e),
@@ -1837,25 +1837,25 @@ impl TrtxConverter {
             ),
         };
         let alpha_const = network
-            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, alpha_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add alpha constant: {}", e),
             })?;
         let beta_const = network
-            .add_small_constant_copied(&broadcast_shape, &beta_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, beta_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add beta constant: {}", e),
             })?;
         let zero_const = network
-            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, zero_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add zero constant: {}", e),
             })?;
         let one_const = network
-            .add_small_constant_copied(&broadcast_shape, &one_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, one_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add one constant: {}", e),
@@ -2000,19 +2000,19 @@ impl TrtxConverter {
             ),
         };
         let three_const = network
-            .add_small_constant_copied(&broadcast_shape, &three_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, three_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSwish: failed to add 3 constant: {}", e),
             })?;
         let six_const = network
-            .add_small_constant_copied(&broadcast_shape, &six_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, six_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSwish: failed to add 6 constant: {}", e),
             })?;
         let zero_const = network
-            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, zero_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSwish: failed to add zero constant: {}", e),
@@ -2151,9 +2151,8 @@ impl TrtxConverter {
         network: &'_ mut trtx::NetworkDefinition<'network>,
         err_prefix: &str,
     ) -> Result<trtx::Tensor<'network>, GraphError> {
-        let scale_one = 1.0f32.to_le_bytes();
         let scale_constant = network
-            .add_small_constant_copied(&[], &scale_one, TrtDataType::kFLOAT)
+            .add_constant_owned(&[], 1.0f32.to_le_bytes().to_vec(), TrtDataType::kFLOAT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("{}: {}", err_prefix, e),
@@ -3152,7 +3151,7 @@ impl TrtxConverter {
         };
         let var_shape: Vec<_> = var_dims;
         let epsilon_const = network
-            .add_small_constant_copied(&var_shape, &epsilon_bytes, trt_dtype)
+            .add_constant_owned(&var_shape, epsilon_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("InstanceNorm: failed to add epsilon constant: {}", e),
@@ -3375,7 +3374,7 @@ impl TrtxConverter {
                 _ => (0.0f32.to_le_bytes().to_vec(), TrtDataType::kFLOAT),
             };
             let zero_const = network
-                .add_small_constant_copied(&[1], &zero_bytes, zero_dtype)
+                .add_constant_owned(&[1], zero_bytes, zero_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("LayerNorm 0D: failed to add zero constant: {}", e),
@@ -3477,7 +3476,7 @@ impl TrtxConverter {
                 ),
             };
             let zero_const = network
-                .add_small_constant_copied(&input_dims, &zero_bytes, zero_dtype)
+                .add_constant_owned(&input_dims, zero_bytes, zero_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("LayerNorm axes=[]: failed to add zeros constant: {}", e),
@@ -3532,7 +3531,7 @@ impl TrtxConverter {
                         }
                     };
                     let bias_const = network
-                        .add_small_constant_copied(&input_dims, &bias_broadcast_bytes, zero_dtype)
+                        .add_constant_owned(&input_dims, bias_broadcast_bytes, zero_dtype)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!(
@@ -3555,7 +3554,7 @@ impl TrtxConverter {
                         _ => (0..num_el).flat_map(|_| 1.0f32.to_le_bytes()).collect(),
                     };
                     let ones_const = network
-                        .add_small_constant_copied(&input_dims, &ones_bytes, zero_dtype)
+                        .add_constant_owned(&input_dims, ones_bytes, zero_dtype)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!(
@@ -3702,7 +3701,7 @@ impl TrtxConverter {
             ),
         };
         let epsilon_const = network
-            .add_small_constant_copied(&var_shape, &epsilon_bytes, epsilon_dtype)
+            .add_constant_owned(&var_shape, epsilon_bytes, epsilon_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("LayerNorm: failed to add epsilon constant: {}", e),
@@ -4901,7 +4900,7 @@ impl TrtxConverter {
             }
         };
         let ones_const = network
-            .add_small_constant_copied(&new_shape, &ones_data, trt_dtype)
+            .add_constant_owned(&new_shape, ones_data, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create ones constant for expand: {}", e),
@@ -5357,13 +5356,13 @@ impl TrtxConverter {
             .collect();
 
         let min_const = network
-            .add_small_constant_copied(&indices_shape, &min_data, trtx::DataType::kINT32)
+            .add_constant_owned(&indices_shape, min_data, trtx::DataType::kINT32)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add gather clamp min constant: {}", e),
             })?;
         let max_const = network
-            .add_small_constant_copied(&indices_shape, &max_data, trtx::DataType::kINT32)
+            .add_constant_owned(&indices_shape, max_data, trtx::DataType::kINT32)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add gather clamp max constant: {}", e),
@@ -5911,7 +5910,7 @@ impl TrtxConverter {
         // Implement clamp as: max(min_value, min(input, max_value))
         // First: min(input, max_value)
         let max_const = network
-            .add_small_constant_copied(&broadcast_shape, &max_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, max_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add max constant: {}", e),
@@ -5942,7 +5941,7 @@ impl TrtxConverter {
 
         // Second: max(min_value, clamped_upper)
         let min_const = network
-            .add_small_constant_copied(&broadcast_shape, &min_bytes, trt_dtype)
+            .add_constant_owned(&broadcast_shape, min_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add min constant: {}", e),
@@ -6087,7 +6086,7 @@ impl TrtxConverter {
             };
 
             let alpha_constant = network
-                .add_small_constant_copied(&broadcast_shape, &alpha_bytes, alpha_dtype)
+                .add_constant_owned(&broadcast_shape, alpha_bytes, alpha_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to create alpha constant: {}", e),
@@ -6143,7 +6142,7 @@ impl TrtxConverter {
             };
 
             let beta_constant = network
-                .add_small_constant_copied(&broadcast_shape, &beta_bytes, beta_dtype)
+                .add_constant_owned(&broadcast_shape, beta_bytes, beta_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to create beta constant: {}", e),
@@ -6525,7 +6524,7 @@ impl TrtxConverter {
             let alpha_bytes: Vec<u8> = alpha_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
             let alpha_layer = network
-                .add_small_constant_copied(&result_dims, &alpha_bytes, TrtDataType::kFLOAT)
+                .add_constant_owned(&result_dims, alpha_bytes, TrtDataType::kFLOAT)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to create alpha constant: {}", e),
@@ -6582,7 +6581,7 @@ impl TrtxConverter {
                 let beta_bytes: Vec<u8> = beta_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
 
                 let beta_layer = network
-                    .add_small_constant_copied(&c_dims, &beta_bytes, TrtDataType::kFLOAT)
+                    .add_constant_owned(&c_dims, beta_bytes, TrtDataType::kFLOAT)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to create beta constant: {}", e),
@@ -8104,7 +8103,7 @@ impl TrtxConverter {
                 })?;
 
         let inf_constant = network
-            .add_small_constant_copied(&[1], &f32::INFINITY.to_le_bytes(), TrtDataType::kFLOAT)
+            .add_constant_owned(&[1], f32::INFINITY.to_le_bytes().to_vec(), TrtDataType::kFLOAT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create infinity constant: {}", e),
@@ -8450,7 +8449,7 @@ impl TrtxConverter {
         // Create axis constant tensor (true 0D scalar with shape [])
         // TensorRT requires axisDims.nbDims == 0 for cumulative operations
         let axis_constant = network
-            .add_small_constant_copied(&[], &axis_value.to_le_bytes(), trtx::DataType::kINT32)
+            .add_constant_owned(&[], axis_value.to_le_bytes().to_vec(), trtx::DataType::kINT32)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create axis constant: {}", e),
@@ -8564,7 +8563,7 @@ impl TrtxConverter {
             .map(|s| get_static_or_max_size(s) as i64)
             .collect();
         let mask_layer = network
-            .add_small_constant_copied(&dims, &mask_bytes, trtx::DataType::kFLOAT)
+            .add_constant_owned(&dims, mask_bytes, trtx::DataType::kFLOAT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add constant mask for triangular: {}", e),
