@@ -3355,6 +3355,12 @@ impl TrtxConverter {
                 reason: format!("Failed to get input shape: {}", e),
             })?;
 
+        // Scale and bias are in MLLayerNormalizationOptions, not in input_operands() (legacy list is [input] only).
+        let attrs = operation.attributes();
+        let opts_ln = attrs.as_layer_normalization();
+        let scale_id = opts_ln.and_then(|o| o.scale);
+        let bias_id = opts_ln.and_then(|o| o.bias);
+
         // TensorRT Reduce requires at least 1 dimension. For 0D scalar: mean=x, variance=0, output = 0*scale + bias = bias or 0.
         if input_dims.is_empty() {
             let input_operand = graph
@@ -3386,15 +3392,38 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("LayerNorm 0D: zero const output: {}", e),
                     })?;
-            // Optional operands are [scale?, bias?]; bias is last when present. So len>=2 => add last (bias when only bias, or bias when scale+bias).
-            if operation.input_operands().len() >= 2 {
-                let bias_id = operation.input_operands()[operation.input_operands().len() - 1];
+            if let Some(sid) = scale_id {
+                let scale = tensor_map.get(&sid).ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("LayerNorm 0D: scale operand {} not found", sid),
+                })?;
+                let (lhs, rhs) = Self::ensure_broadcast_compatible(
+                    network,
+                    &result,
+                    scale,
+                    "layer_norm_0d_scale",
+                )?;
+                let mul_layer = network
+                    .add_elementwise(&lhs, &rhs, ElementWiseOperation::kPROD)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("LayerNorm 0D: failed to multiply by scale: {}", e),
+                    })?;
+                result =
+                    mul_layer
+                        .get_output(network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("LayerNorm 0D: scale mul output: {}", e),
+                        })?;
+            }
+            if let Some(bid) = bias_id {
                 let bias =
                     tensor_map
-                        .get(&bias_id)
+                        .get(&bid)
                         .ok_or_else(|| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
-                            reason: format!("Bias operand {} not found", bias_id),
+                            reason: format!("LayerNorm 0D: bias operand {} not found", bid),
                         })?;
                 // Bias may be scalar; broadcast to result shape [1] so ElementWise accepts same dims.
                 let mut bias_shuffle =
@@ -3437,10 +3466,8 @@ impl TrtxConverter {
 
         // Get epsilon and axes from typed options. Spec: when axes not present, axes = [1..rank) if rank > 1 else [].
         // Option<axes>: None = key omitted => default; Some(v) = use v (Some([]) = explicit no reduction).
-        let attrs = operation.attributes();
-        let opts = attrs.as_layer_normalization();
-        let _epsilon = opts.map(|o| o.epsilon as f32).unwrap_or(1e-5);
-        let axes: Vec<u32> = opts.and_then(|o| o.axes.clone()).unwrap_or_else(|| {
+        let _epsilon = opts_ln.map(|o| o.epsilon as f32).unwrap_or(1e-5);
+        let axes: Vec<u32> = opts_ln.and_then(|o| o.axes.clone()).unwrap_or_else(|| {
             if input_dims.len() > 1 {
                 (1..input_dims.len()).map(|i| i as u32).collect()
             } else {
@@ -3488,19 +3515,42 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("LayerNorm axes=[]: zero const output: {}", e),
                     })?;
-            // Optional operands are [scale?, bias?]; bias is last when present.
-            if operation.input_operands().len() >= 2 {
-                let bias_id = operation.input_operands()[operation.input_operands().len() - 1];
+            if let Some(sid) = scale_id {
+                let scale = tensor_map.get(&sid).ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("LayerNorm axes=[]: scale operand {} not found", sid),
+                })?;
+                let (lhs, rhs) = Self::ensure_broadcast_compatible(
+                    network,
+                    &result,
+                    scale,
+                    "layer_norm_axes_empty_scale",
+                )?;
+                let mul_layer = network
+                    .add_elementwise(&lhs, &rhs, ElementWiseOperation::kPROD)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("LayerNorm axes=[]: failed to multiply by scale: {}", e),
+                    })?;
+                result =
+                    mul_layer
+                        .get_output(network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("LayerNorm axes=[]: scale mul output: {}", e),
+                        })?;
+            }
+            if let Some(bid) = bias_id {
                 let bias =
                     tensor_map
-                        .get(&bias_id)
+                        .get(&bid)
                         .ok_or_else(|| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
-                            reason: format!("Bias operand {} not found", bias_id),
+                            reason: format!("LayerNorm axes=[]: bias operand {} not found", bid),
                         })?;
-                let bias_bc = if graph.constant_operand_ids_to_handles.contains_key(&bias_id) {
+                let bias_bc = if graph.constant_operand_ids_to_handles.contains_key(&bid) {
                     // Shuffle cannot change volume. Broadcast by creating a constant filled with the bias value.
-                    let bias_data = Self::get_constant_data(graph, bias_id)?;
+                    let bias_data = Self::get_constant_data(graph, bid)?;
                     let bias_broadcast_bytes: Vec<u8> = match input_operand.descriptor.data_type {
                         DataType::Float16 => {
                             let bits =
@@ -3853,75 +3903,39 @@ impl TrtxConverter {
                     })
             };
 
-        // Optional operands are [scale?, bias?] in that order. When len() == 2, the single optional may be scale or bias; use name to distinguish.
-        if operation.input_operands().len() > 1 {
-            let opt_id_1 = operation.input_operands()[1];
-            let opt_1 = tensor_map
-                .get(&opt_id_1)
-                .ok_or_else(|| GraphError::ConversionFailed {
+        // Scale and bias operand IDs come from options (see top of this function).
+        if let Some(sid) = scale_id {
+            let scale = tensor_map.get(&sid).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LayerNorm: scale operand {} not found", sid),
+            })?;
+            let scale_bc = reshape_scale_bias_to_result_rank(network, scale, &result, "scale", &axes)?;
+            let mul_layer = network
+                .add_elementwise(&result, &scale_bc, ElementWiseOperation::kPROD)
+                .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("LayerNorm optional operand {} not found", opt_id_1),
+                    reason: format!("Failed to add scale: {}", e),
                 })?;
-            let name_1 = graph
-                .operand(opt_id_1)
-                .and_then(|o| o.name.as_deref())
-                .unwrap_or("");
-            let is_bias_1 = name_1.to_lowercase().contains("bias");
-            let opt_1_bc = reshape_scale_bias_to_result_rank(
-                network,
-                opt_1,
-                &result,
-                if is_bias_1 { "bias" } else { "scale" },
-                &axes,
-            )?;
-            if is_bias_1 {
-                let add_layer = network
-                    .add_elementwise(&result, &opt_1_bc, ElementWiseOperation::kSUM)
+            result =
+                mul_layer
+                    .get_output(network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("Failed to add bias: {}", e),
+                        reason: format!("Failed to get mul output: {}", e),
                     })?;
-                result =
-                    add_layer
-                        .get_output(network, 0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to get add output: {}", e),
-                        })?;
-            } else {
-                let mul_layer = network
-                    .add_elementwise(&result, &opt_1_bc, ElementWiseOperation::kPROD)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to add scale: {}", e),
-                    })?;
-                result =
-                    mul_layer
-                        .get_output(network, 0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to get mul output: {}", e),
-                        })?;
-            }
         }
-
-        // Second optional (when len() == 3) is always bias
-        if operation.input_operands().len() > 2 {
-            let bias = tensor_map
-                .get(&operation.input_operands()[2])
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Bias operand {} not found", operation.input_operands()[2]),
-                })?;
+        if let Some(bid) = bias_id {
+            let bias = tensor_map.get(&bid).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LayerNorm: bias operand {} not found", bid),
+            })?;
             let bias_bc = reshape_scale_bias_to_result_rank(network, bias, &result, "bias", &axes)?;
-
             let add_layer = network
                 .add_elementwise(&result, &bias_bc, ElementWiseOperation::kSUM)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add bias: {}", e),
                 })?;
-
             result =
                 add_layer
                     .get_output(network, 0)
