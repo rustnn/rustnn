@@ -775,9 +775,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     if let Some(input_shape) = input_shapes.first() {
                         match &op {
                             Operation::Slice { starts, sizes, .. } => {
-                                if starts.is_empty() || sizes.is_empty() {
-                                    None
-                                } else if starts.len() != sizes.len() {
+                                if starts.is_empty()
+                                    || sizes.is_empty()
+                                    || starts.len() != sizes.len()
+                                {
                                     None
                                 } else {
                                     let mut output = input_shape.clone();
@@ -797,13 +798,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 }
 
                 // Shape
-                "shape" => {
-                    if let Some(input_shape) = input_shapes.first() {
-                        Some(vec![Dimension::Static(input_shape.len() as u32)])
-                    } else {
-                        None
-                    }
-                }
+                "shape" => input_shapes
+                    .first()
+                    .map(|input_shape| vec![Dimension::Static(input_shape.len() as u32)]),
 
                 // Constant: shape from operator options
                 "constant" => match &op {

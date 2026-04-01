@@ -130,11 +130,10 @@ impl OperationExtras {
             }
             "expand" => {
                 let _ = obj.remove("axes");
-                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape")) {
-                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape"))
+                    && let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
                         out.expand_new_shape = parsed;
                     }
-                }
             }
             "cumulativeSum" => {
                 out.axis = remove_u32(obj, "axis");
@@ -180,11 +179,10 @@ impl OperationExtras {
             }
             "slice" => {
                 out.starts = remove_u32_vec(obj, "starts");
-                if let Some(s) = obj.remove("sizes") {
-                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                if let Some(s) = obj.remove("sizes")
+                    && let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
                         out.sizes = parsed;
                     }
-                }
             }
             "split" => {
                 if let Some(sv) = obj.remove("splits") {
@@ -205,11 +203,10 @@ impl OperationExtras {
                 out.repetitions = remove_u32_vec(obj, "repetitions");
             }
             "reshape" => {
-                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape")) {
-                    if let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
+                if let Some(s) = obj.remove("newShape").or_else(|| obj.remove("new_shape"))
+                    && let Ok(parsed) = serde_json::from_value::<Vec<MLDimension>>(s) {
                         out.reshape_new_shape = parsed;
                     }
-                }
             }
             _ => {}
         }

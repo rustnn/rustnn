@@ -1217,12 +1217,11 @@ impl CoremlMlProgramConverter {
             | Operation::LesserOrEqual { .. }
             | Operation::LogicalAnd { .. }
             | Operation::LogicalOr { .. }
-            | Operation::LogicalXor { .. } => {
-                if input_names.len() >= 2 {
+            | Operation::LogicalXor { .. }
+                if input_names.len() >= 2 => {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert("y".to_string(), Self::create_argument(&input_names[1]));
                 }
-            }
 
             // MatMul operation: x, y, transpose_x, transpose_y
             // CoreML requires transpose parameters, WebNN doesn't have them so default to false
@@ -1325,11 +1324,10 @@ impl CoremlMlProgramConverter {
             | Operation::Erf { .. }
             | Operation::LogicalNot { .. }
             | Operation::Softplus { .. }
-            | Operation::Softsign { .. } => {
-                if !input_names.is_empty() {
+            | Operation::Softsign { .. }
+                if !input_names.is_empty() => {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-            }
 
             Operation::Reciprocal { .. } => {
                 if !input_names.is_empty() {
@@ -1355,8 +1353,8 @@ impl CoremlMlProgramConverter {
             }
 
             // Quantization operations: input, scale, zero_point
-            Operation::DequantizeLinear { .. } | Operation::QuantizeLinear { .. } => {
-                if input_names.len() >= 3 {
+            Operation::DequantizeLinear { .. } | Operation::QuantizeLinear { .. }
+                if input_names.len() >= 3 => {
                     inputs.insert("input".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert("scale".to_string(), Self::create_argument(&input_names[1]));
                     inputs.insert(
@@ -1364,15 +1362,13 @@ impl CoremlMlProgramConverter {
                         Self::create_argument(&input_names[2]),
                     );
                 }
-            }
 
             // Specialized activation: prelu - x, slope (two inputs)
-            Operation::Prelu { .. } => {
-                if input_names.len() >= 2 {
+            Operation::Prelu { .. }
+                if input_names.len() >= 2 => {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert("alpha".to_string(), Self::create_argument(&input_names[1]));
                 }
-            }
 
             // Specialized activations with alpha parameter: elu, leakyRelu
             Operation::Elu { options, .. } => {
@@ -2068,14 +2064,13 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::Where { .. } => {
+            Operation::Where { .. }
                 // select: cond, a (true_value), b (false_value)
-                if input_names.len() >= 3 {
+                if input_names.len() >= 3 => {
                     inputs.insert("cond".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert("a".to_string(), Self::create_argument(&input_names[1]));
                     inputs.insert("b".to_string(), Self::create_argument(&input_names[2]));
                 }
-            }
 
             Operation::Pad {
                 beginning_padding,
@@ -2109,14 +2104,13 @@ impl CoremlMlProgramConverter {
                 // WebNN modes: "constant", "edge", "reflection", "symmetric"
             }
 
-            Operation::Gelu { .. } => {
+            Operation::Gelu { .. }
                 // gelu: x (mode is optional, defaults to "EXACT")
-                if !input_names.is_empty() {
+                if !input_names.is_empty() => {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
                 // CoreML GELU supports "EXACT" and "TANH_APPROXIMATION" modes
                 // WebNN GELU has no mode parameter (uses exact by default)
-            }
 
             Operation::Squeeze { options, .. } => {
                 if !input_names.is_empty() {
@@ -2209,9 +2203,9 @@ impl CoremlMlProgramConverter {
                 }
             }
 
-            Operation::ScatterND { .. } => {
+            Operation::ScatterND { .. }
                 // scatter_nd: data, indices, updates
-                if input_names.len() >= 3 {
+                if input_names.len() >= 3 => {
                     inputs.insert("data".to_string(), Self::create_argument(&input_names[0]));
                     inputs.insert(
                         "indices".to_string(),
@@ -2222,7 +2216,6 @@ impl CoremlMlProgramConverter {
                         Self::create_argument(&input_names[2]),
                     );
                 }
-            }
 
             Operation::Tile { repetitions, .. } => {
                 // tile: x, reps

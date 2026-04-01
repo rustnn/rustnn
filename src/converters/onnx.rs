@@ -7065,7 +7065,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
 
-                if let Some(new_shape_value) = serde_json::to_value(new_shape).ok() {
+                if let Ok(new_shape_value) = serde_json::to_value(new_shape) {
                     // WebNN expand with newShape can be either:
                     // 1. ONNX Expand (broadcasting-compatible shapes)
                     // 2. ONNX Reshape (arbitrary shape changes)

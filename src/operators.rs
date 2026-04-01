@@ -1291,11 +1291,10 @@ impl Operation {
             Operation::ArgMin { axis, .. } | Operation::ArgMax { axis, .. } => {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
-            Operation::Cast { to, .. } => {
-                if !to.is_empty() {
+            Operation::Cast { to, .. }
+                if !to.is_empty() => {
                     obj.insert("to".to_string(), serde_json::Value::String(to.clone()));
                 }
-            }
             Operation::CumulativeSum { axis, .. } => {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
@@ -1303,11 +1302,10 @@ impl Operation {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
             Operation::Expand { new_shape, .. } => {
-                if !new_shape.is_empty() {
-                    if let Ok(v) = serde_json::to_value(new_shape) {
+                if !new_shape.is_empty()
+                    && let Ok(v) = serde_json::to_value(new_shape) {
                         obj.insert("newShape".to_string(), v);
                     }
-                }
             }
             Operation::Gather {
                 batch_dimensions, ..
@@ -1360,17 +1358,15 @@ impl Operation {
                     obj.insert("splits".to_string(), serde_json::json!(splits));
                 }
             }
-            Operation::Tile { repetitions, .. } => {
-                if !repetitions.is_empty() {
+            Operation::Tile { repetitions, .. }
+                if !repetitions.is_empty() => {
                     obj.insert("repetitions".to_string(), serde_json::json!(repetitions));
                 }
-            }
             Operation::Reshape { new_shape, .. } => {
-                if !new_shape.is_empty() {
-                    if let Ok(val) = serde_json::to_value(new_shape) {
+                if !new_shape.is_empty()
+                    && let Ok(val) = serde_json::to_value(new_shape) {
                         obj.insert("newShape".to_string(), val);
                     }
-                }
             }
             _ => {}
         }
