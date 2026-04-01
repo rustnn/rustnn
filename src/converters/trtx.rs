@@ -5369,7 +5369,7 @@ impl TrtxConverter {
                 ),
             });
         }
-        let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i64;
+        let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i32;
 
         let indices_operand = graph
             .operand(operation.input_operands()[1])
@@ -6150,7 +6150,7 @@ impl TrtxConverter {
 
             // Multiply: alpha * x
             let mul_layer = network
-                .add_elementwise(input, alpha_tensor, ElementWiseOperation::kPROD)
+                .add_elementwise(input, &alpha_tensor, ElementWiseOperation::kPROD)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to multiply by alpha: {}", e),
@@ -6579,7 +6579,7 @@ impl TrtxConverter {
                     reason: format!("Failed to create alpha constant: {}", e),
                 })?;
 
-            let mut alpha_tensor =
+            let alpha_tensor =
                 alpha_layer
                     .get_output(network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
@@ -6863,7 +6863,7 @@ impl TrtxConverter {
                     })?;
             shuffle
                 .set_first_transpose(network, &[0, 3, 1, 2])
-                .with_context("Failed to set shuffle for conv2d output");
+                .with_context("Failed to set shuffle for conv2d output")?;
             Some(
                 shuffle
                     .get_output(network, 0)
@@ -7042,9 +7042,13 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add convolution (tensor weights): {}", e),
                     })?;
-                layer.set_input(network, 1, filter_tensor_to_use);
+                layer
+                    .set_input(network, 1, filter_tensor_to_use)
+                    .with_context("while setting kernel for conv2d")?;
                 if let Some(bt) = bias_tensor_to_use {
-                    layer.set_input(network, 2, bt);
+                    layer
+                        .set_input(network, 2, bt)
+                        .with_context("while setting bias for conv2d")?;
                 }
                 layer
             }
