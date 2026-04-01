@@ -1585,11 +1585,12 @@ mod tests {
         // HardSwish: x * hardSigmoid(x)
         let graph = create_unary_graph("hardSwish", vec![4], DataType::Float32);
         let input = vec![-3.0, 0.0, 1.0, 3.0];
+        //x * max(0, min(6, (x + 3))) / 6
         // -3: -3 * 0 = 0
         //  0:  0 * 0.5 = 0
-        //  1:  1 * 0.7 = 0.7
+        //  1:  1 * (1+3) / 6 = 4/6 = 2/3
         //  3:  3 * 1.0 = 3.0
-        let expected = vec![0.0, 0.0, 0.7, 3.0];
+        let expected = vec![0.0, 0.0, 2.0 / 3.0, 3.0];
 
         let output = execute_graph(&graph, &input).expect("Execution failed");
         verify_output(&output, &expected, 1e-3); // Slightly higher tolerance for composite op
