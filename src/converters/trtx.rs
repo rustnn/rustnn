@@ -3304,8 +3304,8 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("InstanceNorm: failed to add shuffle for scale: {}", e),
                     })?;
-            scale_shuffle.set_reshape_dimensions(network, &scale_broadcast_shape);
-            let mut scale_bc =
+            scale_shuffle.set_reshape_dimensions(network, &scale_broadcast_shape)?;
+            let scale_bc =
                 scale_shuffle
                     .get_output(network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
@@ -3314,7 +3314,7 @@ impl TrtxConverter {
                     })?;
 
             let mul_layer = network
-                .add_elementwise(&mut result, &mut scale_bc, ElementWiseOperation::kPROD)
+                .add_elementwise(&result, &scale_bc, ElementWiseOperation::kPROD)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add mul for scale: {}", e),
@@ -3345,8 +3345,8 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("InstanceNorm: failed to add shuffle for bias: {}", e),
                     })?;
-            bias_shuffle.set_reshape_dimensions(network, &scale_broadcast_shape);
-            let mut bias_bc =
+            bias_shuffle.set_reshape_dimensions(network, &scale_broadcast_shape)?;
+            let bias_bc =
                 bias_shuffle
                     .get_output(network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
@@ -3355,7 +3355,7 @@ impl TrtxConverter {
                     })?;
 
             let add_layer = network
-                .add_elementwise(&mut result, &mut bias_bc, ElementWiseOperation::kSUM)
+                .add_elementwise(&result, &bias_bc, ElementWiseOperation::kSUM)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add bias: {}", e),
@@ -3521,9 +3521,8 @@ impl TrtxConverter {
                     TrtDataType::kFLOAT,
                 ),
             };
-            let shape_i64: Vec<i64> = input_dims.iter().map(|&d| d as i64).collect();
             let zero_const = network
-                .add_small_constant_copied(&shape_i64, &zero_bytes, zero_dtype.clone())
+                .add_small_constant_copied(&input_dims, &zero_bytes, zero_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("LayerNorm axes=[]: failed to add zeros constant: {}", e),
@@ -3545,7 +3544,7 @@ impl TrtxConverter {
                             format: "trtx".to_string(),
                             reason: format!("Bias operand {} not found", bias_id),
                         })?;
-                let mut bias_bc = if graph.constant_operand_ids_to_handles.contains_key(&bias_id) {
+                let bias_bc = if graph.constant_operand_ids_to_handles.contains_key(&bias_id) {
                     // Shuffle cannot change volume. Broadcast by creating a constant filled with the bias value.
                     let bias_data = Self::get_constant_data(graph, bias_id)?;
                     let bias_broadcast_bytes: Vec<u8> = match input_operand.descriptor.data_type {
@@ -3578,7 +3577,7 @@ impl TrtxConverter {
                         }
                     };
                     let bias_const = network
-                        .add_small_constant_copied(&shape_i64, &bias_broadcast_bytes, zero_dtype)
+                        .add_small_constant_copied(&input_dims, &bias_broadcast_bytes, zero_dtype)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!(
@@ -3601,7 +3600,7 @@ impl TrtxConverter {
                         _ => (0..num_el).flat_map(|_| 1.0f32.to_le_bytes()).collect(),
                     };
                     let ones_const = network
-                        .add_small_constant_copied(&shape_i64, &ones_bytes, zero_dtype.clone())
+                        .add_small_constant_copied(&input_dims, &ones_bytes, zero_dtype.clone())
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!(
@@ -3624,7 +3623,7 @@ impl TrtxConverter {
                     bias_bc
                 };
                 let add_layer = network
-                    .add_elementwise(&mut result, &mut bias_bc, ElementWiseOperation::kSUM)
+                    .add_elementwise(&result, &bias_bc, ElementWiseOperation::kSUM)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("LayerNorm axes=[]: failed to add bias: {}", e),
@@ -3655,23 +3654,22 @@ impl TrtxConverter {
                 reason: format!("Failed to add mean reduce for layer norm: {}", e),
             })?;
 
-        let mut mean =
-            mean_layer
-                .get_output(network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get mean output: {}", e),
-                })?;
+        let mean = mean_layer
+            .get_output(network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get mean output: {}", e),
+            })?;
 
         // x - mean
         let sub_layer = network
-            .add_elementwise(input, &mut mean, ElementWiseOperation::kSUB)
+            .add_elementwise(input, &mean, ElementWiseOperation::kSUB)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sub for layer norm: {}", e),
             })?;
 
-        let mut x_minus_mean =
+        let x_minus_mean =
             sub_layer
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3687,7 +3685,7 @@ impl TrtxConverter {
                 reason: format!("Failed to add square for layer norm: {}", e),
             })?;
 
-        let mut squared =
+        let squared =
             square_layer
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3698,7 +3696,7 @@ impl TrtxConverter {
         // variance = mean((x - mean)^2)
         let var_layer = network
             .add_reduce(
-                &mut squared,
+                &squared,
                 ReduceOperation::kAVG.into(),
                 Axes::from_slice(&axes),
                 true,
@@ -3708,7 +3706,7 @@ impl TrtxConverter {
                 reason: format!("Failed to add variance reduce for layer norm: {}", e),
             })?;
 
-        let mut variance =
+        let variance =
             var_layer
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3754,7 +3752,7 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("LayerNorm: failed to add epsilon constant: {}", e),
             })?;
-        let mut epsilon_out =
+        let epsilon_out =
             epsilon_const
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3762,12 +3760,12 @@ impl TrtxConverter {
                     reason: format!("LayerNorm: epsilon const output: {}", e),
                 })?;
         let var_plus_eps = network
-            .add_elementwise(&mut variance, &mut epsilon_out, ElementWiseOperation::kSUM)
+            .add_elementwise(&variance, &epsilon_out, ElementWiseOperation::kSUM)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("LayerNorm: variance + epsilon: {}", e),
             })?;
-        let mut variance_eps =
+        let variance_eps =
             var_plus_eps
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3777,13 +3775,13 @@ impl TrtxConverter {
 
         // sqrt(variance + epsilon)
         let sqrt_layer = network
-            .add_unary(&mut variance_eps, UnaryOperation::kSQRT.into())
+            .add_unary(&variance_eps, UnaryOperation::kSQRT)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add sqrt for layer norm: {}", e),
             })?;
 
-        let mut std_dev =
+        let std_dev =
             sqrt_layer
                 .get_output(network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -3793,7 +3791,7 @@ impl TrtxConverter {
 
         // (x - mean) / sqrt(variance + epsilon)
         let div_layer = network
-            .add_elementwise(&mut x_minus_mean, &mut std_dev, ElementWiseOperation::kDIV)
+            .add_elementwise(&x_minus_mean, &std_dev, ElementWiseOperation::kDIV)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add div for layer norm: {}", e),
@@ -3890,9 +3888,9 @@ impl TrtxConverter {
                             reason: format!("LayerNorm {}: shuffle: {}", op_name, e),
                         })?;
                 if let Some(ref perm) = transpose_perm {
-                    shuffle.set_first_transpose(network, perm);
+                    shuffle.set_first_transpose(network, perm)?;
                 }
-                shuffle.set_reshape_dimensions(network, &new_shape);
+                shuffle.set_reshape_dimensions(network, &new_shape)?;
                 shuffle
                     .get_output(network, 0)
                     .map_err(move |e| GraphError::ConversionFailed {
@@ -6124,7 +6122,7 @@ impl TrtxConverter {
         // Note: All scalar constants must use shape [1,1,...,1] matching input dims for TensorRT broadcasting
 
         // Step 1: If alpha != 1.0, multiply x by alpha
-        let mut after_multiply = if (alpha - 1.0).abs() > f32::EPSILON {
+        let after_multiply = if (alpha - 1.0).abs() > f32::EPSILON {
             // Create alpha constant with type matching input (Half vs Float) for TensorRT elementwise
             let (alpha_bytes, alpha_dtype) = match input_operand.descriptor.data_type {
                 DataType::Float16 => (
@@ -6141,7 +6139,7 @@ impl TrtxConverter {
                     reason: format!("Failed to create alpha constant: {}", e),
                 })?;
 
-            let mut alpha_tensor = alpha_constant.get_output(network, 0).map_err(|e| {
+            let alpha_tensor = alpha_constant.get_output(network, 0).map_err(|e| {
                 GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to get alpha constant output: {}", e),
@@ -6197,7 +6195,7 @@ impl TrtxConverter {
                     reason: format!("Failed to create beta constant: {}", e),
                 })?;
 
-            let mut beta_tensor =
+            let beta_tensor =
                 beta_constant
                     .get_output(network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
