@@ -7892,12 +7892,6 @@ impl TrtxConverter {
                 });
             }
         };
-        if new_shape.is_empty() {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "reshape operation missing 'newShape'".to_string(),
-            });
-        }
 
         let dims: Vec<i64> = crate::operator_options::mldimensions_static_or_max(new_shape)
             .into_iter()
