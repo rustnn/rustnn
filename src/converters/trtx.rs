@@ -31,7 +31,7 @@ use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
-use crate::shape_inference::infer_arg_reduce_shape;
+use crate::shape_inference::{infer_arg_reduce_shape, infer_where_shape};
 use trtx::{
     ActivationType, Axes, DataType as TrtDataType, ElementWiseOperation, MatrixOperation,
     OwnedConvWeights, OwnedWeights, PoolingType, ReduceOperation, ResizeMode, ScatterMode,
@@ -774,7 +774,7 @@ impl TrtxConverter {
 
             // Other operations
             "clamp" => Self::add_clamp_op(graph, network, tensor_map, operation, temp_weights)?,
-            "where" => Self::add_where_op(network, tensor_map, operation)?,
+            "where" => Self::add_where_op(graph, network, tensor_map, operation)?,
             "linear" => Self::add_linear_op(graph, network, tensor_map, operation, temp_weights)?,
             "pad" => Self::add_pad_op(network, tensor_map, operation)?,
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
@@ -1068,6 +1068,119 @@ impl TrtxConverter {
         } else {
             Ok((kept, reshaped))
         }
+    }
+
+    /// Static shape dimensions for TRTX broadcast (all dims must be known).
+    fn operand_shape_u32_static(graph: &GraphInfo, id: u32) -> Result<Vec<u32>, GraphError> {
+        let operand = graph.operand(id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("operand {} not in graph", id),
+        })?;
+        let mut out = Vec::with_capacity(operand.descriptor.shape.len());
+        for d in &operand.descriptor.shape {
+            let s = get_static_or_max_size(d);
+            if s == 0 {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "operand {} needs static dimensions for TRTX broadcast (got 0)",
+                        id
+                    ),
+                });
+            }
+            out.push(s);
+        }
+        Ok(out)
+    }
+
+    /// Expand `tensor` from `from_dims` to `target_dims` (NumPy-style; dimensions must be conformable).
+    fn broadcast_trtx_tensor_to_dims<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        from_dims: &[i64],
+        target_dims: &[i64],
+        op_label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if from_dims == target_dims {
+            let layer = network.add_identity(tensor).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast identity: {e}"),
+            })?;
+            return layer.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast identity output: {e}"),
+            });
+        }
+
+        let mut cur: &trtx::Tensor<'a> = tensor;
+        let mut dims = from_dims.to_vec();
+        let mut staged: Option<trtx::Tensor<'a>> = None;
+
+        if dims.len() < target_dims.len() {
+            let rank_diff = target_dims.len() - dims.len();
+            let mut new_shape: Vec<i64> = vec![1i64; rank_diff];
+            new_shape.extend_from_slice(&dims);
+            let mut shuffle_layer = network.add_shuffle(cur).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast shuffle: {e}"),
+            })?;
+            shuffle_layer
+                .set_reshape_dimensions(network, &new_shape)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_label} broadcast reshape: {e}"),
+                })?;
+            let out = shuffle_layer.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast shuffle output: {e}"),
+            })?;
+            staged = Some(out);
+            dims = new_shape;
+            cur = staged.as_ref().ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast shuffle missing tensor"),
+            })?;
+        }
+
+        if dims.len() != target_dims.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "{op_label} broadcast: rank mismatch {:?} vs {:?}",
+                    dims, target_dims
+                ),
+            });
+        }
+
+        for (&d, &t) in dims.iter().zip(target_dims.iter()) {
+            if d != t && d != 1 {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_label} broadcast: cannot expand dim {d} to {t}"),
+                });
+            }
+        }
+
+        if dims == target_dims {
+            return if let Some(t) = staged {
+                Ok(t)
+            } else {
+                Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_label} broadcast: missing tensor after rank pad"),
+                })
+            };
+        }
+
+        let mut resize_layer = network.add_resize(cur).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("{op_label} broadcast resize: {e}"),
+        })?;
+        resize_layer.set_output_dimensions(network, target_dims);
+        resize_layer.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("{op_label} broadcast resize output: {e}"),
+        })
     }
 
     /// Add elementwise operation
@@ -6184,47 +6297,70 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add where operation (select elements based on condition)
+    /// Add where operation (select elements based on condition).
+    /// WebNN broadcasts **condition**, **true**, and **false** to one common shape ([`infer_where_shape`]);
+    /// pairwise [`ensure_broadcast_compatible`] is not enough. `ISelectLayer` needs BOOL condition:
+    /// broadcast condition as Float32 (promote UInt8/Int8), then `cast_to_bool` after resize.
     fn add_where_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
+        let cond_id = operation.input_operands()[0];
+        let true_id = operation.input_operands()[1];
+        let false_id = operation.input_operands()[2];
+
         let condition = tensor_map
-            .get(&operation.input_operands()[0])
+            .get(&cond_id)
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!(
-                    "Condition operand {} not found",
-                    operation.input_operands()[0]
-                ),
+                reason: format!("Condition operand {} not found", cond_id),
             })?;
 
         let true_value = tensor_map
-            .get(&operation.input_operands()[1])
+            .get(&true_id)
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!(
-                    "True value operand {} not found",
-                    operation.input_operands()[1]
-                ),
+                reason: format!("True value operand {} not found", true_id),
             })?;
 
         let false_value = tensor_map
-            .get(&operation.input_operands()[2])
+            .get(&false_id)
             .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!(
-                    "False value operand {} not found",
-                    operation.input_operands()[2]
-                ),
+                reason: format!("False value operand {} not found", false_id),
             })?;
 
-        // Cast condition from Float32 to BOOL (ISelectLayer requires BOOL condition)
-        let condition_bool = Self::cast_to_bool(network, condition)?;
+        let shape_c = Self::operand_shape_u32_static(graph, cond_id)?;
+        let shape_t = Self::operand_shape_u32_static(graph, true_id)?;
+        let shape_f = Self::operand_shape_u32_static(graph, false_id)?;
+        let out_shape_u32 = infer_where_shape(&shape_c, &shape_t, &shape_f)?;
+        let target_i64: Vec<i64> = out_shape_u32.iter().map(|&x| x as i64).collect();
+
+        let cond_in: Vec<i64> = shape_c.iter().map(|&x| x as i64).collect();
+        let true_in: Vec<i64> = shape_t.iter().map(|&x| x as i64).collect();
+        let false_in: Vec<i64> = shape_f.iter().map(|&x| x as i64).collect();
+
+        let cond_float_promoted = match graph.operand(cond_id).map(|o| o.descriptor.data_type) {
+            Some(DataType::Uint8) | Some(DataType::Int8) => {
+                Some(Self::cast_to_float32(network, condition)?)
+            }
+            _ => None,
+        };
+        let cond_f: &trtx::Tensor<'a> = cond_float_promoted.as_ref().unwrap_or(condition);
+
+        let cond_bc =
+            Self::broadcast_trtx_tensor_to_dims(network, cond_f, &cond_in, &target_i64, "where_cond")?;
+        let true_bc =
+            Self::broadcast_trtx_tensor_to_dims(network, true_value, &true_in, &target_i64, "where_true")?;
+        let false_bc =
+            Self::broadcast_trtx_tensor_to_dims(network, false_value, &false_in, &target_i64, "where_false")?;
+
+        let condition_bool = Self::cast_to_bool(network, &cond_bc)?;
 
         let layer = network
-            .add_select(&condition_bool, true_value, false_value)
+            .add_select(&condition_bool, &true_bc, &false_bc)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add select layer: {}", e),
