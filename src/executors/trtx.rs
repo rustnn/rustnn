@@ -141,6 +141,9 @@ fn is_onnx_format(bytes: &[u8]) -> bool {
 /// Run ONNX model or TensorRT engine with zero-filled inputs
 /// This is useful for validation and testing graph structure
 ///
+/// For native WebNN [`crate::converters::TrtxConverter`] engines (not ONNX), input tensor names
+/// must be [`TrtxConverter::engine_binding_name`] for each graph input operand id.
+///
 /// If model_bytes appears to be ONNX format, it will be parsed as ONNX and built into an engine.
 /// Otherwise, it will be treated as a pre-serialized TensorRT engine.
 pub fn run_trtx_zeroed(

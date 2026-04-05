@@ -25,6 +25,8 @@ use rustnn::graph::{
     get_static_or_max_size, to_dimension_vector,
 };
 use rustnn::operators::Operation;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+use rustnn::converters::TrtxConverter;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;
@@ -1186,18 +1188,23 @@ fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
         .or_else(|| v.as_u64().map(|u| u as i64))
 }
 
-/// Build TensorRT input list from WPT graph. Caller encodes values as bytes per dtype (float32, float16, int8, int32, etc.).
+/// Build TensorRT input list from WPT graph. Tensor names match [`TrtxConverter::engine_binding_name`]
+/// (operand index), not WebNN/WPT logical names, so TensorRT QDQ rewrite does not misfire on names like `...ZeroPoint`.
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn wpt_graph_to_trtx_inputs(
     graph: &WptGraph,
-    input_names: &[String],
+    graph_info: &GraphInfo,
 ) -> Result<Vec<rustnn::TrtxInput>, String> {
     let mut inputs = Vec::new();
-    for name in input_names {
+    for &op_id in &graph_info.input_operands {
+        let name = graph_info
+            .operand(op_id)
+            .and_then(|o| o.name.as_deref())
+            .ok_or_else(|| format!("input operand {op_id} has no name"))?;
         let spec = graph
             .inputs
             .get(name)
-            .ok_or_else(|| format!("input {} not found", name))?;
+            .ok_or_else(|| format!("input {name} not found"))?;
         let dtype = spec.data_type();
         let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
         let n: usize = shape.iter().product();
@@ -1326,7 +1333,7 @@ pub fn wpt_graph_to_trtx_inputs(
         };
 
         inputs.push(rustnn::TrtxInput {
-            name: name.clone(),
+            name: TrtxConverter::engine_binding_name(op_id),
             data,
         });
     }

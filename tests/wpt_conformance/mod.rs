@@ -489,7 +489,7 @@ pub fn run_one_test_case_trtx(
 ) -> Result<(), String> {
     let graph = &test_case.graph;
     let (graph_info, input_names) = wpt_graph_to_graph_info(graph)?;
-    let inputs = wpt_graph_to_trtx_inputs(graph, &input_names)?;
+    let inputs = wpt_graph_to_trtx_inputs(graph, &graph_info)?;
 
     let converter = TrtxConverter;
     let converted = converter
@@ -502,10 +502,22 @@ pub fn run_one_test_case_trtx(
         get_operation_tolerance(operation, test_case.tolerance.as_ref());
 
     for (out_name, expected_spec) in &graph.expected_outputs {
+        let out_op_id = graph_info
+            .output_operands
+            .iter()
+            .copied()
+            .find(|&id| {
+                graph_info
+                    .operand(id)
+                    .and_then(|o| o.name.as_deref())
+                    == Some(out_name.as_str())
+            })
+            .ok_or_else(|| format!("output operand '{}' not in graph_info", out_name))?;
+        let trt_out_name = TrtxConverter::engine_binding_name(out_op_id);
         let actual = outputs
             .iter()
-            .find(|o| o.name == *out_name)
-            .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
+            .find(|o| o.name == trt_out_name)
+            .ok_or_else(|| format!("output '{}' (TRT {}) not found in results", out_name, trt_out_name))?;
 
         let (pass, msg, expected_str, actual_str) = match expected_spec.data_type() {
             "int64" => {
