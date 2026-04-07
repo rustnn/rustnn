@@ -3537,6 +3537,10 @@ impl TrtxConverter {
             }
         };
 
+        let input_operand = graph.operand(in_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("dequantizeLinear input operand {in_id} not found"),
+        })?;
         let scale_operand = graph.operand(sc_id).ok_or_else(|| GraphError::ConversionFailed {
             format: "trtx".to_string(),
             reason: format!("dequantizeLinear scale operand {sc_id} not found"),
@@ -3565,11 +3569,43 @@ impl TrtxConverter {
             reason: format!("Scale operand {sc_id} not found"),
         })?;
 
-        let input_q = Self::trtx_qdq_ensure_rank1(network, input, "dequantizeLinear input")?;
-        let scale_q = Self::trtx_qdq_ensure_rank1(network, scale, "dequantizeLinear scale")?;
+        let input_dims = input
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dequantizeLinear input dimensions: {e}"),
+            })?;
+        let scale_dims = scale
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dequantizeLinear scale dimensions: {e}"),
+            })?;
+        let in_shape_web = input_operand.descriptor.static_or_max_shape();
+        let sc_shape_web = scale_operand.descriptor.static_or_max_shape();
+        // Per-tensor 0D: DO NOT insert Shuffle before DQ (QDQ fusion needs int8 binding -> DQ).
+        // TensorRT may report scalars as rank-1 while WebNN uses `[]`, so trust graph shapes too.
+        let scalar_dq = (in_shape_web.is_empty() && sc_shape_web.is_empty())
+            || (input_dims.is_empty() && scale_dims.is_empty());
+
+        let input_q_holder;
+        let scale_q_holder;
+        // `scale_for_zp` must be assigned next to `scale_q_holder` so the compiler proves it is
+        // only `&scale_q_holder` when that binding was initialized (nested `if ins.len() > 2` loses
+        // the `scalar_dq` / init correlation for `let scale_q_holder;` otherwise -> E0381).
+        let scale_for_zp: &trtx::Tensor<'a>;
+        let (input_for_dq, scale_for_dq): (&trtx::Tensor<'a>, &trtx::Tensor<'a>) = if scalar_dq {
+            scale_for_zp = scale;
+            (input, scale)
+        } else {
+            input_q_holder = Self::trtx_qdq_ensure_rank1(network, input, "dequantizeLinear input")?;
+            scale_q_holder = Self::trtx_qdq_ensure_rank1(network, scale, "dequantizeLinear scale")?;
+            scale_for_zp = &scale_q_holder;
+            (&input_q_holder, &scale_q_holder)
+        };
 
         let dq_layer = network
-            .add_dequantize(&input_q, &scale_q, out_trt)
+            .add_dequantize(input_for_dq, scale_for_dq, out_trt)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add dequantize layer: {}", e),
@@ -3588,7 +3624,42 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Zero point operand {z_id} not found"),
             })?;
-            let zp_q = Self::trtx_qdq_ensure_rank1(network, zp, "dequantizeLinear zero_point")?;
+            let z_operand = graph.operand(z_id).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dequantizeLinear zero_point operand {z_id} not in graph"),
+            })?;
+            // kINT8/kUINT8 constants must feed Constant -> DQ before other layers (QDQ validator).
+            let zp_q = if matches!(
+                zp.get_type(&*network),
+                TrtDataType::kINT8 | TrtDataType::kUINT8
+            ) {
+                let zp_dq = Self::trtx_int8_uint8_identity_dequantize(
+                    network,
+                    zp,
+                    fp_trt,
+                    "dequantizeLinear zero_point",
+                    z_operand.descriptor.data_type,
+                )?;
+                let zp_shape_web = z_operand.descriptor.static_or_max_shape();
+                if scalar_dq && zp_shape_web.is_empty() {
+                    zp_dq
+                } else {
+                    Self::trtx_qdq_ensure_rank1(network, &zp_dq, "dequantizeLinear zero_point")?
+                }
+            } else if scalar_dq && z_operand.descriptor.static_or_max_shape().is_empty()
+                && Self::trtx_tensor_dims_empty(network, zp)?
+            {
+                let id = network.add_identity(zp).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dequantizeLinear zero_point identity: {e}"),
+                })?;
+                id.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dequantizeLinear zero_point identity output: {e}"),
+                })?
+            } else {
+                Self::trtx_qdq_ensure_rank1(network, zp, "dequantizeLinear zero_point")?
+            };
             let zp_fp_layer = network.add_cast(&zp_q, fp_trt).map_err(|e| {
                 GraphError::ConversionFailed {
                     format: "trtx".to_string(),
@@ -3602,7 +3673,7 @@ impl TrtxConverter {
                     reason: format!("dequantizeLinear zero_point cast output: {}", e),
                 })?;
             let zp_times_scale = network
-                .add_elementwise(&zp_fp, &scale_q, ElementWiseOperation::kPROD)
+                .add_elementwise(&zp_fp, scale_for_zp, ElementWiseOperation::kPROD)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("dequantizeLinear zero_point * scale: {}", e),
