@@ -23,6 +23,12 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+    MLInterpolationMode, MLLstmWeightLayout, MLPaddingMode, MLRecurrentNetworkActivation,
+    MLRecurrentNetworkDirection, MLRoundingType,
+};
+
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
 pub type OperandIndex = u32;
 
@@ -319,9 +325,9 @@ pub struct MLConv2dOptions {
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
     #[serde(default)]
-    pub input_layout: String, // "nchw" | "nhwc"
+    pub input_layout: MLInputOperandLayout, // "nchw" | "nhwc"
     #[serde(default)]
-    pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
+    pub filter_layout: MLConv2dFilterOperandLayout, // "oihw" | "hwio" | "ohwi" | "ihwo"
     pub bias: Option<OperandIndex>,
 }
 
@@ -333,8 +339,8 @@ impl Default for MLConv2dOptions {
             strides: Vec::new(),
             dilations: Vec::new(),
             groups: default_conv_groups(),
-            input_layout: String::new(),
-            filter_layout: String::new(),
+            input_layout: Default::default(),
+            filter_layout: Default::default(),
             bias: None,
         }
     }
@@ -358,9 +364,9 @@ pub struct MLConvTranspose2dOptions {
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
     #[serde(default)]
-    pub input_layout: String,
+    pub input_layout: MLInputOperandLayout,
     #[serde(default)]
-    pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
+    pub filter_layout: MLConvTranspose2dFilterOperandLayout, // "iohw" | "hwoi" | "ohwi"
     pub bias: Option<OperandIndex>,
 }
 
@@ -374,8 +380,8 @@ impl Default for MLConvTranspose2dOptions {
             output_padding: Vec::new(),
             output_sizes: None,
             groups: default_conv_groups(),
-            input_layout: String::new(),
-            filter_layout: String::new(),
+            input_layout: Default::default(),
+            filter_layout: Default::default(),
             bias: None,
         }
     }
@@ -524,7 +530,7 @@ pub struct MLGruCellOptions {
     #[serde(default)]
     pub reset_after: bool,
     #[serde(default)]
-    pub layout: String,
+    pub layout: MLInputOperandLayout,
     pub activations: Option<Vec<String>>,
 }
 
@@ -697,10 +703,10 @@ pub struct MLLstmOptions {
     #[serde(default)]
     pub return_sequence: bool,
     #[serde(default)]
-    pub direction: String,
+    pub direction: MLRecurrentNetworkDirection,
     #[serde(default)]
-    pub layout: String, // "iofg" | "ifgo"
-    pub activations: Option<Vec<String>>,
+    pub layout: MLLstmWeightLayout, // "iofg" | "ifgo"
+    pub activations: Option<Vec<MLRecurrentNetworkActivation>>,
 }
 
 /// MLLstmCellOptions. lstmCell.
@@ -730,7 +736,7 @@ pub struct MLPadOptions {
     pub label: String,
     // TODO MTAX mode is an enum of type MLPaddingMode
     #[serde(default)]
-    pub mode: String, // "constant" | "edge" | "reflection"
+    pub mode: MLPaddingMode, // "constant" | "edge" | "reflection"
     pub value: Option<serde_json::Value>, // MLNumber
 }
 
@@ -750,12 +756,10 @@ pub struct MLPool2dOptions {
     pub strides: Vec<u32>,
     #[serde(default)]
     pub dilations: Vec<u32>,
-    // TODO MTAX layout is enum MLInputOperandLayout
     #[serde(default)]
-    pub layout: String,
-    // TODO MTAX enum MLRoundingType
+    pub layout: MLInputOperandLayout,
     #[serde(default)]
-    pub output_shape_rounding: String,
+    pub output_shape_rounding: MLRoundingType,
     pub output_sizes: Option<Vec<u32>>,
 }
 
@@ -781,9 +785,8 @@ pub struct MLReduceOptions {
 pub struct MLResample2dOptions {
     #[serde(default)]
     pub label: String,
-    // TODO MTAX enum MLInterpolationMode
     #[serde(default)]
-    pub mode: String, // "nearest-neighbor" | "linear"
+    pub mode: MLInterpolationMode, // "nearest-neighbor" | "linear"
     #[serde(default)]
     pub scales: Vec<f32>,
     #[serde(default)]
