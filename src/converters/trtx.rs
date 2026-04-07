@@ -83,6 +83,36 @@ impl TrtxConverter {
         }
     }
 
+    /// `[1; rank]` for scalar weights in elementwise ops. Prefer TRT tensor rank when the operand
+    /// descriptor has no shape (webnn-graph-json subgraphs often omit intermediate shapes).
+    fn trtx_broadcast_ones_for_elementwise_scalar<'a>(
+        input: &trtx::Tensor<'a>,
+        network: &trtx::NetworkDefinition<'a>,
+        descriptor_rank: usize,
+        op_label: &'static str,
+    ) -> Result<Vec<i64>, GraphError> {
+        let rank_from_tensor = input
+            .dimensions(network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label}: input dimensions: {e}"),
+            })?
+            .len();
+        let num_dims = if rank_from_tensor > 0 {
+            rank_from_tensor
+        } else if descriptor_rank > 0 {
+            descriptor_rank
+        } else {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "{op_label}: could not determine input tensor rank (empty dims and shape)"
+                ),
+            });
+        };
+        Ok(vec![1i64; num_dims])
+    }
+
     /// Get constant data as bytes
     fn get_constant_data(graph: &GraphInfo, operand_id: u32) -> Result<&[u8], GraphError> {
         graph
@@ -1536,8 +1566,12 @@ impl TrtxConverter {
             return Self::add_activation_op(network, tensor_map, operation, ActivationType::kELU);
         }
 
-        let num_dims = input_operand.descriptor.shape.len();
-        let broadcast_shape: Vec<i64> = vec![1i64; num_dims];
+        let broadcast_shape = Self::trtx_broadcast_ones_for_elementwise_scalar(
+            input,
+            &*network,
+            input_operand.descriptor.shape.len(),
+            "elu",
+        )?;
         let (trt_dtype, one_bytes, zero_bytes, alpha_bytes) = match input_dtype {
             DataType::Float16 => {
                 let one: Vec<u8> = f16::from_f32(1.0).to_bits().to_le_bytes().to_vec();
@@ -1764,8 +1798,12 @@ impl TrtxConverter {
                     operation.input_operands()[0]
                 ),
             })?;
-        let num_dims = input_operand.descriptor.shape.len();
-        let broadcast_shape: Vec<i64> = vec![1i64; num_dims];
+        let broadcast_shape = Self::trtx_broadcast_ones_for_elementwise_scalar(
+            input,
+            &*network,
+            input_operand.descriptor.shape.len(),
+            "leakyRelu",
+        )?;
 
         let (alpha_bytes, alpha_dtype) = match input_operand.descriptor.data_type {
             DataType::Float16 => (
@@ -7187,10 +7225,13 @@ impl TrtxConverter {
                     operation.input_operands()[0]
                 ),
             })?;
-        let num_dims = input_operand.descriptor.shape.len();
         let input_dtype = input_operand.descriptor.data_type;
-        // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
-        let broadcast_shape: Vec<i64> = vec![1i64; num_dims];
+        let broadcast_shape = Self::trtx_broadcast_ones_for_elementwise_scalar(
+            input,
+            &*network,
+            input_operand.descriptor.shape.len(),
+            "clamp",
+        )?;
 
         // Get min and max values from attributes (handle "Infinity"/"-Infinity"/"NaN" strings from WPT).
         let parse_clamp_bound_f32 = |v: &serde_json::Value| -> Option<f32> {
@@ -7498,9 +7539,12 @@ impl TrtxConverter {
                     operation.input_operands()[0]
                 ),
             })?;
-        let num_dims = input_operand.descriptor.shape.len();
-        // Create broadcast shape: [1, 1, ..., 1] with same number of dimensions as input
-        let broadcast_shape: Vec<i64> = vec![1i64; num_dims];
+        let broadcast_shape = Self::trtx_broadcast_ones_for_elementwise_scalar(
+            input,
+            &*network,
+            input_operand.descriptor.shape.len(),
+            "linear",
+        )?;
 
         let attrs = operation.attributes();
         let linear_opts = attrs.as_linear();
@@ -11586,6 +11630,10 @@ impl GraphConverter for TrtxConverter {
 
         // Set workspace size (1 GB)
         config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 30);
+
+        // WPT / rustnnpt often compare TRT to strict IEEE fp32 (ulpTol=0). TF32 matmul/conv rounds to
+        // 10-bit mantissa on supported GPUs and can differ by many ULP from CPU reference.
+        config.clear_flag(trtx::builder::BuilderFlag::kTF32);
 
         // Build and serialize the engine
         let engine_data = builder
