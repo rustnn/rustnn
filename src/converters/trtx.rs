@@ -9691,6 +9691,270 @@ impl TrtxConverter {
         }
     }
 
+    /// Dilated average-pool: same slice grid as max-pool; OOB taps are 0; sum then scale by `1/(kh*kw)`.
+    ///
+    /// `input` must be NCHW. Denominator is the full window size (WebNN / ONNX dilated average pool).
+    fn add_average_pool2d_dilated_via_slices<'a>(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        operation: &Operation,
+        opts: &MLPool2dOptions,
+        window_hw: [i64; 2],
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        const MAX_DILATED_POOL_TAPS: usize = 4096;
+
+        let dims = input
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool input dimensions: {e}"),
+            })?;
+        if dims.len() != 4 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "dilated average pool expects 4D NCHW input, got {}D",
+                    dims.len()
+                ),
+            });
+        }
+        let n = dims[0];
+        let c = dims[1];
+        let h_in = dims[2];
+        let w_in = dims[3];
+        if n <= 0 || c <= 0 || h_in <= 0 || w_in <= 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool invalid dims {dims:?}"),
+            });
+        }
+
+        let kh = window_hw[0] as u32;
+        let kw = window_hw[1] as u32;
+        if kh == 0 || kw == 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "dilated average pool zero window".to_string(),
+            });
+        }
+
+        let sh = opts.strides.get(0).copied().unwrap_or(1);
+        let sw = opts.strides.get(1).copied().unwrap_or(1);
+        if sh == 0 || sw == 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "dilated average pool zero stride".to_string(),
+            });
+        }
+
+        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dw = opts.dilations.get(1).copied().unwrap_or(1);
+        if dh == 0 || dw == 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "dilated average pool zero dilation".to_string(),
+            });
+        }
+
+        let (pb_h, pe_h, pb_w, pe_w) = if opts.padding.len() >= 4 {
+            (
+                opts.padding[0],
+                opts.padding[1],
+                opts.padding[2],
+                opts.padding[3],
+            )
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        let shape_u32: Vec<u32> = dims
+            .iter()
+            .map(|&d| u32::try_from(d.max(0)).unwrap_or(0))
+            .collect();
+        let pool_opts = Pool2dOptions {
+            window_dimensions: vec![kh, kw],
+            strides: vec![sh, sw],
+            dilations: vec![dh, dw],
+            pads: vec![pb_h, pe_h, pb_w, pe_w],
+            layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: Self::trtx_pool_padding_round_up(graph, operation, opts)?,
+        };
+        let out_shape = infer_pool2d_shape(&shape_u32, &pool_opts).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool shape inference: {e}"),
+            }
+        })?;
+        let oh = out_shape[2];
+        let ow = out_shape[3];
+
+        let num_taps = (kh as usize)
+            .saturating_mul(kw as usize)
+            .saturating_mul(oh as usize)
+            .saturating_mul(ow as usize);
+        if num_taps > MAX_DILATED_POOL_TAPS {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "dilated average pool too many taps ({num_taps} > {MAX_DILATED_POOL_TAPS}); reduce size or dilation"
+                ),
+            });
+        }
+
+        let z = 0.0f32.to_ne_bytes();
+        let nc_count = (n * c) as usize;
+        let mut zero_weights = Vec::with_capacity(nc_count * 4);
+        for _ in 0..nc_count {
+            zero_weights.extend_from_slice(&z);
+        }
+        let zero_layer = network
+            .add_constant_owned(&[n, c, 1, 1], zero_weights, TrtDataType::kFLOAT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool zero constant: {e}"),
+            })?;
+
+        let kh_i = kh as i32;
+        let kw_i = kw as i32;
+        let dil_hi = dh as i32;
+        let dil_wi = dw as i32;
+        let sh_i = sh as i32;
+        let sw_i = sw as i32;
+        let pb_hi = pb_h as i32;
+        let pb_wi = pb_w as i32;
+        let h_in_i = h_in as i32;
+        let w_in_i = w_in as i32;
+
+        let mut rows: Vec<trtx::Tensor<'a>> = Vec::with_capacity(oh as usize);
+
+        for oh_idx in 0..oh {
+            let mut cols: Vec<trtx::Tensor<'a>> = Vec::with_capacity(ow as usize);
+            for ow_idx in 0..ow {
+                let h_start = (oh_idx as i32) * sh_i - pb_hi;
+                let w_start = (ow_idx as i32) * sw_i - pb_wi;
+
+                let mut taps: Vec<trtx::Tensor<'a>> =
+                    Vec::with_capacity((kh * kw) as usize);
+                for ih in 0..kh_i {
+                    for iw in 0..kw_i {
+                        let h_idx = h_start + ih * dil_hi;
+                        let w_idx = w_start + iw * dil_wi;
+                        let tap_tensor = if h_idx >= 0
+                            && w_idx >= 0
+                            && h_idx < h_in_i
+                            && w_idx < w_in_i
+                        {
+                            let slice_layer = network
+                                .add_slice(
+                                    input,
+                                    &[0, 0, h_idx as i64, w_idx as i64],
+                                    &[n, c, 1, 1],
+                                    &[1, 1, 1, 1],
+                                )
+                                .map_err(|e| GraphError::ConversionFailed {
+                                    format: "trtx".to_string(),
+                                    reason: format!("dilated average pool slice: {e}"),
+                                })?;
+                            slice_layer
+                                .get_output(&*network, 0)
+                                .map_err(|e| GraphError::ConversionFailed {
+                                    format: "trtx".to_string(),
+                                    reason: format!("dilated average pool slice output: {e}"),
+                                })?
+                        } else {
+                            zero_layer.get_output(&*network, 0).map_err(|e| {
+                                GraphError::ConversionFailed {
+                                    format: "trtx".to_string(),
+                                    reason: format!("dilated average pool zero tap: {e}"),
+                                }
+                            })?
+                        };
+                        taps.push(tap_tensor);
+                    }
+                }
+
+                if taps.is_empty() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: "dilated average pool empty tap list".to_string(),
+                    });
+                }
+                let mut acc = taps.remove(0);
+                for t in taps {
+                    let ew = network
+                        .add_elementwise(&acc, &t, ElementWiseOperation::kSUM)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("dilated average pool elementwise sum: {e}"),
+                        })?;
+                    acc = ew
+                        .get_output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("dilated average pool sum output: {e}"),
+                        })?;
+                }
+                cols.push(acc);
+            }
+            let row = Self::trtx_concat_tensors_along_axis(network, &cols, 3)?;
+            rows.push(row);
+        }
+
+        let summed_nchw = Self::trtx_concat_tensors_along_axis(network, &rows, 2)?;
+
+        // `add_scale` Weights take raw pointers; passing `&f32::to_ne_bytes()` temporaries is unsafe
+        // because TRT may retain pointers until engine build. Use owned constant + elementwise prod.
+        let inv = 1.0f32 / ((kh as f32) * (kw as f32));
+        let inv_const_layer = network
+            .add_constant_owned(&[1, 1, 1, 1], inv.to_ne_bytes().to_vec(), TrtDataType::kFLOAT)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool inv scale constant: {e}"),
+            })?;
+        let inv_tensor = inv_const_layer
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool inv scale output: {e}"),
+            })?;
+        let prod_layer = network
+            .add_elementwise(&summed_nchw, &inv_tensor, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool multiply by 1/n: {e}"),
+            })?;
+        let out_nchw = prod_layer
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("dilated average pool prod output: {e}"),
+            })?;
+
+        let out_id = operation.output_operands_slice()[0];
+        let out_operand = graph.operand(out_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("dilated average pool output operand {out_id} not found"),
+        })?;
+        let need_half = out_operand.descriptor.data_type == DataType::Float16;
+        if need_half {
+            let cast_layer = network
+                .add_cast(&out_nchw, TrtDataType::kHALF)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dilated average pool Float->Half: {e}"),
+                })?;
+            cast_layer
+                .get_output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dilated average pool cast output: {e}"),
+                })
+        } else {
+            Ok(out_nchw)
+        }
+    }
+
     /// TensorRT `kEXPLICIT_ROUND_UP` when WebNN needs ceil spatial size: `outputShapeRounding` or
     /// [`output_sizes`](crate::operator_options::MLPool2dOptions::output_sizes) matching the ceil implicit shape.
     fn trtx_pool_padding_round_up(
@@ -9819,11 +10083,11 @@ impl TrtxConverter {
         let dh = opts.dilations.get(0).copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
         if dh != 1 || dw != 1 {
-            if pool_type != PoolingType::kMAX {
+            if pool_type != PoolingType::kMAX && pool_type != PoolingType::kAVERAGE {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason:
-                        "TRTX: pooling with dilations other than 1 is only supported for maxPool2d"
+                        "TRTX: pooling with dilations other than 1 is only supported for maxPool2d and averagePool2d"
                             .to_string(),
                 });
             }
@@ -9839,12 +10103,12 @@ impl TrtxConverter {
                         .add_cast(pool_nchw_in, TrtDataType::kFLOAT)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
-                            reason: format!("maxPool2d dilated Half->Float: {e}"),
+                            reason: format!("pool2d dilated Half->Float: {e}"),
                         })?;
                     Some(cast_layer.get_output(&*network, 0).map_err(|e| {
                         GraphError::ConversionFailed {
                             format: "trtx".to_string(),
-                            reason: format!("maxPool2d dilated cast output: {e}"),
+                            reason: format!("pool2d dilated cast output: {e}"),
                         }
                     })?)
                 } else {
@@ -9852,33 +10116,44 @@ impl TrtxConverter {
                 };
             let dilated_input = half_to_float.as_ref().unwrap_or(pool_nchw_in);
 
-            let out_nchw = Self::add_max_pool2d_dilated_via_slices(
-                graph,
-                network,
-                dilated_input,
-                operation,
-                opts,
-                window,
-            )?;
+            let out_nchw = if pool_type == PoolingType::kMAX {
+                Self::add_max_pool2d_dilated_via_slices(
+                    graph,
+                    network,
+                    dilated_input,
+                    operation,
+                    opts,
+                    window,
+                )?
+            } else {
+                Self::add_average_pool2d_dilated_via_slices(
+                    graph,
+                    network,
+                    dilated_input,
+                    operation,
+                    opts,
+                    window,
+                )?
+            };
 
             let output = if layout == "nhwc" {
                 let mut shuffle = network
                     .add_shuffle(&out_nchw)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("maxPool2d dilated NCHW->NHWC shuffle: {e}"),
+                        reason: format!("pool2d dilated NCHW->NHWC shuffle: {e}"),
                     })?;
                 shuffle
                     .set_first_transpose(network, &[0, 2, 3, 1])
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("maxPool2d dilated NCHW->NHWC transpose: {e}"),
+                        reason: format!("pool2d dilated NCHW->NHWC transpose: {e}"),
                     })?;
                 shuffle
                     .get_output(&*network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("maxPool2d dilated NCHW shuffle output: {e}"),
+                        reason: format!("pool2d dilated NCHW shuffle output: {e}"),
                     })?
             } else {
                 out_nchw
