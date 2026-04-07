@@ -1,6 +1,6 @@
 /// Shape inference and validation for WebNN operations
 use crate::error::GraphError;
-use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size};
+use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size, to_dimension_vector};
 
 /// Compute the broadcasted shape for two operands following NumPy broadcasting rules
 ///
@@ -644,13 +644,17 @@ pub fn infer_conv_transpose2d_shape(
     Ok(output_shape)
 }
 
-/// Parameters for pool2d shape inference
+/// Parameters for pool2d shape inference.
+///
+/// `pads` is WebNN order: `[beginning_height, ending_height, beginning_width, ending_width]`.
 pub struct Pool2dOptions {
     pub window_dimensions: Vec<u32>,
     pub strides: Vec<u32>,
     pub dilations: Vec<u32>,
     pub pads: Vec<u32>,
     pub layout: Conv2dInputLayout,
+    /// When true, match WebNN `outputShapeRounding` `"ceil"` / ONNX `ceil_mode` (round spatial span up).
+    pub ceil_output_spatial: bool,
 }
 
 /// Infer output shape for 2D pooling operations (average, max)
@@ -744,9 +748,10 @@ pub fn infer_pool2d_shape(
             reason: format!("Pool2d pads must have 4 elements, got {:?}", options.pads),
         });
     }
+    // WebNN: [beginning_height, ending_height, beginning_width, ending_width]
     let pad_begin_h = options.pads[0];
-    let pad_begin_w = options.pads[1];
-    let pad_end_h = options.pads[2];
+    let pad_end_h = options.pads[1];
+    let pad_begin_w = options.pads[2];
     let pad_end_w = options.pads[3];
 
     // Compute effective window size with dilation
@@ -767,8 +772,18 @@ pub fn infer_pool2d_shape(
         });
     }
 
-    let output_h = (padded_h - effective_window_h) / stride_h + 1;
-    let output_w = (padded_w - effective_window_w) / stride_w + 1;
+    let span_h = padded_h - effective_window_h;
+    let span_w = padded_w - effective_window_w;
+    let output_h = if options.ceil_output_spatial {
+        (span_h + stride_h - 1) / stride_h + 1
+    } else {
+        span_h / stride_h + 1
+    };
+    let output_w = if options.ceil_output_spatial {
+        (span_w + stride_w - 1) / stride_w + 1
+    } else {
+        span_w / stride_w + 1
+    };
 
     // Build output shape based on layout (channels remain unchanged)
     let output_shape = match options.layout {
@@ -777,6 +792,109 @@ pub fn infer_pool2d_shape(
     };
 
     Ok(output_shape)
+}
+
+/// Infer pool2d output shape as [`Dimension`] values (WebNN `MLPool2dOptions` defaults applied).
+///
+/// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
+/// `outputShapeRounding` is ignored (WebNN).
+pub fn infer_pool2d_shape_dimensions(
+    input_shape: &[Dimension],
+    layout: &str,
+    window_dimensions: Option<&[u32]>,
+    strides: &[u32],
+    dilations: &[u32],
+    padding: &[u32],
+    output_sizes: Option<&[u32]>,
+    ceil_output_spatial: bool,
+) -> Result<Vec<Dimension>, GraphError> {
+    if input_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "Pool2d input must be 4D, got {} dimensions",
+                input_shape.len()
+            ),
+        });
+    }
+
+    let layout_enum = if layout.eq_ignore_ascii_case("nhwc") {
+        Conv2dInputLayout::Nhwc
+    } else {
+        Conv2dInputLayout::Nchw
+    };
+
+    if let Some(sizes) = output_sizes {
+        if sizes.len() >= 2 {
+            let oh = sizes[0];
+            let ow = sizes[1];
+            let output_shape = match layout_enum {
+                Conv2dInputLayout::Nchw => vec![
+                    input_shape[0].clone(),
+                    input_shape[1].clone(),
+                    Dimension::Static(oh),
+                    Dimension::Static(ow),
+                ],
+                Conv2dInputLayout::Nhwc => vec![
+                    input_shape[0].clone(),
+                    Dimension::Static(oh),
+                    Dimension::Static(ow),
+                    input_shape[3].clone(),
+                ],
+            };
+            return Ok(output_shape);
+        }
+    }
+
+    let (in_h, in_w) = match layout_enum {
+        Conv2dInputLayout::Nchw => (
+            get_static_or_max_size(&input_shape[2]),
+            get_static_or_max_size(&input_shape[3]),
+        ),
+        Conv2dInputLayout::Nhwc => (
+            get_static_or_max_size(&input_shape[1]),
+            get_static_or_max_size(&input_shape[2]),
+        ),
+    };
+
+    let window_dims: Vec<u32> = if let Some(w) = window_dimensions {
+        if w.len() >= 2 {
+            vec![w[0], w[1]]
+        } else {
+            vec![in_h, in_w]
+        }
+    } else {
+        vec![in_h, in_w]
+    };
+
+    let strides_v: Vec<u32> = if strides.len() >= 2 {
+        vec![strides[0], strides[1]]
+    } else {
+        vec![1, 1]
+    };
+
+    let dilations_v: Vec<u32> = if dilations.len() >= 2 {
+        vec![dilations[0], dilations[1]]
+    } else {
+        vec![1, 1]
+    };
+
+    let pads_v: Vec<u32> = if padding.len() >= 4 {
+        vec![padding[0], padding[1], padding[2], padding[3]]
+    } else {
+        vec![0, 0, 0, 0]
+    };
+
+    let input_u32: Vec<u32> = input_shape.iter().map(get_static_or_max_size).collect();
+    let pool_opts = Pool2dOptions {
+        window_dimensions: window_dims,
+        strides: strides_v,
+        dilations: dilations_v,
+        pads: pads_v,
+        layout: layout_enum,
+        ceil_output_spatial,
+    };
+    let out = infer_pool2d_shape(&input_u32, &pool_opts)?;
+    Ok(to_dimension_vector(&out))
 }
 
 /// Options for global pooling operations
@@ -2581,6 +2699,7 @@ mod tests {
             dilations: vec![1, 1],
             pads: vec![0, 0, 0, 0],
             layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: false,
         };
         // Input: [1, 64, 32, 32], Window: [2, 2], Stride: [2, 2]
         // Output: (32 - 2) / 2 + 1 = 16
@@ -2596,6 +2715,7 @@ mod tests {
             dilations: vec![1, 1],
             pads: vec![1, 1, 1, 1],
             layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: false,
         };
         // Input: [1, 64, 32, 32], Window: [3, 3], Padding: 1
         // Output: (32 + 1 + 1 - 3) / 1 + 1 = 32
@@ -2611,6 +2731,7 @@ mod tests {
             dilations: vec![1, 1],
             pads: vec![0, 0, 0, 0],
             layout: Conv2dInputLayout::Nhwc,
+            ceil_output_spatial: false,
         };
         // Input: [1, 32, 32, 64] (NHWC)
         // Output: [1, 16, 16, 64] (NHWC)
@@ -2626,6 +2747,7 @@ mod tests {
             dilations: vec![1, 1],
             pads: vec![0, 0, 0, 0],
             layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: false,
         };
         // Input: [1, 64, 28, 28], Window: [3, 3], Stride: [2, 2]
         // Output: (28 - 3) / 2 + 1 = 13
@@ -2641,9 +2763,40 @@ mod tests {
             dilations: vec![1, 1],
             pads: vec![0, 0, 0, 0],
             layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: false,
         };
         // Input must be 4D
         assert!(infer_pool2d_shape(&[64, 32, 32], &options).is_err());
+    }
+
+    #[test]
+    fn test_pool2d_ceil_rounding_matches_wpt() {
+        let pads = vec![1, 0, 0, 1];
+        let input = [1u32, 2, 5, 5];
+        let floor_opts = Pool2dOptions {
+            window_dimensions: vec![3, 3],
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            pads: pads.clone(),
+            layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: false,
+        };
+        assert_eq!(
+            infer_pool2d_shape(&input, &floor_opts).unwrap(),
+            vec![1, 2, 2, 2]
+        );
+        let ceil_opts = Pool2dOptions {
+            window_dimensions: vec![3, 3],
+            strides: vec![2, 2],
+            dilations: vec![1, 1],
+            pads: pads.clone(),
+            layout: Conv2dInputLayout::Nchw,
+            ceil_output_spatial: true,
+        };
+        assert_eq!(
+            infer_pool2d_shape(&input, &ceil_opts).unwrap(),
+            vec![1, 2, 3, 3]
+        );
     }
 
     // Global pooling tests

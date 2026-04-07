@@ -5,6 +5,7 @@ use crate::graph::GraphInfo;
 
 mod coreml_mlprogram;
 pub mod onnx;
+mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
 mod weight_file_builder;
