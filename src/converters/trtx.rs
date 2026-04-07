@@ -29,6 +29,9 @@ use super::{ConvertedGraph, GraphConverter};
 use crate::error::GraphError;
 use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+};
 use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use trtx::network::Layer;
@@ -6680,22 +6683,12 @@ impl TrtxConverter {
         let fs = filter_operand.descriptor.static_or_max_shape();
         let attrs = operation.attributes();
         let conv_opts = attrs.as_conv2d();
-        let filter_layout = conv_opts
-            .map(|o| o.filter_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("oihw");
+        let filter_layout = conv_opts.map(|o| o.filter_layout).unwrap_or_default();
         let (o, _i, h, w): (u32, u32, u32, u32) = match filter_layout {
-            "oihw" => (fs[0], fs[1], fs[2], fs[3]),
-            "hwio" => (fs[3], fs[2], fs[0], fs[1]),
-            "ohwi" => (fs[0], fs[3], fs[1], fs[2]),
-            "ihwo" => (fs[3], fs[0], fs[1], fs[2]),
-            "hwoi" => (fs[2], fs[3], fs[0], fs[1]),
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Unsupported filter_layout: {}", filter_layout),
-                });
-            }
+            MLConv2dFilterOperandLayout::Oihw => (fs[0], fs[1], fs[2], fs[3]),
+            MLConv2dFilterOperandLayout::Hwio => (fs[3], fs[2], fs[0], fs[1]),
+            MLConv2dFilterOperandLayout::Ohwi => (fs[0], fs[3], fs[1], fs[2]),
+            MLConv2dFilterOperandLayout::Ihwo => (fs[3], fs[0], fs[1], fs[2]),
         };
         let num_output_maps = o as i32;
         let kernel_size: [i32; 2] = [h as i32, w as i32];
@@ -6736,18 +6729,25 @@ impl TrtxConverter {
             let filter_temp_index: Option<usize> = match (filter_dtype, filter_layout) {
                 (DataType::Float16, _) => {
                     let f32_bytes = Self::f16_bytes_to_f32_bytes(filter_data)?;
-                    let oihw = if filter_layout == "oihw" {
+                    let oihw = if filter_layout == MLConv2dFilterOperandLayout::Oihw {
                         f32_bytes
                     } else {
-                        Self::conv_filter_to_oihw(&f32_bytes, filter_layout, &filter_shape_u32)?
+                        Self::conv_filter_to_oihw(
+                            &f32_bytes,
+                            filter_layout.as_str(),
+                            &filter_shape_u32,
+                        )?
                     };
                     temp_weights.push(oihw);
                     Some(temp_weights.len() - 1)
                 }
-                (DataType::Float32, "oihw") => None,
+                (DataType::Float32, MLConv2dFilterOperandLayout::Oihw) => None,
                 (DataType::Float32, _) => {
-                    let oihw =
-                        Self::conv_filter_to_oihw(filter_data, filter_layout, &filter_shape_u32)?;
+                    let oihw = Self::conv_filter_to_oihw(
+                        filter_data,
+                        filter_layout.as_str(),
+                        &filter_shape_u32,
+                    )?;
                     temp_weights.push(oihw);
                     Some(temp_weights.len() - 1)
                 }
@@ -6772,7 +6772,7 @@ impl TrtxConverter {
             (Some(filter_data_to_use), bias_data)
         } else {
             // Non-constant filter: use tensor inputs (setInput(1)=kernel, setInput(2)=bias). TensorRT expects OIHW for kernel.
-            if filter_layout != "oihw" {
+            if filter_layout != MLConv2dFilterOperandLayout::Oihw {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: "conv2d with non-constant filter requires filter_layout \"oihw\""
@@ -6791,10 +6791,7 @@ impl TrtxConverter {
         };
 
         // Input layout: nchw (default) or nhwc. TensorRT conv is NCHW; we use IShuffleLayer::setFirstTranspose for NHWC.
-        let input_layout = conv_opts
-            .map(|o| o.input_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("nchw");
+        let input_layout = conv_opts.map(|o| o.input_layout).unwrap_or_default();
         let input_id = operation.input_operands()[0];
         let input_dtype = graph
             .operand(input_id)
@@ -6808,7 +6805,7 @@ impl TrtxConverter {
             })?;
 
         // NHWC input: TensorRT conv expects NCHW. Insert shuffle to transpose NHWC->NCHW before conv.
-        let nhwc_shuffle_output = if input_layout == "nhwc" {
+        let nhwc_shuffle_output = if input_layout == MLInputOperandLayout::Nhwc {
             let mut shuffle =
                 network
                     .add_shuffle(input)
@@ -7084,7 +7081,7 @@ impl TrtxConverter {
         };
 
         // If input was NHWC, transpose output back to NHWC.
-        let output = if input_layout == "nhwc" {
+        let output = if input_layout == MLInputOperandLayout::Nhwc {
             let mut shuffle =
                 network
                     .add_shuffle(&conv_output)
@@ -7146,23 +7143,11 @@ impl TrtxConverter {
         let fs = filter_operand.descriptor.static_or_max_shape();
         let attrs = operation.attributes();
         let deconv_opts = attrs.as_conv_transpose2d();
-        let filter_layout = deconv_opts
-            .map(|o| o.filter_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("iohw");
+        let filter_layout = deconv_opts.map(|o| o.filter_layout).unwrap_or_default();
         let (_i, o, h, w): (u32, u32, u32, u32) = match filter_layout {
-            "iohw" => (fs[0], fs[1], fs[2], fs[3]),
-            "oihw" => (fs[1], fs[0], fs[2], fs[3]),
-            "hwio" => (fs[2], fs[3], fs[0], fs[1]),
-            "ohwi" => (fs[3], fs[0], fs[1], fs[2]),
-            "ihwo" => (fs[0], fs[3], fs[1], fs[2]),
-            "hwoi" => (fs[3], fs[2], fs[0], fs[1]),
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Unsupported filter_layout: {}", filter_layout),
-                });
-            }
+            MLConvTranspose2dFilterOperandLayout::Iohw => (fs[0], fs[1], fs[2], fs[3]),
+            MLConvTranspose2dFilterOperandLayout::Hwoi => (fs[3], fs[2], fs[0], fs[1]),
+            MLConvTranspose2dFilterOperandLayout::Ohwi => (fs[3], fs[0], fs[1], fs[2]),
         };
         let groups = deconv_opts.map(|o| o.groups as i32).unwrap_or(1);
         // WebNN filter shape is [inputChannels, outputChannels/groups, H, W]; TensorRT expects total output maps.
@@ -7203,18 +7188,25 @@ impl TrtxConverter {
             let filter_temp_index: Option<usize> = match (filter_dtype, filter_layout) {
                 (DataType::Float16, _) => {
                     let f32_bytes = Self::f16_bytes_to_f32_bytes(filter_data)?;
-                    let iohw = if filter_layout == "iohw" {
+                    let iohw = if filter_layout == MLConvTranspose2dFilterOperandLayout::Iohw {
                         f32_bytes
                     } else {
-                        Self::deconv_filter_to_iohw(&f32_bytes, filter_layout, &filter_shape_u32)?
+                        Self::deconv_filter_to_iohw(
+                            &f32_bytes,
+                            filter_layout.as_str(),
+                            &filter_shape_u32,
+                        )?
                     };
                     temp_weights.push(iohw);
                     Some(temp_weights.len() - 1)
                 }
-                (DataType::Float32, "iohw") => None,
+                (DataType::Float32, MLConvTranspose2dFilterOperandLayout::Iohw) => None,
                 (DataType::Float32, _) => {
-                    let iohw =
-                        Self::deconv_filter_to_iohw(filter_data, filter_layout, &filter_shape_u32)?;
+                    let iohw = Self::deconv_filter_to_iohw(
+                        filter_data,
+                        filter_layout.as_str(),
+                        &filter_shape_u32,
+                    )?;
                     temp_weights.push(iohw);
                     Some(temp_weights.len() - 1)
                 }
@@ -7238,7 +7230,7 @@ impl TrtxConverter {
             };
             (Some(filter_data_to_use), bias_data)
         } else {
-            if filter_layout != "iohw" {
+            if filter_layout != MLConvTranspose2dFilterOperandLayout::Iohw {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason:
@@ -7257,10 +7249,7 @@ impl TrtxConverter {
             (None, None)
         };
 
-        let input_layout = deconv_opts
-            .map(|o| o.input_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("nchw");
+        let input_layout = deconv_opts.map(|o| o.input_layout).unwrap_or_default();
         let input_id = operation.input_operands()[0];
         let input_dtype = graph
             .operand(input_id)
@@ -7273,7 +7262,7 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", input_id),
             })?;
 
-        let nhwc_shuffle_output = if input_layout == "nhwc" {
+        let nhwc_shuffle_output = if input_layout == MLInputOperandLayout::Nhwc {
             let mut shuffle =
                 network
                     .add_shuffle(input)
@@ -7584,30 +7573,32 @@ impl TrtxConverter {
                 if in_shape.len() != 4 || out_shape.len() != 4 {
                     deconv_output
                 } else {
-                    let (input_h, input_w): (i32, i32) = if input_layout == "nhwc" {
-                        (
-                            get_static_or_max_size(&in_shape[1]) as i32,
-                            get_static_or_max_size(&in_shape[2]) as i32,
-                        )
-                    } else {
-                        (
-                            get_static_or_max_size(&in_shape[2]) as i32,
-                            get_static_or_max_size(&in_shape[3]) as i32,
-                        )
-                    };
-                    let (target_h, target_w, out_c): (i32, i32, i32) = if input_layout == "nhwc" {
-                        (
-                            get_static_or_max_size(&out_shape[1]) as i32,
-                            get_static_or_max_size(&out_shape[2]) as i32,
-                            get_static_or_max_size(&out_shape[3]) as i32,
-                        )
-                    } else {
-                        (
-                            get_static_or_max_size(&out_shape[2]) as i32,
-                            get_static_or_max_size(&out_shape[3]) as i32,
-                            get_static_or_max_size(&out_shape[1]) as i32,
-                        )
-                    };
+                    let (input_h, input_w): (i32, i32) =
+                        if input_layout == MLInputOperandLayout::Nhwc {
+                            (
+                                get_static_or_max_size(&in_shape[1]) as i32,
+                                get_static_or_max_size(&in_shape[2]) as i32,
+                            )
+                        } else {
+                            (
+                                get_static_or_max_size(&in_shape[2]) as i32,
+                                get_static_or_max_size(&in_shape[3]) as i32,
+                            )
+                        };
+                    let (target_h, target_w, out_c): (i32, i32, i32) =
+                        if input_layout == MLInputOperandLayout::Nhwc {
+                            (
+                                get_static_or_max_size(&out_shape[1]) as i32,
+                                get_static_or_max_size(&out_shape[2]) as i32,
+                                get_static_or_max_size(&out_shape[3]) as i32,
+                            )
+                        } else {
+                            (
+                                get_static_or_max_size(&out_shape[2]) as i32,
+                                get_static_or_max_size(&out_shape[3]) as i32,
+                                get_static_or_max_size(&out_shape[1]) as i32,
+                            )
+                        };
                     let out_batch = get_static_or_max_size(&in_shape[0]) as i32;
                     if target_h <= 0 || target_w <= 0 {
                         deconv_output
@@ -7693,7 +7684,7 @@ impl TrtxConverter {
             spatial_adjusted
         };
 
-        let output = if input_layout == "nhwc" {
+        let output = if input_layout == MLInputOperandLayout::Nhwc {
             let mut shuffle =
                 network
                     .add_shuffle(&conv_output)

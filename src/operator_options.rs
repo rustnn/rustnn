@@ -24,9 +24,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::operator_enums::{
-    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
-    MLInterpolationMode, MLLstmWeightLayout, MLPaddingMode, MLRecurrentNetworkActivation,
-    MLRecurrentNetworkDirection, MLRoundingType,
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLGruWeightLayout,
+    MLInputOperandLayout, MLInterpolationMode, MLLstmWeightLayout, MLPaddingMode,
+    MLRecurrentNetworkActivation, MLRecurrentNetworkDirection, MLRoundingType,
 };
 
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
@@ -530,7 +530,7 @@ pub struct MLGruCellOptions {
     #[serde(default)]
     pub reset_after: bool,
     #[serde(default)]
-    pub layout: MLInputOperandLayout,
+    pub layout: MLGruWeightLayout,
     pub activations: Option<Vec<String>>,
 }
 

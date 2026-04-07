@@ -28,6 +28,10 @@
 use crate::converters::operand_name;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo};
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+    MLRoundingType,
+};
 use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use crate::protos::coreml::mil_spec::{
@@ -1612,22 +1616,13 @@ impl CoremlMlProgramConverter {
             } => {
                 // CoreML MLProgram pooling path currently assumes NCHW input layout.
                 // Reject NHWC explicitly to avoid invalid model/runtime crashes.
-                let layout = pool_opts
-                    .as_ref()
-                    .map(|o| {
-                        if o.layout.is_empty() {
-                            "nchw"
-                        } else {
-                            o.layout.as_str()
-                        }
-                    })
-                    .unwrap_or("nchw");
-                if !layout.eq_ignore_ascii_case("nchw") {
+                let layout = pool_opts.as_ref().map(|o| o.layout).unwrap_or_default();
+                if layout != MLInputOperandLayout::Nchw {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!(
                             "CoreML pooling currently supports only NCHW layout; got '{}' for {}",
-                            layout,
+                            layout.as_str(),
                             op.op_type(),
                         ),
                     });
@@ -1656,7 +1651,7 @@ impl CoremlMlProgramConverter {
                 // outputShapeRounding: "floor" (default) or "ceil"
                 let ceil_mode = pool_opts
                     .as_ref()
-                    .map(|o| o.output_shape_rounding.eq_ignore_ascii_case("ceil"))
+                    .map(|o| matches!(o.output_shape_rounding, MLRoundingType::Ceil))
                     .unwrap_or(false);
                 inputs.insert(
                     "ceil_mode".to_string(),
@@ -2544,107 +2539,121 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             if (op_type_lower == "conv2d" || op_type_lower == "convtranspose2d")
                 && op.input_operands().len() >= 2
             {
-                let filter_layout = match &op {
-                    Operation::Conv2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.as_str())
-                        .unwrap_or(""),
-                    Operation::ConvTranspose2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.as_str())
-                        .unwrap_or(""),
-                    _ => "",
+                let needs_filter_transpose = match &op {
+                    Operation::Conv2d { options, .. } => {
+                        options
+                            .as_ref()
+                            .map(|o| o.filter_layout)
+                            .unwrap_or_default()
+                            != MLConv2dFilterOperandLayout::Oihw
+                    }
+                    Operation::ConvTranspose2d { options, .. } => {
+                        options
+                            .as_ref()
+                            .map(|o| o.filter_layout)
+                            .unwrap_or_default()
+                            != MLConvTranspose2dFilterOperandLayout::Iohw
+                    }
+                    _ => false,
                 };
-                if !filter_layout.is_empty() {
-                    let expected_layout = if op_type_lower == "conv2d" {
-                        "oihw"
-                    } else {
-                        "iohw"
-                    };
 
-                    if filter_layout != expected_layout {
-                        let filter_operand_id = op.input_operands()[1];
+                if needs_filter_transpose {
+                    let filter_operand_id = op.input_operands()[1];
 
-                        if let Some(filter_operand) = graph_info.operand(filter_operand_id) {
-                            // Calculate transpose permutation
-                            let perm = match (op_type_lower.as_str(), filter_layout) {
-                                // Conv2d conversions to oihw [O, I, H, W]
-                                ("conv2d", "hwio") => vec![3, 2, 0, 1], // [H, W, I, O] -> [O, I, H, W]
-                                ("conv2d", "ohwi") => vec![0, 3, 1, 2], // [O, H, W, I] -> [O, I, H, W]
-                                ("conv2d", "ihwo") => vec![3, 0, 1, 2], // [I, H, W, O] -> [O, I, H, W]
+                    if let Some(filter_operand) = graph_info.operand(filter_operand_id) {
+                        let perm_opt = match &op {
+                            Operation::Conv2d { options, .. } => {
+                                match options
+                                    .as_ref()
+                                    .map(|o| o.filter_layout)
+                                    .unwrap_or_default()
+                                {
+                                    MLConv2dFilterOperandLayout::Oihw => None,
+                                    MLConv2dFilterOperandLayout::Hwio => Some(vec![3, 2, 0, 1]),
+                                    MLConv2dFilterOperandLayout::Ohwi => Some(vec![0, 3, 1, 2]),
+                                    MLConv2dFilterOperandLayout::Ihwo => Some(vec![3, 0, 1, 2]),
+                                }
+                            }
+                            Operation::ConvTranspose2d { options, .. } => {
+                                match options
+                                    .as_ref()
+                                    .map(|o| o.filter_layout)
+                                    .unwrap_or_default()
+                                {
+                                    MLConvTranspose2dFilterOperandLayout::Iohw => None,
+                                    MLConvTranspose2dFilterOperandLayout::Hwoi => {
+                                        Some(vec![3, 2, 0, 1])
+                                    }
+                                    MLConvTranspose2dFilterOperandLayout::Ohwi => {
+                                        Some(vec![3, 0, 1, 2])
+                                    }
+                                }
+                            }
+                            _ => None,
+                        };
+                        let Some(perm) = perm_opt else {
+                            continue;
+                        };
 
-                                // Conv_transpose2d conversions to iohw [I, O, H, W]
-                                ("convtranspose2d", "hwoi") => vec![3, 2, 0, 1], // [H, W, O, I] -> [I, O, H, W]
-                                ("convtranspose2d", "ohwi") => vec![3, 0, 1, 2], // [O, H, W, I] -> [I, O, H, W]
-                                ("convtranspose2d", "hwio") => vec![2, 3, 0, 1], // [H, W, I, O] -> [I, O, H, W]
+                        // Create transpose operation for filter
+                        let filter_name = operand_name(graph_info, filter_operand_id);
+                        let transposed_filter_name = format!("{}_transposed", filter_name);
 
-                                _ => continue, // Skip unsupported layouts
-                            };
+                        // Store the override mapping
+                        operand_name_overrides
+                            .insert(filter_operand_id, transposed_filter_name.clone());
 
-                            // Create transpose operation for filter
-                            let filter_name = operand_name(graph_info, filter_operand_id);
-                            let transposed_filter_name = format!("{}_transposed", filter_name);
+                        let mut transpose_inputs: HashMap<String, Argument> = HashMap::new();
+                        transpose_inputs
+                            .insert("x".to_string(), Self::create_name_argument(filter_name));
+                        transpose_inputs
+                            .insert("perm".to_string(), Self::create_immediate_int_array(&perm));
 
-                            // Store the override mapping
-                            operand_name_overrides
-                                .insert(filter_operand_id, transposed_filter_name.clone());
+                        // Create tensor type for transposed filter
+                        let dtype = Self::mil_data_type(&filter_operand.descriptor.data_type)?;
+                        let transposed_shape =
+                            Self::permute_graph_shape(&filter_operand.descriptor.shape, &perm);
+                        let dimensions =
+                            Self::mil_dimensions_from_graph_shape(&transposed_shape, false);
 
-                            let mut transpose_inputs: HashMap<String, Argument> = HashMap::new();
-                            transpose_inputs
-                                .insert("x".to_string(), Self::create_name_argument(filter_name));
-                            transpose_inputs.insert(
-                                "perm".to_string(),
-                                Self::create_immediate_int_array(&perm),
-                            );
-
-                            // Create tensor type for transposed filter
-                            let dtype = Self::mil_data_type(&filter_operand.descriptor.data_type)?;
-                            let transposed_shape =
-                                Self::permute_graph_shape(&filter_operand.descriptor.shape, &perm);
-                            let dimensions =
-                                Self::mil_dimensions_from_graph_shape(&transposed_shape, false);
-
-                            let value_type = ValueType {
-                                r#type: Some(
-                                    crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                        TensorType {
-                                            rank: dimensions.len() as i64,
-                                            data_type: dtype,
-                                            dimensions,
-                                            attributes: HashMap::new(),
-                                        },
-                                    ),
+                        let value_type = ValueType {
+                            r#type: Some(
+                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                    TensorType {
+                                        rank: dimensions.len() as i64,
+                                        data_type: dtype,
+                                        dimensions,
+                                        attributes: HashMap::new(),
+                                    },
                                 ),
-                            };
+                            ),
+                        };
 
-                            let transpose_output_type = NamedValueType {
-                                name: transposed_filter_name.clone(),
-                                r#type: Some(value_type),
-                            };
+                        let transpose_output_type = NamedValueType {
+                            name: transposed_filter_name.clone(),
+                            r#type: Some(value_type),
+                        };
 
-                            let transpose_op = Self::create_mil_operation(
-                                "transpose",
-                                transpose_inputs,
-                                vec![transpose_output_type],
-                            );
+                        let transpose_op = Self::create_mil_operation(
+                            "transpose",
+                            transpose_inputs,
+                            vec![transpose_output_type],
+                        );
 
-                            main_block.operations.push(transpose_op);
-                        }
+                        main_block.operations.push(transpose_op);
                     }
                 }
 
                 let input_layout = match &op {
-                    Operation::Conv2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.input_layout.as_str())
-                        .unwrap_or(""),
-                    Operation::ConvTranspose2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.input_layout.as_str())
-                        .unwrap_or(""),
-                    _ => "",
+                    Operation::Conv2d { options, .. } => {
+                        options.as_ref().map(|o| o.input_layout).unwrap_or_default()
+                    }
+                    Operation::ConvTranspose2d { options, .. } => {
+                        options.as_ref().map(|o| o.input_layout).unwrap_or_default()
+                    }
+                    _ => MLInputOperandLayout::Nchw,
                 };
-                if input_layout == "nhwc" && !op.input_operands().is_empty() {
+                if input_layout == MLInputOperandLayout::Nhwc && !op.input_operands().is_empty() {
                     let input_operand_id = op.input_operands()[0];
 
                     // Only transpose if not already transposed

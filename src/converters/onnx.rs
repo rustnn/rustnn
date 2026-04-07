@@ -20,6 +20,11 @@ use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLGruWeightLayout,
+    MLInputOperandLayout, MLInterpolationMode, MLPaddingMode, MLRecurrentNetworkActivation,
+    MLRecurrentNetworkDirection, MLRoundingType,
+};
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
 use crate::protos::onnx::{
@@ -51,6 +56,14 @@ impl OnnxConverter {
             "tanh" => "Tanh".to_string(),
             "relu" => "Relu".to_string(),
             other => other.to_string(),
+        }
+    }
+
+    fn recurrent_activation_enum_to_onnx(act: MLRecurrentNetworkActivation) -> String {
+        match act {
+            MLRecurrentNetworkActivation::Sigmoid => "Sigmoid".to_string(),
+            MLRecurrentNetworkActivation::Tanh => "Tanh".to_string(),
+            MLRecurrentNetworkActivation::Relu => "Relu".to_string(),
         }
     }
 
@@ -1211,8 +1224,8 @@ impl OnnxConverter {
         if input_shape.len() != 4 {
             return None;
         }
-        let layout = opts.layout.to_ascii_lowercase();
-        let (input_h, input_w) = if layout == "nhwc" {
+        let layout = opts.layout;
+        let (input_h, input_w) = if layout == MLInputOperandLayout::Nhwc {
             (
                 get_static_or_max_size(&input_shape[1]) as i64,
                 get_static_or_max_size(&input_shape[2]) as i64,
@@ -1229,7 +1242,7 @@ impl OnnxConverter {
             .as_ref()
             .map(|v| v.iter().map(|&u| u as i64).collect())
             .or_else(|| {
-                if layout == "nhwc" {
+                if layout == MLInputOperandLayout::Nhwc {
                     Some(vec![
                         get_static_or_max_size(&input_shape[1]) as i64,
                         get_static_or_max_size(&input_shape[2]) as i64,
@@ -1306,7 +1319,7 @@ impl OnnxConverter {
             _ => return attributes,
         };
 
-        let layout = opts.layout.to_ascii_lowercase();
+        let layout = opts.layout;
         let mut kernel_shape: Option<Vec<i64>> = opts
             .window_dimensions
             .as_ref()
@@ -1321,7 +1334,7 @@ impl OnnxConverter {
                     if input_shape.len() != 4 {
                         return None;
                     }
-                    let (h, w) = if layout == "nhwc" {
+                    let (h, w) = if layout == MLInputOperandLayout::Nhwc {
                         (
                             get_static_or_max_size(&input_shape[1]) as i64,
                             get_static_or_max_size(&input_shape[2]) as i64,
@@ -1349,7 +1362,7 @@ impl OnnxConverter {
             && in_operand.descriptor.shape.len() == 4
             && out_operand.descriptor.shape.len() == 4
         {
-            let (in_h, in_w, _out_h, _out_w) = if layout == "nhwc" {
+            let (in_h, in_w, _out_h, _out_w) = if layout == MLInputOperandLayout::Nhwc {
                 (
                     get_static_or_max_size(&in_operand.descriptor.shape[1]),
                     get_static_or_max_size(&in_operand.descriptor.shape[2]),
@@ -1405,7 +1418,7 @@ impl OnnxConverter {
         }
         let ceil_mode = if opts.output_sizes.is_some() {
             Self::infer_pool_ceil_mode_from_output_sizes(op, graph)
-        } else if opts.output_shape_rounding.eq_ignore_ascii_case("ceil") {
+        } else if matches!(opts.output_shape_rounding, MLRoundingType::Ceil) {
             Some(1)
         } else {
             Some(0)
@@ -3910,9 +3923,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     | Operation::GlobalMaxPool { options, .. } => options.as_ref(),
                     _ => None,
                 };
-                let layout = pool_opts
-                    .map(|o| o.layout.to_ascii_lowercase())
-                    .unwrap_or_else(|| "nchw".to_string());
+                let layout = pool_opts.map(|o| o.layout).unwrap_or_default();
 
                 // ONNX AveragePool does not support dilations. Emulate dilated average pool
                 // (for no-padding cases) with depthwise Conv using sparse kernel taps.
@@ -3965,7 +3976,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     })?;
                     let input_shape = input_operand.descriptor.static_or_max_shape();
                     if input_shape.len() == 4 {
-                        let channels = if layout == "nhwc" {
+                        let channels = if layout == MLInputOperandLayout::Nhwc {
                             input_shape[3] as i64
                         } else {
                             input_shape[1] as i64
@@ -3981,7 +3992,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             let denom = (kh * kw) as f32;
 
                             let mut conv_input_name = input_name.clone();
-                            if layout == "nhwc" {
+                            if layout == MLInputOperandLayout::Nhwc {
                                 let nchw_input = format!("{}_nchw_in", op_name);
                                 nodes.push(NodeProto {
                                     input: vec![input_name],
@@ -4025,7 +4036,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 ..Default::default()
                             });
 
-                            let conv_output_name = if layout == "nhwc" {
+                            let conv_output_name = if layout == MLInputOperandLayout::Nhwc {
                                 format!("{}_nchw_out", op_name)
                             } else {
                                 output_name.clone()
@@ -4071,7 +4082,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 ));
                             }
 
-                            if layout == "nhwc" {
+                            if layout == MLInputOperandLayout::Nhwc {
                                 nodes.push(NodeProto {
                                     input: vec![conv_output_name],
                                     output: vec![output_name],
@@ -4094,7 +4105,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 let attributes = Self::create_pool2d_attributes_with_graph(op, graph);
 
-                if layout == "nhwc" {
+                if layout == MLInputOperandLayout::Nhwc {
                     let nchw_input = format!("{}_nchw_in", op_name);
                     nodes.push(NodeProto {
                         input: vec![input_name],
@@ -5421,7 +5432,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 let direction_str = match direction.as_str() {
                     "backward" => "reverse",
-                    "both" => "bidirectional",
+                    "both" | "bidirectional" => "bidirectional",
                     _ => "forward",
                 };
 
@@ -5645,16 +5656,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 })?;
                 let input_dtype = Self::data_type_code(weight_operand.descriptor.data_type);
                 let direction = match &op {
-                    Operation::Lstm { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.direction.to_ascii_lowercase())
-                        .unwrap_or_else(|| "forward".to_string()),
-                    _ => "forward".to_string(),
+                    Operation::Lstm { options, .. } => {
+                        options.as_ref().map(|o| o.direction).unwrap_or_default()
+                    }
+                    _ => MLRecurrentNetworkDirection::Forward,
                 };
-                let direction_str = match direction.as_str() {
-                    "both" | "bidirectional" => "bidirectional",
-                    "backward" => "reverse",
-                    _ => "forward",
+                let direction_str = match direction {
+                    MLRecurrentNetworkDirection::Backward => "reverse",
+                    MLRecurrentNetworkDirection::Both => "bidirectional",
+                    MLRecurrentNetworkDirection::Forward => "forward",
                 };
                 let axes0_name = format!("{}_axes0", op_name);
                 initializers.push(TensorProto {
@@ -5852,7 +5862,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 // For bidirectional, ONNX initial_h/initial_c must be [2, batch, hidden]. WebNN sends [1, batch, hidden]; duplicate on axis 0.
                 let (lstm_initial_h_name, lstm_initial_c_name) =
-                    if direction == "both" || direction == "bidirectional" {
+                    if matches!(direction, MLRecurrentNetworkDirection::Both) {
                         let h_bidi = format!("{}_initial_h_bidi", op_name);
                         let c_bidi = format!("{}_initial_c_bidi", op_name);
                         nodes.push(NodeProto {
@@ -5910,15 +5920,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 } {
                     let strings: Vec<Vec<u8>> = activations
                         .iter()
-                        .map(|s| Self::recurrent_activation_to_onnx(s).into_bytes())
+                        .map(|a| Self::recurrent_activation_enum_to_onnx(*a).into_bytes())
                         .collect();
                     if !strings.is_empty() {
-                        let num_directions = if direction == "both" || direction == "bidirectional"
-                        {
-                            2
-                        } else {
-                            1
-                        };
+                        let num_directions =
+                            if matches!(direction, MLRecurrentNetworkDirection::Both) {
+                                2
+                            } else {
+                                1
+                            };
                         let strings: Vec<Vec<u8>> = (0..num_directions)
                             .flat_map(|_| strings.iter().cloned())
                             .collect();
@@ -5952,7 +5962,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
                 // Wire by name: outputs[0]=Y_h, outputs[1]=Y_c, outputs[2]=sequence when returnSequence.
-                let unidirectional = direction != "both" && direction != "bidirectional";
+                let unidirectional = !matches!(direction, MLRecurrentNetworkDirection::Both);
                 let axes1_name = format!("{}_lstm_axes1", op_name);
                 initializers.push(TensorProto {
                     name: axes1_name.clone(),
@@ -6415,10 +6425,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 })?;
                 let input_dtype = Self::data_type_code(hidden_state_operand.descriptor.data_type);
 
-                let gate_layout = gru_cell_opts
-                    .map(|o| o.layout.to_ascii_lowercase())
-                    .unwrap_or_else(|| "zrn".to_string());
-                let needs_rzn_to_zrn = gate_layout == "rzn";
+                let gate_layout = gru_cell_opts.map(|o| o.layout).unwrap_or_default();
+                let needs_rzn_to_zrn = gate_layout == MLGruWeightLayout::Rzn;
 
                 let axes0_name = format!("{}_axes0", op_name);
                 initializers.push(TensorProto {
@@ -7489,11 +7497,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
 
                 let mut inputs = vec![data_input_name, pads_name];
-                let mode = pad_opts.mode.to_ascii_lowercase();
-                let onnx_mode = match mode.as_str() {
-                    "edge" => "edge",
-                    "reflection" => "reflect",
-                    _ => "constant",
+                let onnx_mode = match pad_opts.mode {
+                    MLPaddingMode::Edge => "edge",
+                    MLPaddingMode::Reflection => "reflect",
+                    MLPaddingMode::Constant => "constant",
                 };
                 if onnx_mode == "constant" {
                     let data_dtype = graph
@@ -7660,13 +7667,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                let mode = resample_opts
-                    .map(|o| o.mode.to_ascii_lowercase())
-                    .unwrap_or_else(|| "nearest-neighbor".to_string());
-                let onnx_mode = if mode == "linear" {
-                    "linear"
-                } else {
-                    "nearest"
+                let mode = resample_opts.map(|o| o.mode).unwrap_or_default();
+                let onnx_mode = match mode {
+                    MLInterpolationMode::Linear => "linear",
+                    MLInterpolationMode::NearestNeighbor => "nearest",
                 };
                 let coord_mode = if onnx_mode == "linear" {
                     "half_pixel"
@@ -8326,21 +8330,17 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let mut conv_inputs: Vec<String> = Vec::new();
 
                 let input_layout = match &op {
-                    Operation::Conv2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.input_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "nchw".to_string()),
-                    Operation::ConvTranspose2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.input_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "nchw".to_string()),
-                    _ => "nchw".to_string(),
+                    Operation::Conv2d { options, .. } => {
+                        options.as_ref().map(|o| o.input_layout).unwrap_or_default()
+                    }
+                    Operation::ConvTranspose2d { options, .. } => {
+                        options.as_ref().map(|o| o.input_layout).unwrap_or_default()
+                    }
+                    _ => MLInputOperandLayout::default(),
                 };
 
                 let input_name = operand_name(graph, op.input_operands()[0]);
-                let transposed_input = if input_layout.eq_ignore_ascii_case("nhwc") {
+                let transposed_input = if input_layout == MLInputOperandLayout::Nhwc {
                     // Insert Transpose node: NHWC → NCHW
                     let transpose_output = format!("{}_input_transposed", op_name);
                     nodes.push(NodeProto {
@@ -8362,54 +8362,58 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 conv_inputs.push(transposed_input);
 
-                let filter_layout = match &op {
-                    Operation::Conv2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "oihw".to_string()),
-                    Operation::ConvTranspose2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "iohw".to_string()),
-                    _ => {
-                        if matches!(&op, Operation::ConvTranspose2d { .. }) {
-                            "iohw".to_string()
-                        } else {
-                            "oihw".to_string()
-                        }
-                    }
-                };
-
                 let filter_name = operand_name(graph, op.input_operands()[1]);
 
-                let is_transpose = matches!(&op, Operation::ConvTranspose2d { .. });
-                let needs_transpose = if is_transpose {
-                    // ConvTranspose: ONNX expects IOHW (Input, Output, H, W)
-                    filter_layout != "iohw"
-                } else {
-                    // Conv: ONNX expects OIHW (Output, Input, H, W)
-                    filter_layout != "oihw"
+                let needs_transpose = match &op {
+                    Operation::ConvTranspose2d { options, .. } => {
+                        options
+                            .as_ref()
+                            .map(|o| o.filter_layout)
+                            .unwrap_or_default()
+                            != MLConvTranspose2dFilterOperandLayout::Iohw
+                    }
+                    Operation::Conv2d { options, .. } => {
+                        options
+                            .as_ref()
+                            .map(|o| o.filter_layout)
+                            .unwrap_or_default()
+                            != MLConv2dFilterOperandLayout::Oihw
+                    }
+                    _ => unreachable!(),
                 };
 
                 let transposed_filter = if needs_transpose {
-                    let perm = if is_transpose {
-                        // ConvTranspose filter layout conversions → IOHW
-                        match filter_layout.as_str() {
-                            "hwoi" => vec![3, 2, 0, 1], // HWOI (H,W,O,I) → IOHW (I,O,H,W)
-                            "ohwi" => vec![3, 0, 1, 2], // OHWI (O,H,W,I) → IOHW (I,O,H,W)
-                            "oihw" => vec![1, 0, 2, 3], // OIHW (O,I,H,W) → IOHW (I,O,H,W)
-                            _ => vec![0, 1, 2, 3],      // Default: no transpose
+                    let perm = match &op {
+                        Operation::ConvTranspose2d { options, .. } => {
+                            match options
+                                .as_ref()
+                                .map(|o| o.filter_layout)
+                                .unwrap_or_default()
+                            {
+                                MLConvTranspose2dFilterOperandLayout::Hwoi => {
+                                    vec![3, 2, 0, 1]
+                                }
+                                MLConvTranspose2dFilterOperandLayout::Ohwi => {
+                                    vec![3, 0, 1, 2]
+                                }
+                                MLConvTranspose2dFilterOperandLayout::Iohw => {
+                                    vec![1, 0, 2, 3]
+                                }
+                            }
                         }
-                    } else {
-                        // Conv2d filter layout conversions → OIHW
-                        match filter_layout.as_str() {
-                            "hwio" => vec![3, 2, 0, 1], // HWIO (H,W,I,O) → OIHW (O,I,H,W)
-                            "ohwi" => vec![0, 3, 1, 2], // OHWI (O,H,W,I) → OIHW (O,I,H,W)
-                            "ihwo" => vec![3, 0, 1, 2], // IHWO (I,H,W,O) → OIHW (O,I,H,W)
-                            _ => vec![0, 1, 2, 3],      // Default: no transpose
+                        Operation::Conv2d { options, .. } => {
+                            match options
+                                .as_ref()
+                                .map(|o| o.filter_layout)
+                                .unwrap_or_default()
+                            {
+                                MLConv2dFilterOperandLayout::Hwio => vec![3, 2, 0, 1],
+                                MLConv2dFilterOperandLayout::Ohwi => vec![0, 3, 1, 2],
+                                MLConv2dFilterOperandLayout::Ihwo => vec![3, 0, 1, 2],
+                                MLConv2dFilterOperandLayout::Oihw => vec![0, 1, 2, 3],
+                            }
                         }
+                        _ => unreachable!(),
                     };
 
                     let transpose_output = format!("{}_filter_transposed", op_name);
@@ -8449,7 +8453,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     op.output_operand()
                         .expect("Single-output operation expected"),
                 );
-                let conv_output_name = if input_layout.eq_ignore_ascii_case("nhwc") {
+                let conv_output_name = if input_layout == MLInputOperandLayout::Nhwc {
                     format!("{}_conv_output_nchw", op_name)
                 } else {
                     final_output_name.clone()
@@ -8465,7 +8469,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                if input_layout.eq_ignore_ascii_case("nhwc") {
+                if input_layout == MLInputOperandLayout::Nhwc {
                     nodes.push(NodeProto {
                         input: vec![conv_output_name],
                         output: vec![final_output_name],
