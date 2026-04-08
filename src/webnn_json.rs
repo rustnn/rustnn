@@ -880,6 +880,22 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     _ => Some(Vec::new()),
                 },
 
+                "tile" => {
+                    if let (Some(input_shape), Operation::Tile { repetitions, .. }) =
+                        (input_shapes.first(), op)
+                    {
+                        let input_u32: Vec<u32> = input_shape
+                            .iter()
+                            .map(crate::graph::get_static_or_max_size)
+                            .collect();
+                        infer_tile_shape(&input_u32, repetitions)
+                            .ok()
+                            .map(|v| to_dimension_vector(&v))
+                    } else {
+                        None
+                    }
+                },
+
                 // For other operations, leave shape empty (will be handled later or is dynamic)
                 _ => None,
             };

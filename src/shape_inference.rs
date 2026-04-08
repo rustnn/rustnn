@@ -2116,6 +2116,10 @@ pub fn infer_scatter_nd_shape(
 /// Infer output shape for tile operation
 /// Output shape = input shape * repetitions
 pub fn infer_tile_shape(input_shape: &[u32], repetitions: &[u32]) -> Result<Vec<u32>, GraphError> {
+    // Rank-0 input: repetitions must be `[]` (no axes to repeat); output stays scalar.
+    if input_shape.is_empty() && repetitions.is_empty() {
+        return Ok(Vec::new());
+    }
     if input_shape.len() != repetitions.len() {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
@@ -3593,6 +3597,12 @@ mod tests {
         // Repetitions length mismatch
         assert!(infer_tile_shape(&[2, 3], &[2]).is_err());
         assert!(infer_tile_shape(&[2, 3], &[2, 3, 1]).is_err());
+    }
+
+    #[test]
+    fn test_tile_scalar_empty_repetitions() {
+        assert_eq!(infer_tile_shape(&[], &[]).unwrap(), Vec::<u32>::new());
+        assert!(infer_tile_shape(&[1], &[]).is_err());
     }
 
     // Triangular tests

@@ -6279,17 +6279,36 @@ impl TrtxConverter {
                 });
             }
         };
-        if repetitions.is_empty() {
+
+        let input_id = operation.input_operands()[0];
+        let input_rank = {
+            let input = tensor_map.get(&input_id).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Tile: input operand {} not found", input_id),
+            })?;
+            input
+                .dimensions(&*network)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Tile: input dimensions: {}", e),
+                })?
+                .len()
+        };
+        if repetitions.len() != input_rank {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Tile operation missing 'repetitions' attribute".to_string(),
+                reason: format!(
+                    "Tile: repetitions length {} must equal input rank {} (WebNN tile)",
+                    repetitions.len(),
+                    input_rank
+                ),
             });
         }
 
         // Tile by concatenating the tensor multiple times along each axis
         // We process each axis sequentially: tile axis 0, then axis 1, etc.
-        // Start with the input tensor's ID
-        let mut current_id = operation.input_operands()[0];
+        let mut current_id = input_id;
+        let mut produced_temp = false;
 
         for (axis, &reps) in repetitions.iter().enumerate() {
             if reps <= 1 {
@@ -6333,33 +6352,38 @@ impl TrtxConverter {
             // We use a large number to avoid collisions with actual operand IDs
             current_id = 1_000_000 + axis as u32;
             tensor_map.insert(current_id, output_tensor);
+            produced_temp = true;
         }
 
         // Insert the final result with the actual output operand ID
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
 
-        // Move the final tensor from temporary ID to output ID
-        if let Some(final_tensor) = tensor_map.remove(&current_id) {
+        if produced_temp {
+            let final_tensor = tensor_map.remove(&current_id).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Tile: missing intermediate tensor {}", current_id),
+            })?;
             tensor_map.insert(output_id, final_tensor);
         } else {
-            // No tiling happened (all reps were 1), just use input
-            if let Some(input_tensor) = tensor_map.get(&operation.input_operands()[0]) {
-                // We need to create an identity layer to "clone" the tensor reference
-                let identity_layer = network.add_identity(input_tensor).map_err(|e| {
-                    GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to add identity layer: {}", e),
-                    }
-                })?;
-                let output_tensor = identity_layer.get_output(&*network, 0).map_err(|e| {
-                    GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get identity output: {}", e),
-                    }
-                })?;
-                tensor_map.insert(output_id, output_tensor);
-            }
+            // No concat tiling (all reps <= 1, or rank-0 with repetitions []): keep input in map, identity to output.
+            let input_tensor = tensor_map.get(&input_id).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Tile: input {} missing for identity", input_id),
+            })?;
+            let identity_layer = network.add_identity(input_tensor).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Tile: identity: {}", e),
+                }
+            })?;
+            let output_tensor = identity_layer.get_output(&*network, 0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Tile: identity output: {}", e),
+                }
+            })?;
+            tensor_map.insert(output_id, output_tensor);
         }
 
         Ok(())
