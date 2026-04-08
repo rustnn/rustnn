@@ -824,7 +824,7 @@ impl TrtxConverter {
             "clamp" => Self::add_clamp_op(graph, network, tensor_map, operation, temp_weights)?,
             "where" => Self::add_where_op(graph, network, tensor_map, operation)?,
             "linear" => Self::add_linear_op(graph, network, tensor_map, operation, temp_weights)?,
-            "pad" => Self::add_pad_op(network, tensor_map, operation)?,
+            "pad" => Self::add_pad_op(graph, network, tensor_map, operation)?,
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
             "concat" => Self::add_concat_op(network, tensor_map, operation)?,
             "isNaN" => Self::add_is_nan_op(network, tensor_map, operation)?,
@@ -7791,8 +7791,363 @@ impl TrtxConverter {
         Ok(())
     }
 
+    /// Parse WebNN `MLPadOptions.value` (`MLNumber`: number or special float strings like `"NaN"`).
+    fn pad_mlnumber_to_f32(v: &serde_json::Value) -> Option<f32> {
+        if let Some(f) = v.as_f64() {
+            return Some(f as f32);
+        }
+        if let Some(i) = v.as_i64() {
+            return Some(i as f32);
+        }
+        if let Some(u) = v.as_u64() {
+            return Some(u as f32);
+        }
+        let s = v.as_str()?.trim();
+        let lower = s.to_lowercase();
+        Some(match lower.as_str() {
+            "nan" => f32::NAN,
+            "infinity" | "+infinity" | "inf" | "+inf" => f32::INFINITY,
+            "-infinity" | "-inf" => f32::NEG_INFINITY,
+            _ => s.parse::<f32>().ok()?,
+        })
+    }
+
+    /// Pad one axis by concatenating constant-filled tensors (constant-pad only).
+    fn trtx_pad_axis_constant_concat<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        axis: usize,
+        pre: i32,
+        post: i32,
+        fill_f32: f32,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if pre <= 0 && post <= 0 {
+            let id =
+                network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad concat: identity: {}", e),
+                    })?;
+            return id.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad concat: identity output: {}", e),
+            });
+        }
+
+        let dims = input.dimensions(&*network).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad concat: dimensions: {}", e),
+        })?;
+        let rank = dims.len();
+        if axis >= rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad concat: axis {axis} >= rank {rank}"),
+            });
+        }
+
+        let trt_dtype = input.get_type(&*network);
+        let elem_size = match trt_dtype {
+            TrtDataType::kFLOAT => 4usize,
+            TrtDataType::kHALF => 2,
+            TrtDataType::kINT32 => 4,
+            TrtDataType::kINT64 => 8,
+            TrtDataType::kINT8 | TrtDataType::kUINT8 | TrtDataType::kBOOL => 1,
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "Pad concat: unsupported TensorRT dtype for constant fill: {:?}",
+                        trt_dtype
+                    ),
+                });
+            }
+        };
+
+        let one_elem_bytes: Vec<u8> = match trt_dtype {
+            TrtDataType::kFLOAT => fill_f32.to_le_bytes().to_vec(),
+            TrtDataType::kHALF => f16::from_f32(fill_f32).to_bits().to_le_bytes().to_vec(),
+            TrtDataType::kINT32 => (fill_f32 as i32).to_le_bytes().to_vec(),
+            TrtDataType::kINT64 => (fill_f32 as i64).to_le_bytes().to_vec(),
+            TrtDataType::kINT8 => [(fill_f32 as i8) as u8].to_vec(),
+            TrtDataType::kUINT8 | TrtDataType::kBOOL => {
+                vec![if fill_f32 != 0.0 { 1u8 } else { 0u8 }]
+            }
+            _ => unreachable!(),
+        };
+
+        let mut make_const =
+            |axis_len: i64| -> Result<trtx::Tensor<'a>, GraphError> {
+                let mut shape = dims.clone();
+                shape[axis] = axis_len;
+                let n: usize = shape.iter().map(|&d| d.max(0) as usize).product();
+                let mut data = Vec::with_capacity(n * elem_size);
+                for _ in 0..n {
+                    data.extend_from_slice(&one_elem_bytes);
+                }
+                let layer = network
+                    .add_small_constant_copied(&shape, &data, trt_dtype)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad concat: constant: {}", e),
+                    })?;
+                layer.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad concat: constant output: {}", e),
+                })
+            };
+
+        let mut pieces: Vec<&trtx::Tensor<'a>> = Vec::new();
+        let pre_t = if pre > 0 {
+            Some(make_const(pre as i64)?)
+        } else {
+            None
+        };
+        if let Some(ref t) = pre_t {
+            pieces.push(t);
+        }
+        pieces.push(input);
+        let post_t = if post > 0 {
+            Some(make_const(post as i64)?)
+        } else {
+            None
+        };
+        if let Some(ref t) = post_t {
+            pieces.push(t);
+        }
+
+        let mut cat = network
+            .add_concatenation(&pieces)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad concat: concat: {}", e),
+            })?;
+        cat.set_axis(network, axis as i32);
+        cat.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad concat: concat out: {}", e),
+        })
+    }
+
+    /// Edge pad on one axis: replicate first / last slice along `axis` (WebNN `mode == "edge"`).
+    fn trtx_pad_axis_edge_concat<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        axis: usize,
+        pre: i32,
+        post: i32,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if pre <= 0 && post <= 0 {
+            let id =
+                network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad edge: identity: {}", e),
+                    })?;
+            return id.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: identity output: {}", e),
+            });
+        }
+
+        let dims = input.dimensions(&*network).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad edge: dimensions: {}", e),
+        })?;
+        let rank = dims.len();
+        if axis >= rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: axis {axis} >= rank {rank}"),
+            });
+        }
+        let d_ax = dims[axis];
+        if d_ax <= 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: non-positive dim {d_ax} on axis {axis}"),
+            });
+        }
+
+        let stride: Vec<i64> = vec![1i64; rank];
+
+        let start_left = vec![0i64; rank];
+        let mut size_left = dims.clone();
+        size_left[axis] = 1;
+        let left_layer =
+            network
+                .add_slice(input, &start_left, &size_left, &stride)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad edge: left slice: {}", e),
+                })?;
+        let left_t = left_layer.get_output(&*network, 0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: left slice output: {}", e),
+            }
+        })?;
+
+        let mut start_right = vec![0i64; rank];
+        start_right[axis] = d_ax - 1;
+        let mut size_right = dims.clone();
+        size_right[axis] = 1;
+        let right_layer =
+            network
+                .add_slice(input, &start_right, &size_right, &stride)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad edge: right slice: {}", e),
+                })?;
+        let right_t = right_layer.get_output(&*network, 0).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: right slice output: {}", e),
+            }
+        })?;
+
+        let mut cat_inputs: Vec<&trtx::Tensor<'a>> = Vec::new();
+        for _ in 0..pre {
+            cat_inputs.push(&left_t);
+        }
+        cat_inputs.push(input);
+        for _ in 0..post {
+            cat_inputs.push(&right_t);
+        }
+
+        let mut cat = network
+            .add_concatenation(&cat_inputs)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad edge: concat: {}", e),
+            })?;
+        cat.set_axis(network, axis as i32);
+        cat.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad edge: concat out: {}", e),
+        })
+    }
+
+    /// Reflection pad on one axis (NumPy / ONNX `reflect`: mirror interior, excluding the edge).
+    /// Requires `pre < dim` and `post < dim` on this axis.
+    fn trtx_pad_axis_reflect_concat<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        axis: usize,
+        pre: i32,
+        post: i32,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if pre <= 0 && post <= 0 {
+            let id =
+                network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad reflect: identity: {}", e),
+                    })?;
+            return id.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad reflect: identity output: {}", e),
+            });
+        }
+
+        let dims = input.dimensions(&*network).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad reflect: dimensions: {}", e),
+        })?;
+        let rank = dims.len();
+        if axis >= rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad reflect: axis {axis} >= rank {rank}"),
+            });
+        }
+        let d_ax = dims[axis];
+        if d_ax <= 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad reflect: non-positive dim {d_ax} on axis {axis}"),
+            });
+        }
+        if pre as i64 >= d_ax || post as i64 >= d_ax {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Pad reflect: axis {axis} dim {d_ax} requires pre/post padding each < dim (got pre={pre} post={post})"
+                ),
+            });
+        }
+
+        let stride: Vec<i64> = vec![1i64; rank];
+        let mut pre_slabs: Vec<trtx::Tensor<'a>> = Vec::new();
+        for off in (1_i32..=pre).rev() {
+            let idx = i64::from(off);
+            let mut start = vec![0i64; rank];
+            start[axis] = idx;
+            let mut size = dims.clone();
+            size[axis] = 1;
+            let layer =
+                network
+                    .add_slice(input, &start, &size, &stride)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad reflect: pre slice: {}", e),
+                    })?;
+            let slab = layer.get_output(&*network, 0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad reflect: pre slice out: {}", e),
+                }
+            })?;
+            pre_slabs.push(slab);
+        }
+
+        let mut post_slabs: Vec<trtx::Tensor<'a>> = Vec::new();
+        for t in 0..post {
+            let idx = d_ax - 2 - i64::from(t);
+            let mut start = vec![0i64; rank];
+            start[axis] = idx;
+            let mut size = dims.clone();
+            size[axis] = 1;
+            let layer =
+                network
+                    .add_slice(input, &start, &size, &stride)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad reflect: post slice: {}", e),
+                    })?;
+            let slab = layer.get_output(&*network, 0).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad reflect: post slice out: {}", e),
+                }
+            })?;
+            post_slabs.push(slab);
+        }
+
+        let mut cat_inputs: Vec<&trtx::Tensor<'a>> =
+            pre_slabs.iter().collect::<Vec<_>>();
+        cat_inputs.push(input);
+        cat_inputs.extend(post_slabs.iter());
+
+        let mut cat = network
+            .add_concatenation(&cat_inputs)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Pad reflect: concat: {}", e),
+            })?;
+        cat.set_axis(network, axis as i32);
+        cat.get_output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Pad reflect: concat out: {}", e),
+        })
+    }
+
     /// Add pad operation (pad tensor with constant/edge/reflection values)
     fn add_pad_op<'a>(
+        _graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7804,7 +8159,7 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let (beginning_padding, ending_padding, _opts) = match operation {
+        let (beginning_padding, ending_padding, pad_opts) = match operation {
             Operation::Pad {
                 beginning_padding,
                 ending_padding,
@@ -7829,12 +8184,6 @@ impl TrtxConverter {
         };
         let pre_padding: Vec<i32> = beginning_padding.iter().map(|&u| u as i32).collect();
         let post_padding: Vec<i32> = ending_padding.iter().map(|&u| u as i32).collect();
-        if pre_padding.is_empty() || post_padding.is_empty() {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Pad operation missing beginningPadding or endingPadding".to_string(),
-            });
-        }
 
         // Get input dimensions
         let input_dims = input
@@ -7844,27 +8193,151 @@ impl TrtxConverter {
                 reason: format!("Failed to get input dimensions: {}", e),
             })?;
 
-        let original_ndims = input_dims.len();
-        eprintln!(
-            "[PAD DEBUG] Input dims: {:?}, len={}",
-            input_dims, original_ndims
-        );
-        eprintln!(
-            "[PAD DEBUG] Pre-padding: {:?}, Post-padding: {:?}",
-            pre_padding, post_padding
-        );
+        if pre_padding.len() != post_padding.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Pad: beginningPadding len {} != endingPadding len {}",
+                    pre_padding.len(),
+                    post_padding.len()
+                ),
+            });
+        }
+        if pre_padding.len() != input_dims.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Pad: padding length {} does not match input rank {}",
+                    pre_padding.len(),
+                    input_dims.len()
+                ),
+            });
+        }
 
-        // TensorRT padding requires at least 4D input (NCHW format)
-        // If input is less than 4D, reshape to 4D first
+        // WebNN: empty paddings on rank-0 input (or all zeros) is a no-op; TRT IPaddingLayer still needs work.
+        let no_pad_amounts = pre_padding
+            .iter()
+            .chain(post_padding.iter())
+            .all(|&p| p == 0);
+        if no_pad_amounts {
+            let identity =
+                network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Pad no-op: failed to add identity: {}", e),
+                    })?;
+            let out = identity
+                .get_output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad no-op: identity output: {}", e),
+                })?;
+            tensor_map.insert(operation.output_operands_slice()[0], out);
+            return Ok(());
+        }
+
+        let original_ndims = input_dims.len();
+
+        let pad_mode_norm = pad_opts.mode.to_lowercase();
+        let is_constant_pad_mode =
+            pad_mode_norm.is_empty() || pad_mode_norm == "constant";
+        let is_edge_pad_mode = pad_mode_norm == "edge";
+        let is_reflect_pad_mode =
+            pad_mode_norm == "reflection" || pad_mode_norm == "reflect";
+        if !pad_mode_norm.is_empty()
+            && !is_constant_pad_mode
+            && !is_edge_pad_mode
+            && !is_reflect_pad_mode
+        {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "Pad: TensorRT pad supports constant, edge, and reflection mode (got {:?})",
+                    pad_opts.mode
+                ),
+            });
+        }
+        let fill_f32 = pad_opts
+            .value
+            .as_ref()
+            .and_then(Self::pad_mlnumber_to_f32)
+            .unwrap_or(0.0);
+
+        // TensorRT `addPaddingNd` only accepts **two** padding values (last two tensor dims). When
+        // WebNN padding affects other axes (e.g. 3D with pad on axis 0), use concat + constants.
+        let lead_if_reshaped = if original_ndims < 4 {
+            4 - original_ndims
+        } else {
+            0
+        };
+        let trt_ipadding_covers = if original_ndims < 4 {
+            (0..original_ndims).all(|wi| {
+                let trt_d = lead_if_reshaped + wi;
+                trt_d >= 2 || (pre_padding[wi] == 0 && post_padding[wi] == 0)
+            })
+        } else {
+            (0..original_ndims.saturating_sub(2)).all(|wi| {
+                pre_padding[wi] == 0 && post_padding[wi] == 0
+            })
+        };
+
+        // `IPaddingLayer` is zero-only and 2D; edge / non-zero constant use slice+concat or constant+concat.
+        let use_concat_pad = !trt_ipadding_covers
+            || !is_constant_pad_mode
+            || fill_f32 != 0.0
+            || fill_f32.is_nan()
+            || fill_f32.is_infinite();
+        if use_concat_pad {
+            let in_id = operation.input_operands()[0];
+            let out_id = operation.output_operands_slice()[0];
+            let mut cur_key = in_id;
+            let mut step: u32 = 0;
+            let mut any = false;
+            for ax in 0..original_ndims {
+                let pr = pre_padding[ax];
+                let po = post_padding[ax];
+                if pr == 0 && po == 0 {
+                    continue;
+                }
+                any = true;
+                let t = tensor_map.get(&cur_key).ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Pad concat: tensor {cur_key} not found"),
+                })?;
+                let new_t = if is_edge_pad_mode {
+                    Self::trtx_pad_axis_edge_concat(network, t, ax, pr, po)?
+                } else if is_reflect_pad_mode {
+                    Self::trtx_pad_axis_reflect_concat(network, t, ax, pr, po)?
+                } else {
+                    Self::trtx_pad_axis_constant_concat(network, t, ax, pr, po, fill_f32)?
+                };
+                let next_key = 0xFA_B0_0000u32.wrapping_add(step);
+                step = step.saturating_add(1);
+                if cur_key != in_id {
+                    let _ = tensor_map.remove(&cur_key);
+                }
+                tensor_map.insert(next_key, new_t);
+                cur_key = next_key;
+            }
+            if !any {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Pad: internal error (concat path but no non-zero axis pad)".to_string(),
+                });
+            }
+            let final_t = tensor_map.remove(&cur_key).ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "Pad concat: missing final tensor".to_string(),
+            })?;
+            tensor_map.insert(out_id, final_t);
+            return Ok(());
+        }
+
+        // Rank < 4: left-pad shape with 1s to 4D; WebNN axis i maps to TRT axis (4 - original_ndims + i).
         let input_to_pad = if original_ndims < 4 {
-            eprintln!(
-                "[PAD DEBUG] Reshaping to 4D (original was {}D)",
-                original_ndims
-            );
-            // Calculate 4D shape: pad with 1s on the left
             let mut shape_4d: Vec<i64> = vec![1i64; 4 - original_ndims];
             shape_4d.extend_from_slice(&input_dims);
-            eprintln!("[PAD DEBUG] Shape 4D: {:?}", shape_4d);
 
             // Reshape to 4D
             let mut reshape_layer =
@@ -7889,8 +8362,6 @@ impl TrtxConverter {
                     reason: format!("Failed to get reshape output: {}", e),
                 })?
         } else {
-            eprintln!("[PAD DEBUG] Input already >= 4D, using identity layer");
-            // Use identity layer to pass through without reshape
             let identity =
                 network
                     .add_identity(input)
@@ -7906,53 +8377,52 @@ impl TrtxConverter {
                 })?
         };
 
-        // TensorRT addPaddingNd for 4D tensors (NCHW) expects 2D padding (H, W dimensions only)
-        // Padding must be RIGHT-ALIGNED to match the rightmost dimensions of the reshaped input
-        // For 1D input [d0] → reshaped to [1,1,1,d0], padding on d0 → W dimension (index 1)
-        // For 2D input [d0,d1] → reshaped to [1,1,d0,d1], padding on d0,d1 → H,W dimensions (indices 0,1)
-        let spatial_dims = 2; // H, W dimensions in NCHW
-
-        // Right-align: If we have fewer than 2 padding values, pad LEFT with zeros
-        let mut pre_padding_spatial: Vec<i64> = vec![0; spatial_dims];
-        let mut post_padding_spatial: Vec<i64> = vec![0; spatial_dims];
-
-        let len = pre_padding.len().min(spatial_dims);
-        let pad_offset = spatial_dims.saturating_sub(pre_padding.len());
-
-        for i in 0..len {
-            pre_padding_spatial[pad_offset + i] = pre_padding[i] as i64;
-            post_padding_spatial[pad_offset + i] = post_padding[i] as i64;
-        }
-
-        // Check actual dimensions of input_to_pad
-        let input_to_pad_dims =
-            input_to_pad
-                .dimensions(&*network)
-                .map_err(|e| GraphError::ConversionFailed {
+        let (pre_spatial, post_spatial): (Vec<i64>, Vec<i64>) = if original_ndims < 4 {
+            let lead = 4 - original_ndims;
+            let wn_pre = |trt_ax: usize| -> i64 {
+                if trt_ax < lead {
+                    return 0;
+                }
+                let wi = trt_ax - lead;
+                if wi < original_ndims {
+                    pre_padding[wi] as i64
+                } else {
+                    0
+                }
+            };
+            let wn_post = |trt_ax: usize| -> i64 {
+                if trt_ax < lead {
+                    return 0;
+                }
+                let wi = trt_ax - lead;
+                if wi < original_ndims {
+                    post_padding[wi] as i64
+                } else {
+                    0
+                }
+            };
+            (vec![wn_pre(2), wn_pre(3)], vec![wn_post(2), wn_post(3)])
+        } else {
+            if original_ndims < 2 {
+                return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Failed to get input_to_pad dimensions: {}", e),
-                })?;
+                    reason: format!("Pad: rank {original_ndims} < 2 for IPaddingLayer"),
+                });
+            }
+            (
+                vec![
+                    pre_padding[original_ndims - 2] as i64,
+                    pre_padding[original_ndims - 1] as i64,
+                ],
+                vec![
+                    post_padding[original_ndims - 2] as i64,
+                    post_padding[original_ndims - 1] as i64,
+                ],
+            )
+        };
 
-        eprintln!("[PAD DEBUG] Final padding arrays (spatial only):");
-        eprintln!(
-            "[PAD DEBUG]   pre_spatial:  {:?} (len={})",
-            pre_padding_spatial,
-            pre_padding_spatial.len()
-        );
-        eprintln!(
-            "[PAD DEBUG]   post_spatial: {:?} (len={})",
-            post_padding_spatial,
-            post_padding_spatial.len()
-        );
-        eprintln!(
-            "[PAD DEBUG] input_to_pad actual dims: {:?} (len={})",
-            input_to_pad_dims,
-            input_to_pad_dims.len()
-        );
-
-        // Add padding layer (4D input with 2D spatial padding)
         let padding_layer = network
-            .add_padding(&input_to_pad, &pre_padding_spatial, &post_padding_spatial)
+            .add_padding(&input_to_pad, &pre_spatial, &post_spatial)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add padding layer: {}", e),
