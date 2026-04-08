@@ -814,7 +814,7 @@ impl TrtxConverter {
 
             // Indexing/Gathering operations
             "gather" => Self::add_gather_op(graph, network, tensor_map, operation, temp_weights)?,
-            "gatherND" => Self::add_gather_nd_op(network, tensor_map, operation)?,
+            "gatherND" => Self::add_gather_nd_op(graph, network, tensor_map, operation)?,
             "scatterElements" => Self::add_scatter_elements_op(network, tensor_map, operation)?,
             "scatterND" => Self::add_scatter_nd_op(network, tensor_map, operation)?,
             "argMax" => Self::add_arg_max_op(graph, network, tensor_map, operation)?,
@@ -6758,8 +6758,11 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add gatherND operation (N-dimensional gather)
+    /// Add gatherND operation (N-dimensional gather).
+    /// Clamps each index component to `[-dim_size, dim_size - 1]` on the corresponding data axis
+    /// (WebNN / ONNX / WPT); TensorRT Gather-ND otherwise returns 0 for out-of-range indices.
     fn add_gather_nd_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -6781,16 +6784,146 @@ impl TrtxConverter {
                 ),
             })?;
 
-        // Create gather layer with axis 0 (required by addGather API)
+        let data_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherND: data operand {} not in graph",
+                    operation.input_operands()[0]
+                ),
+            })?;
+        let indices_operand = graph
+            .operand(operation.input_operands()[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherND: indices operand {} not in graph",
+                    operation.input_operands()[1]
+                ),
+            })?;
+
+        let data_rank = data_operand.descriptor.shape.len();
+        let k = indices_operand
+            .descriptor
+            .shape
+            .last()
+            .map(get_static_or_max_size)
+            .unwrap_or(1) as usize;
+        if k == 0 || k > data_rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherND: invalid indices last dim {} for data rank {}",
+                    k, data_rank
+                ),
+            });
+        }
+
+        let mins_k: Vec<i32> = data_operand.descriptor.shape[..k]
+            .iter()
+            .map(|d| -(get_static_or_max_size(d) as i32))
+            .collect();
+        let maxs_k: Vec<i32> = data_operand.descriptor.shape[..k]
+            .iter()
+            .map(|d| get_static_or_max_size(d) as i32 - 1)
+            .collect();
+
+        let idx_dims: Vec<u32> = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(get_static_or_max_size)
+            .collect();
+        let r = idx_dims.len();
+        if r < 1 {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "gatherND: indices tensor must have rank >= 1".to_string(),
+            });
+        }
+        let prefix_count: usize = if r <= 1 {
+            1usize
+        } else {
+            idx_dims[..r - 1]
+                .iter()
+                .map(|&x| x as usize)
+                .product()
+        };
+        let mut min_data: Vec<u8> = Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(4));
+        let mut max_data: Vec<u8> = Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(4));
+        for _ in 0..prefix_count {
+            for j in 0..k {
+                min_data.extend_from_slice(&mins_k[j].to_le_bytes());
+                max_data.extend_from_slice(&maxs_k[j].to_le_bytes());
+            }
+        }
+
+        let indices_shape_i64: Vec<i64> = idx_dims.iter().map(|&d| d as i64).collect();
+        let min_const = network
+            .add_small_constant_copied(&indices_shape_i64, &min_data, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamp min constant: {}", e),
+            })?;
+        let max_const = network
+            .add_small_constant_copied(&indices_shape_i64, &max_data, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamp max constant: {}", e),
+            })?;
+
+        let min_const_out = min_const
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamp min output: {}", e),
+            })?;
+        let max_const_out = max_const
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamp max output: {}", e),
+            })?;
+
+        let clamped_upper = network
+            .add_elementwise(indices, &max_const_out, ElementWiseOperation::kMIN)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: indices clamp upper: {}", e),
+            })?;
+        let clamped_upper_out = clamped_upper
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamp upper tensor: {}", e),
+            })?;
+
+        let clamped = network
+            .add_elementwise(
+                &min_const_out,
+                &clamped_upper_out,
+                ElementWiseOperation::kMAX,
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: indices clamp lower: {}", e),
+            })?;
+        let clamped_indices = clamped
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherND: clamped indices: {}", e),
+            })?;
+
         let mut layer =
             network
-                .add_gather(input, indices, 0)
+                .add_gather(input, &clamped_indices, 0)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("Failed to add gatherND layer: {}", e),
                 })?;
 
-        // Set gather mode to kND for N-dimensional gather
         layer.set_gather_mode(network, trtx::GatherMode::kND);
 
         let output = layer
