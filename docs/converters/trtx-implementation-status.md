@@ -516,7 +516,7 @@ Added the final 8 operations, achieving **100% WebNN specification coverage (105
   3. Compare: `IElementWiseLayer` with `kEQUAL`
   4. Cast Bool to Float32: `IElementWiseLayer` multiply by 1.0
 - **Output:** Float32 (0.0 = false, 1.0 = true)
-- **Weights Management:** Infinity constant stored in `temp_weights` for lifetime
+- **Weights Management:** Infinity is supplied via a constant layer; weight bytes are handled by the trtx/TensorRT build APIs.
 
 **roundEven:**
 - **TensorRT's Default:** TensorRT's `kROUND` already uses IEEE 754 round-to-nearest-even (banker's rounding)
@@ -767,20 +767,9 @@ This marks the **first complete implementation of all non-RNN WebNN operations i
 
 ## Implementation Notes
 
-### Weight Lifetime Management
+### Weight lifetime
 
-TrtxConverter uses a `Vec<Vec<u8>>` temporary weight storage to ensure constant weight data remains valid throughout TensorRT engine building and serialization. This is critical for operations like GEMM that create scalar constants dynamically.
-
-```rust
-fn build_network(
-    graph: &GraphInfo,
-    network: &mut trtx::NetworkDefinition,
-) -> Result<Vec<Vec<u8>>, GraphError> {
-    let mut temp_weights: Vec<Vec<u8>> = Vec::new();
-    // ... operations store weights in temp_weights ...
-    Ok(temp_weights) // Keep alive until engine serialization
-}
-```
+`TrtxConverter` does not keep a `Vec<Vec<u8>>` for weights. Network construction uses trtx methods such as `add_constant` and `add_small_constant_copied`, which copy or retain bytes as the bindings require. `build_network` takes the graph and `NetworkDefinition` and returns `Result<(), GraphError>`.
 
 ### TensorRT Layer API Usage
 

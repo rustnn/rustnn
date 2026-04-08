@@ -154,21 +154,11 @@ final_output_buffer.copy_to_host(output_bytes)?;
 
 ### 5. Weights Lifetime Management
 
-**Critical Requirement:** Constant weights passed to TensorRT must remain valid until engine serialization completes.
+**Context:** Some TensorRT APIs require weight bytes to stay valid until the engine is serialized.
 
-**Implementation:**
-```rust
-pub struct TrtxConverter {
-    temp_weights: Vec<Vec<u8>>,  // Keeps weights alive
-}
+**Current implementation:** `TrtxConverter` is a unit struct (no fields). The converter adds constants through trtx network helpers such as `add_constant`, `add_small_constant_copied`, and related layers; those APIs copy or retain data as required by the bindings. The converter does not keep an auxiliary host-side buffer for weight bytes.
 
-fn add_constant(&mut self, data: &[u8]) -> trtx::Weights {
-    let weight_data = data.to_vec();
-    self.temp_weights.push(weight_data);
-    let stable_ptr = self.temp_weights.last().unwrap().as_ptr();
-    trtx::Weights::new(stable_ptr, data.len(), data_type)
-}
-```
+**If you see invalid-weights-pointer errors:** Prefer APIs that copy host bytes into the network, and avoid handing TensorRT pointers to stack temporaries unless the API documents an immediate copy.
 
 ---
 
@@ -350,9 +340,8 @@ Segmentation fault
 ```
 
 **Solution:**
-- Store weights in `TrtxConverter::temp_weights`
-- Use stable pointers from stored `Vec<u8>`
-- Don't pass temporary stack arrays
+- Use `add_small_constant_copied` / `add_constant` (or equivalent) so weights are owned or copied by the network build path
+- Do not pass pointers to short-lived stack buffers into APIs that retain raw pointers without copying
 
 ---
 

@@ -392,11 +392,9 @@ impl TrtxConverter {
     }
 
     /// Build TensorRT network from WebNN graph.
-    /// `temp_weights` must be supplied by the caller and kept alive until engine serialization completes.
     fn build_network<'a>(
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
-        temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let promoted_constants: HashSet<u32> = HashSet::new();
@@ -527,7 +525,6 @@ impl TrtxConverter {
                 graph,
                 network,
                 &mut tensor_map,
-                temp_weights,
                 &promoted_constants,
                 &constants_stored_flat,
                 operation,
@@ -559,7 +556,6 @@ impl TrtxConverter {
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
-        temp_weights: &mut Vec<Vec<u8>>,
         promoted_constants: &HashSet<u32>,
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
@@ -628,7 +624,7 @@ impl TrtxConverter {
             "tanh" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kTANH)?
             }
-            "elu" => Self::add_elu_op(graph, network, tensor_map, operation, temp_weights)?,
+            "elu" => Self::add_elu_op(graph, network, tensor_map, operation)?,
             "softsign" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kSOFTSIGN)?
             }
@@ -638,16 +634,10 @@ impl TrtxConverter {
             "gelu" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kGELU_ERF)?
             }
-            "leakyRelu" => {
-                Self::add_leaky_relu_op(graph, network, tensor_map, operation, temp_weights)?
-            }
+            "leakyRelu" => Self::add_leaky_relu_op(graph, network, tensor_map, operation)?,
             "prelu" => Self::add_prelu_op(network, tensor_map, operation)?,
-            "hardSigmoid" => {
-                Self::add_hard_sigmoid_op(graph, network, tensor_map, operation, temp_weights)?
-            }
-            "hardSwish" => {
-                Self::add_hard_swish_op(graph, network, tensor_map, operation, temp_weights)?
-            }
+            "hardSigmoid" => Self::add_hard_sigmoid_op(graph, network, tensor_map, operation)?,
+            "hardSwish" => Self::add_hard_swish_op(graph, network, tensor_map, operation)?,
 
             // Unary mathematical operations (use IUnaryLayer)
             // Exponential and logarithmic
@@ -677,7 +667,6 @@ impl TrtxConverter {
                 graph,
                 network,
                 tensor_map,
-                temp_weights,
                 promoted_constants,
                 constants_stored_flat,
                 operation,
@@ -691,7 +680,7 @@ impl TrtxConverter {
 
             // Matrix operations
             "matmul" => Self::add_matmul_op(network, tensor_map, operation)?,
-            "gemm" => Self::add_gemm_op(graph, network, tensor_map, temp_weights, operation)?,
+            "gemm" => Self::add_gemm_op(graph, network, tensor_map, operation)?,
 
             // Convolution operations
             "conv2d" => Self::add_conv2d_op(graph, network, tensor_map, operation)?,
@@ -717,20 +706,12 @@ impl TrtxConverter {
             "batchNormalization" => {
                 Self::add_batch_normalization_op(graph, network, tensor_map, operation)?
             }
-            "instanceNormalization" => Self::add_instance_normalization_op(
-                graph,
-                network,
-                tensor_map,
-                operation,
-                temp_weights,
-            )?,
-            "layerNormalization" => Self::add_layer_normalization_op(
-                graph,
-                network,
-                tensor_map,
-                operation,
-                temp_weights,
-            )?,
+            "instanceNormalization" => {
+                Self::add_instance_normalization_op(graph, network, tensor_map, operation)?
+            }
+            "layerNormalization" => {
+                Self::add_layer_normalization_op(graph, network, tensor_map, operation)?
+            }
 
             // Reduction operations
             "reduceSum" => {
@@ -759,7 +740,7 @@ impl TrtxConverter {
             "split" => Self::add_split_op(network, tensor_map, operation)?,
             "squeeze" => Self::add_squeeze_op(network, tensor_map, operation)?,
             "unsqueeze" => Self::add_unsqueeze_op(network, tensor_map, operation)?,
-            "expand" => Self::add_expand_op(graph, network, tensor_map, operation, temp_weights)?,
+            "expand" => Self::add_expand_op(graph, network, tensor_map, operation)?,
             "tile" => Self::add_tile_op(network, tensor_map, operation)?,
 
             // Comparison operations (return Float32 with 0.0/1.0 values)
@@ -810,12 +791,10 @@ impl TrtxConverter {
                 operation,
                 ElementWiseOperation::kXOR,
             )?,
-            "logicalNot" => {
-                Self::add_logical_not_op(graph, network, tensor_map, operation, temp_weights)?
-            }
+            "logicalNot" => Self::add_logical_not_op(graph, network, tensor_map, operation)?,
 
             // Indexing/Gathering operations
-            "gather" => Self::add_gather_op(graph, network, tensor_map, operation, temp_weights)?,
+            "gather" => Self::add_gather_op(graph, network, tensor_map, operation)?,
             "gatherND" => Self::add_gather_nd_op(graph, network, tensor_map, operation)?,
             "scatterElements" => Self::add_scatter_elements_op(network, tensor_map, operation)?,
             "scatterND" => Self::add_scatter_nd_op(network, tensor_map, operation)?,
@@ -823,9 +802,9 @@ impl TrtxConverter {
             "argMin" => Self::add_arg_min_op(graph, network, tensor_map, operation)?,
 
             // Other operations
-            "clamp" => Self::add_clamp_op(graph, network, tensor_map, operation, temp_weights)?,
+            "clamp" => Self::add_clamp_op(graph, network, tensor_map, operation)?,
             "where" => Self::add_where_op(graph, network, tensor_map, operation)?,
-            "linear" => Self::add_linear_op(graph, network, tensor_map, operation, temp_weights)?,
+            "linear" => Self::add_linear_op(graph, network, tensor_map, operation)?,
             "pad" => Self::add_pad_op(graph, network, tensor_map, operation)?,
             "softmax" => Self::add_softmax_op(network, tensor_map, operation)?,
             "concat" => Self::add_concat_op(network, tensor_map, operation)?,
@@ -1434,7 +1413,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input_id = operation.input_operands()[0];
         let input = tensor_map
@@ -1559,7 +1537,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -1797,7 +1774,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -2029,7 +2005,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -2215,7 +2190,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -2415,7 +2389,6 @@ impl TrtxConverter {
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
-        _temp_weights: &mut Vec<Vec<u8>>,
         promoted_constants: &HashSet<u32>,
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
@@ -4432,7 +4405,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         // Instance normalization computes statistics per-instance (N, C) over spatial dims
         // Input operands: input, scale (optional), bias (optional)
@@ -4781,7 +4753,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         // Layer normalization computes statistics over specified axes
         // Input operands: input, scale (optional), bias (optional)
@@ -6279,7 +6250,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -6736,7 +6706,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -7479,7 +7448,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -7809,7 +7777,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
-        _temp_weights: &mut Vec<Vec<u8>>,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -8657,7 +8624,6 @@ impl TrtxConverter {
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
-        _temp_weights: &mut Vec<Vec<u8>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let a_id = operation.input_operands()[0];
@@ -12615,9 +12581,7 @@ impl GraphConverter for TrtxConverter {
                 reason: format!("Failed to create TensorRT network: {}", e),
             })?;
 
-        // Temporary weight buffers referenced by the network; must outlive `build_serialized_network`.
-        let mut temp_weights: Vec<Vec<u8>> = Vec::new();
-        Self::build_network(graph_info, &mut network, &mut temp_weights)?;
+        Self::build_network(graph_info, &mut network)?;
 
         // Create builder config
         let mut config = builder
