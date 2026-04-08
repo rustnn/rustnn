@@ -552,10 +552,10 @@ impl TrtxConverter {
     }
 
     /// Add a single operation to the network
-    fn add_operation<'a>(
-        graph: &'a GraphInfo,
-        network: &mut trtx::NetworkDefinition<'a>,
-        tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
+    fn add_operation<'network_definition>(
+        graph: &'network_definition GraphInfo,
+        network: &mut trtx::NetworkDefinition<'network_definition>,
+        tensor_map: &mut HashMap<u32, trtx::Tensor<'network_definition>>,
         promoted_constants: &HashSet<u32>,
         constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
@@ -634,10 +634,16 @@ impl TrtxConverter {
             "gelu" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kGELU_ERF)?
             }
-            "leakyRelu" => Self::add_leaky_relu_op(graph, network, tensor_map, operation)?,
+            "leakyRelu" => {
+                Self::add_leaky_relu_op(graph, network, tensor_map, operation)?
+            }
             "prelu" => Self::add_prelu_op(network, tensor_map, operation)?,
-            "hardSigmoid" => Self::add_hard_sigmoid_op(graph, network, tensor_map, operation)?,
-            "hardSwish" => Self::add_hard_swish_op(graph, network, tensor_map, operation)?,
+            "hardSigmoid" => {
+                Self::add_hard_sigmoid_op(graph, network, tensor_map, operation)?
+            }
+            "hardSwish" => {
+                Self::add_hard_swish_op(graph, network, tensor_map, operation)?
+            }
 
             // Unary mathematical operations (use IUnaryLayer)
             // Exponential and logarithmic
@@ -791,7 +797,9 @@ impl TrtxConverter {
                 operation,
                 ElementWiseOperation::kXOR,
             )?,
-            "logicalNot" => Self::add_logical_not_op(graph, network, tensor_map, operation)?,
+            "logicalNot" => {
+                Self::add_logical_not_op(graph, network, tensor_map, operation)?
+            }
 
             // Indexing/Gathering operations
             "gather" => Self::add_gather_op(graph, network, tensor_map, operation)?,
