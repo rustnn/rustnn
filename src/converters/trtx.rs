@@ -36,8 +36,9 @@ use crate::shape_inference::{
 };
 use trtx::{
     ActivationType, Axes, DataType as TrtDataType, ElementWiseOperation, MatrixOperation,
-    OwnedConvWeights, OwnedWeights, PaddingMode, PoolingType, ReduceOperation, ResizeMode,
-    ScatterMode, TopKOperation, UnaryOperation,
+    OwnedConvWeights, OwnedWeights, PaddingMode, PoolingType, ReduceOperation,
+    ResizeCoordinateTransformation, ResizeMode, ResizeRoundMode, ScatterMode, TopKOperation,
+    UnaryOperation,
 };
 use trtx::network::PoolingLayer;
 
@@ -836,7 +837,7 @@ impl TrtxConverter {
             "triangular" => Self::add_triangular_op(graph, network, tensor_map, operation)?,
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
-            "resample2d" => Self::add_resample2d_op(network, tensor_map, operation)?,
+            "resample2d" => Self::add_resample2d_op(graph, network, tensor_map, operation)?,
 
             // NOTE: RNN operations (lstm, lstmCell, gru, gruCell) deferred
             // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
@@ -10720,60 +10721,148 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add resample2d operation (resize/interpolate 2D tensor)
+    /// Add resample2d operation (resize/interpolate 2D tensor).
+    ///
+    /// WebNN: <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-resample2d-method>
+    /// Defaults per `MLResample2dOptions`: `axes` = [2, 3], `scales` = [1.0, 1.0] when omitted;
+    /// `sizes` (length 2) overrides `scales`.
     fn add_resample2d_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input = tensor_map
-            .get(&operation.input_operands()[0])
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands()[0]),
-            })?;
-
-        // Parse mode attribute (default to "nearest-neighbor")
-        let mode_str = operation
-            .attributes()
-            .get("mode")
-            .and_then(|v| v.as_str().map(String::from))
-            .unwrap_or_else(|| "nearest-neighbor".to_string());
-
-        // Map WebNN mode to TensorRT ResizeMode (typedef for InterpolationMode)
-        let resize_mode = match mode_str.as_str() {
-            "nearest-neighbor" => ResizeMode::kNEAREST,
-            "linear" => ResizeMode::kLINEAR,
-            _ => ResizeMode::kNEAREST, // Default to nearest
+        let (input_id, opts) = match operation {
+            Operation::Resample2d { input, options, .. } => {
+                (*input, options.clone().unwrap_or_default())
+            }
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "resample2d: expected Operation::Resample2d".to_string(),
+                });
+            }
         };
 
-        // Parse sizes from attributes (should be output spatial dimensions)
-        // WebNN resample2d uses [newHeight, newWidth]
-        let sizes = operation
-            .attributes()
-            .get("sizes")
-            .and_then(|v| v.as_array().cloned())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_i64().map(|i| i as i32))
-                    .collect::<Vec<i32>>()
-            })
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Missing sizes attribute for resample2d".to_string(),
-            })?;
+        let input = tensor_map.get(&input_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("resample2d: input operand {input_id} not found"),
+        })?;
 
-        if sizes.len() != 2 {
+        let input_operand = graph.operand(input_id).ok_or_else(|| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("resample2d: operand {input_id} missing from graph"),
+        })?;
+
+        let dims_trt = input
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("resample2d: input dimensions: {e}"),
+            })?;
+        let desc_shape: Vec<i64> = input_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|d| get_static_or_max_size(d) as i64)
+            .collect();
+
+        let rank = if !dims_trt.is_empty() {
+            dims_trt.len()
+        } else if !desc_shape.is_empty() {
+            desc_shape.len()
+        } else {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: "resample2d: cannot determine input rank".to_string(),
+            });
+        };
+
+        if rank != 4 {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!(
-                    "resample2d sizes must have 2 elements (height, width), got {}",
-                    sizes.len()
+                    "resample2d: WebNN requires a 4-D input tensor, got rank {rank}"
                 ),
             });
         }
 
-        // Create resize layer
+        let mut input_shape = vec![1_i64; rank];
+        for i in 0..rank {
+            let from_trt = dims_trt.get(i).copied().unwrap_or(0);
+            let from_desc = desc_shape.get(i).copied().unwrap_or(1);
+            input_shape[i] = if from_trt > 0 {
+                from_trt
+            } else {
+                from_desc.max(1)
+            };
+        }
+
+        let axes: Vec<usize> = if opts.axes.len() == 2 {
+            opts.axes.iter().map(|&a| a as usize).collect()
+        } else {
+            vec![2, 3]
+        };
+        if axes.len() != 2 || axes[0] >= rank || axes[1] >= rank || axes[0] == axes[1] {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "resample2d: axes must be two distinct valid indices for rank {rank}, got {:?}",
+                    opts.axes
+                ),
+            });
+        }
+
+        let spatial_sizes: Vec<i64> = if let Some(ref sizes) = opts.sizes {
+            if sizes.len() != 2 {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "resample2d: sizes must have length 2, got {:?}",
+                        sizes
+                    ),
+                });
+            }
+            sizes.iter().map(|&u| u as i64).collect()
+        } else {
+            let (s0, s1) = if opts.scales.is_empty() {
+                (1.0_f32, 1.0_f32)
+            } else if opts.scales.len() == 2 {
+                (opts.scales[0], opts.scales[1])
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "resample2d: scales must have length 2 or be omitted (default [1, 1]), got {:?}",
+                        opts.scales
+                    ),
+                });
+            };
+            vec![
+                (input_shape[axes[0]].max(1) as f64 * f64::from(s0))
+                    .round()
+                    .max(1.0) as i64,
+                (input_shape[axes[1]].max(1) as f64 * f64::from(s1))
+                    .round()
+                    .max(1.0) as i64,
+            ]
+        };
+
+        let mut output_dims = input_shape.clone();
+        output_dims[axes[0]] = spatial_sizes[0];
+        output_dims[axes[1]] = spatial_sizes[1];
+
+        let mode_norm = if opts.mode.is_empty() {
+            "nearest-neighbor".to_string()
+        } else {
+            opts.mode.to_ascii_lowercase()
+        };
+        let resize_mode = match mode_norm.as_str() {
+            "linear" => ResizeMode::kLINEAR,
+            "nearest-neighbor" | "nearest" => ResizeMode::kNEAREST,
+            _ => ResizeMode::kNEAREST,
+        };
+
         let mut layer = network
             .add_resize(input)
             .map_err(|e| GraphError::ConversionFailed {
@@ -10781,17 +10870,17 @@ impl TrtxConverter {
                 reason: format!("Failed to add resize layer: {}", e),
             })?;
 
-        // TensorRT expects full output dimensions [N, C, H, W]
-        // WebNN resample2d only specifies [H, W], so we need to preserve N and C
-        // For now, we'll assume 4D NCHW input and set full dimensions
-        // TODO: Get actual input dimensions to preserve N and C
-        let output_dims: Vec<i64> = vec![1, 1, sizes[0] as i64, sizes[1] as i64]; // Placeholder: [N=1, C=1, H, W]
-
-        // Set output dimensions
         layer.set_output_dimensions(network, &output_dims);
 
         // Set resize mode (uses ResizeMode typedef for InterpolationMode)
         layer.set_resize_mode(network, resize_mode);
+        // WebNN `resample2d` uses the half-pixel grid; TensorRT default is kASYMMETRIC.
+        layer.set_coordinate_transformation(network, ResizeCoordinateTransformation::kHALF_PIXEL);
+        // WebNN nearest: `ceil(coord - 0.5)` == `floor(coord + 0.5)` on the sampling grid; TRT default
+        // `kFLOOR` uses `floor(coord)` and mis-aligns upsampling (e.g. 2x nearest on float grid).
+        if resize_mode == ResizeMode::kNEAREST {
+            layer.set_nearest_rounding(network, ResizeRoundMode::kHALF_UP);
+        }
 
         let output = layer
             .get_output(&*network, 0)
