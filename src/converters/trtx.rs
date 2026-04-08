@@ -4727,7 +4727,7 @@ impl TrtxConverter {
                 _ => (0.0f32.to_le_bytes().to_vec(), TrtDataType::kFLOAT),
             };
             let zero_const = network
-                .add_small_constant_copied(&[1], &zero_bytes, zero_dtype)
+                .add_small_constant_copied(&[], &zero_bytes, zero_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("LayerNorm 0D: failed to add zero constant: {}", e),
@@ -4747,7 +4747,7 @@ impl TrtxConverter {
                             format: "trtx".to_string(),
                             reason: format!("Bias operand {} not found", bias_id),
                         })?;
-                // Bias may be scalar; broadcast to result shape [1] so ElementWise accepts same dims.
+                // Bias may be [1] or scalar; reshape to rank-0 so output matches WebNN 0D (see quantizeLinear scalar shuffle).
                 let mut bias_shuffle =
                     network
                         .add_shuffle(bias)
@@ -4756,7 +4756,7 @@ impl TrtxConverter {
                             reason: format!("LayerNorm 0D: failed to add bias shuffle: {}", e),
                         })?;
                 bias_shuffle
-                    .set_reshape_dimensions(network, &[1i64])
+                    .set_reshape_dimensions(network, &[])
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("LayerNorm 0D: failed to set bias reshape: {}", e),
