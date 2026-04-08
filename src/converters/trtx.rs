@@ -10984,9 +10984,38 @@ impl TrtxConverter {
                     reason: format!("Failed to get ABS output: {}", e),
                 })?;
 
-        let inf_bytes = f32::INFINITY.to_le_bytes();
+        // Infinity constant must match `abs` tensor rank. `[1]` is rank-1; 0D scalars use `abs` rank 0
+        // and TRT rejects elementwise `[]` vs `[1]` (no broadcast between those ranks).
+        let abs_rank = abs_output
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("isInfinite: abs output dimensions: {e}"),
+            })?
+            .len();
+        let inf_dims: Vec<i64> = vec![1i64; abs_rank];
+        let abs_trt_type = abs_output.get_type(&*network);
+        let (inf_bytes, inf_trt_dtype) = match abs_trt_type {
+            TrtDataType::kHALF => (
+                f16::from_f32(f32::INFINITY)
+                    .to_bits()
+                    .to_le_bytes()
+                    .to_vec(),
+                TrtDataType::kHALF,
+            ),
+            TrtDataType::kFLOAT => (f32::INFINITY.to_le_bytes().to_vec(), TrtDataType::kFLOAT),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "isInfinite: expected float16 or float32 abs tensor, got TRT dtype id {:?}",
+                        abs_trt_type
+                    ),
+                });
+            }
+        };
         let inf_constant = network
-            .add_small_constant_copied(&[1], inf_bytes.as_slice(), TrtDataType::kFLOAT)
+            .add_small_constant_copied(&inf_dims, inf_bytes.as_slice(), inf_trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create infinity constant: {}", e),
