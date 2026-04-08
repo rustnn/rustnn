@@ -830,7 +830,7 @@ impl TrtxConverter {
             "isNaN" => Self::add_is_nan_op(network, tensor_map, operation)?,
             "isInfinite" => Self::add_is_infinite_op(network, tensor_map, operation)?,
             "roundEven" => Self::add_round_even_op(network, tensor_map, operation)?,
-            "gatherElements" => Self::add_gather_elements_op(network, tensor_map, operation)?,
+            "gatherElements" => Self::add_gather_elements_op(graph, network, tensor_map, operation)?,
             "l2Pool2d" => Self::add_l2_pool2d_op(graph, network, tensor_map, operation)?,
             "reverse" => Self::add_reverse_op(graph, network, tensor_map, operation)?,
             "cumulativeSum" => Self::add_cumulative_sum_op(graph, network, tensor_map, operation)?,
@@ -11088,8 +11088,11 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add gatherElements operation (gather using index tensor along axis)
+    /// Add gatherElements operation (gather using index tensor along axis).
+    /// Clamps indices to `[-dim_size, dim_size - 1]` on the gather axis (WebNN / WPT), matching
+    /// [`add_gather_op`]: TensorRT Gather otherwise returns 0 for out-of-range indices.
     fn add_gather_elements_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -11111,22 +11114,128 @@ impl TrtxConverter {
                 ),
             })?;
 
-        // Get axis parameter (default to 0)
         let axis = operation
             .attributes()
             .as_gather()
             .map(|o| o.axis as i32)
             .unwrap_or(0);
 
-        // Create gather layer with ELEMENT mode
+        let data_operand = graph
+            .operand(operation.input_operands()[0])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherElements: data operand {} not in graph",
+                    operation.input_operands()[0]
+                ),
+            })?;
+        let axis_usize = axis as usize;
+        if axis_usize >= data_operand.descriptor.shape.len() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherElements axis {} out of bounds for rank {}",
+                    axis,
+                    data_operand.descriptor.shape.len()
+                ),
+            });
+        }
+        let dim_size = get_static_or_max_size(&data_operand.descriptor.shape[axis_usize]) as i32;
+
+        let indices_operand = graph
+            .operand(operation.input_operands()[1])
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "gatherElements: indices operand {} not in graph",
+                    operation.input_operands()[1]
+                ),
+            })?;
+        let indices_shape: Vec<i32> = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|d| get_static_or_max_size(d) as i32)
+            .collect();
+        let indices_shape_i64: Vec<i64> = indices_shape.iter().map(|&d| d as i64).collect();
+
+        let clamp_min_val = -dim_size;
+        let clamp_max_val = dim_size - 1;
+        let num_elements: usize = indices_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(get_static_or_max_size)
+            .product::<u32>() as usize;
+        let min_data: Vec<u8> = (0..num_elements)
+            .flat_map(|_| clamp_min_val.to_le_bytes())
+            .collect();
+        let max_data: Vec<u8> = (0..num_elements)
+            .flat_map(|_| clamp_max_val.to_le_bytes())
+            .collect();
+        let min_const = network
+            .add_small_constant_copied(&indices_shape_i64, &min_data, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamp min constant: {}", e),
+            })?;
+        let max_const = network
+            .add_small_constant_copied(&indices_shape_i64, &max_data, trtx::DataType::kINT32)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamp max constant: {}", e),
+            })?;
+
+        let min_const_out = min_const
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamp min output: {}", e),
+            })?;
+        let max_const_out = max_const
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamp max output: {}", e),
+            })?;
+
+        let clamped_upper = network
+            .add_elementwise(indices_tensor, &max_const_out, ElementWiseOperation::kMIN)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: indices clamp (min upper): {}", e),
+            })?;
+        let clamped_upper_out = clamped_upper
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamp upper output: {}", e),
+            })?;
+
+        let clamped = network
+            .add_elementwise(
+                &min_const_out,
+                &clamped_upper_out,
+                ElementWiseOperation::kMAX,
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: indices clamp (max lower): {}", e),
+            })?;
+        let clamped_indices = clamped
+            .get_output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("gatherElements: clamped indices output: {}", e),
+            })?;
+
         let mut layer = network
-            .add_gather(data_tensor, indices_tensor, axis)
+            .add_gather(data_tensor, &clamped_indices, axis)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create gather layer: {}", e),
             })?;
 
-        // Set gather mode to ELEMENT
         layer.set_gather_mode(network, trtx::GatherMode::kELEMENT);
 
         let output = layer
