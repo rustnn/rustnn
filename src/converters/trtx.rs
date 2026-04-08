@@ -1961,9 +1961,11 @@ impl TrtxConverter {
                     reason: format!("Failed to get negative part: {}", e),
                 })?;
 
-        // slope * min(0, x)
+        // slope * min(0, x) — TRT requires same rank for elementwise; reshape slope with leading 1s (WebNN broadcast).
+        let (neg_bc, slope_bc) =
+            Self::ensure_broadcast_compatible(network, &neg_part, slope, "prelu_slope")?;
         let scaled_neg_layer = network
-            .add_elementwise(&neg_part, slope, ElementWiseOperation::kPROD)
+            .add_elementwise(&neg_bc, &slope_bc, ElementWiseOperation::kPROD)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to scale negative part: {}", e),
