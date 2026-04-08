@@ -1,6 +1,6 @@
 //! Shared pool2d helpers for ONNX, TensorRT, and shape inference.
 
-use crate::graph::{get_static_or_max_size, GraphInfo};
+use crate::graph::{GraphInfo, get_static_or_max_size};
 use crate::operators::Operation;
 
 /// Map WebNN [`output_sizes`](crate::operator_options::MLPool2dOptions::output_sizes) to ONNX `ceil_mode`

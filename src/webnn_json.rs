@@ -894,7 +894,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     } else {
                         None
                     }
-                },
+                }
 
                 // For other operations, leave shape empty (will be handled later or is dynamic)
                 _ => None,

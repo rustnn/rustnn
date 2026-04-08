@@ -507,17 +507,19 @@ pub fn run_one_test_case_trtx(
             .iter()
             .copied()
             .find(|&id| {
-                graph_info
-                    .operand(id)
-                    .and_then(|o| o.name.as_deref())
-                    == Some(out_name.as_str())
+                graph_info.operand(id).and_then(|o| o.name.as_deref()) == Some(out_name.as_str())
             })
             .ok_or_else(|| format!("output operand '{}' not in graph_info", out_name))?;
         let trt_out_name = TrtxConverter::engine_binding_name(out_op_id);
         let actual = outputs
             .iter()
             .find(|o| o.name == trt_out_name)
-            .ok_or_else(|| format!("output '{}' (TRT {}) not found in results", out_name, trt_out_name))?;
+            .ok_or_else(|| {
+                format!(
+                    "output '{}' (TRT {}) not found in results",
+                    out_name, trt_out_name
+                )
+            })?;
 
         let (pass, msg, expected_str, actual_str) = match expected_spec.data_type() {
             "int64" => {

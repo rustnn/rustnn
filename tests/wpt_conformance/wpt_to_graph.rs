@@ -20,13 +20,13 @@
 //! Operations are built with [`rustnn::operators::Operation::from_json_attributes`]: one JSON attributes
 //! object per op (WebNN camelCase names) plus operand wiring.
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+use rustnn::converters::TrtxConverter;
 use rustnn::graph::{
     ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
     get_static_or_max_size, to_dimension_vector,
 };
 use rustnn::operators::Operation;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::converters::TrtxConverter;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::{OnnxInput, TensorData};
 use std::collections::HashMap;

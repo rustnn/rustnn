@@ -7,6 +7,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Parser;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+use rustnn::converters::TrtxConverter;
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
@@ -18,11 +20,7 @@ use rustnn::graph::get_static_or_max_size;
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime"
 ))]
-use rustnn::{
-    ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path,
-};
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::converters::TrtxConverter;
+use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Validate WebNN graph descriptions", long_about = None)]
@@ -223,12 +221,13 @@ fn run() -> Result<(), GraphError> {
             let inputs: Vec<rustnn::TrtxInput> = if converted.format == "trtx" {
                 let mut v = Vec::with_capacity(graph.input_operands.len());
                 for &op_id in &graph.input_operands {
-                    let logical = graph.operand(op_id).and_then(|o| o.name.as_deref()).ok_or_else(
-                        || GraphError::ConversionFailed {
+                    let logical = graph
+                        .operand(op_id)
+                        .and_then(|o| o.name.as_deref())
+                        .ok_or_else(|| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!("input operand {op_id} has no name"),
-                        },
-                    )?;
+                        })?;
                     let desc = artifacts
                         .input_names_to_descriptors
                         .get(logical)
