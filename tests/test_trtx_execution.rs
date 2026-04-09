@@ -197,8 +197,8 @@ mod tests {
 
         // Create TensorRT runtime
         let logger = Logger::stderr()?;
-        let runtime = Runtime::new(&logger)?;
-        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
@@ -281,8 +281,8 @@ mod tests {
 
         // Create TensorRT runtime
         let logger = Logger::stderr()?;
-        let runtime = Runtime::new(&logger)?;
-        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
@@ -354,8 +354,8 @@ mod tests {
 
         // Create TensorRT runtime
         let logger = Logger::stderr()?;
-        let runtime = Runtime::new(&logger)?;
-        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
@@ -906,8 +906,8 @@ mod tests {
 
         // Create TensorRT runtime
         let logger = Logger::stderr()?;
-        let runtime = Runtime::new(&logger)?;
-        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
@@ -1126,8 +1126,8 @@ mod tests {
 
         // Create TensorRT runtime
         let logger = Logger::stderr()?;
-        let runtime = Runtime::new(&logger)?;
-        let engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
