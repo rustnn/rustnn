@@ -634,16 +634,10 @@ impl TrtxConverter {
             "gelu" => {
                 Self::add_activation_op(network, tensor_map, operation, ActivationType::kGELU_ERF)?
             }
-            "leakyRelu" => {
-                Self::add_leaky_relu_op(graph, network, tensor_map, operation)?
-            }
+            "leakyRelu" => Self::add_leaky_relu_op(graph, network, tensor_map, operation)?,
             "prelu" => Self::add_prelu_op(network, tensor_map, operation)?,
-            "hardSigmoid" => {
-                Self::add_hard_sigmoid_op(graph, network, tensor_map, operation)?
-            }
-            "hardSwish" => {
-                Self::add_hard_swish_op(graph, network, tensor_map, operation)?
-            }
+            "hardSigmoid" => Self::add_hard_sigmoid_op(graph, network, tensor_map, operation)?,
+            "hardSwish" => Self::add_hard_swish_op(graph, network, tensor_map, operation)?,
 
             // Unary mathematical operations (use IUnaryLayer)
             // Exponential and logarithmic
@@ -797,9 +791,7 @@ impl TrtxConverter {
                 operation,
                 ElementWiseOperation::kXOR,
             )?,
-            "logicalNot" => {
-                Self::add_logical_not_op(graph, network, tensor_map, operation)?
-            }
+            "logicalNot" => Self::add_logical_not_op(graph, network, tensor_map, operation)?,
 
             // Indexing/Gathering operations
             "gather" => Self::add_gather_op(graph, network, tensor_map, operation)?,
