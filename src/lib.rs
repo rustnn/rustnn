@@ -112,6 +112,7 @@ pub mod executors;
 pub mod graph;
 mod graph_recorder;
 pub mod graphviz;
+pub mod limits;
 pub mod loader;
 pub mod mlcontext;
 pub mod mlcontextoptions;
