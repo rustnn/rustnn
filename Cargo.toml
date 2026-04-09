@@ -41,7 +41,7 @@ objc = { version = "0.2", optional = true }
 ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half", "load-dynamic"] }
 tokenizers = { version = "0.22", optional = true }
 half = "2.4"
-trtx = { version = "0.3.1", optional = true }
+trtx = { version = "0.4.0", optional = true }
 regex = "1.11"
 webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
