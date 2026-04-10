@@ -4,6 +4,7 @@ use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
 mod coreml_mlprogram;
+#[cfg(feature = "onnx-converter")]
 pub mod onnx;
 mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
@@ -11,6 +12,7 @@ mod trtx;
 mod weight_file_builder;
 
 pub use coreml_mlprogram::CoremlMlProgramConverter;
+#[cfg(feature = "onnx-converter")]
 pub use onnx::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use trtx::TrtxConverter;
@@ -50,6 +52,7 @@ impl ConverterRegistry {
         let mut registry = Self {
             converters: HashMap::new(),
         };
+        #[cfg(feature = "onnx-converter")]
         registry.register(Box::new(OnnxConverter));
         registry.register(Box::new(CoremlMlProgramConverter));
         #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
