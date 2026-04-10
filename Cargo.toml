@@ -20,8 +20,11 @@ exclude = [
 [features]
 default = ["onnx-converter"]
 dynamic-inputs = []
-coreml-runtime = ["objc"]
+
 onnx-converter = ["webnn-onnx-utils"]
+coreml-converter = []
+
+coreml-runtime = ["coreml-converter", "objc"]
 onnx-runtime = ["ort", "ndarray", "tokenizers", "onnx-converter"]
 trtx-runtime = ["trtx"]
 trtx-runtime-mock = ["trtx/mock"]

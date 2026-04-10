@@ -3,19 +3,24 @@ use std::collections::HashMap;
 use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
+#[cfg(feature = "coreml-converter")]
 mod coreml_mlprogram;
 #[cfg(feature = "onnx-converter")]
 pub mod onnx;
 mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
+#[cfg(feature = "coreml-converter")]
 mod weight_file_builder;
 
+#[cfg(feature = "coreml-converter")]
 pub use coreml_mlprogram::CoremlMlProgramConverter;
 #[cfg(feature = "onnx-converter")]
 pub use onnx::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use trtx::TrtxConverter;
+
+#[cfg(feature = "coreml-converter")]
 pub(crate) use weight_file_builder::WeightFileBuilder;
 
 /// Get operand name for an operand ID, or generate a default name
@@ -54,6 +59,7 @@ impl ConverterRegistry {
         };
         #[cfg(feature = "onnx-converter")]
         registry.register(Box::new(OnnxConverter));
+        #[cfg(feature = "coreml-converter")]
         registry.register(Box::new(CoremlMlProgramConverter));
         #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
         registry.register(Box::new(TrtxConverter::new()));
