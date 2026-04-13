@@ -1,6 +1,7 @@
 /// Shape inference and validation for WebNN operations
 use crate::error::GraphError;
 use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size, to_dimension_vector};
+use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};
 
 /// Compute the broadcasted shape for two operands following NumPy broadcasting rules
 ///
@@ -222,7 +223,7 @@ pub fn validate_reshape(input_shape: &[u32], output_shape: &[u32]) -> Result<(),
 
 /// Layout for conv2d input tensors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Conv2dInputLayout {
+pub enum InputLayout {
     /// Channels-first: [batch, channels, height, width]
     Nchw,
     /// Channels-last: [batch, height, width, channels]
@@ -242,24 +243,75 @@ pub enum Conv2dFilterLayout {
     Ihwo,
 }
 
-/// Parameters for conv2d shape inference
-pub struct Conv2dOptions {
-    pub strides: Vec<u32>,
-    pub dilations: Vec<u32>,
-    pub pads: Vec<u32>,
-    pub groups: u32,
-    pub input_layout: Conv2dInputLayout,
-    pub filter_layout: Conv2dFilterLayout,
+fn conv2d_input_layout_from_options(layout: &str) -> InputLayout {
+    if layout.eq_ignore_ascii_case("nhwc") {
+        InputLayout::Nhwc
+    } else {
+        InputLayout::Nchw
+    }
+}
+
+fn conv2d_filter_layout_from_options(layout: &str) -> Conv2dFilterLayout {
+    if layout.eq_ignore_ascii_case("hwio") {
+        Conv2dFilterLayout::Hwio
+    } else if layout.eq_ignore_ascii_case("ohwi") {
+        Conv2dFilterLayout::Ohwi
+    } else if layout.eq_ignore_ascii_case("ihwo") {
+        Conv2dFilterLayout::Ihwo
+    } else {
+        Conv2dFilterLayout::Oihw
+    }
+}
+
+/// `(filter_in_channels, out_channels_per_group, kernel_h, kernel_w)` for convTranspose2d.
+///
+/// WebNN `filterLayout`: `"iohw"` (default), `"ohwi"`, `"hwoi"`. Also accepts `"oihw"` / `"hwio"`
+/// for the same mapping as the historical `Conv2dFilterLayout` transpose paths.
+fn conv_transpose_filter_dims_from_layout(
+    layout: &str,
+    filter_shape: &[u32],
+) -> Result<(u32, u32, u32, u32), GraphError> {
+    if filter_shape.len() != 4 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "ConvTranspose2d filter must be 4D, got shape {:?}",
+                filter_shape
+            ),
+        });
+    }
+    let f = filter_shape;
+    if layout.eq_ignore_ascii_case("iohw") || layout.is_empty() {
+        return Ok((f[0], f[1], f[2], f[3]));
+    }
+    if layout.eq_ignore_ascii_case("ohwi") {
+        return Ok((f[3], f[0], f[1], f[2]));
+    }
+    if layout.eq_ignore_ascii_case("hwoi") {
+        return Ok((f[3], f[2], f[0], f[1]));
+    }
+    if layout.eq_ignore_ascii_case("oihw") || layout.eq_ignore_ascii_case("hwio") {
+        return Ok((f[1], f[0], f[2], f[3]));
+    }
+    Err(GraphError::ShapeInferenceFailed {
+        reason: format!(
+            "ConvTranspose2d unknown filter_layout {:?} (expected iohw, ohwi, hwoi)",
+            layout
+        ),
+    })
 }
 
 /// Infer output shape for 2D convolution
 ///
 /// Following the W3C WebNN specification for conv2d:
 /// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d
+///
+/// Uses [`MLConv2dOptions`]. `padding` is WebNN order:
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// Empty `strides` / `dilations` default to `[1, 1]`; empty `padding` defaults to zeros.
 pub fn infer_conv2d_shape(
     input_shape: &[u32],
     filter_shape: &[u32],
-    options: &Conv2dOptions,
+    options: &MLConv2dOptions,
 ) -> Result<Vec<u32>, GraphError> {
     // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
     if input_shape.len() != 4 {
@@ -275,15 +327,18 @@ pub fn infer_conv2d_shape(
         });
     }
 
+    let input_layout = conv2d_input_layout_from_options(&options.input_layout);
+    let filter_layout = conv2d_filter_layout_from_options(&options.filter_layout);
+
     // Extract dimensions based on layout
-    let (batch, in_channels, input_h, input_w) = match options.input_layout {
-        Conv2dInputLayout::Nchw => (
+    let (batch, in_channels, input_h, input_w) = match input_layout {
+        InputLayout::Nchw => (
             input_shape[0],
             input_shape[1],
             input_shape[2],
             input_shape[3],
         ),
-        Conv2dInputLayout::Nhwc => (
+        InputLayout::Nhwc => (
             input_shape[0],
             input_shape[3],
             input_shape[1],
@@ -291,7 +346,7 @@ pub fn infer_conv2d_shape(
         ),
     };
 
-    let (out_channels, filter_in_channels, kernel_h, kernel_w) = match options.filter_layout {
+    let (out_channels, filter_in_channels, kernel_h, kernel_w) = match filter_layout {
         Conv2dFilterLayout::Oihw => (
             filter_shape[0],
             filter_shape[1],
@@ -343,17 +398,18 @@ pub fn infer_conv2d_shape(
         });
     }
 
-    // Validate strides
-    if options.strides.len() != 2 {
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "Conv2d strides must have 2 elements, got {:?}",
+                "Conv2d strides must have 2 elements when set, got {:?}",
                 options.strides
             ),
         });
-    }
-    let stride_h = options.strides[0];
-    let stride_w = options.strides[1];
+    };
 
     if stride_h == 0 || stride_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -361,17 +417,18 @@ pub fn infer_conv2d_shape(
         });
     }
 
-    // Validate dilations
-    if options.dilations.len() != 2 {
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "Conv2d dilations must have 2 elements, got {:?}",
+                "Conv2d dilations must have 2 elements when set, got {:?}",
                 options.dilations
             ),
         });
-    }
-    let dilation_h = options.dilations[0];
-    let dilation_w = options.dilations[1];
+    };
 
     if dilation_h == 0 || dilation_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -379,16 +436,23 @@ pub fn infer_conv2d_shape(
         });
     }
 
-    // Validate pads
-    if options.pads.len() != 4 {
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else if options.padding.is_empty() {
+        (0, 0, 0, 0)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
-            reason: format!("Conv2d pads must have 4 elements, got {:?}", options.pads),
+            reason: format!(
+                "Conv2d padding must have 4 elements or be empty (default zeros), got {:?}",
+                options.padding
+            ),
         });
-    }
-    let pad_begin_h = options.pads[0];
-    let pad_begin_w = options.pads[1];
-    let pad_end_h = options.pads[2];
-    let pad_end_w = options.pads[3];
+    };
 
     // Compute effective kernel size with dilation
     let effective_kernel_h = dilation_h * (kernel_h - 1) + 1;
@@ -412,34 +476,26 @@ pub fn infer_conv2d_shape(
     let output_w = (padded_w - effective_kernel_w) / stride_w + 1;
 
     // Build output shape based on input layout
-    let output_shape = match options.input_layout {
-        Conv2dInputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
-        Conv2dInputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
+    let output_shape = match input_layout {
+        InputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
     };
 
     Ok(output_shape)
-}
-
-/// Parameters for convTranspose2d shape inference
-pub struct ConvTranspose2dOptions {
-    pub strides: Vec<u32>,
-    pub dilations: Vec<u32>,
-    pub pads: Vec<u32>,
-    pub output_padding: Vec<u32>,
-    pub output_sizes: Option<Vec<u32>>,
-    pub groups: u32,
-    pub input_layout: Conv2dInputLayout,
-    pub filter_layout: Conv2dFilterLayout,
 }
 
 /// Infer output shape for 2D transposed convolution (deconvolution)
 ///
 /// Following the W3C WebNN specification for convTranspose2d:
 /// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d
+///
+/// Uses [`MLConvTranspose2dOptions`]. `padding` is WebNN order:
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// Empty `strides` / `dilations` default to `[1, 1]`; empty `padding` and `output_padding` default to zeros.
 pub fn infer_conv_transpose2d_shape(
     input_shape: &[u32],
     filter_shape: &[u32],
-    options: &ConvTranspose2dOptions,
+    options: &MLConvTranspose2dOptions,
 ) -> Result<Vec<u32>, GraphError> {
     // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
     if input_shape.len() != 4 {
@@ -461,15 +517,17 @@ pub fn infer_conv_transpose2d_shape(
         });
     }
 
+    let input_layout = conv2d_input_layout_from_options(&options.input_layout);
+
     // Extract dimensions based on layout
-    let (batch, in_channels, input_h, input_w) = match options.input_layout {
-        Conv2dInputLayout::Nchw => (
+    let (batch, in_channels, input_h, input_w) = match input_layout {
+        InputLayout::Nchw => (
             input_shape[0],
             input_shape[1],
             input_shape[2],
             input_shape[3],
         ),
-        Conv2dInputLayout::Nhwc => (
+        InputLayout::Nhwc => (
             input_shape[0],
             input_shape[3],
             input_shape[1],
@@ -477,47 +535,8 @@ pub fn infer_conv_transpose2d_shape(
         ),
     };
 
-    // For transposed convolution, filter layout interpretation is different from conv2d
-    // The enum values are reused but reinterpreted to match convTranspose2d semantics
     let (filter_in_channels, out_channels_per_group, kernel_h, kernel_w) =
-        match options.filter_layout {
-            Conv2dFilterLayout::Oihw => {
-                // WebNN "iohw" layout: [in_channels, out_channels/groups, h, w]
-                (
-                    filter_shape[0],
-                    filter_shape[1],
-                    filter_shape[2],
-                    filter_shape[3],
-                )
-            }
-            Conv2dFilterLayout::Hwio => {
-                // WebNN "oihw" layout: [out_channels/groups, in_channels, h, w]
-                (
-                    filter_shape[1],
-                    filter_shape[0],
-                    filter_shape[2],
-                    filter_shape[3],
-                )
-            }
-            Conv2dFilterLayout::Ohwi => {
-                // WebNN "ohwi" layout: [out_channels/groups, h, w, in_channels]
-                (
-                    filter_shape[3],
-                    filter_shape[0],
-                    filter_shape[1],
-                    filter_shape[2],
-                )
-            }
-            Conv2dFilterLayout::Ihwo => {
-                // WebNN "hwoi" layout: [h, w, out_channels/groups, in_channels]
-                (
-                    filter_shape[3],
-                    filter_shape[2],
-                    filter_shape[0],
-                    filter_shape[1],
-                )
-            }
-        };
+        conv_transpose_filter_dims_from_layout(&options.filter_layout, filter_shape)?;
 
     // Validate groups
     if options.groups == 0 {
@@ -546,17 +565,18 @@ pub fn infer_conv_transpose2d_shape(
 
     let out_channels = out_channels_per_group * options.groups;
 
-    // Validate strides
-    if options.strides.len() != 2 {
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "ConvTranspose2d strides must have 2 elements, got {:?}",
+                "ConvTranspose2d strides must have 2 elements when set, got {:?}",
                 options.strides
             ),
         });
-    }
-    let stride_h = options.strides[0];
-    let stride_w = options.strides[1];
+    };
 
     if stride_h == 0 || stride_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -564,17 +584,18 @@ pub fn infer_conv_transpose2d_shape(
         });
     }
 
-    // Validate dilations
-    if options.dilations.len() != 2 {
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "ConvTranspose2d dilations must have 2 elements, got {:?}",
+                "ConvTranspose2d dilations must have 2 elements when set, got {:?}",
                 options.dilations
             ),
         });
-    }
-    let dilation_h = options.dilations[0];
-    let dilation_w = options.dilations[1];
+    };
 
     if dilation_h == 0 || dilation_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -582,31 +603,36 @@ pub fn infer_conv_transpose2d_shape(
         });
     }
 
-    // Validate pads
-    if options.pads.len() != 4 {
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else if options.padding.is_empty() {
+        (0, 0, 0, 0)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "ConvTranspose2d pads must have 4 elements, got {:?}",
-                options.pads
+                "ConvTranspose2d padding must have 4 elements or be empty (default zeros), got {:?}",
+                options.padding
             ),
         });
-    }
-    let pad_begin_h = options.pads[0];
-    let pad_begin_w = options.pads[1];
-    let pad_end_h = options.pads[2];
-    let pad_end_w = options.pads[3];
+    };
 
-    // Validate output_padding
-    if options.output_padding.len() != 2 {
+    let (output_pad_h, output_pad_w) = if options.output_padding.len() >= 2 {
+        (options.output_padding[0], options.output_padding[1])
+    } else if options.output_padding.is_empty() {
+        (0u32, 0u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "ConvTranspose2d output_padding must have 2 elements, got {:?}",
+                "ConvTranspose2d output_padding must have 2 elements when set, got {:?}",
                 options.output_padding
             ),
         });
-    }
-    let output_pad_h = options.output_padding[0];
-    let output_pad_w = options.output_padding[1];
+    };
 
     // Compute effective kernel size with dilation
     let effective_kernel_h = dilation_h * (kernel_h - 1) + 1;
@@ -636,34 +662,38 @@ pub fn infer_conv_transpose2d_shape(
     };
 
     // Build output shape based on input layout
-    let output_shape = match options.input_layout {
-        Conv2dInputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
-        Conv2dInputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
+    let output_shape = match input_layout {
+        InputLayout::Nchw => vec![batch, out_channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, out_channels],
     };
 
     Ok(output_shape)
 }
 
-/// Parameters for pool2d shape inference.
-///
-/// `pads` is WebNN order: `[beginning_height, ending_height, beginning_width, ending_width]`.
-pub struct Pool2dOptions {
-    pub window_dimensions: Vec<u32>,
-    pub strides: Vec<u32>,
-    pub dilations: Vec<u32>,
-    pub pads: Vec<u32>,
-    pub layout: Conv2dInputLayout,
-    /// When true, match WebNN `outputShapeRounding` `"ceil"` / ONNX `ceil_mode` (round spatial span up).
-    pub ceil_output_spatial: bool,
+fn pool2d_layout_from_options(layout: &str) -> InputLayout {
+    if layout.eq_ignore_ascii_case("nhwc") {
+        InputLayout::Nhwc
+    } else {
+        InputLayout::Nchw
+    }
+}
+
+fn pool2d_ceil_output_spatial(output_shape_rounding: &str) -> bool {
+    output_shape_rounding.eq_ignore_ascii_case("ceil")
 }
 
 /// Infer output shape for 2D pooling operations (average, max)
 ///
 /// Following the W3C WebNN specification for pool2d:
 /// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d
+///
+/// Uses [`MLPool2dOptions`]: `padding` is WebNN order
+/// `[beginning_height, ending_height, beginning_width, ending_width]`.
+/// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
+/// `output_shape_rounding` is ignored.
 pub fn infer_pool2d_shape(
     input_shape: &[u32],
-    options: &Pool2dOptions,
+    options: &MLPool2dOptions,
 ) -> Result<Vec<u32>, GraphError> {
     // Input must be 4D: [batch, channels, height, width] or [batch, height, width, channels]
     if input_shape.len() != 4 {
@@ -672,15 +702,17 @@ pub fn infer_pool2d_shape(
         });
     }
 
+    let layout_enum = pool2d_layout_from_options(&options.layout);
+
     // Extract dimensions based on layout
-    let (batch, channels, input_h, input_w) = match options.layout {
-        Conv2dInputLayout::Nchw => (
+    let (batch, channels, input_h, input_w) = match layout_enum {
+        InputLayout::Nchw => (
             input_shape[0],
             input_shape[1],
             input_shape[2],
             input_shape[3],
         ),
-        Conv2dInputLayout::Nhwc => (
+        InputLayout::Nhwc => (
             input_shape[0],
             input_shape[3],
             input_shape[1],
@@ -688,17 +720,33 @@ pub fn infer_pool2d_shape(
         ),
     };
 
-    // Validate window dimensions
-    if options.window_dimensions.len() != 2 {
-        return Err(GraphError::ShapeInferenceFailed {
-            reason: format!(
-                "Pool2d window_dimensions must have 2 elements, got {:?}",
-                options.window_dimensions
-            ),
-        });
+    if let Some(sizes) = options.output_sizes.as_ref() {
+        if sizes.len() >= 2 {
+            let oh = sizes[0];
+            let ow = sizes[1];
+            let output_shape = match layout_enum {
+                InputLayout::Nchw => vec![batch, channels, oh, ow],
+                InputLayout::Nhwc => vec![batch, oh, ow, channels],
+            };
+            return Ok(output_shape);
+        }
     }
-    let window_h = options.window_dimensions[0];
-    let window_w = options.window_dimensions[1];
+
+    let ceil_output_spatial = pool2d_ceil_output_spatial(&options.output_shape_rounding);
+
+    // Validate window dimensions (default: full spatial size per WebNN)
+    let (window_h, window_w) = match options.window_dimensions.as_ref() {
+        Some(w) if w.len() == 2 => (w[0], w[1]),
+        Some(w) => {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!(
+                    "Pool2d window_dimensions must have 2 elements when set, got {:?}",
+                    w
+                ),
+            });
+        }
+        None => (input_h, input_w),
+    };
 
     if window_h == 0 || window_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -706,17 +754,18 @@ pub fn infer_pool2d_shape(
         });
     }
 
-    // Validate strides
-    if options.strides.len() != 2 {
+    let (stride_h, stride_w) = if options.strides.len() >= 2 {
+        (options.strides[0], options.strides[1])
+    } else if options.strides.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "Pool2d strides must have 2 elements, got {:?}",
+                "Pool2d strides must have 2 elements when set, got {:?}",
                 options.strides
             ),
         });
-    }
-    let stride_h = options.strides[0];
-    let stride_w = options.strides[1];
+    };
 
     if stride_h == 0 || stride_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -724,17 +773,18 @@ pub fn infer_pool2d_shape(
         });
     }
 
-    // Validate dilations
-    if options.dilations.len() != 2 {
+    let (dilation_h, dilation_w) = if options.dilations.len() >= 2 {
+        (options.dilations[0], options.dilations[1])
+    } else if options.dilations.is_empty() {
+        (1u32, 1u32)
+    } else {
         return Err(GraphError::ShapeInferenceFailed {
             reason: format!(
-                "Pool2d dilations must have 2 elements, got {:?}",
+                "Pool2d dilations must have 2 elements when set, got {:?}",
                 options.dilations
             ),
         });
-    }
-    let dilation_h = options.dilations[0];
-    let dilation_w = options.dilations[1];
+    };
 
     if dilation_h == 0 || dilation_w == 0 {
         return Err(GraphError::ShapeInferenceFailed {
@@ -742,17 +792,16 @@ pub fn infer_pool2d_shape(
         });
     }
 
-    // Validate pads
-    if options.pads.len() != 4 {
-        return Err(GraphError::ShapeInferenceFailed {
-            reason: format!("Pool2d pads must have 4 elements, got {:?}", options.pads),
-        });
-    }
-    // WebNN: [beginning_height, ending_height, beginning_width, ending_width]
-    let pad_begin_h = options.pads[0];
-    let pad_end_h = options.pads[1];
-    let pad_begin_w = options.pads[2];
-    let pad_end_w = options.pads[3];
+    let (pad_begin_h, pad_end_h, pad_begin_w, pad_end_w) = if options.padding.len() >= 4 {
+        (
+            options.padding[0],
+            options.padding[1],
+            options.padding[2],
+            options.padding[3],
+        )
+    } else {
+        (0, 0, 0, 0)
+    };
 
     // Compute effective window size with dilation
     let effective_window_h = dilation_h * (window_h - 1) + 1;
@@ -774,21 +823,21 @@ pub fn infer_pool2d_shape(
 
     let span_h = padded_h - effective_window_h;
     let span_w = padded_w - effective_window_w;
-    let output_h = if options.ceil_output_spatial {
+    let output_h = if ceil_output_spatial {
         (span_h + stride_h - 1) / stride_h + 1
     } else {
         span_h / stride_h + 1
     };
-    let output_w = if options.ceil_output_spatial {
+    let output_w = if ceil_output_spatial {
         (span_w + stride_w - 1) / stride_w + 1
     } else {
         span_w / stride_w + 1
     };
 
     // Build output shape based on layout (channels remain unchanged)
-    let output_shape = match options.layout {
-        Conv2dInputLayout::Nchw => vec![batch, channels, output_h, output_w],
-        Conv2dInputLayout::Nhwc => vec![batch, output_h, output_w, channels],
+    let output_shape = match layout_enum {
+        InputLayout::Nchw => vec![batch, channels, output_h, output_w],
+        InputLayout::Nhwc => vec![batch, output_h, output_w, channels],
     };
 
     Ok(output_shape)
@@ -818,9 +867,9 @@ pub fn infer_pool2d_shape_dimensions(
     }
 
     let layout_enum = if layout.eq_ignore_ascii_case("nhwc") {
-        Conv2dInputLayout::Nhwc
+        InputLayout::Nhwc
     } else {
-        Conv2dInputLayout::Nchw
+        InputLayout::Nchw
     };
 
     if let Some(sizes) = output_sizes {
@@ -828,13 +877,13 @@ pub fn infer_pool2d_shape_dimensions(
             let oh = sizes[0];
             let ow = sizes[1];
             let output_shape = match layout_enum {
-                Conv2dInputLayout::Nchw => vec![
+                InputLayout::Nchw => vec![
                     input_shape[0].clone(),
                     input_shape[1].clone(),
                     Dimension::Static(oh),
                     Dimension::Static(ow),
                 ],
-                Conv2dInputLayout::Nhwc => vec![
+                InputLayout::Nhwc => vec![
                     input_shape[0].clone(),
                     Dimension::Static(oh),
                     Dimension::Static(ow),
@@ -844,27 +893,6 @@ pub fn infer_pool2d_shape_dimensions(
             return Ok(output_shape);
         }
     }
-
-    let (in_h, in_w) = match layout_enum {
-        Conv2dInputLayout::Nchw => (
-            get_static_or_max_size(&input_shape[2]),
-            get_static_or_max_size(&input_shape[3]),
-        ),
-        Conv2dInputLayout::Nhwc => (
-            get_static_or_max_size(&input_shape[1]),
-            get_static_or_max_size(&input_shape[2]),
-        ),
-    };
-
-    let window_dims: Vec<u32> = if let Some(w) = window_dimensions {
-        if w.len() >= 2 {
-            vec![w[0], w[1]]
-        } else {
-            vec![in_h, in_w]
-        }
-    } else {
-        vec![in_h, in_w]
-    };
 
     let strides_v: Vec<u32> = if strides.len() >= 2 {
         vec![strides[0], strides[1]]
@@ -885,13 +913,24 @@ pub fn infer_pool2d_shape_dimensions(
     };
 
     let input_u32: Vec<u32> = input_shape.iter().map(get_static_or_max_size).collect();
-    let pool_opts = Pool2dOptions {
-        window_dimensions: window_dims,
+    let pool_opts = MLPool2dOptions {
+        window_dimensions: window_dimensions.and_then(|w| {
+            if w.len() >= 2 {
+                Some(vec![w[0], w[1]])
+            } else {
+                None
+            }
+        }),
+        padding: pads_v,
         strides: strides_v,
         dilations: dilations_v,
-        pads: pads_v,
-        layout: layout_enum,
-        ceil_output_spatial,
+        layout: layout.to_string(),
+        output_shape_rounding: if ceil_output_spatial {
+            "ceil".to_string()
+        } else {
+            "floor".to_string()
+        },
+        ..Default::default()
     };
     let out = infer_pool2d_shape(&input_u32, &pool_opts)?;
     Ok(to_dimension_vector(&out))
@@ -900,7 +939,7 @@ pub fn infer_pool2d_shape_dimensions(
 /// Options for global pooling operations
 #[derive(Debug, Clone)]
 pub struct GlobalPoolOptions {
-    pub layout: Conv2dInputLayout,
+    pub layout: InputLayout,
 }
 
 /// Infer the output shape for global pooling operations
@@ -923,11 +962,11 @@ pub fn infer_global_pool_shape(
     // Global pooling reduces spatial dimensions to 1x1
     // Output shape depends on layout
     let output_shape = match options.layout {
-        Conv2dInputLayout::Nchw => {
+        InputLayout::Nchw => {
             // [N, C, H, W] -> [N, C, 1, 1]
             vec![input_shape[0], input_shape[1], 1, 1]
         }
-        Conv2dInputLayout::Nhwc => {
+        InputLayout::Nhwc => {
             // [N, H, W, C] -> [N, 1, 1, C]
             vec![input_shape[0], 1, 1, input_shape[3]]
         }
@@ -2386,6 +2425,7 @@ pub fn infer_split_shape(
 mod tests {
     use super::*;
     use crate::graph::{Dimension, DynamicDimension};
+    use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};
 
     fn d(name: &str, max_size: u32) -> Dimension {
         Dimension::Dynamic(DynamicDimension {
@@ -2475,13 +2515,14 @@ mod tests {
         // Input: [1, 3, 32, 32], Filter: [64, 3, 3, 3]
         // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1]
         // Expected output: [1, 64, 32, 32]
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![1, 1, 1, 1],
+            padding: vec![1, 1, 1, 1],
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
         assert_eq!(output, vec![1, 64, 32, 32]);
@@ -2492,13 +2533,14 @@ mod tests {
         // Input: [1, 32, 32, 3], Filter: [64, 3, 3, 3]
         // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1]
         // Expected output: [1, 32, 32, 64]
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![1, 1, 1, 1],
+            padding: vec![1, 1, 1, 1],
             groups: 1,
-            input_layout: Conv2dInputLayout::Nhwc,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nhwc".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 32, 32, 3], &[64, 3, 3, 3], &options).unwrap();
         assert_eq!(output, vec![1, 32, 32, 64]);
@@ -2509,13 +2551,14 @@ mod tests {
         // Input: [1, 3, 28, 28], Filter: [32, 3, 5, 5]
         // Stride: [2, 2], Dilation: [1, 1], Pads: [0, 0, 0, 0]
         // Output: [1, 32, 12, 12]
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 28, 28], &[32, 3, 5, 5], &options).unwrap();
         assert_eq!(output, vec![1, 32, 12, 12]);
@@ -2526,13 +2569,14 @@ mod tests {
         // Input: [1, 3, 32, 32], Filter: [64, 3, 3, 3]
         // Stride: [1, 1], Dilation: [2, 2], Pads: [2, 2, 2, 2]
         // Effective kernel: 5x5, Output: [1, 64, 32, 32]
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![2, 2],
-            pads: vec![2, 2, 2, 2],
+            padding: vec![2, 2, 2, 2],
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
         assert_eq!(output, vec![1, 64, 32, 32]);
@@ -2543,13 +2587,14 @@ mod tests {
         // Depthwise convolution: groups = in_channels
         // Input: [1, 32, 28, 28], Filter: [32, 1, 3, 3]
         // Stride: [1, 1], Dilation: [1, 1], Pads: [1, 1, 1, 1], Groups: 32
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![1, 1, 1, 1],
+            padding: vec![1, 1, 1, 1],
             groups: 32,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 32, 28, 28], &[32, 1, 3, 3], &options).unwrap();
         assert_eq!(output, vec![1, 32, 28, 28]);
@@ -2557,13 +2602,14 @@ mod tests {
 
     #[test]
     fn test_conv2d_invalid_input_dim() {
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         // Input must be 4D
         assert!(infer_conv2d_shape(&[3, 32, 32], &[64, 3, 3, 3], &options).is_err());
@@ -2571,13 +2617,14 @@ mod tests {
 
     #[test]
     fn test_conv2d_invalid_groups() {
-        let options = Conv2dOptions {
+        let options = MLConv2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             groups: 2,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "oihw".to_string(),
+            ..Default::default()
         };
         // Groups must divide input channels evenly
         assert!(infer_conv2d_shape(&[1, 3, 32, 32], &[64, 1, 3, 3], &options).is_err());
@@ -2586,15 +2633,16 @@ mod tests {
     // ConvTranspose2d tests
     #[test]
     fn test_conv_transpose2d_basic() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
         // Output: (14-1)*1 + 3 - 0 - 0 + 0 = 16
@@ -2605,15 +2653,16 @@ mod tests {
 
     #[test]
     fn test_conv_transpose2d_with_stride() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
         // Output: (14-1)*2 + 3 - 0 - 0 + 0 = 29
@@ -2624,15 +2673,16 @@ mod tests {
 
     #[test]
     fn test_conv_transpose2d_with_output_padding() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             output_padding: vec![1, 1],
             output_sizes: None,
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
         // Output: (14-1)*2 + 3 - 0 - 0 + 1 = 30
@@ -2643,15 +2693,16 @@ mod tests {
 
     #[test]
     fn test_conv_transpose2d_with_output_sizes() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![1, 1, 1, 1],
+            padding: vec![1, 1, 1, 1],
             output_padding: vec![0, 0],
             output_sizes: Some(vec![28, 28]),
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // When output_sizes is specified, use it directly
         let output =
@@ -2661,15 +2712,16 @@ mod tests {
 
     #[test]
     fn test_conv_transpose2d_nhwc_layout() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: Conv2dInputLayout::Nhwc,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nhwc".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 14, 14, 64] (NHWC), Filter: [64, 32, 3, 3]
         // Output: [1, 29, 29, 32] (NHWC)
@@ -2680,15 +2732,16 @@ mod tests {
 
     #[test]
     fn test_conv_transpose2d_invalid_input_dim() {
-        let options = ConvTranspose2dOptions {
+        let options = MLConvTranspose2dOptions {
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
+            padding: vec![0, 0, 0, 0],
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: Conv2dInputLayout::Nchw,
-            filter_layout: Conv2dFilterLayout::Oihw,
+            input_layout: "nchw".to_string(),
+            filter_layout: "iohw".to_string(),
+            ..Default::default()
         };
         // Input must be 4D
         assert!(infer_conv_transpose2d_shape(&[64, 14, 14], &[64, 32, 3, 3], &options).is_err());
@@ -2697,13 +2750,13 @@ mod tests {
     // Pool2d tests
     #[test]
     fn test_pool2d_basic() {
-        let options = Pool2dOptions {
-            window_dimensions: vec![2, 2],
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: false,
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 32, 32], Window: [2, 2], Stride: [2, 2]
         // Output: (32 - 2) / 2 + 1 = 16
@@ -2713,13 +2766,13 @@ mod tests {
 
     #[test]
     fn test_pool2d_with_padding() {
-        let options = Pool2dOptions {
-            window_dimensions: vec![3, 3],
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
             strides: vec![1, 1],
             dilations: vec![1, 1],
-            pads: vec![1, 1, 1, 1],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: false,
+            padding: vec![1, 1, 1, 1],
+            layout: "nchw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 32, 32], Window: [3, 3], Padding: 1
         // Output: (32 + 1 + 1 - 3) / 1 + 1 = 32
@@ -2729,13 +2782,13 @@ mod tests {
 
     #[test]
     fn test_pool2d_nhwc_layout() {
-        let options = Pool2dOptions {
-            window_dimensions: vec![2, 2],
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
-            layout: Conv2dInputLayout::Nhwc,
-            ceil_output_spatial: false,
+            padding: vec![0, 0, 0, 0],
+            layout: "nhwc".to_string(),
+            ..Default::default()
         };
         // Input: [1, 32, 32, 64] (NHWC)
         // Output: [1, 16, 16, 64] (NHWC)
@@ -2745,13 +2798,13 @@ mod tests {
 
     #[test]
     fn test_pool2d_with_stride() {
-        let options = Pool2dOptions {
-            window_dimensions: vec![3, 3],
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: false,
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
         };
         // Input: [1, 64, 28, 28], Window: [3, 3], Stride: [2, 2]
         // Output: (28 - 3) / 2 + 1 = 13
@@ -2761,13 +2814,13 @@ mod tests {
 
     #[test]
     fn test_pool2d_invalid_input_dim() {
-        let options = Pool2dOptions {
-            window_dimensions: vec![2, 2],
+        let options = MLPool2dOptions {
+            window_dimensions: Some(vec![2, 2]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: vec![0, 0, 0, 0],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: false,
+            padding: vec![0, 0, 0, 0],
+            layout: "nchw".to_string(),
+            ..Default::default()
         };
         // Input must be 4D
         assert!(infer_pool2d_shape(&[64, 32, 32], &options).is_err());
@@ -2777,25 +2830,27 @@ mod tests {
     fn test_pool2d_ceil_rounding_matches_wpt() {
         let pads = vec![1, 0, 0, 1];
         let input = [1u32, 2, 5, 5];
-        let floor_opts = Pool2dOptions {
-            window_dimensions: vec![3, 3],
+        let floor_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: pads.clone(),
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: false,
+            padding: pads.clone(),
+            layout: "nchw".to_string(),
+            output_shape_rounding: "floor".to_string(),
+            ..Default::default()
         };
         assert_eq!(
             infer_pool2d_shape(&input, &floor_opts).unwrap(),
             vec![1, 2, 2, 2]
         );
-        let ceil_opts = Pool2dOptions {
-            window_dimensions: vec![3, 3],
+        let ceil_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![3, 3]),
             strides: vec![2, 2],
             dilations: vec![1, 1],
-            pads: pads.clone(),
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: true,
+            padding: pads.clone(),
+            layout: "nchw".to_string(),
+            output_shape_rounding: "ceil".to_string(),
+            ..Default::default()
         };
         assert_eq!(
             infer_pool2d_shape(&input, &ceil_opts).unwrap(),
@@ -2807,7 +2862,7 @@ mod tests {
     #[test]
     fn test_global_pool_nchw() {
         let options = GlobalPoolOptions {
-            layout: Conv2dInputLayout::Nchw,
+            layout: InputLayout::Nchw,
         };
         // Input: [1, 64, 28, 28] -> Output: [1, 64, 1, 1]
         let output = infer_global_pool_shape(&[1, 64, 28, 28], &options).unwrap();
@@ -2817,7 +2872,7 @@ mod tests {
     #[test]
     fn test_global_pool_nhwc() {
         let options = GlobalPoolOptions {
-            layout: Conv2dInputLayout::Nhwc,
+            layout: InputLayout::Nhwc,
         };
         // Input: [1, 28, 28, 64] -> Output: [1, 1, 1, 64]
         let output = infer_global_pool_shape(&[1, 28, 28, 64], &options).unwrap();
@@ -2827,7 +2882,7 @@ mod tests {
     #[test]
     fn test_global_pool_various_sizes() {
         let options = GlobalPoolOptions {
-            layout: Conv2dInputLayout::Nchw,
+            layout: InputLayout::Nchw,
         };
         // Different spatial sizes should all reduce to 1x1
         let output = infer_global_pool_shape(&[2, 128, 7, 7], &options).unwrap();
@@ -2840,7 +2895,7 @@ mod tests {
     #[test]
     fn test_global_pool_invalid_input_dim() {
         let options = GlobalPoolOptions {
-            layout: Conv2dInputLayout::Nchw,
+            layout: InputLayout::Nchw,
         };
         // Input must be 4D
         assert!(infer_global_pool_shape(&[64, 32, 32], &options).is_err());

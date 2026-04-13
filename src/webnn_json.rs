@@ -845,9 +845,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                             _ => &default_pool,
                         };
                         let layout_enum = if o.layout.eq_ignore_ascii_case("nhwc") {
-                            Conv2dInputLayout::Nhwc
+                            InputLayout::Nhwc
                         } else {
-                            Conv2dInputLayout::Nchw
+                            InputLayout::Nchw
                         };
                         let input_u32: Vec<u32> = input_shape
                             .iter()

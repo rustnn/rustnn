@@ -34,7 +34,7 @@ use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
 use crate::shape_inference::{
-    Conv2dInputLayout, Pool2dOptions, infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape,
+    Conv2dInputLayout, infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape,
 };
 use trtx::network::PoolingLayer;
 use trtx::{
@@ -10314,13 +10314,18 @@ impl TrtxConverter {
             .iter()
             .map(|&d| u32::try_from(d.max(0)).unwrap_or(0))
             .collect();
-        let pool_opts = Pool2dOptions {
-            window_dimensions: vec![kh, kw],
+        let pool_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![kh, kw]),
             strides: vec![sh, sw],
             dilations: vec![dh, dw],
-            pads: vec![pb_h, pe_h, pb_w, pe_w],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: Self::trtx_pool_padding_round_up(graph, operation, opts)?,
+            padding: vec![pb_h, pe_h, pb_w, pe_w],
+            layout: "nchw".to_string(),
+            output_shape_rounding: if Self::trtx_pool_padding_round_up(graph, operation, opts)? {
+                "ceil".to_string()
+            } else {
+                "floor".to_string()
+            },
+            ..Default::default()
         };
         let out_shape = infer_pool2d_shape(&shape_u32, &pool_opts).map_err(|e| {
             GraphError::ConversionFailed {
@@ -10549,13 +10554,18 @@ impl TrtxConverter {
             .iter()
             .map(|&d| u32::try_from(d.max(0)).unwrap_or(0))
             .collect();
-        let pool_opts = Pool2dOptions {
-            window_dimensions: vec![kh, kw],
+        let pool_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![kh, kw]),
             strides: vec![sh, sw],
             dilations: vec![dh, dw],
-            pads: vec![pb_h, pe_h, pb_w, pe_w],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: Self::trtx_pool_padding_round_up(graph, operation, opts)?,
+            padding: vec![pb_h, pe_h, pb_w, pe_w],
+            layout: "nchw".to_string(),
+            output_shape_rounding: if Self::trtx_pool_padding_round_up(graph, operation, opts)? {
+                "ceil".to_string()
+            } else {
+                "floor".to_string()
+            },
+            ..Default::default()
         };
         let out_shape = infer_pool2d_shape(&shape_u32, &pool_opts).map_err(|e| {
             GraphError::ConversionFailed {
@@ -10814,13 +10824,18 @@ impl TrtxConverter {
             .iter()
             .map(|&d| u32::try_from(d.max(0)).unwrap_or(0))
             .collect();
-        let pool_opts = Pool2dOptions {
-            window_dimensions: vec![kh, kw],
+        let pool_opts = MLPool2dOptions {
+            window_dimensions: Some(vec![kh, kw]),
             strides: vec![sh, sw],
             dilations: vec![dh, dw],
-            pads: vec![pb_h, pe_h, pb_w, pe_w],
-            layout: Conv2dInputLayout::Nchw,
-            ceil_output_spatial: Self::trtx_pool_padding_round_up(graph, operation, opts)?,
+            padding: vec![pb_h, pe_h, pb_w, pe_w],
+            layout: "nchw".to_string(),
+            output_shape_rounding: if Self::trtx_pool_padding_round_up(graph, operation, opts)? {
+                "ceil".to_string()
+            } else {
+                "floor".to_string()
+            },
+            ..Default::default()
         };
         let out_shape = infer_pool2d_shape(&shape_u32, &pool_opts).map_err(|e| {
             GraphError::ConversionFailed {

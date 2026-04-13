@@ -243,6 +243,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
+name = "bindgen"
+version = "0.72.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+dependencies = [
+ "bitflags",
+ "cexpr",
+ "clang-sys",
+ "itertools 0.13.0",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex",
+ "syn 2.0.116",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2214,26 +2234,29 @@ dependencies = [
 
 [[package]]
 name = "trtx"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fad082cf8f02e20e4db1a850214b77fe89c808896217c4927a7a6ecd6c228c90"
+checksum = "e33e2037d309568bc023bb161c9ea23168ac0e345d398c912061d63dc3fb8415"
 dependencies = [
+ "autocxx",
  "cudarc",
  "cxx",
  "libc",
  "libloading 0.9.0",
+ "log",
  "thiserror 2.0.18",
  "trtx-sys",
 ]
 
 [[package]]
 name = "trtx-sys"
-version = "0.3.1"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ae9dd5b3c7ecf5a2509b42b4118124d8bf0169d88adc04dc82e8c87c23b7627"
+checksum = "44e29236a965ef87398a0cb398f69e7a83b0eead80578cea5bbe1131363955ee"
 dependencies = [
  "autocxx",
  "autocxx-build",
+ "bindgen",
  "cc",
  "cxx",
  "regex",
