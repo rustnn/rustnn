@@ -854,8 +854,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                             .map(crate::graph::get_static_or_max_size)
                             .collect();
                         infer_global_pool_shape(&input_u32, layout_enum)
-                        .ok()
-                        .map(|v| to_dimension_vector(&v))
+                            .ok()
+                            .map(|v| to_dimension_vector(&v))
                     } else {
                         None
                     }
