@@ -33,9 +33,7 @@ use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
-use crate::shape_inference::{
-    Conv2dInputLayout, infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape,
-};
+use crate::shape_inference::{infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape};
 use trtx::network::PoolingLayer;
 use trtx::{
     ActivationType, Axes, DataType as TrtDataType, ElementWiseOperation, MatrixOperation,
