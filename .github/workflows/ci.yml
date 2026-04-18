@@ -50,6 +50,9 @@ jobs:
       - name: Run cargo check (onnx-runtime without dynamic-inputs)
         run: cargo check --no-default-features --features onnx-runtime
 
+      - name: Run cargo check (TensorRT)
+        run: cargo check -F trtx-runtime
+
       - name: Run cargo test (library only)
         run: cargo test --lib
 
