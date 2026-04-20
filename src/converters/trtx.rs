@@ -104,12 +104,7 @@ impl TrtxConverter {
         } else if descriptor_rank > 0 {
             descriptor_rank
         } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!(
-                    "{op_label}: could not determine input tensor rank (empty dims and shape)"
-                ),
-            });
+            0
         };
         Ok(vec![1i64; num_dims])
     }
