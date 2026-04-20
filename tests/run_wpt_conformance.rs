@@ -1,7 +1,8 @@
 //! WPT WebNN conformance tests (ONNX and/or TensorRT backend).
 //!
-//! ONNX: cargo test --test run_wpt_conformance --features onnx-runtime [-- run_wpt_conformance_tests]
-//! TensorRT: cargo test --test run_wpt_conformance --features trtx-runtime-mock [-- run_wpt_conformance_tests_trtx]
+//! Per JSON file, `build.rs` emits two tests: `wpt_json_onnx_*` (`onnx-runtime`) and
+//! `wpt_json_trtx_*` (`trtx-runtime-mock` / `trtx-runtime`). Example:
+//! `cargo test --test run_wpt_conformance wpt_json_onnx_relu`.
 //!
 //! Add -- --nocapture to see which tests are found and run.
 //! ONNX requires native library >= 1.23 on PATH; wrong version is skipped with a message.
@@ -14,10 +15,13 @@
 
 mod wpt_conformance;
 
+include!(concat!(env!("OUT_DIR"), "/wpt_json_tests_generated.rs"));
+
 #[test]
+#[ignore = "superseded by per-JSON tests (wpt_json_onnx_*) generated in build.rs"]
 #[cfg(feature = "onnx-runtime")]
 fn run_wpt_conformance_tests() {
-    let result = std::panic::catch_unwind(|| wpt_conformance::run_all());
+    let result = std::panic::catch_unwind(wpt_conformance::run_all);
     match result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => panic!("WPT conformance tests failed: {}", e),
@@ -44,9 +48,10 @@ fn run_wpt_conformance_tests() {
 }
 
 #[test]
+#[ignore = "superseded by per-JSON tests (wpt_json_trtx_*) generated in build.rs"]
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn run_wpt_conformance_tests_trtx() {
-    let result = std::panic::catch_unwind(|| wpt_conformance::run_all_trtx());
+    let result = std::panic::catch_unwind(wpt_conformance::run_all_trtx);
     match result {
         Ok(Ok(())) => {}
         Ok(Err(e)) => panic!("WPT conformance tests (TRTX) failed: {}", e),

@@ -38,6 +38,14 @@ use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
 
+/// Aggregated result of running every test case in one WPT conformance JSON file.
+struct WptFileRunOutcome {
+    passed: usize,
+    skipped: usize,
+    failures: Vec<(String, String)>,
+    total_cases: usize,
+}
+
 /// Format a flat integer slice as n-dimensional for failure output (exact values, no f32 precision loss).
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
@@ -782,6 +790,168 @@ fn trtx_skip_reason(test_case: &wpt_types::WptTestCase) -> Option<&'static str> 
     None
 }
 
+#[cfg(feature = "onnx-runtime")]
+fn run_wpt_json_file_onnx(stem: &str) -> Result<WptFileRunOutcome, String> {
+    let dir = wpt_data_dir();
+    if !dir.exists() {
+        return Err(format!("WPT data dir not found: {}", dir.display()));
+    }
+
+    let path = dir.join(format!("{stem}.json"));
+    let json =
+        fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+
+    let op = stem;
+    let num_tests = file.tests.len();
+    println!("[WPT] operation '{}': {} test case(s)", op, num_tests);
+
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+    let mut failures = Vec::new();
+
+    for test_case in &file.tests {
+        println!("  running: {} :: {}", op, test_case.name);
+        if is_skipped_test(&file.operation, &test_case.name) {
+            skipped += 1;
+            println!("    [SKIP]");
+            continue;
+        }
+        match run_one_test_case(&file.operation, test_case) {
+            Ok(()) => {
+                passed += 1;
+                println!("    [OK]");
+            }
+            Err(e) => {
+                failures.push((format!("{}::{}", op, test_case.name), e.clone()));
+                println!("    [FAIL]\n{}", e);
+            }
+        }
+    }
+
+    println!(
+        "[WPT] {}: {} passed, {} skipped, {} failed (of {} cases)",
+        op,
+        passed,
+        skipped,
+        failures.len(),
+        num_tests
+    );
+
+    Ok(WptFileRunOutcome {
+        passed,
+        skipped,
+        failures,
+        total_cases: num_tests,
+    })
+}
+
+/// Run WPT conformance tests for a single `tests/wpt_data/conformance/{stem}.json` file (ONNX).
+#[cfg(feature = "onnx-runtime")]
+pub fn run_operation_onnx(stem: &str) -> Result<(), String> {
+    let o = run_wpt_json_file_onnx(stem)?;
+    if o.failures.is_empty() {
+        Ok(())
+    } else {
+        let msg = o
+            .failures
+            .iter()
+            .map(|(name, e)| format!("  {}: {}", name, e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!(
+            "WPT conformance ({}): {} passed, {} skipped, {} failed\n{}",
+            stem,
+            o.passed,
+            o.skipped,
+            o.failures.len(),
+            msg
+        ))
+    }
+}
+
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+fn run_wpt_json_file_trtx(stem: &str) -> Result<WptFileRunOutcome, String> {
+    unsafe { std::env::set_var("RUSTNN_TRTX_LOG_VERBOSITY", "error") };
+
+    let dir = wpt_data_dir();
+    if !dir.exists() {
+        return Err(format!("WPT data dir not found: {}", dir.display()));
+    }
+
+    let path = dir.join(format!("{stem}.json"));
+    let json =
+        fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+    let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+
+    let op = stem;
+    let num_tests = file.tests.len();
+    println!("[WPT-TRTX] operation '{}': {} test case(s)", op, num_tests);
+
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+    let mut failures = Vec::new();
+
+    for test_case in &file.tests {
+        println!("  running: {} :: {}", op, test_case.name);
+        if let Some(reason) = trtx_skip_reason(test_case) {
+            skipped += 1;
+            println!("    [SKIP] {}", reason);
+            continue;
+        }
+        match run_one_test_case_trtx(&file.operation, test_case) {
+            Ok(()) => {
+                passed += 1;
+                println!("    [OK]");
+            }
+            Err(e) => {
+                failures.push((format!("{}::{}", op, test_case.name), e.clone()));
+                println!("    [FAIL]\n{}", e);
+            }
+        }
+    }
+
+    println!(
+        "[WPT-TRTX] {}: {} passed, {} skipped, {} failed (of {} cases)",
+        op,
+        passed,
+        skipped,
+        failures.len(),
+        num_tests
+    );
+
+    Ok(WptFileRunOutcome {
+        passed,
+        skipped,
+        failures,
+        total_cases: num_tests,
+    })
+}
+
+/// Run WPT conformance tests for a single JSON file (TensorRT / trtx).
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+pub fn run_operation_trtx(stem: &str) -> Result<(), String> {
+    let o = run_wpt_json_file_trtx(stem)?;
+    if o.failures.is_empty() {
+        Ok(())
+    } else {
+        let msg = o
+            .failures
+            .iter()
+            .map(|(name, e)| format!("  {}: {}", name, e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Err(format!(
+            "WPT conformance (TRTX) ({}): {} passed, {} skipped, {} failed\n{}",
+            stem,
+            o.passed,
+            o.skipped,
+            o.failures.len(),
+            msg
+        ))
+    }
+}
+
 /// Run all WPT conformance tests using the TensorRT (trtx) backend.
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn run_all_trtx() -> Result<(), String> {
@@ -811,33 +981,11 @@ pub fn run_all_trtx() -> Result<(), String> {
     let mut total_cases = 0usize;
 
     for op in &operations {
-        let path = dir.join(format!("{}.json", op));
-        let json =
-            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
-
-        let num_tests = file.tests.len();
-        total_cases += num_tests;
-        println!("[WPT-TRTX] operation '{}': {} test case(s)", op, num_tests);
-
-        for test_case in &file.tests {
-            println!("  running: {} :: {}", op, test_case.name);
-            if let Some(reason) = trtx_skip_reason(test_case) {
-                skipped += 1;
-                println!("    [SKIP] {}", reason);
-                continue;
-            }
-            match run_one_test_case_trtx(&file.operation, test_case) {
-                Ok(()) => {
-                    passed += 1;
-                    println!("    [OK]");
-                }
-                Err(e) => {
-                    failed.push((format!("{}::{}", op, test_case.name), e.clone()));
-                    println!("    [FAIL]\n{}", e);
-                }
-            }
-        }
+        let o = run_wpt_json_file_trtx(op)?;
+        passed += o.passed;
+        skipped += o.skipped;
+        failed.extend(o.failures);
+        total_cases += o.total_cases;
     }
 
     println!(
@@ -899,33 +1047,11 @@ pub fn run_all() -> Result<(), String> {
     let mut total_cases = 0usize;
 
     for op in &operations {
-        let path = dir.join(format!("{}.json", op));
-        let json =
-            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
-
-        let num_tests = file.tests.len();
-        total_cases += num_tests;
-        println!("[WPT] operation '{}': {} test case(s)", op, num_tests);
-
-        for test_case in &file.tests {
-            println!("  running: {} :: {}", op, test_case.name);
-            if is_skipped_test(&file.operation, &test_case.name) {
-                skipped += 1;
-                println!("    [SKIP]");
-                continue;
-            }
-            match run_one_test_case(&file.operation, test_case) {
-                Ok(()) => {
-                    passed += 1;
-                    println!("    [OK]");
-                }
-                Err(e) => {
-                    failed.push((format!("{}::{}", op, test_case.name), e.clone()));
-                    println!("    [FAIL]\n{}", e);
-                }
-            }
-        }
+        let o = run_wpt_json_file_onnx(op)?;
+        passed += o.passed;
+        skipped += o.skipped;
+        failed.extend(o.failures);
+        total_cases += o.total_cases;
     }
 
     println!(
