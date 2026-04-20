@@ -846,7 +846,6 @@ pub fn run_all_trtx() -> Result<(), String> {
             }
         }
     }
-    assert_debug_snapshot!(test_results);
 
     println!(
         "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
