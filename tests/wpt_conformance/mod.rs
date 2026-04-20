@@ -846,7 +846,6 @@ pub fn run_all_trtx() -> Result<(), String> {
             }
         }
     }
-    assert_debug_snapshot!(test_results);
 
     println!(
         "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
@@ -855,13 +854,14 @@ pub fn run_all_trtx() -> Result<(), String> {
         failed.len(),
         total_cases
     );
-    assert_debug_snapshot!(format!(
+    test_results.push(format!(
         "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
         passed,
         skipped,
         failed.len(),
         total_cases
     ));
+    assert_debug_snapshot!(test_results);
 
     if failed.is_empty() {
         Ok(())

@@ -1482,4 +1482,5 @@ expression: test_results
     "transpose float16 5D tensor default options    [OK]",
     "transpose float16 1D tensor options.permutation    [OK]",
     "transpose float16 5D tensor options.permutation    [OK]",
+    "[WPT-TRTX] total: 1456 passed, 14 skipped, 9 failed (of 1479 cases)",
 ]
