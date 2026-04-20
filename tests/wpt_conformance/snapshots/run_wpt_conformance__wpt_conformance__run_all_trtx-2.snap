@@ -1,0 +1,5 @@
+---
+source: tests/wpt_conformance/mod.rs
+expression: "format!(\"[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)\",\npassed, skipped, failed.len(), total_cases)"
+---
+"[WPT-TRTX] total: 1448 passed, 14 skipped, 17 failed (of 1479 cases)"

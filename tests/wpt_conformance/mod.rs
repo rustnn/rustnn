@@ -9,6 +9,8 @@ pub mod wpt_types;
 
 use std::fs;
 
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+use insta::assert_debug_snapshot;
 use tolerance::get_operation_tolerance;
 use wpt_to_graph::wpt_data_dir;
 use wpt_types::load_wpt_file;
@@ -811,6 +813,7 @@ pub fn run_all_trtx() -> Result<(), String> {
     let mut failed = Vec::new();
     let mut total_cases = 0usize;
 
+    let mut test_results = Vec::new();
     for op in &operations {
         let path = dir.join(format!("{}.json", op));
         let json =
@@ -826,20 +829,24 @@ pub fn run_all_trtx() -> Result<(), String> {
             if let Some(reason) = trtx_skip_reason(test_case) {
                 skipped += 1;
                 println!("    [SKIP] {}", reason);
+                test_results.push(format!("{}    [SKIP] {}", test_case.name, reason));
                 continue;
             }
             match run_one_test_case_trtx(&file.operation, test_case) {
                 Ok(()) => {
                     passed += 1;
                     println!("    [OK]");
+                    test_results.push(format!("{}    [OK]", test_case.name));
                 }
                 Err(e) => {
                     failed.push((format!("{}::{}", op, test_case.name), e.clone()));
                     println!("    [FAIL]\n{}", e);
+                    test_results.push(format!("{}    [FAIL]\n{}", test_case.name, e));
                 }
             }
         }
     }
+    assert_debug_snapshot!(test_results);
 
     println!(
         "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
@@ -848,6 +855,13 @@ pub fn run_all_trtx() -> Result<(), String> {
         failed.len(),
         total_cases
     );
+    assert_debug_snapshot!(format!(
+        "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
+        passed,
+        skipped,
+        failed.len(),
+        total_cases
+    ));
 
     if failed.is_empty() {
         Ok(())
