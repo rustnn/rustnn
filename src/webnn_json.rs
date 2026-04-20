@@ -798,13 +798,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 }
 
                 // Shape
-                "shape" => {
-                    if let Some(input_shape) = input_shapes.first() {
-                        Some(vec![Dimension::Static(input_shape.len() as u32)])
-                    } else {
-                        None
-                    }
-                }
+                "shape" => input_shapes
+                    .first()
+                    .map(|input_shape| vec![Dimension::Static(input_shape.len() as u32)]),
 
                 // Pool2d (WebNN defaults for window / strides / dilations / padding)
                 "averagepool2d" | "maxpool2d" | "l2pool2d" => {
