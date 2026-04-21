@@ -23,6 +23,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::operator_enums::MLOperandDataType;
+
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
 pub type OperandIndex = u32;
 
@@ -68,7 +70,7 @@ pub fn mldimensions_static_or_max(dims: &[MLDimension]) -> Vec<u32> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OperationExtras {
     pub axis: Option<u32>,
-    pub to_data_type: Option<String>,
+    pub to_data_type: Option<MLOperandDataType>,
     pub batch_dimensions: Option<u32>,
     pub steps: Option<u32>,
     pub hidden_size: Option<u32>,
@@ -113,16 +115,10 @@ impl OperationExtras {
                 out.axis = remove_u32(obj, "axis");
             }
             "cast" => {
-                if let Some(s) = obj
-                    .remove("to")
-                    .and_then(|x| x.as_str().map(|s| s.to_string()))
+                if let Some(v) = obj.remove("to").or_else(|| obj.remove("dataType"))
+                    && let Ok(dt) = serde_json::from_value::<MLOperandDataType>(v)
                 {
-                    out.to_data_type = Some(s);
-                } else if let Some(s) = obj
-                    .remove("dataType")
-                    .and_then(|x| x.as_str().map(|s| s.to_string()))
-                {
-                    out.to_data_type = Some(s);
+                    out.to_data_type = Some(dt);
                 }
             }
             "concat" => {
@@ -246,7 +242,7 @@ pub struct MLArgMinMaxOptions {
     #[serde(default)]
     pub keep_dimensions: bool,
     #[serde(default)]
-    pub output_data_type: String, // MLOperandDataType, e.g. "int32", "int64"
+    pub output_data_type: MLOperandDataType,
 }
 
 fn default_batch_norm_axis() -> u32 {

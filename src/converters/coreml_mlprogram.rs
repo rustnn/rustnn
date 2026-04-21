@@ -28,6 +28,7 @@
 use crate::converters::operand_name;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo};
+use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use crate::protos::coreml::mil_spec::{
@@ -2158,30 +2159,28 @@ impl CoremlMlProgramConverter {
                 // Note: outputDataType is handled by the output tensor's data type
             }
 
-            Operation::Cast { to, .. } => {
+            Operation::Cast { data_type: to, .. } => {
                 // cast: x, dtype
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
 
                 // Add dtype parameter (required)
-                if !to.is_empty() {
-                    let to_type = to;
-                    let dtype_string = match to_type.as_str() {
-                        "float32" => "fp32",
-                        "float16" => "fp16",
-                        "int32" => "int32",
-                        "uint32" => "uint32",
-                        "int8" => "int8",
-                        "uint8" => "uint8",
-                        "int64" => "int64",
-                        _ => "fp32", // default
-                    };
-                    inputs.insert(
-                        "dtype".to_string(),
-                        Self::create_immediate_string(dtype_string),
-                    );
-                }
+                let to_type = to;
+                let dtype_string = match to_type {
+                    MLOperandDataType::Float32 => "fp32",
+                    MLOperandDataType::Float16 => "fp16",
+                    MLOperandDataType::Int32 => "int32",
+                    MLOperandDataType::Uint32 => "uint32",
+                    MLOperandDataType::Int8 => "int8",
+                    MLOperandDataType::Uint8 => "int8",
+                    MLOperandDataType::Int64 => "int64",
+                    MLOperandDataType::Uint64 => "uint64",
+                };
+                inputs.insert(
+                    "dtype".to_string(),
+                    Self::create_immediate_string(dtype_string),
+                );
             }
 
             Operation::ScatterElements { options, .. } => {

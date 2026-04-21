@@ -22,6 +22,7 @@ use crate::graph::{
     ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
     OperandKind, to_dimension_vector,
 };
+use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;
 use std::collections::{BTreeMap, HashMap};
 use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
@@ -435,6 +436,19 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             "int4" => Some(DataType::Int4),
             "uint4" => Some(DataType::Uint4),
             _ => None,
+        }
+    }
+
+    fn data_type_from_ml_operand_dtype(dt: MLOperandDataType) -> DataType {
+        match dt {
+            MLOperandDataType::Float32 => DataType::Float32,
+            MLOperandDataType::Float16 => DataType::Float16,
+            MLOperandDataType::Int32 => DataType::Int32,
+            MLOperandDataType::Uint32 => DataType::Uint32,
+            MLOperandDataType::Int64 => DataType::Int64,
+            MLOperandDataType::Uint64 => DataType::Uint64,
+            MLOperandDataType::Int8 => DataType::Int8,
+            MLOperandDataType::Uint8 => DataType::Uint8,
         }
     }
 
@@ -910,12 +924,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         _ => None,
                     },
                     "cast" => match &op {
-                        Operation::Cast { to, .. } => {
-                            if to.is_empty() {
-                                None
-                            } else {
-                                parse_dtype(&serde_json::Value::String(to.clone()))
-                            }
+                        Operation::Cast { data_type: to, .. } => {
+                            Some(data_type_from_ml_operand_dtype(*to))
                         }
                         _ => None,
                     },
@@ -923,14 +933,12 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     "quantizelinear" => input_types.get(2).cloned().or(Some(DataType::Uint8)),
                     "argmax" | "argmin" => match &op {
                         Operation::ArgMax { options, .. } | Operation::ArgMin { options, .. } => {
-                            options
-                                .as_ref()
-                                .and_then(|o| {
-                                    parse_dtype(&serde_json::Value::String(
-                                        o.output_data_type.clone(),
-                                    ))
-                                })
-                                .or(Some(DataType::Int32))
+                            Some(
+                                options
+                                    .as_ref()
+                                    .map(|o| data_type_from_ml_operand_dtype(o.output_data_type))
+                                    .unwrap_or(DataType::Int32),
+                            )
                         }
                         _ => Some(DataType::Int32),
                     },

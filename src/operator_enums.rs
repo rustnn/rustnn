@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum MlOperandDataType {
+pub enum MLOperandDataType {
     #[default]
     Float32,
     Float16,
@@ -103,6 +103,21 @@ pub enum MLPaddingMode {
 // ---------------------------------------------------------------------------
 // Stable WebNN JSON / IDL string forms (kebab-case / lowercase) for converters
 // ---------------------------------------------------------------------------
+
+impl MLOperandDataType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MLOperandDataType::Float32 => "float32",
+            MLOperandDataType::Float16 => "float16",
+            MLOperandDataType::Int32 => "int32",
+            MLOperandDataType::Uint32 => "uint32",
+            MLOperandDataType::Int64 => "int64",
+            MLOperandDataType::Uint64 => "uint64",
+            MLOperandDataType::Int8 => "int8",
+            MLOperandDataType::Uint8 => "uint8",
+        }
+    }
+}
 
 impl MLRoundingType {
     pub fn as_str(self) -> &'static str {

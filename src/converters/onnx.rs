@@ -20,6 +20,7 @@ use crate::converters::{ConvertedGraph, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
 use crate::protos::onnx::{
@@ -1695,19 +1696,15 @@ impl OnnxConverter {
     /// Create ONNX attributes for cast operation
     fn create_cast_attributes(op: &Operation) -> Vec<AttributeProto> {
         let mut attributes = Vec::new();
-        if let Operation::Cast { to, .. } = &op
-            && !to.is_empty()
-        {
-            let to_type = to.to_ascii_lowercase();
-            let type_code = match to_type.as_str() {
-                "float32" => ProtoDataType::Float as i64,
-                "float16" => ProtoDataType::Float16 as i64,
-                "int32" => ProtoDataType::Int32 as i64,
-                "uint32" => ProtoDataType::Uint32 as i64,
-                "int8" => ProtoDataType::Int8 as i64,
-                "uint8" => ProtoDataType::Uint8 as i64,
-                "int64" => ProtoDataType::Int64 as i64,
-                "int4" | "uint4" => ProtoDataType::Undefined as i64,
+        if let Operation::Cast { data_type: to, .. } = &op {
+            let type_code = match to {
+                MLOperandDataType::Float32 => ProtoDataType::Float as i64,
+                MLOperandDataType::Float16 => ProtoDataType::Float16 as i64,
+                MLOperandDataType::Int32 => ProtoDataType::Int32 as i64,
+                MLOperandDataType::Uint32 => ProtoDataType::Uint32 as i64,
+                MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
+                MLOperandDataType::Uint8 => ProtoDataType::Uint8 as i64,
+                MLOperandDataType::Int64 => ProtoDataType::Int64 as i64,
                 _ => ProtoDataType::Undefined as i64,
             };
             attributes.push(AttributeProto {
@@ -9295,22 +9292,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         let output_id = op
                             .output_operand()
                             .expect("Single-output operation expected");
-                        let type_code: i64 = match match &op {
-                            Operation::Cast { to, .. } => {
-                                let t = to.to_ascii_lowercase();
-                                if t.is_empty() { None } else { Some(t) }
-                            }
-                            _ => None,
-                        } {
-                            Some(s) => match s.as_str() {
-                                "float32" => ProtoDataType::Float as i64,
-                                "float16" => ProtoDataType::Float16 as i64,
-                                "int32" => ProtoDataType::Int32 as i64,
-                                "uint32" => ProtoDataType::Uint32 as i64,
-                                "int8" => ProtoDataType::Int8 as i64,
-                                "uint8" => ProtoDataType::Uint8 as i64,
-                                "int64" => ProtoDataType::Int64 as i64,
-                                _ => {
+                        let type_code: i64 = match &op {
+                            Operation::Cast { data_type: to, .. } => match to {
+                                MLOperandDataType::Float32 => ProtoDataType::Float as i64,
+                                MLOperandDataType::Float16 => ProtoDataType::Float16 as i64,
+                                MLOperandDataType::Int32 => ProtoDataType::Int32 as i64,
+                                MLOperandDataType::Uint32 => ProtoDataType::Uint32 as i64,
+                                MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
+                                MLOperandDataType::Uint8 => ProtoDataType::Uint8 as i64,
+                                MLOperandDataType::Int64 => ProtoDataType::Int64 as i64,
+                                MLOperandDataType::Uint64 => {
                                     let output_dtype = graph
                                         .operand(output_id)
                                         .map(|o| o.descriptor.data_type)
@@ -9318,13 +9309,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                     Self::data_type_code(output_dtype) as i64
                                 }
                             },
-                            None => {
-                                let output_dtype = graph
-                                    .operand(output_id)
-                                    .map(|o| o.descriptor.data_type)
-                                    .unwrap_or(DataType::Float32);
-                                Self::data_type_code(output_dtype) as i64
-                            }
+                            _ => unreachable!("Cast-only branch"),
                         };
                         vec![AttributeProto {
                             name: "to".to_string(),
@@ -10031,7 +10016,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_operation_with_int4_target() {
+    fn test_cast_operation_to_int32() {
         let mut operands = Vec::new();
         let mut operations = Vec::new();
 
@@ -10048,7 +10033,7 @@ mod tests {
         operands.push(Operand {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
-                data_type: DataType::Int4,
+                data_type: DataType::Int32,
                 shape: s(&[10, 10]),
                 pending_permutation: vec![],
             },
@@ -10057,7 +10042,7 @@ mod tests {
 
         let operator = Operation::Cast {
             input: 0,
-            to: "int4".to_string(),
+            data_type: MLOperandDataType::Int32,
             options: None,
             outputs: vec![1],
         };

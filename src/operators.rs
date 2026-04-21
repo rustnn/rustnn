@@ -40,15 +40,18 @@
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::operator_options::{
-    MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
-    MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions,
-    MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions,
-    MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
-    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
-    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions, MLScatterOptions,
-    MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions, MLTriangularOptions,
-    MLUnsqueezeOptions, OperandIndex, OperationExtras, OperatorOptions,
+use crate::{
+    operator_enums::MLOperandDataType,
+    operator_options::{
+        MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
+        MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension,
+        MLEluOptions, MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions,
+        MLHardSigmoidOptions, MLInstanceNormalizationOptions, MLLayerNormalizationOptions,
+        MLLeakyReluOptions, MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions,
+        MLPadOptions, MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions,
+        MLScatterOptions, MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions,
+        MLTriangularOptions, MLUnsqueezeOptions, OperandIndex, OperationExtras, OperatorOptions,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -334,7 +337,7 @@ pub enum Operation {
     /// [cast()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-cast)
     Cast {
         input: OperandIndex,
-        to: String,
+        data_type: MLOperandDataType,
         options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -1291,8 +1294,10 @@ impl Operation {
             Operation::ArgMin { axis, .. } | Operation::ArgMax { axis, .. } => {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
-            Operation::Cast { to, .. } if !to.is_empty() => {
-                obj.insert("to".to_string(), serde_json::Value::String(to.clone()));
+            Operation::Cast { data_type: to, .. } => {
+                if let Ok(v) = serde_json::to_value(to) {
+                    obj.insert("to".to_string(), v);
+                }
             }
             Operation::CumulativeSum { axis, .. } => {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
@@ -2292,7 +2297,7 @@ impl Operation {
             }
             "cast" if !input_operands.is_empty() => Some(Operation::Cast {
                 input: at(input_operands, 0)?,
-                to: extras.to_data_type.unwrap_or_default(),
+                data_type: extras.to_data_type.unwrap_or_default(),
                 options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
