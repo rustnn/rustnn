@@ -1015,6 +1015,42 @@ impl Default for OperatorOptions {
 }
 
 impl OperatorOptions {
+    pub fn label(&self) -> &str {
+        match self {
+            OperatorOptions::Operator(opt) => &opt.label,
+            OperatorOptions::ArgMinMax(opt) => &opt.label,
+            OperatorOptions::BatchNormalization(opt) => &opt.label,
+            OperatorOptions::Clamp(opt) => &opt.label,
+            OperatorOptions::Constant(opt) => &opt.label,
+            OperatorOptions::Conv2d(opt) => &opt.label,
+            OperatorOptions::ConvTranspose2d(opt) => &opt.label,
+            OperatorOptions::CumulativeSum(opt) => &opt.label,
+            OperatorOptions::Elu(opt) => &opt.label,
+            OperatorOptions::Gather(opt) => &opt.label,
+            OperatorOptions::Gemm(opt) => &opt.label,
+            OperatorOptions::Gru(opt) => &opt.label,
+            OperatorOptions::GruCell(opt) => &opt.label,
+            OperatorOptions::HardSigmoid(opt) => &opt.label,
+            OperatorOptions::InstanceNormalization(opt) => &opt.label,
+            OperatorOptions::LayerNormalization(opt) => &opt.label,
+            OperatorOptions::LeakyRelu(opt) => &opt.label,
+            OperatorOptions::Linear(opt) => &opt.label,
+            OperatorOptions::Lstm(opt) => &opt.label,
+            OperatorOptions::LstmCell(opt) => &opt.label,
+            OperatorOptions::Pad(opt) => &opt.label,
+            OperatorOptions::Pool2d(opt) => &opt.label,
+            OperatorOptions::Reduce(opt) => &opt.label,
+            OperatorOptions::Resample2d(opt) => &opt.label,
+            OperatorOptions::Reverse(opt) => &opt.label,
+            OperatorOptions::ScatterElements(opt) => &opt.label,
+            OperatorOptions::Slice(opt) => &opt.label,
+            OperatorOptions::Split(opt) => &opt.label,
+            OperatorOptions::Transpose(opt) => &opt.label,
+            OperatorOptions::Squeeze(opt) => &opt.label,
+            OperatorOptions::Unsqueeze(opt) => &opt.label,
+            OperatorOptions::Triangular(opt) => &opt.label,
+        }
+    }
     /// Parse attributes from JSON using the operation type to select the options variant.
     /// Returns `None` if `value` is null or not an object; otherwise tries to deserialize
     /// into the variant for `op_type`, falling back to `Operator(MLOperatorOptions::default())`.
