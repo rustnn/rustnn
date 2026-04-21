@@ -11,7 +11,6 @@
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime"
 ))]
-
 mod wpt_conformance;
 
 #[test]

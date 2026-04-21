@@ -1,8 +1,84 @@
 use std::path::PathBuf;
 
-use crate::graph::DataType;
+use crate::{
+    graph::DataType,
+    mlcontext::{MLTensor, MLTensorDescriptor},
+};
+#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+use cudarc::driver::DriverError;
 use serde_json::Error as JsonError;
 use thiserror::Error;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("No backend is avaialbel for context creation")]
+    NoBackendAvialable,
+
+    #[error("No device of selected type available")]
+    NoDeviceAvailable,
+
+    #[error("Lost MLContext: {0}")]
+    ContextLost(String),
+
+    // TODO: this error can at moment also occur in other situations than conversion. We should make
+    // GraphError more specific to graph conversion
+    #[error("Failed to convert graph: {source}")]
+    GraphConversionError {
+        #[from]
+        source: GraphError,
+    },
+
+    #[error("Failed to convert graph: {source}")]
+    GraphBuildError {
+        #[from]
+        source: Box<dyn std::error::Error>,
+    },
+
+    #[error("Failed to run inference: {source}")]
+    InferenceError { source: Box<dyn std::error::Error> },
+
+    #[error("Failed to create context: {source}")]
+    ContextCreationError { source: Box<dyn std::error::Error> },
+
+    #[error("Failed to create builder: {source}")]
+    BuilderCreationError { source: Box<dyn std::error::Error> },
+
+    #[error("Failed to tensor: {source}")]
+    TensorCreationError {
+        source: Box<dyn std::error::Error>,
+        descriptor: MLTensorDescriptor,
+    },
+
+    #[error("Failed to write tensor: {source}")]
+    TensorWriteError {
+        source: Box<dyn std::error::Error>,
+        tensor: MLTensor,
+    },
+
+    #[error("Failed to read tensor: {source}")]
+    TensorReadError {
+        source: Box<dyn std::error::Error>,
+        tensor: MLTensor,
+    },
+
+    #[error("Failed to dispatch graph: {source}")]
+    GraphDispatchError { source: Box<dyn std::error::Error> },
+
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[error("An error in the Trtx: {source}")]
+    TrtxError {
+        #[from]
+        source: trtx::Error,
+    },
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[error("An CUDA error occurred: {source}")]
+    CudaError {
+        #[from]
+        source: DriverError,
+    },
+}
 
 #[derive(Debug, Error)]
 pub enum GraphError {

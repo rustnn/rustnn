@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Once;
 
+use log::{info, warn};
 use ndarray::{ArrayD, IxDyn};
+use ort::environment::Environment;
 use ort::session::SessionInputValue;
 
 use half;
@@ -19,21 +21,27 @@ use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_l
 
 static INIT: Once = Once::new();
 
-fn ensure_ort_initialized() -> Result<(), GraphError> {
+pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
     let mut result = Ok(());
     INIT.call_once(|| {
-        let success = ort::init()
+        info!("Loading onnxruntime");
+        let _is_initial_load = ort::init()
             .with_name("rustnn")
-            .with_execution_providers([
-                ort::execution_providers::CPUExecutionProvider::default().build()
-            ])
+            .with_execution_providers([ort::ep::CPUExecutionProvider::default().build()])
+            .with_telemetry(false)
             .commit();
 
-        if !success {
-            result = Err(GraphError::OnnxRuntimeFailed {
-                reason: "ort init failed - unable to initialize ONNX Runtime".to_string(),
-            });
+        let env = Environment::current().map_err(|e| {
+            warn!("Error loading onnxruntime: {e}");
+            GraphError::OnnxRuntimeUnavailable
+        });
+        if let Err(e) = env {
+            result = Err(e);
+            return;
         }
+        let env = env.unwrap();
+        env.set_log_level(ort::logging::LogLevel::Verbose);
+        info!("Loaded");
     });
     result
 }

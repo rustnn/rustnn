@@ -1,3 +1,5 @@
+pub mod backend_selection;
+pub mod backends;
 pub mod converters;
 pub mod debug;
 pub mod error;
@@ -5,6 +7,7 @@ pub mod executors;
 pub mod graph;
 pub mod graphviz;
 pub mod loader;
+pub mod mlcontext;
 pub mod operator_enums;
 pub mod operator_options;
 pub mod operators;

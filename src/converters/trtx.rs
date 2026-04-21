@@ -51,12 +51,54 @@ impl TrtxConverter {
         TrtxConverter
     }
 
-    /// TensorRT engine I/O tensor name for operand index `operand_id` (`GraphInfo::operands` index).
-    ///
-    /// WebNN/WPT names are intentionally not used as TRT binding names: TensorRT's QDQ rewrite
-    /// matches ONNX-style tokens (e.g. `ZeroPoint`) and can fail engine build for unrelated native graphs.
+    /// Stable fallback TensorRT tensor name when [`Operand::name`] is missing or empty.
     pub fn engine_binding_name(operand_id: u32) -> String {
         format!("webnn_operand_{operand_id}")
+    }
+
+    /// Tensor names for graph inputs and outputs as used by [`Self::build_network`].
+    ///
+    /// Uses each operand's `name` when present and non-empty. If the same name is used for more
+    /// than one input/output operand, disambiguates with `_{operand_id}`. Falls back to
+    /// [`Self::engine_binding_name`] when unnamed.
+    pub fn engine_io_binding_names(graph: &GraphInfo) -> HashMap<u32, String> {
+        let mut specs: Vec<(u32, Option<String>)> = Vec::new();
+        for (i, op) in graph.operands.iter().enumerate() {
+            if matches!(op.kind, OperandKind::Input | OperandKind::Output) {
+                let trimmed = op
+                    .name
+                    .as_ref()
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+                specs.push((i as u32, trimmed));
+            }
+        }
+        let mut count_by_pref: HashMap<String, usize> = HashMap::new();
+        for (_, pref) in &specs {
+            if let Some(n) = pref {
+                *count_by_pref.entry(n.clone()).or_insert(0) += 1;
+            }
+        }
+        let mut m = HashMap::new();
+        for (id, pref) in specs {
+            let name = match pref {
+                Some(n) if count_by_pref.get(&n).copied().unwrap_or(0) > 1 => format!("{n}_{id}"),
+                Some(n) => n,
+                None => Self::engine_binding_name(id),
+            };
+            m.insert(id, name);
+        }
+        m
+    }
+
+    /// TensorRT engine I/O name for `operand_id` after [`Self::build_network`] (same rules as
+    /// [`Self::engine_io_binding_names`]).
+    pub fn engine_io_tensor_name(graph: &GraphInfo, operand_id: u32) -> String {
+        Self::engine_io_binding_names(graph)
+            .get(&operand_id)
+            .cloned()
+            .unwrap_or_else(|| Self::engine_binding_name(operand_id))
     }
 
     #[allow(dead_code)]
@@ -392,6 +434,7 @@ impl TrtxConverter {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let promoted_constants: HashSet<u32> = HashSet::new();
         let constants_stored_flat: HashSet<u32> = HashSet::new();
+        let io_binding_names = Self::engine_io_binding_names(graph);
 
         // Step 1: Add inputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
@@ -403,7 +446,10 @@ impl TrtxConverter {
                     .iter()
                     .map(|d| get_static_or_max_size(d) as i64)
                     .collect();
-                let trt_io_name = Self::engine_binding_name(operand_id as u32);
+                let trt_io_name = io_binding_names
+                    .get(&(operand_id as u32))
+                    .cloned()
+                    .unwrap_or_else(|| Self::engine_binding_name(operand_id as u32));
 
                 let tensor = network.add_input(&trt_io_name, dtype, &dims).map_err(|e| {
                     GraphError::ConversionFailed {
@@ -534,7 +580,10 @@ impl TrtxConverter {
                     }
                 })?;
 
-                let trt_io_name = Self::engine_binding_name(operand_id as u32);
+                let trt_io_name = io_binding_names
+                    .get(&(operand_id as u32))
+                    .cloned()
+                    .unwrap_or_else(|| Self::engine_binding_name(operand_id as u32));
                 let _ = tensor.set_name(network, &trt_io_name);
 
                 network.mark_output(tensor);
@@ -12657,6 +12706,79 @@ mod tests {
             TrtxConverter::engine_binding_name(42).as_str(),
             "webnn_operand_42"
         );
+    }
+
+    #[test]
+    fn test_engine_io_binding_names_use_operand_names() {
+        use crate::graph::to_dimension_vector;
+        use crate::graph::{Operand, OperandDescriptor, OperandKind};
+        let desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(&[1, 1]),
+            pending_permutation: vec![],
+        };
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: desc.clone(),
+                    name: Some("lhs".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Constant,
+                    descriptor: desc.clone(),
+                    name: Some("c".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: desc,
+                    name: Some("sum".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![2],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+        let m = TrtxConverter::engine_io_binding_names(&graph);
+        assert_eq!(m.get(&0).map(String::as_str), Some("lhs"));
+        assert_eq!(m.get(&2).map(String::as_str), Some("sum"));
+    }
+
+    #[test]
+    fn test_engine_io_binding_names_duplicate_disambiguation() {
+        use crate::graph::to_dimension_vector;
+        use crate::graph::{Operand, OperandDescriptor, OperandKind};
+        let desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(&[1]),
+            pending_permutation: vec![],
+        };
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: desc.clone(),
+                    name: Some("x".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: desc,
+                    name: Some("x".to_string()),
+                },
+            ],
+            input_operands: vec![0, 1],
+            output_operands: vec![],
+            operations: vec![],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+        let m = TrtxConverter::engine_io_binding_names(&graph);
+        assert_eq!(m.get(&0).map(String::as_str), Some("x_0"));
+        assert_eq!(m.get(&1).map(String::as_str), Some("x_1"));
     }
 
     /// HWIO -> OIHW transpose: perm (3,2,0,1) => output[o,i,h,w] = input[h,w,i,o].

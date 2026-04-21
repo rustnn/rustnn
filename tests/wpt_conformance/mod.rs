@@ -513,7 +513,7 @@ pub fn run_one_test_case_trtx(
                 graph_info.operand(id).and_then(|o| o.name.as_deref()) == Some(out_name.as_str())
             })
             .ok_or_else(|| format!("output operand '{}' not in graph_info", out_name))?;
-        let trt_out_name = TrtxConverter::engine_binding_name(out_op_id);
+        let trt_out_name = TrtxConverter::engine_io_tensor_name(&graph_info, out_op_id);
         let actual = outputs
             .iter()
             .find(|o| o.name == trt_out_name)
