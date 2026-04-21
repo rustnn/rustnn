@@ -41,6 +41,9 @@ jobs:
           path: target
           key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Is Cargo.lock consistent with Cargo.toml?
+        run: cargo fetch --locked
+
       - name: Run cargo check
         run: cargo check
 
