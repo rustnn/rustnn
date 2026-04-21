@@ -720,16 +720,16 @@ pub fn infer_pool2d_shape(
         ),
     };
 
-    if let Some(sizes) = options.output_sizes.as_ref() {
-        if sizes.len() >= 2 {
-            let oh = sizes[0];
-            let ow = sizes[1];
-            let output_shape = match layout_enum {
-                InputLayout::Nchw => vec![batch, channels, oh, ow],
-                InputLayout::Nhwc => vec![batch, oh, ow, channels],
-            };
-            return Ok(output_shape);
-        }
+    if let Some(sizes) = options.output_sizes.as_ref()
+        && sizes.len() >= 2
+    {
+        let oh = sizes[0];
+        let ow = sizes[1];
+        let output_shape = match layout_enum {
+            InputLayout::Nchw => vec![batch, channels, oh, ow],
+            InputLayout::Nhwc => vec![batch, oh, ow, channels],
+        };
+        return Ok(output_shape);
     }
 
     let ceil_output_spatial = pool2d_ceil_output_spatial(&options.output_shape_rounding);
@@ -824,12 +824,12 @@ pub fn infer_pool2d_shape(
     let span_h = padded_h - effective_window_h;
     let span_w = padded_w - effective_window_w;
     let output_h = if ceil_output_spatial {
-        (span_h + stride_h - 1) / stride_h + 1
+        span_h.div_ceil(stride_h) + 1
     } else {
         span_h / stride_h + 1
     };
     let output_w = if ceil_output_spatial {
-        (span_w + stride_w - 1) / stride_w + 1
+        span_w.div_ceil(stride_w) + 1
     } else {
         span_w / stride_w + 1
     };
@@ -872,26 +872,26 @@ pub fn infer_pool2d_shape_dimensions(
         InputLayout::Nchw
     };
 
-    if let Some(sizes) = output_sizes {
-        if sizes.len() >= 2 {
-            let oh = sizes[0];
-            let ow = sizes[1];
-            let output_shape = match layout_enum {
-                InputLayout::Nchw => vec![
-                    input_shape[0].clone(),
-                    input_shape[1].clone(),
-                    Dimension::Static(oh),
-                    Dimension::Static(ow),
-                ],
-                InputLayout::Nhwc => vec![
-                    input_shape[0].clone(),
-                    Dimension::Static(oh),
-                    Dimension::Static(ow),
-                    input_shape[3].clone(),
-                ],
-            };
-            return Ok(output_shape);
-        }
+    if let Some(sizes) = output_sizes
+        && sizes.len() >= 2
+    {
+        let oh = sizes[0];
+        let ow = sizes[1];
+        let output_shape = match layout_enum {
+            InputLayout::Nchw => vec![
+                input_shape[0].clone(),
+                input_shape[1].clone(),
+                Dimension::Static(oh),
+                Dimension::Static(ow),
+            ],
+            InputLayout::Nhwc => vec![
+                input_shape[0].clone(),
+                Dimension::Static(oh),
+                Dimension::Static(ow),
+                input_shape[3].clone(),
+            ],
+        };
+        return Ok(output_shape);
     }
 
     let strides_v: Vec<u32> = if strides.len() >= 2 {

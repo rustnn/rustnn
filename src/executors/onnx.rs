@@ -1,4 +1,4 @@
-#![cfg(all(feature = "onnx-runtime"))]
+#![cfg(feature = "onnx-runtime")]
 
 use std::collections::HashMap;
 use std::sync::Once;
@@ -163,7 +163,7 @@ pub fn run_onnx_zeroed(
                     reason: format!("failed to extract tensor: {e}"),
                 })?;
 
-        let shape_vec: Vec<i64> = shape.iter().map(|d| *d as i64).collect();
+        let shape_vec: Vec<i64> = shape.iter().copied().collect();
         results.push(OnnxOutput {
             name: format!("output_{idx}"),
             shape: shape_vec,
@@ -461,7 +461,7 @@ fn run_onnx_with_inputs_impl(
             name,
             shape: shape_vec,
             data: data_vec,
-            float32_data: float32_data,
+            float32_data,
             int64_data,
             uint64_data,
         });

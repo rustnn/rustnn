@@ -129,7 +129,7 @@ impl TrtxConverter {
     /// Convert float16 bytes to float32 bytes (little-endian). Used when filter is Float16
     /// but TensorRT conv layer expects Float weights.
     fn f16_bytes_to_f32_bytes(data: &[u8]) -> Result<Vec<u8>, GraphError> {
-        if data.len() % 2 != 0 {
+        if !data.len().is_multiple_of(2) {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Float16 data length {} is not even", data.len()),
@@ -1615,7 +1615,7 @@ impl TrtxConverter {
                 })?;
 
         let one_const = network
-            .add_small_constant_copied(&broadcast_shape, &one_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &one_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create one constant for elu: {}", e),
@@ -1645,7 +1645,7 @@ impl TrtxConverter {
         })?;
 
         let zero_const = network
-            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create zero constant for elu: {}", e),
@@ -1676,7 +1676,7 @@ impl TrtxConverter {
                 })?;
 
         let alpha_const = network
-            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to create alpha constant for elu: {}", e),
@@ -2070,19 +2070,19 @@ impl TrtxConverter {
             ),
         };
         let alpha_const = network
-            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &alpha_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add alpha constant: {}", e),
             })?;
         let beta_const = network
-            .add_small_constant_copied(&broadcast_shape, &beta_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &beta_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add beta constant: {}", e),
             })?;
         let zero_const = network
-            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &zero_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSigmoid: failed to add zero constant: {}", e),
@@ -2232,13 +2232,13 @@ impl TrtxConverter {
             ),
         };
         let three_const = network
-            .add_small_constant_copied(&broadcast_shape, &three_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &three_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSwish: failed to add 3 constant: {}", e),
             })?;
         let six_const = network
-            .add_small_constant_copied(&broadcast_shape, &six_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &six_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("HardSwish: failed to add 6 constant: {}", e),
@@ -3986,7 +3986,7 @@ impl TrtxConverter {
                 MatrixOperation::kNONE,
             )
         } else if rank0 < rank1 {
-            let reshape_dims: Vec<i64> = dims0.iter().copied().collect();
+            let reshape_dims: Vec<i64> = dims0.to_vec();
             let rank_diff = rank1 - rank0;
             let mut new_shape: Vec<i64> = vec![1i64; rank_diff];
             new_shape.extend(reshape_dims);
@@ -4017,7 +4017,7 @@ impl TrtxConverter {
                 MatrixOperation::kNONE,
             )
         } else {
-            let reshape_dims: Vec<i64> = dims1.iter().copied().collect();
+            let reshape_dims: Vec<i64> = dims1.to_vec();
             let rank_diff = rank0 - rank1;
             let mut new_shape: Vec<i64> = vec![1i64; rank_diff];
             new_shape.extend(reshape_dims);
@@ -4446,7 +4446,7 @@ impl TrtxConverter {
         let mean_layer = network
             .add_reduce(
                 input,
-                ReduceOperation::kAVG.into(),
+                ReduceOperation::kAVG,
                 Axes::from_bits(axes_mask),
                 true,
             )
@@ -4499,7 +4499,7 @@ impl TrtxConverter {
         let var_layer = network
             .add_reduce(
                 &squared,
-                ReduceOperation::kAVG.into(),
+                ReduceOperation::kAVG,
                 Axes::from_bits(axes_mask),
                 true,
             )
@@ -4550,7 +4550,7 @@ impl TrtxConverter {
                 (data, trtx::DataType::kFLOAT)
             }
         };
-        let var_shape: Vec<i64> = var_dims.iter().map(|&d| d as i64).collect();
+        let var_shape = var_dims;
         let epsilon_const = network
             .add_small_constant_copied(&var_shape, &epsilon_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4659,8 +4659,7 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("InstanceNorm: failed to add shuffle for scale: {}", e),
                     })?;
-            let scale_broadcast_i64: Vec<i64> =
-                scale_broadcast_shape.iter().map(|&d| d as i64).collect();
+            let scale_broadcast_i64: Vec<i64> = scale_broadcast_shape.to_vec();
             scale_shuffle
                 .set_reshape_dimensions(network, &scale_broadcast_i64)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -4706,8 +4705,7 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("InstanceNorm: failed to add shuffle for bias: {}", e),
                     })?;
-            let bias_broadcast_i64: Vec<i64> =
-                scale_broadcast_shape.iter().map(|&d| d as i64).collect();
+            let bias_broadcast_i64: Vec<i64> = scale_broadcast_shape.to_vec();
             bias_shuffle
                 .set_reshape_dimensions(network, &bias_broadcast_i64)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -4897,9 +4895,9 @@ impl TrtxConverter {
                     TrtDataType::kFLOAT,
                 ),
             };
-            let shape_i64: Vec<i64> = input_dims.iter().map(|&d| d as i64).collect();
+            let shape_i64: Vec<i64> = input_dims.to_vec();
             let zero_const = network
-                .add_small_constant_copied(&shape_i64, &zero_bytes, zero_dtype.clone())
+                .add_small_constant_copied(&shape_i64, &zero_bytes, zero_dtype)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("LayerNorm axes=[]: failed to add zeros constant: {}", e),
@@ -4975,7 +4973,7 @@ impl TrtxConverter {
                         _ => (0..num_el).flat_map(|_| 1.0f32.to_le_bytes()).collect(),
                     };
                     let ones_const = network
-                        .add_small_constant_copied(&shape_i64, &ones_bytes, zero_dtype.clone())
+                        .add_small_constant_copied(&shape_i64, &ones_bytes, zero_dtype)
                         .map_err(|e| GraphError::ConversionFailed {
                             format: "trtx".to_string(),
                             reason: format!(
@@ -5025,7 +5023,7 @@ impl TrtxConverter {
         let mean_layer = network
             .add_reduce(
                 input,
-                ReduceOperation::kAVG.into(),
+                ReduceOperation::kAVG,
                 Axes::from_bits(axes_mask),
                 true,
             )
@@ -5078,7 +5076,7 @@ impl TrtxConverter {
         let var_layer = network
             .add_reduce(
                 &squared,
-                ReduceOperation::kAVG.into(),
+                ReduceOperation::kAVG,
                 Axes::from_bits(axes_mask),
                 true,
             )
@@ -5408,12 +5406,7 @@ impl TrtxConverter {
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let layer = network
-            .add_reduce(
-                input,
-                reduce_op.into(),
-                Axes::from_bits(axes_mask),
-                keep_dims,
-            )
+            .add_reduce(input, reduce_op, Axes::from_bits(axes_mask), keep_dims)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add reduce operation: {}", e),
@@ -5490,7 +5483,7 @@ impl TrtxConverter {
         let layer = network
             .add_reduce(
                 &abs_output,
-                ReduceOperation::kSUM.into(),
+                ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
             )
@@ -5592,7 +5585,7 @@ impl TrtxConverter {
         let sum_layer = network
             .add_reduce(
                 &to_reduce,
-                ReduceOperation::kSUM.into(),
+                ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
             )
@@ -5691,7 +5684,7 @@ impl TrtxConverter {
         let sum_layer = network
             .add_reduce(
                 input,
-                ReduceOperation::kSUM.into(),
+                ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
             )
@@ -5802,7 +5795,7 @@ impl TrtxConverter {
         let sum_layer = network
             .add_reduce(
                 &exp_output,
-                ReduceOperation::kSUM.into(),
+                ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
             )
@@ -5899,7 +5892,7 @@ impl TrtxConverter {
         let layer = network
             .add_reduce(
                 &square_output,
-                ReduceOperation::kSUM.into(),
+                ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
             )
@@ -7602,7 +7595,7 @@ impl TrtxConverter {
         // Implement clamp as: max(min_value, min(input, max_value))
         // First: min(input, max_value)
         let max_const = network
-            .add_small_constant_copied(&broadcast_shape, &max_bytes, trt_dtype.clone())
+            .add_small_constant_copied(&broadcast_shape, &max_bytes, trt_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add max constant: {}", e),
@@ -8400,11 +8393,7 @@ impl TrtxConverter {
 
         // TensorRT `addPaddingNd` only accepts **two** padding values (last two tensor dims). When
         // WebNN padding affects other axes (e.g. 3D with pad on axis 0), use concat + constants.
-        let lead_if_reshaped = if original_ndims < 4 {
-            4 - original_ndims
-        } else {
-            0
-        };
+        let lead_if_reshaped = 4_usize.saturating_sub(original_ndims);
         let trt_ipadding_covers = if original_ndims < 4 {
             (0..original_ndims).all(|wi| {
                 let trt_d = lead_if_reshaped + wi;
@@ -8447,7 +8436,7 @@ impl TrtxConverter {
                 } else {
                     Self::trtx_pad_axis_constant_concat(network, t, ax, pr, po, fill_f32)?
                 };
-                let next_key = 0xFA_B0_0000u32.wrapping_add(step);
+                let next_key = 0xFA_B0_00_00u32.wrapping_add(step);
                 step = step.saturating_add(1);
                 if cur_key != in_id {
                     let _ = tensor_map.remove(&cur_key);
@@ -9061,13 +9050,13 @@ impl TrtxConverter {
             }
         } else {
             // Non-constant filter: TensorRT kernel tensor is OIHW; shuffle from WebNN layout when needed.
-            if let Some(id) = bias_id {
-                if graph.constant_operand_ids_to_handles.contains_key(&id) {
-                    return Err(GraphError::ConversionFailed {
+            if let Some(id) = bias_id
+                && graph.constant_operand_ids_to_handles.contains_key(&id)
+            {
+                return Err(GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: "conv2d with non-constant filter requires bias to be a tensor input (constant bias not supported)".to_string(),
                     });
-                }
             }
             (None, None, None)
         };
@@ -9174,7 +9163,7 @@ impl TrtxConverter {
                 let pre_pad_i64: Vec<i64> = pre_padding.iter().map(|&p| p as i64).collect();
                 let post_pad_i64: Vec<i64> = post_padding.iter().map(|&p| p as i64).collect();
                 let padding_layer = network
-                    .add_padding(&conv_input_source, &pre_pad_i64, &post_pad_i64)
+                    .add_padding(conv_input_source, &pre_pad_i64, &post_pad_i64)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add padding layer: {}", e),
@@ -9188,7 +9177,7 @@ impl TrtxConverter {
                 })?
             } else {
                 // No padding needed, use conv_input_source directly
-                let id_layer = network.add_identity(&conv_input_source).map_err(|e| {
+                let id_layer = network.add_identity(conv_input_source).map_err(|e| {
                     GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("Failed to add identity layer: {}", e),
@@ -9567,13 +9556,13 @@ impl TrtxConverter {
                 (Some(filter_data), bias_raw, None)
             }
         } else {
-            if let Some(id) = bias_id {
-                if graph.constant_operand_ids_to_handles.contains_key(&id) {
-                    return Err(GraphError::ConversionFailed {
+            if let Some(id) = bias_id
+                && graph.constant_operand_ids_to_handles.contains_key(&id)
+            {
+                return Err(GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: "convTranspose2d with non-constant filter requires bias to be a tensor input (constant bias not supported)".to_string(),
                     });
-                }
             }
             (None, None, None)
         };
@@ -9671,7 +9660,7 @@ impl TrtxConverter {
 
         // Map WebNN padding to TensorRT IDeconvolutionLayer pre/post (trim); do not pad the input.
         let deconv_input = {
-            let id_layer = network.add_identity(&deconv_input_source).map_err(|e| {
+            let id_layer = network.add_identity(deconv_input_source).map_err(|e| {
                 GraphError::ConversionFailed {
                     format: "trtx".to_string(),
                     reason: format!("convTranspose2d identity: {}", e),
@@ -10279,7 +10268,7 @@ impl TrtxConverter {
             });
         }
 
-        let sh = opts.strides.get(0).copied().unwrap_or(1);
+        let sh = opts.strides.first().copied().unwrap_or(1);
         let sw = opts.strides.get(1).copied().unwrap_or(1);
         if sh == 0 || sw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10288,7 +10277,7 @@ impl TrtxConverter {
             });
         }
 
-        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dh = opts.dilations.first().copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
         if dh == 0 || dw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10519,7 +10508,7 @@ impl TrtxConverter {
             });
         }
 
-        let sh = opts.strides.get(0).copied().unwrap_or(1);
+        let sh = opts.strides.first().copied().unwrap_or(1);
         let sw = opts.strides.get(1).copied().unwrap_or(1);
         if sh == 0 || sw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10528,7 +10517,7 @@ impl TrtxConverter {
             });
         }
 
-        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dh = opts.dilations.first().copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
         if dh == 0 || dw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10789,7 +10778,7 @@ impl TrtxConverter {
             });
         }
 
-        let sh = opts.strides.get(0).copied().unwrap_or(1);
+        let sh = opts.strides.first().copied().unwrap_or(1);
         let sw = opts.strides.get(1).copied().unwrap_or(1);
         if sh == 0 || sw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10798,7 +10787,7 @@ impl TrtxConverter {
             });
         }
 
-        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dh = opts.dilations.first().copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
         if dh == 0 || dw == 0 {
             return Err(GraphError::ConversionFailed {
@@ -10995,7 +10984,7 @@ impl TrtxConverter {
         opts: &MLPool2dOptions,
         round_up: bool,
     ) {
-        let stride_h = opts.strides.get(0).copied().unwrap_or(1) as i64;
+        let stride_h = opts.strides.first().copied().unwrap_or(1) as i64;
         let stride_w = opts.strides.get(1).copied().unwrap_or(1) as i64;
         layer.set_stride_nd(network, &[stride_h, stride_w]);
 
@@ -11084,7 +11073,7 @@ impl TrtxConverter {
             };
         let pool_nchw_in = nhwc_to_nchw.as_ref().unwrap_or(input);
 
-        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dh = opts.dilations.first().copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
         if dh != 1 || dw != 1 {
             if pool_type != PoolingType::kMAX && pool_type != PoolingType::kAVERAGE {
@@ -12046,7 +12035,7 @@ impl TrtxConverter {
         let default_pool = MLPool2dOptions::default();
         let opts = opts_ref.unwrap_or(&default_pool);
 
-        let dh = opts.dilations.get(0).copied().unwrap_or(1);
+        let dh = opts.dilations.first().copied().unwrap_or(1);
         let dw = opts.dilations.get(1).copied().unwrap_or(1);
 
         let window = Self::pool2d_window_from_graph_input(graph, input_id, operation, opts)?;
