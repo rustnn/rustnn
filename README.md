@@ -193,8 +193,10 @@ Contributions welcome! Please see:
 1. Fork and create feature branch: `git checkout -b feature/my-feature`
 2. Install hooks (optional): `./scripts/install-git-hooks.sh`
 3. Make changes and test: `make test && make python-test`
-4. Format code: `make fmt`
-5. Commit and push
+4. If Snapshots need to be updated (will be indicated by test failures),
+   run `cargo insta review` (see https://insta.rs/docs/cli/ to install)
+5. Format code: `make fmt`
+6. Commit and push
 
 ## License
 
