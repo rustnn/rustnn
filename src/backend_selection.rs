@@ -20,7 +20,7 @@ pub(crate) enum BackendDesc {
         device_type: DeviceType,
     },
     TrtxRuntime {
-        cuda_device_idx: u64,
+        cuda_device_idx: u32,
     },
     CoremlRuntime {
         //device_idx: u64,
