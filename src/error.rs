@@ -5,6 +5,26 @@ use serde_json::Error as JsonError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+pub enum Error {
+    #[error("Lost MLContext: {0}")]
+    MLContextLost(String),
+
+    // TODO: this error can at moment also occur in other situations than conversion. We should make
+    // GraphError more specific to graph conversion
+    #[error("Failed to convert graph: {source}")]
+    GraphError {
+        #[from]
+        source: GraphError,
+    },
+
+    #[error("Failed to run inference: {source}")]
+    InferenceError {
+        #[from]
+        source: Box<dyn std::error::Error>,
+    },
+}
+
+#[derive(Debug, Error)]
 pub enum GraphError {
     #[error("graph file {path} could not be read: {source}")]
     Io {
