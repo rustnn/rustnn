@@ -45,13 +45,17 @@ pub struct MLGraph {}
 pub struct MLOpSupportLimits {}
 
 // https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Default)]
 pub struct MLOperandDescriptor {
     data_type: MLOperandDataType,
     shape: Vec<u64>,
 }
 
 impl MLOperandDescriptor {
+    pub fn new(data_type: MLOperandDataType, shape: Vec<u64>) -> Self {
+        Self { data_type, shape }
+    }
+
     pub fn data_type(&self) -> MLOperandDataType {
         self.data_type
     }
@@ -88,7 +92,7 @@ pub struct MLContextOptions {
 }
 
 /// https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Default)]
 pub struct MLTensorDescriptor {
     operand_descriptor: MLOperandDescriptor,
     readable: bool,
@@ -104,6 +108,13 @@ impl std::ops::Deref for MLTensorDescriptor {
 }
 
 impl MLTensorDescriptor {
+    pub fn new(data_type: MLOperandDataType, shape: Vec<u64>) -> Self {
+        Self {
+            operand_descriptor: MLOperandDescriptor { data_type, shape },
+            writable: false,
+            readable: false,
+        }
+    }
     pub fn readable(&self) -> bool {
         self.readable
     }
@@ -178,5 +189,32 @@ impl MLContext {
 
     pub async fn write_tensor<T>(this: &MLContext, tensor: &MLTensor, array: &[T]) {
         todo!();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::mlcontext::*;
+
+    #[test]
+    fn test_tensor_desc() {
+        let default_operand_desc = MLOperandDescriptor::default();
+        let mut default_tensor_desc = MLTensorDescriptor::default();
+        assert_eq!(default_tensor_desc.shape(), default_operand_desc.shape());
+        assert_eq!(
+            default_tensor_desc.data_type(),
+            default_operand_desc.data_type()
+        );
+        assert_eq!(default_tensor_desc.data_type(), MLOperandDataType::Float32);
+        assert_eq!(default_tensor_desc.writable(), false);
+        assert_eq!(default_tensor_desc.readable(), false);
+        default_tensor_desc.set_writable(true);
+        assert_eq!(default_tensor_desc.writable(), true);
+        default_tensor_desc.set_writable(true);
+        assert_eq!(default_tensor_desc.writable(), true);
+
+        let desc = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
+        let op_desc = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
+        assert_eq!(desc.operand_descriptor, op_desc);
     }
 }
