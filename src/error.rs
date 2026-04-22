@@ -4,8 +4,13 @@ use crate::graph::DataType;
 use serde_json::Error as JsonError;
 use thiserror::Error;
 
+pub type Result<T> = std::result::Result<T, Error>;
+
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("No backend is avaialbel for context creation")]
+    NoBackendAvialable,
+
     #[error("Lost MLContext: {0}")]
     MLContextLost(String),
 

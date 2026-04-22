@@ -1,6 +1,10 @@
+use crate::error::Result;
 use std::{collections::HashMap, fmt::Display};
 
-use crate::operator_enums::MLOperandDataType;
+use crate::{
+    backend_selection::{select_backend, select_backend_by_gpu},
+    operator_enums::MLOperandDataType,
+};
 
 // Backend traits
 
@@ -8,8 +12,6 @@ use crate::operator_enums::MLOperandDataType;
 pub(crate) trait MLBackendContext: std::fmt::Debug {
     fn accelerated(&self) -> bool;
 }
-
-pub(crate) trait MLBackendTensor: std::fmt::Debug {}
 
 // types for MLContext
 
@@ -34,9 +36,40 @@ impl Display for MLContextLostInfo {
     }
 }
 
+/// https://www.w3.org/TR/webnn/#api-mltensor
 #[derive(Debug)]
 pub struct MLTensor {
-    backend: Box<dyn MLBackendTensor>,
+    id: u64,
+    constant: bool,
+    /// internal slots as per https://www.w3.org/TR/webnn/#api-mltensor
+    descriptor: MLTensorDescriptor,
+    //context: &'context MLContext, // todo, omit context?
+    //// pending promises, need to be canceled when tensor is destroyed
+}
+
+impl MLTensor {
+    pub fn data_type(&self) -> MLOperandDataType {
+        self.descriptor.data_type
+    }
+    pub fn shape(&self) -> &[u64] {
+        &self.descriptor.shape
+    }
+    pub fn readable(&self) -> bool {
+        self.descriptor.readable
+    }
+    pub fn writable(&self) -> bool {
+        self.descriptor.writable
+    }
+    pub fn constant(&self) -> bool {
+        self.constant
+    }
+    // TODO: or replace by Rust's drop?
+    pub fn destoy(&self) {
+        todo!() // destroying needs to cancel pending promises
+    }
+    pub fn destroyed(&self) -> bool {
+        todo!() // JS has a isDestroyed method
+    }
 }
 
 #[derive(Debug)]
@@ -73,7 +106,7 @@ impl MLOperandDescriptor {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub enum MLPowerPreference {
     #[default]
     Default,
@@ -87,8 +120,11 @@ pub enum MLPowerPreference {
 /// From specs: Note: MLContextOptions is under active development, and the design is expected to change,
 #[derive(Debug, Eq, PartialEq)]
 pub struct MLContextOptions {
-    power_preference: MLPowerPreference,
-    accelerated: bool,
+    pub(crate) power_preference: MLPowerPreference,
+    pub(crate) accelerated: bool,
+    // could add our own experimental options
+    // could add device_type (CPU, NPU, GPU) like pywebnn
+    // could add backend preference
 }
 
 /// https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor
@@ -146,12 +182,27 @@ pub struct MLContext {
 }
 
 impl MLContext {
-    pub async fn create_context(options: &MLContextOptions) -> Self {
-        todo!();
+    // those are methods on `create_context`
+    pub async fn create(options: &MLContextOptions) -> Result<Self> {
+        let desc = select_backend(options)?;
+        match desc {
+            crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => todo!(),
+            crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDesc::WebNN => todo!(),
+            crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
+        }
     }
 
-    pub async fn create_context_with_gpu_device(gpu_device: &GpuDevice) -> Self {
-        todo!()
+    pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
+        let desc = select_backend_by_gpu(gpu_device)?;
+        match desc {
+            crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => todo!(),
+            crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDesc::WebNN => todo!(),
+            crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
+        }
     }
     pub fn accelerated(&self) -> bool {
         self.backend.accelerated()
