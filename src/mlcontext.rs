@@ -1,5 +1,8 @@
-use crate::error::Result;
-use std::{collections::HashMap, fmt::Display};
+use crate::{
+    error::{Error, Result},
+    executors::trtx::TrtxContext,
+};
+use std::{collections::HashMap, fmt::Display, io::Read};
 
 use crate::{
     backend_selection::{select_backend, select_backend_by_gpu},
@@ -11,6 +14,12 @@ use crate::{
 // could make public later if interface stabilized
 pub(crate) trait MLBackendContext: std::fmt::Debug {
     fn accelerated(&self) -> bool;
+    fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder>>;
+}
+
+pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
+    /*async*/
+    fn build(&self) -> Result<MLGraph>;
 }
 
 // types for MLContext
@@ -185,24 +194,29 @@ impl MLContext {
     // those are methods on `create_context`
     pub async fn create(options: &MLContextOptions) -> Result<Self> {
         let desc = select_backend(options)?;
-        match desc {
+        let backend = match desc {
             crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => todo!(),
+            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => Box::new(
+                TrtxContext::new(cuda_device_idx)
+                    .map_err(|e| Error::ContextCreationError { source: e.into() })?,
+            ),
             crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
             crate::backend_selection::BackendDesc::WebNN => todo!(),
             crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
-        }
+        };
+        Ok(Self { backend })
     }
 
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let desc = select_backend_by_gpu(gpu_device)?;
-        match desc {
+        let backend = match desc {
             crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
             crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
             crate::backend_selection::BackendDesc::WebNN => todo!(),
             crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
-        }
+        };
+        Ok(Self { backend })
     }
     pub fn accelerated(&self) -> bool {
         self.backend.accelerated()
@@ -248,6 +262,26 @@ impl MLContext {
 
     pub async fn write_tensor<T>(this: &MLContext, tensor: &MLTensor, array: &[T]) {
         todo!();
+    }
+}
+
+#[derive(Debug)]
+pub struct MLBuilder<'context> {
+    backend: Box<dyn MLBackendBuilder<'context>>,
+}
+
+impl<'context> MLBuilder<'context> {
+    fn new(context: &'context mut MLContext) -> Result<Self> {
+        let backend = context.backend.create_builder()?;
+        Ok(Self { backend })
+    }
+
+    fn load_webnn(webnn: impl Read) -> Result<()> {
+        Ok(())
+    }
+
+    async fn build() -> Result<MLGraph> {
+        todo!()
     }
 }
 

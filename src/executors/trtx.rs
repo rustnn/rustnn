@@ -1,13 +1,33 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError};
+use ort::logging::Logger;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Once;
 
-use crate::error::GraphError;
+use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
+use crate::mlcontext::MLBackendBuilder;
+use crate::mlcontext::MLBackendContext;
 
 // Reexport to allow downstream users (e.g. pywebnn) to set path to TensorRT RTX lib
 pub use trtx::dynamically_load_tensorrt;
+
+#[derive(Debug, thiserror::Error)]
+pub enum TrtxError {
+    #[error("Cuda driver error: {source}")]
+    CudaError {
+        #[from]
+        source: DriverError,
+    },
+    #[error("TensorRT error: {source}")]
+    TrtxError {
+        #[from]
+        source: trtx::Error,
+    },
+}
+pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
 
 /// Bytes per element for TensorRT tensor data types (used for buffer sizing).
 fn trt_dtype_bytes_per_element(dtype: &trtx::DataType) -> usize {
@@ -320,6 +340,82 @@ pub fn run_trtx_with_inputs(
     })
 }
 
+#[derive(Debug)]
+pub(crate) struct TrtxTensor {
+    // todo: make all allocs owned by backend, only have view here
+    memory: CudaSlice<u8>,
+    stream: CudaStream,
+}
+
+pub(crate) struct TrtxContext<'context> {
+    cuda_ctx: Arc<CudaContext>,
+    tensors: Vec<TrtxTensor>,
+    runtime: trtx::Runtime<'context>,
+    builder: trtx::Builder<'context>,
+}
+
+impl std::fmt::Debug for TrtxContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrtxContext")
+            .field("cuda_ctx", &self.cuda_ctx)
+            .field("tensors", &self.tensors)
+            //.field("logger", &self.logger)
+            //.field("runtime", &self.runtime)
+            .finish()
+    }
+}
+
+// TODO: should make logger static or remove from API. It is anyway a global for TRT
+static LOGGER: trtx::Logger = trtx::Logger::log_crate().unwrap();
+
+impl<'context> TrtxContext<'context> {
+    pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
+        let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
+        let builder = trtx::Builder::new(&LOGGER)?;
+        let runtime = trtx::Runtime::new(&LOGGER)?;
+        Ok(Self {
+            cuda_ctx,
+            tensors: vec![],
+            runtime,
+            builder,
+        })
+    }
+}
+
+pub(crate) struct TrtxBuilder<'builder> {
+    builder: trtx::NetworkDefinition<'builder>,
+}
+impl std::fmt::Debug for TrtxBuilder<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrtxBuilder").finish()
+    }
+}
+
+impl MLBackendBuilder<'_> for TrtxBuilder<'_> {
+    /*async */
+    fn build(&self) -> crate::error::Result<crate::mlcontext::MLGraph> {
+        todo!()
+    }
+}
+
+impl<'context> MLBackendContext for TrtxContext<'context> {
+    fn accelerated(&self) -> bool {
+        true
+    }
+
+    fn create_builder(
+        &'_ mut self,
+    ) -> crate::error::Result<Box<dyn crate::mlcontext::MLBackendBuilder<'context>>> {
+        let builder = self
+            .builder
+            .create_network(0)
+            .map_err(|e| Error::BuilderCreationError {
+                source: Box::new(e),
+            })?;
+        Ok(Box::new(TrtxBuilder { builder }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -328,5 +424,12 @@ mod tests {
         // This test just verifies the module compiles in mock mode
         // Real execution tests would require actual ONNX models
         assert!(true, "TensorRT executor module compiled successfully");
+    }
+
+    #[test]
+    #[cfg(feature = "trtx-runtime")]
+    fn test_context_creation() {
+        use crate::executors::trtx::TrtxContext;
+        TrtxContext::new(0).unwrap();
     }
 }

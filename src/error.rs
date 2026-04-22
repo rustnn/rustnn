@@ -12,7 +12,7 @@ pub enum Error {
     NoBackendAvialable,
 
     #[error("Lost MLContext: {0}")]
-    MLContextLost(String),
+    ContextLost(String),
 
     // TODO: this error can at moment also occur in other situations than conversion. We should make
     // GraphError more specific to graph conversion
@@ -24,7 +24,16 @@ pub enum Error {
 
     #[error("Failed to run inference: {source}")]
     InferenceError {
-        #[from]
+        source: Box<dyn std::error::Error>,
+    },
+
+    #[error("Failed to create context: {source}")]
+    ContextCreationError {
+        source: Box<dyn std::error::Error>,
+    },
+
+    #[error("Failed to create builder: {source}")]
+    BuilderCreationError {
         source: Box<dyn std::error::Error>,
     },
 }
