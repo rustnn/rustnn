@@ -130,6 +130,14 @@ impl MLTensorDescriptor {
     pub fn set_readable(&mut self, readable: bool) {
         self.readable = readable;
     }
+
+    pub fn operand_descriptor(&self) -> &MLOperandDescriptor {
+        &self.operand_descriptor
+    }
+
+    pub fn set_operand_descriptor(&mut self, operand_descriptor: MLOperandDescriptor) {
+        self.operand_descriptor = operand_descriptor;
+    }
 }
 
 #[derive(Debug)]
@@ -215,6 +223,6 @@ mod test {
 
         let desc = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
         let op_desc = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
-        assert_eq!(desc.operand_descriptor, op_desc);
+        assert_eq!(desc.operand_descriptor(), op_desc);
     }
 }
