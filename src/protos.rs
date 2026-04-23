@@ -26,6 +26,7 @@ pub mod coreml {
 }
 
 // Re-export ONNX protos from webnn-onnx-utils to ensure type compatibility
+#[cfg(feature = "onnx-converter")]
 pub mod onnx {
     pub use webnn_onnx_utils::protos::onnx::*;
 }

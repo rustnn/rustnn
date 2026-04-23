@@ -30,6 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     coreml_files.sort();
 
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
+    #[cfg(feature = "coreml-converter")]
     config.compile_protos(&coreml_files, &[coreml_dir])?;
 
     println!("cargo:rerun-if-changed=protos");

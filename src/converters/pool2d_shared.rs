@@ -7,6 +7,7 @@ use crate::operators::Operation;
 /// / TensorRT round-up: `0` = floor spatial shape, `1` = ceil spatial shape.
 ///
 /// Returns [`None`] when `output_sizes` is absent, not length-2, or does not match either implicit shape.
+#[cfg(feature = "onnx-converter")]
 pub(crate) fn infer_pool2d_ceil_mode_from_output_sizes(
     op: &Operation,
     graph: &GraphInfo,
