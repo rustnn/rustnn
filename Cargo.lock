@@ -2503,9 +2503,9 @@ dependencies = [
 
 [[package]]
 name = "trtx"
-version = "0.5.0"
+version = "0.6.0+rtx1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58fe5f8fc1b4d8dda3a9ebd5fe232e81149bd68361d7f932a55e1fed866de1a5"
+checksum = "a239b25bb33f6ee714809c92a1a6e24eb3d323bf68c81a1eeb9df53446d7d699"
 dependencies = [
  "autocxx",
  "cudarc 0.11.9",
@@ -2519,9 +2519,9 @@ dependencies = [
 
 [[package]]
 name = "trtx-sys"
-version = "0.5.0"
+version = "0.6.0+rtx1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1efd9036abbd2775da5df4e49793ec8e656f026fb9c60dff7e95bda2d654e634"
+checksum = "a20ef33bdda170608d38ffaa604ad0587c2e8f9383ccb7945d4e8fc2202508d0"
 dependencies = [
  "autocxx",
  "autocxx-build",
