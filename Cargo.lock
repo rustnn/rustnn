@@ -26,6 +26,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -884,6 +890,13 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "allocator-api2",
+ "equivalent",
+ "foldhash",
+ "serde",
+ "serde_core",
+]
 
 [[package]]
 name = "heck"
@@ -1026,15 +1039,6 @@ name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
 dependencies = [
  "either",
 ]
@@ -1598,7 +1602,7 @@ checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
  "heck",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "once_cell",
@@ -1618,7 +1622,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.116",
@@ -1847,6 +1851,7 @@ dependencies = [
  "prost-build",
  "prost-types",
  "regex",
+ "safetensors",
  "serde",
  "serde_json",
  "serde_with",
@@ -1869,6 +1874,17 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safetensors"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "675656c1eabb620b921efea4f9199f97fc86e36dd6ffd1fbbe48d0f59a4987f5"
+dependencies = [
+ "hashbrown 0.16.1",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "schannel"
@@ -2439,15 +2455,17 @@ dependencies = [
 
 [[package]]
 name = "webnn-graph"
-version = "0.2.1"
-source = "git+https://github.com/rustnn/webnn-graph?branch=main#eba3691f16f1ba25a127e82fc55a3f8abf1e269b"
+version = "0.3.0"
+source = "git+https://github.com/rustnn/webnn-graph?branch=main#4dd1ec6d15d396e198b7b1ca0884acfbb24ef230"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
  "clap",
+ "half",
  "pest",
  "pest_derive",
  "prost",
+ "safetensors",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -2457,7 +2475,7 @@ dependencies = [
 [[package]]
 name = "webnn-onnx-utils"
 version = "0.1.0"
-source = "git+https://github.com/rustnn/webnn-onnx-utils?branch=main#2e48450d12122dd0f776c1aca7ae9e09b1eaf743"
+source = "git+https://github.com/rustnn/webnn-onnx-utils?branch=main#9fcced36cd062cdca883addb771e96c98c4bdc13"
 dependencies = [
  "half",
  "once_cell",

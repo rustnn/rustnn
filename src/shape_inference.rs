@@ -2331,6 +2331,64 @@ pub fn infer_gemm_shape(
     Ok(vec![m, n])
 }
 
+/// Infer GEMM output shape while preserving dynamic dimensions.
+///
+/// Leading dimensions (all but the last two of each input) are broadcast like
+/// [`infer_matmul_shape_dimensions`]. The trailing two dimensions of `A` and `B` follow
+/// WebNN / ONNX GEMM transpose rules (same as [`infer_gemm_shape`]).
+pub fn infer_gemm_shape_dimensions(
+    shape_a: &[Dimension],
+    shape_b: &[Dimension],
+    a_transpose: bool,
+    b_transpose: bool,
+) -> Result<Vec<Dimension>, GraphError> {
+    if shape_a.len() < 2 || shape_b.len() < 2 {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM requires tensors of rank >= 2, got shapes {:?} and {:?}",
+                shape_a, shape_b
+            ),
+        });
+    }
+
+    let a_r0 = shape_a[shape_a.len() - 2].clone();
+    let a_r1 = shape_a[shape_a.len() - 1].clone();
+    let (m_dim, k_a_dim) = if a_transpose {
+        (a_r1, a_r0)
+    } else {
+        (a_r0, a_r1)
+    };
+
+    let b_r0 = shape_b[shape_b.len() - 2].clone();
+    let b_r1 = shape_b[shape_b.len() - 1].clone();
+    let (k_b_dim, n_dim) = if b_transpose {
+        (b_r1, b_r0)
+    } else {
+        (b_r0, b_r1)
+    };
+
+    if let (Dimension::Static(ka), Dimension::Static(kb)) = (&k_a_dim, &k_b_dim)
+        && ka != kb
+    {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!(
+                "GEMM inner dimensions must match: A{}[M, K={}] x B{}[K={}, N]",
+                if a_transpose { "^T" } else { "" },
+                ka,
+                if b_transpose { "^T" } else { "" },
+                kb,
+            ),
+        });
+    }
+
+    let batch_a = &shape_a[..shape_a.len() - 2];
+    let batch_b = &shape_b[..shape_b.len() - 2];
+    let mut batch_dims = broadcast_shapes_dimensions(batch_a, batch_b)?;
+    batch_dims.push(m_dim);
+    batch_dims.push(n_dim);
+    Ok(batch_dims)
+}
+
 /// Infer output shapes for split operation
 /// Splits input along given axis into multiple outputs
 ///
@@ -3841,6 +3899,41 @@ mod tests {
         // Non-2D inputs
         assert!(infer_gemm_shape(&[3], &[3, 4], false, false).is_err());
         assert!(infer_gemm_shape(&[3, 4], &[4], false, false).is_err());
+    }
+
+    #[test]
+    fn test_gemm_dimensions_2d_b_transpose() {
+        let a = vec![Dimension::Static(1), Dimension::Static(256)];
+        let b = vec![Dimension::Static(3072), Dimension::Static(256)];
+        assert_eq!(
+            infer_gemm_shape_dimensions(&a, &b, false, true).unwrap(),
+            vec![Dimension::Static(1), Dimension::Static(3072)]
+        );
+    }
+
+    #[test]
+    fn test_gemm_dimensions_batched_b_transpose() {
+        let a = vec![
+            Dimension::Static(1),
+            Dimension::Static(64),
+            Dimension::Static(128),
+        ];
+        let b = vec![Dimension::Static(3072), Dimension::Static(128)];
+        assert_eq!(
+            infer_gemm_shape_dimensions(&a, &b, false, true).unwrap(),
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(64),
+                Dimension::Static(3072),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gemm_dimensions_inner_mismatch() {
+        let a = vec![Dimension::Static(2), Dimension::Static(3)];
+        let b = vec![Dimension::Static(4), Dimension::Static(5)];
+        assert!(infer_gemm_shape_dimensions(&a, &b, false, false).is_err());
     }
 
     // Split tests

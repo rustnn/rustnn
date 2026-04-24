@@ -107,6 +107,18 @@ fn run() -> Result<(), GraphError> {
         if let Some(ref path) = cli.convert_output {
             std::fs::write(path, &converted.data)
                 .map_err(|err| GraphError::export(path.clone(), err))?;
+            if let Some(ref weights) = converted.weights_data {
+                let sidecar = path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join(rustnn::ONNX_EXTERNAL_WEIGHTS_FILENAME);
+                std::fs::write(&sidecar, weights)
+                    .map_err(|err| GraphError::export(sidecar.clone(), err))?;
+                println!(
+                    "Wrote ONNX external weights to `{}` (same directory as the model).",
+                    sidecar.display()
+                );
+            }
             println!(
                 "Converted graph to `{}` format at `{}` (type {}).",
                 converted.format,
@@ -200,7 +212,11 @@ fn run() -> Result<(), GraphError> {
                 })
                 .collect();
 
-            let outputs = rustnn::run_onnx_with_inputs(&converted.data, inputs)?;
+            let outputs = rustnn::run_onnx_with_inputs(
+                &converted.data,
+                converted.weights_data.as_deref(),
+                inputs,
+            )?;
             println!("Executed ONNX model with zeroed inputs (CPU):");
             for out in outputs {
                 println!("  - {}: shape={:?}", out.name, out.shape);

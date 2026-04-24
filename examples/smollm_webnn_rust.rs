@@ -345,8 +345,12 @@ mod app {
                 pos_before, token_id, pos_before, mask_ones
             ))?;
             let onnx_inputs = build_inputs(&input_order, &layout, &state, *token_id as i64)?;
-            let outputs = run_onnx_with_inputs(&converted.data, onnx_inputs)
-                .map_err(|e| format!("onnx run (prefill pos={}): {e}", state.current_pos))?;
+            let outputs = run_onnx_with_inputs(
+                &converted.data,
+                converted.weights_data.as_deref(),
+                onnx_inputs,
+            )
+            .map_err(|e| format!("onnx run (prefill pos={}): {e}", state.current_pos))?;
             let logits = outputs
                 .iter()
                 .find(|o| o.name == layout.logits_name)
@@ -385,8 +389,12 @@ mod app {
                 pos_before, next_id, pos_before, mask_ones
             ))?;
             let onnx_inputs = build_inputs(&input_order, &layout, &state, next_id as i64)?;
-            let outputs = run_onnx_with_inputs(&converted.data, onnx_inputs)
-                .map_err(|e| format!("onnx run (decode pos={}): {e}", state.current_pos))?;
+            let outputs = run_onnx_with_inputs(
+                &converted.data,
+                converted.weights_data.as_deref(),
+                onnx_inputs,
+            )
+            .map_err(|e| format!("onnx run (decode pos={}): {e}", state.current_pos))?;
             let logits_after = outputs
                 .iter()
                 .find(|o| o.name == layout.logits_name)

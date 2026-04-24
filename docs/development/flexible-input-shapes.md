@@ -41,10 +41,8 @@ Phase 5 runtime checks enforce:
 
 ## Checked Execution APIs
 
-Use checked variants when runtime descriptor validation is required:
+Pass operand descriptor maps when runtime validation against the WebNN graph is required:
 
-- ONNX: `run_onnx_with_inputs_checked(...)`
+- ONNX: `run_onnx_with_inputs_checked(..., &input_descriptors, &output_descriptors)` passes the WebNN I/O descriptor maps from validation artifacts; ORT still validates feeds independently. Use `run_onnx_with_inputs` when you do not need descriptor checks.
 - TensorRT: `run_trtx_with_inputs_checked(...)`
 - CoreML: `run_coreml_with_inputs_checked(...)`
-
-Unchecked `run_*_with_inputs(...)` APIs are still available for compatibility.

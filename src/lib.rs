@@ -18,13 +18,16 @@ pub mod webnn_json;
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;
 
-pub use converters::{ConvertedGraph, ConverterRegistry, GraphConverter};
+pub use converters::{
+    ConvertedGraph, ConverterRegistry, GraphConverter, ONNX_EXTERNAL_WEIGHTS_FILENAME,
+};
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use coreml::{CoremlOutput, CoremlRunAttempt, run_coreml_zeroed, run_coreml_zeroed_cached};
 pub use error::GraphError;
 #[cfg(feature = "onnx-runtime")]
 pub use executors::onnx::{
-    OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs, run_onnx_zeroed,
+    OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs,
+    run_onnx_with_inputs_checked, run_onnx_zeroed,
 };
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use executors::trtx::{

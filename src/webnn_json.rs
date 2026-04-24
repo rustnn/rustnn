@@ -81,6 +81,66 @@ fn from_webnn_dimension(dim: &webnn_graph::ast::Dimension) -> Dimension {
     }
 }
 
+/// Build one [`webnn_graph::ast::Node`] for the operation at `op_index`, matching the shape produced by [`to_graph_json`].
+///
+/// Useful for diagnostics (for example ONNX conversion failures) without serializing the full graph.
+pub fn graph_operation_to_webnn_node(
+    graph: &GraphInfo,
+    op_index: usize,
+) -> Result<Node, GraphError> {
+    let operation = graph
+        .operations
+        .get(op_index)
+        .ok_or_else(|| GraphError::ConversionFailed {
+            format: "webnn-graph-json".to_string(),
+            reason: format!("operation index {op_index} out of range"),
+        })?;
+    let id = format!("op_{}", op_index);
+
+    let input_names: Vec<String> = operation
+        .input_operands()
+        .iter()
+        .map(|&idx| {
+            graph.operands[idx as usize]
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("operand_{}", idx))
+        })
+        .collect();
+
+    let output_operands = operation.output_operands_slice();
+    let output_names: Option<Vec<String>> = if output_operands.is_empty() {
+        None
+    } else {
+        Some(
+            output_operands
+                .iter()
+                .map(|&idx| {
+                    graph.operands[idx as usize]
+                        .name
+                        .clone()
+                        .unwrap_or_else(|| format!("operand_{}", idx))
+                })
+                .collect(),
+        )
+    };
+
+    let mut options: serde_json::Map<String, serde_json::Value> = operation
+        .attributes_value()
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    options.remove("kind");
+
+    Ok(Node {
+        id,
+        op: operation.op_type().to_string(),
+        inputs: input_names,
+        options,
+        outputs: output_names,
+    })
+}
+
 /// Convert GraphInfo to GraphJson
 pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, GraphError> {
     let mut inputs = BTreeMap::new();
@@ -145,54 +205,8 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
     }
 
     // Process operations
-    for (op_idx, operation) in graph.operations.iter().enumerate() {
-        let id = format!("op_{}", op_idx);
-
-        // Collect input names
-        let input_names: Vec<String> = operation
-            .input_operands()
-            .iter()
-            .map(|&idx| {
-                graph.operands[idx as usize]
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("operand_{}", idx))
-            })
-            .collect();
-
-        // Collect output names
-        let output_operands = operation.output_operands_slice();
-        let output_names: Option<Vec<String>> = if output_operands.is_empty() {
-            None
-        } else {
-            Some(
-                output_operands
-                    .iter()
-                    .map(|&idx| {
-                        graph.operands[idx as usize]
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("operand_{}", idx))
-                    })
-                    .collect(),
-            )
-        };
-
-        // Convert attributes to JSON options (strip "kind" for plain-option format)
-        let mut options: serde_json::Map<String, serde_json::Value> = operation
-            .attributes_value()
-            .as_object()
-            .cloned()
-            .unwrap_or_else(serde_json::Map::new);
-        options.remove("kind");
-
-        nodes.push(Node {
-            id,
-            op: operation.op_type().to_string(),
-            inputs: input_names,
-            options,
-            outputs: output_names,
-        });
+    for op_idx in 0..graph.operations.len() {
+        nodes.push(graph_operation_to_webnn_node(graph, op_idx)?);
     }
 
     // Process outputs from graph.output_operands
@@ -660,6 +674,44 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         } else {
                             infer_matmul_shape_dimensions(&input_shapes[0], &input_shapes[1]).ok()
                         }
+                    } else {
+                        None
+                    }
+                }
+
+                // Gemm: same trailing-2D layout as matmul; optional `c` must broadcast to output.
+                "gemm" => {
+                    if input_shapes.len() >= 2 {
+                        let (a_transpose, b_transpose) = match &op {
+                            Operation::Gemm { options, .. } => options
+                                .as_ref()
+                                .map(|o| (o.a_transpose, o.b_transpose))
+                                .unwrap_or((false, false)),
+                            _ => (false, false),
+                        };
+                        infer_gemm_shape_dimensions(
+                            &input_shapes[0],
+                            &input_shapes[1],
+                            a_transpose,
+                            b_transpose,
+                        )
+                        .ok()
+                        .and_then(|inferred| match &op {
+                            Operation::Gemm { options, .. } => {
+                                if let Some(c_id) = options.as_ref().and_then(|o| o.c) {
+                                    let c_shape =
+                                        graph.operands[c_id as usize].descriptor.shape.clone();
+                                    if c_shape.is_empty() {
+                                        Some(inferred)
+                                    } else {
+                                        broadcast_shapes_dimensions(&inferred, &c_shape).ok()
+                                    }
+                                } else {
+                                    Some(inferred)
+                                }
+                            }
+                            _ => Some(inferred),
+                        })
                     } else {
                         None
                     }

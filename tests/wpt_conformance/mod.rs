@@ -426,7 +426,8 @@ pub fn run_one_test_case(
     let converter = OnnxConverter;
     let converted = converter.convert(&graph_info).map_err(|e| e.to_string())?;
 
-    let outputs = run_onnx_with_inputs(&converted.data, inputs).map_err(|e| e.to_string())?;
+    let outputs = run_onnx_with_inputs(&converted.data, converted.weights_data.as_deref(), inputs)
+        .map_err(|e| e.to_string())?;
 
     let (tolerance_kind, tolerance_value) =
         get_operation_tolerance(operation, test_case.tolerance.as_ref());

@@ -21,7 +21,7 @@ exclude = [
 default = []
 dynamic-inputs = []
 coreml-runtime = ["objc"]
-onnx-runtime = ["ort", "ndarray", "tokenizers"]
+onnx-runtime = ["ort", "ndarray", "tokenizers", "dep:tempfile"]
 trtx-runtime = ["trtx"]
 trtx-runtime-mock = ["trtx/mock"]
 
@@ -39,6 +39,7 @@ bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
 objc = { version = "0.2", optional = true }
 ort = { version = "2.0.0-rc.11", optional = true, features = ["ndarray", "half", "load-dynamic"] }
+tempfile = { version = "3.8", optional = true }
 tokenizers = { version = "0.22", optional = true }
 half = "2.4"
 trtx = { version = "0.4.0", optional = true }
@@ -52,6 +53,7 @@ prost-build = "0.12"
 [dev-dependencies]
 tempfile = "3.8"
 half = "2.4"
+safetensors = "0.7"
 
 [lib]
 name = "rustnn"

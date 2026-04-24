@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-use crate::converters::{ConvertedGraph, operand_name};
+use crate::converters::{ConvertedGraph, ONNX_EXTERNAL_WEIGHTS_FILENAME, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size};
@@ -24,9 +24,10 @@ use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
 use crate::protos::onnx::{
-    AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorProto,
-    TensorShapeProto, TypeProto, ValueInfoProto, attribute_proto::AttributeType,
-    tensor_proto::DataType as ProtoDataType, type_proto::Tensor as TensorTypeProto,
+    AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, StringStringEntryProto,
+    TensorProto, TensorShapeProto, TypeProto, ValueInfoProto, attribute_proto::AttributeType,
+    tensor_proto::DataLocation as TensorDataLocation, tensor_proto::DataType as ProtoDataType,
+    type_proto::Tensor as TensorTypeProto,
 };
 use crate::shape_inference::{
     broadcast_shapes, infer_matmul_shape, infer_transpose_shape, infer_unsqueeze_shape,
@@ -39,6 +40,47 @@ use webnn_onnx_utils::{
     attributes::AttrBuilder, data_types as utils_data_types, operation_names::mapper,
     tensor_data::TensorData,
 };
+
+/// Append each initializer's `raw_data` into one external blob and point tensors at it (ONNX external data).
+///
+/// Tensors using `int32_data` / `float_data` / `int64_data` are left unchanged. Only non-empty `raw_data`
+/// is moved so large weight tensors leave the main `ModelProto`.
+fn onnx_pack_external_initializer_raw_data(initializers: &mut Vec<TensorProto>) -> Option<Vec<u8>> {
+    // Align each tensor's external slice to a page boundary. This is not required by ONNX; it can help
+    // mmap / large sequential file I/O patterns and some runtimes that prefer aligned tensor views.
+    const ALIGN: usize = 4096;
+    let mut blob: Vec<u8> = Vec::new();
+    let mut any = false;
+    for tensor in initializers.iter_mut() {
+        if tensor.raw_data.is_empty() {
+            continue;
+        }
+        let pad = (ALIGN - (blob.len() % ALIGN)) % ALIGN;
+        let new_len = blob.len() + pad;
+        blob.resize(new_len, 0u8);
+        let offset = blob.len();
+        let length = tensor.raw_data.len();
+        blob.extend_from_slice(&tensor.raw_data);
+        tensor.raw_data.clear();
+        tensor.external_data = vec![
+            StringStringEntryProto {
+                key: "location".to_string(),
+                value: ONNX_EXTERNAL_WEIGHTS_FILENAME.to_string(),
+            },
+            StringStringEntryProto {
+                key: "offset".to_string(),
+                value: offset.to_string(),
+            },
+            StringStringEntryProto {
+                key: "length".to_string(),
+                value: length.to_string(),
+            },
+        ];
+        tensor.data_location = TensorDataLocation::External as i32;
+        any = true;
+    }
+    any.then_some(blob)
+}
 
 #[derive(Default)]
 pub struct OnnxConverter;
@@ -1020,6 +1062,24 @@ impl OnnxConverter {
             debug_print!("[DEBUG] Invalid operand {} at {}", operand, context);
         }
         GraphError::InvalidConversionOperand { operand }
+    }
+
+    /// Pretty-print the webnn-graph-json style [`webnn_graph::ast::Node`] for `op_index` to stderr (ONNX conversion diagnostics).
+    fn eprintln_failed_operation_webnn_json(graph: &GraphInfo, op_index: usize) {
+        use crate::webnn_json::graph_operation_to_webnn_node;
+        match graph_operation_to_webnn_node(graph, op_index) {
+            Ok(node) => match serde_json::to_string_pretty(&node) {
+                Ok(s) => eprintln!(
+                    "[rustnn onnx converter] failing operation index {op_index} (WebNN graph JSON node):\n{s}"
+                ),
+                Err(e) => eprintln!(
+                    "[rustnn onnx converter] operation index {op_index}: failed to pretty-print JSON node: {e}"
+                ),
+            },
+            Err(e) => eprintln!(
+                "[rustnn onnx converter] operation index {op_index}: could not build WebNN JSON node for stderr: {e}"
+            ),
+        }
     }
 
     fn data_type_code(data_type: DataType) -> ProtoDataType {
@@ -8016,6 +8076,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_shape = input_operand.descriptor.static_or_max_shape();
                 let rank = input_shape.len();
                 if axis >= rank {
+                    Self::eprintln_failed_operation_webnn_json(graph, idx);
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
                         reason: format!("split axis {} out of bounds for rank {}", axis_attr, rank),
@@ -9458,6 +9519,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
             &seen_names,
         );
 
+        let weights_data = onnx_pack_external_initializer_raw_data(&mut initializers);
+
         let graph_proto = GraphProto {
             name: "webnn_graph".to_string(),
             node: nodes,
@@ -9499,7 +9562,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
             format: "onnx",
             content_type: "application/onnx",
             data,
-            weights_data: None, // ONNX doesn't use external weight files
+            weights_data,
         })
     }
 }

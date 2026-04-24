@@ -383,6 +383,7 @@ mod app {
             let inputs = to_onnx_inputs(&input_order, &state)?;
             let outputs = run_onnx_with_inputs_checked(
                 &converted.data,
+                converted.weights_data.as_deref(),
                 inputs,
                 &artifacts.input_names_to_descriptors,
                 &artifacts.output_names_to_descriptors,
@@ -419,6 +420,7 @@ mod app {
             let inputs = to_onnx_inputs(&input_order, &state)?;
             let outputs = run_onnx_with_inputs_checked(
                 &converted.data,
+                converted.weights_data.as_deref(),
                 inputs,
                 &artifacts.input_names_to_descriptors,
                 &artifacts.output_names_to_descriptors,

@@ -1,5 +1,6 @@
 #![cfg(feature = "onnx-runtime")]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Once;
 
@@ -11,6 +12,7 @@ use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Value;
 
+use crate::converters::ONNX_EXTERNAL_WEIGHTS_FILENAME;
 use crate::error::GraphError;
 use crate::graph::OperandDescriptor;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
@@ -173,28 +175,34 @@ pub fn run_onnx_zeroed(
     Ok(results)
 }
 
-/// Run ONNX model with actual input tensors and return output tensors with data
+/// Run ONNX model with actual input tensors and return output tensors with data.
+///
+/// ONNX Runtime performs its own shape checks. For validation against WebNN operand descriptors
+/// (rank, static dimensions, dynamic `maxSize`, linked dynamic names), use
+/// [`run_onnx_with_inputs_checked`].
 pub fn run_onnx_with_inputs(
     model_bytes: &[u8],
+    external_weights: Option<&[u8]>,
     inputs: Vec<OnnxInput>,
 ) -> Result<Vec<OnnxOutputWithData>, GraphError> {
-    run_onnx_with_inputs_impl(model_bytes, inputs, None, None)
+    run_onnx_with_inputs_impl(model_bytes, external_weights, inputs, None, None)
 }
 
-/// Run ONNX model with runtime descriptor checks for dynamic dimensions.
+/// Same as [`run_onnx_with_inputs`], plus optional WebNN operand descriptor validation.
 ///
-/// Enforces:
-/// - actual tensor shape matches descriptor (rank/static dims)
-/// - dynamic dimensions do not exceed maxSize
-/// - same-named dynamic dimensions are equal across inputs and outputs
+/// For each map that is `Some`, validates actual tensor shapes against that map (inputs before the
+/// run, outputs after). `None` skips that side. When both maps are `Some`, same-named dynamic
+/// dimensions are cross-checked (see `crate::runtime_checks::RuntimeShapeState`).
 pub fn run_onnx_with_inputs_checked(
     model_bytes: &[u8],
+    external_weights: Option<&[u8]>,
     inputs: Vec<OnnxInput>,
     input_descriptors: &HashMap<String, OperandDescriptor>,
     output_descriptors: &HashMap<String, OperandDescriptor>,
 ) -> Result<Vec<OnnxOutputWithData>, GraphError> {
     run_onnx_with_inputs_impl(
         model_bytes,
+        external_weights,
         inputs,
         Some(input_descriptors),
         Some(output_descriptors),
@@ -203,6 +211,7 @@ pub fn run_onnx_with_inputs_checked(
 
 fn run_onnx_with_inputs_impl(
     model_bytes: &[u8],
+    external_weights: Option<&[u8]>,
     inputs: Vec<OnnxInput>,
     input_descriptors: Option<&HashMap<String, OperandDescriptor>>,
     output_descriptors: Option<&HashMap<String, OperandDescriptor>>,
@@ -210,18 +219,30 @@ fn run_onnx_with_inputs_impl(
     // Initialize ort global environment (only once per process)
     ensure_ort_initialized()?;
 
-    let mut session = Session::builder()
+    let mut builder = Session::builder()
         .map_err(|e| GraphError::OnnxRuntimeFailed {
             reason: format!("session builder failed: {e}"),
         })?
         .with_optimization_level(GraphOptimizationLevel::Disable)
         .map_err(|e| GraphError::OnnxRuntimeFailed {
             reason: format!("set opt level failed: {e}"),
-        })?
-        .commit_from_memory(model_bytes)
-        .map_err(|e| GraphError::OnnxRuntimeFailed {
-            reason: format!("load model failed: {e}"),
         })?;
+    if let Some(weights) = external_weights {
+        builder = builder
+            .with_external_initializer_file_in_memory(
+                ONNX_EXTERNAL_WEIGHTS_FILENAME,
+                Cow::Owned(weights.to_vec()),
+            )
+            .map_err(|e| GraphError::OnnxRuntimeFailed {
+                reason: format!("set external initializer failed: {e}"),
+            })?;
+    }
+    let mut session =
+        builder
+            .commit_from_memory(model_bytes)
+            .map_err(|e| GraphError::OnnxRuntimeFailed {
+                reason: format!("load model failed: {e}"),
+            })?;
 
     // Extract output names for later use
     let output_names: Vec<String> = session

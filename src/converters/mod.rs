@@ -16,6 +16,12 @@ pub use onnx::OnnxConverter;
 pub use trtx::TrtxConverter;
 pub(crate) use weight_file_builder::WeightFileBuilder;
 
+/// Filename (relative to the `.onnx` file directory) for ONNX external initializer data produced by the ONNX converter.
+///
+/// When [`ConvertedGraph::weights_data`] is `Some`, write those bytes next to the model using this exact name so
+/// `external_data` `location` entries resolve correctly for ONNX Runtime and other tools.
+pub const ONNX_EXTERNAL_WEIGHTS_FILENAME: &str = "rustnn_external_weights.data";
+
 /// Get operand name for an operand ID, or generate a default name
 ///
 /// This is a shared helper used by all converters to ensure consistent
