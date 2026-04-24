@@ -390,7 +390,7 @@ impl TrtxConverter {
     }
 
     /// Build TensorRT network from WebNN graph.
-    fn build_network<'a>(
+    pub fn build_network<'a>(
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
