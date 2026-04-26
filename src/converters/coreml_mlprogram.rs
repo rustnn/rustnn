@@ -1513,31 +1513,45 @@ impl CoremlMlProgramConverter {
                     inputs.insert("bias".to_string(), Self::create_argument(&input_names[2]));
                 }
 
-                // Add parameters from operator options
-                if let Some(opts) = options {
-                    if !opts.strides.is_empty() {
-                        inputs.insert(
-                            "strides".to_string(),
-                            Self::create_immediate_int_array(&opts.strides),
-                        );
-                    }
-                    if !opts.dilations.is_empty() {
-                        inputs.insert(
-                            "dilations".to_string(),
-                            Self::create_immediate_int_array(&opts.dilations),
-                        );
-                    }
-                    if !opts.padding.is_empty() {
-                        inputs.insert(
-                            "pad".to_string(),
-                            Self::create_immediate_int_array(&opts.padding),
-                        );
-                    }
-                    inputs.insert(
-                        "groups".to_string(),
-                        Self::create_immediate_int(opts.groups),
-                    );
-                }
+                // MIL `conv` requires `strides`, `pad`, `dilations`, `groups` — all
+                // four are declared as required inputs in the MIL op schema, so
+                // Apple's CoreML loader rejects the model with
+                // "Required param '...' is missing" when any is omitted. Emit the
+                // WebNN defaults when the WebNN graph left them unset.
+                let (strides, dilations, padding, groups) = match options {
+                    Some(o) => (
+                        if o.strides.is_empty() {
+                            vec![1, 1]
+                        } else {
+                            o.strides.clone()
+                        },
+                        if o.dilations.is_empty() {
+                            vec![1, 1]
+                        } else {
+                            o.dilations.clone()
+                        },
+                        if o.padding.is_empty() {
+                            vec![0, 0, 0, 0]
+                        } else {
+                            o.padding.clone()
+                        },
+                        o.groups,
+                    ),
+                    None => (vec![1, 1], vec![1, 1], vec![0, 0, 0, 0], 1),
+                };
+                inputs.insert(
+                    "strides".to_string(),
+                    Self::create_immediate_int_array(&strides),
+                );
+                inputs.insert(
+                    "dilations".to_string(),
+                    Self::create_immediate_int_array(&dilations),
+                );
+                inputs.insert(
+                    "pad".to_string(),
+                    Self::create_immediate_int_array(&padding),
+                );
+                inputs.insert("groups".to_string(), Self::create_immediate_int(groups));
 
                 // Add pad_type - required parameter in CoreML
                 // Use "custom" when explicit padding is provided
@@ -1565,31 +1579,44 @@ impl CoremlMlProgramConverter {
                     Self::create_immediate_string("custom"),
                 );
 
-                // Add parameters from operator options
-                if let Some(opts) = options {
-                    if !opts.strides.is_empty() {
-                        inputs.insert(
-                            "strides".to_string(),
-                            Self::create_immediate_int_array(&opts.strides),
-                        );
-                    }
-                    if !opts.dilations.is_empty() {
-                        inputs.insert(
-                            "dilations".to_string(),
-                            Self::create_immediate_int_array(&opts.dilations),
-                        );
-                    }
-                    if !opts.padding.is_empty() {
-                        inputs.insert(
-                            "pad".to_string(),
-                            Self::create_immediate_int_array(&opts.padding),
-                        );
-                    }
-                    inputs.insert(
-                        "groups".to_string(),
-                        Self::create_immediate_int(opts.groups),
-                    );
-                }
+                // MIL `conv_transpose` requires `strides`, `pad`, `dilations`,
+                // `groups` — same as `conv` above. Apple's loader emits
+                // "Required param '...' is missing" when any is dropped, even
+                // when the WebNN graph left the attribute at its default.
+                let (strides, dilations, padding, groups) = match options {
+                    Some(o) => (
+                        if o.strides.is_empty() {
+                            vec![1, 1]
+                        } else {
+                            o.strides.clone()
+                        },
+                        if o.dilations.is_empty() {
+                            vec![1, 1]
+                        } else {
+                            o.dilations.clone()
+                        },
+                        if o.padding.is_empty() {
+                            vec![0, 0, 0, 0]
+                        } else {
+                            o.padding.clone()
+                        },
+                        o.groups,
+                    ),
+                    None => (vec![1, 1], vec![1, 1], vec![0, 0, 0, 0], 1),
+                };
+                inputs.insert(
+                    "strides".to_string(),
+                    Self::create_immediate_int_array(&strides),
+                );
+                inputs.insert(
+                    "dilations".to_string(),
+                    Self::create_immediate_int_array(&dilations),
+                );
+                inputs.insert(
+                    "pad".to_string(),
+                    Self::create_immediate_int_array(&padding),
+                );
+                inputs.insert("groups".to_string(), Self::create_immediate_int(groups));
                 // Handle outputSizes (explicit output spatial dimensions [H, W])
                 // Following Chromium: For conv_transpose, CoreML requires output_shape
                 // to be the full output tensor dimensions [N, C, H, W] (from output operand),
