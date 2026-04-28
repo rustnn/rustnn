@@ -3,11 +3,12 @@
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::executors::trtx::TrtxGraph;
 use crate::{
+    GraphInfo,
     backend_selection::BackendDevice,
     error::{Error, Result},
     executors::trtx::TrtxContext,
 };
-use std::{collections::HashMap, fmt::Display, io::Read};
+use std::{collections::HashMap, fmt::Display};
 
 use crate::{
     backend_selection::{select_backend, select_backend_by_gpu},
@@ -45,7 +46,8 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
 
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
     /*async*/
-    fn build(&self) -> Result<MLGraph<'context>>;
+    fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>>;
+    fn load_graph(&mut self, webnn: &'context GraphInfo) -> Result<()>;
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -201,6 +203,11 @@ pub struct MLTensorDescriptor {
     writable: bool,
 }
 
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
+pub struct MLOperand {
+    pub(crate) id: usize,
+}
+
 impl std::ops::Deref for MLTensorDescriptor {
     type Target = MLOperandDescriptor;
 
@@ -350,12 +357,13 @@ impl<'context> MLBuilder<'context> {
         Ok(Self { backend })
     }
 
-    fn load_webnn(webnn: impl Read) -> Result<()> {
-        Ok(())
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<()> {
+        self.backend.load_graph(graph)
     }
 
-    async fn build() -> Result<MLGraph<'context>> {
-        todo!()
+    /*async*/
+    fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>> {
+        self.backend.build(outputs)
     }
 }
 

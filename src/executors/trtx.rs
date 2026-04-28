@@ -1,5 +1,6 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
+use clap::builder;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError, result, sys};
 use cudarc::driver::{CudaEvent, DevicePtrMut};
 use log::debug;
@@ -8,17 +9,20 @@ use log::trace;
 use log::warn;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::rc::Rc;
 use std::sync::Once;
-use trtx::CudaEngine;
-use trtx::ExecutionContext;
+use std::sync::{Arc, Mutex};
+use trtx::{CudaEngine, Tensor, network};
+use trtx::{ExecutionContext, OnnxParser};
 
+use crate::GraphInfo;
+use crate::converters::TrtxConverter;
 use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
-use crate::mlcontext::ListDevices;
-use crate::mlcontext::MLBackendBuilder;
-use crate::mlcontext::MLBackendContext;
 use crate::mlcontext::MLTensor;
+use crate::mlcontext::{ListDevices, MLOperand};
+use crate::mlcontext::{MLBackendBuilder, MLGraph};
+use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
 // Reexport to allow downstream users (e.g. pywebnn) to set path to TensorRT RTX lib
 pub use trtx::dynamically_load_tensorrt;
@@ -38,6 +42,8 @@ pub enum TrtxError {
 }
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
 
+// TODO: the mapping to GraphDispatchError/TensorReadError/TensorWriteError
+// should be done for all backends in mlcontext.rs
 trait ToDispatchResult<T> {
     fn to_dispatch_result(self) -> crate::error::Result<T>;
 }
@@ -405,7 +411,7 @@ pub fn run_trtx_with_inputs(
 pub(crate) struct TrtxGraph<'context> {
     engine: CudaEngine<'context>,
     exec: ExecutionContext<'context>,
-    cuda_stream: CudaStream,
+    cuda_stream: Arc<CudaStream>,
 }
 
 impl std::fmt::Debug for TrtxGraph<'_> {
@@ -438,8 +444,9 @@ pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
-    runtime: trtx::Runtime<'context>,
-    builder: trtx::Builder<'context>,
+    runtime: Rc<Mutex<trtx::Runtime<'context>>>,
+    config: Rc<Mutex<trtx::BuilderConfig>>, // needs to be destroyed before builder
+    builder: Rc<Mutex<trtx::Builder<'context>>>,
 }
 
 impl std::fmt::Debug for TrtxContext<'_> {
@@ -461,15 +468,17 @@ impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
         // this retains the primary context
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
-        let builder = trtx::Builder::new(&LOGGER)?;
-        let runtime = trtx::Runtime::new(&LOGGER)?;
+        let mut builder = trtx::Builder::new(&LOGGER)?;
+        let config = Rc::new(builder.create_config()?.into());
+        let runtime = Rc::new(trtx::Runtime::new(&LOGGER)?.into());
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
             tensors: vec![],
             events: vec![],
             runtime,
-            builder,
+            builder: Rc::new(builder.into()),
+            config,
         })
     }
 }
@@ -477,6 +486,12 @@ impl<'context> TrtxContext<'context> {
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
     network: trtx::NetworkDefinition<'builder>,
+    builder: Rc<Mutex<trtx::Builder<'builder>>>,
+    config: Rc<Mutex<trtx::BuilderConfig>>,
+    cuda_context: Arc<CudaContext>,
+    runtime: Rc<Mutex<trtx::Runtime<'builder>>>,
+    _tensors: Vec<Tensor<'builder>>,
+    //_parser: Option<OnnxParser<'builder>>,
 }
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -486,8 +501,51 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
 
 impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
     /*async */
-    fn build(&self) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        todo!()
+    fn build(
+        &mut self,
+        _outputs: &HashMap<&str, MLOperand>,
+    ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
+        // TODO: keep track of id->tensor during building via builder API and also get this mapping
+        // from converter API
+
+        //for (name, tensor) in outputs.iter() {
+        //let trt_tensor = self.network.get_te
+        // unset all outputs, then set outputs according to MLOperands
+        //}
+
+        let host_mem = self
+            .builder
+            .lock()
+            .unwrap()
+            .build_serialized_network(&mut self.network, &mut self.config.lock().unwrap())
+            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+
+        let mut engine = self
+            .runtime
+            .lock()
+            .unwrap()
+            .deserialize_cuda_engine(&host_mem)
+            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+
+        // make the right context current
+        let exec = engine
+            .create_execution_context()
+            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+
+        Ok(MLGraph {
+            backend: MLBackendGraph::TrtxEngine(TrtxGraph {
+                engine,
+                exec,
+                cuda_stream: self
+                    .cuda_context
+                    .new_stream()
+                    .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
+            }),
+        })
+    }
+
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
+        TrtxConverter::build_network(graph, &mut self.network).map_err(|e| e.into())
     }
 }
 
@@ -503,12 +561,21 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     {
         let network = self
             .builder
+            .lock()
+            .unwrap()
             .create_network(0)
             .map_err(|e| Error::BuilderCreationError {
                 source: Box::new(e),
             })?;
         //self.networks.push(network);
-        Ok(Box::new(TrtxBuilder { network }))
+        Ok(Box::new(TrtxBuilder {
+            network,
+            builder: Rc::clone(&self.builder),
+            config: Rc::clone(&self.config),
+            runtime: Rc::clone(&self.runtime),
+            cuda_context: Arc::clone(&self.cuda_ctx),
+            _tensors: vec![],
+        }))
     }
 
     fn create_tensor(
