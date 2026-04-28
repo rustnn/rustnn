@@ -1,6 +1,5 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
-use clap::builder;
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError, result, sys};
 use cudarc::driver::{CudaEvent, DevicePtrMut};
 use log::debug;
