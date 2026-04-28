@@ -47,7 +47,7 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
     /*async*/
     fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>>;
-    fn load_graph(&mut self, webnn: &'context GraphInfo) -> Result<()>;
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<()>;
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -347,11 +347,11 @@ impl<'context> MLContext<'context> {
 }
 
 #[derive(Debug)]
-pub struct MLBuilder<'context> {
+pub struct MLGraphBuilder<'context> {
     backend: Box<dyn MLBackendBuilder<'context> + 'context>,
 }
 
-impl<'context> MLBuilder<'context> {
+impl<'context> MLGraphBuilder<'context> {
     fn new(context: &'context mut MLContext<'context>) -> Result<Self> {
         let backend = context.backend.create_builder()?;
         Ok(Self { backend })
