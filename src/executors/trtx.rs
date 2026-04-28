@@ -11,8 +11,8 @@ use std::ffi::c_void;
 use std::rc::Rc;
 use std::sync::Once;
 use std::sync::{Arc, Mutex};
-use trtx::{CudaEngine, Tensor, network};
-use trtx::{ExecutionContext, OnnxParser};
+use trtx::ExecutionContext;
+use trtx::{CudaEngine, Tensor};
 
 use crate::GraphInfo;
 use crate::converters::TrtxConverter;
@@ -408,7 +408,7 @@ pub fn run_trtx_with_inputs(
 }
 
 pub(crate) struct TrtxGraph<'context> {
-    engine: CudaEngine<'context>,
+    _engine: CudaEngine<'context>,
     exec: ExecutionContext<'context>,
     cuda_stream: Arc<CudaStream>,
 }
@@ -533,7 +533,7 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
 
         Ok(MLGraph {
             backend: MLBackendGraph::TrtxEngine(TrtxGraph {
-                engine,
+                _engine: engine,
                 exec,
                 cuda_stream: self
                     .cuda_context
