@@ -1,4 +1,5 @@
 use crate::{
+    backend_selection::BackendDevice,
     error::{Error, Result},
     executors::trtx::TrtxContext,
 };
@@ -11,10 +12,13 @@ use crate::{
 
 // Backend traits
 
+pub(crate) trait ListDevices {
+    fn list_devices() -> Vec<BackendDevice>;
+}
 // could make public later if interface stabilized
-pub(crate) trait MLBackendContext: std::fmt::Debug {
+pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn accelerated(&self) -> bool;
-    fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder>>;
+    fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder<'context> + 'context>>;
 }
 
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
@@ -186,23 +190,23 @@ impl MLTensorDescriptor {
 }
 
 #[derive(Debug)]
-pub struct MLContext {
-    backend: Box<dyn MLBackendContext>,
+pub struct MLContext<'context> {
+    backend: Box<dyn MLBackendContext<'context> + 'context>,
 }
 
-impl MLContext {
+impl<'context> MLContext<'context> {
     // those are methods on `create_context`
     pub async fn create(options: &MLContextOptions) -> Result<Self> {
         let desc = select_backend(options)?;
         let backend = match desc {
-            crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => Box::new(
+            crate::backend_selection::BackendDevice::OnnxRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::TrtxRuntime { cuda_device_idx } => Box::new(
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDesc::WebNN => todo!(),
-            crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
+            crate::backend_selection::BackendDevice::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::WebNN => todo!(),
+            crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
         };
         Ok(Self { backend })
     }
@@ -210,11 +214,11 @@ impl MLContext {
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let desc = select_backend_by_gpu(gpu_device)?;
         let backend = match desc {
-            crate::backend_selection::BackendDesc::OnnxRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDesc::TrtxRuntime { cuda_device_idx } => todo!(),
-            crate::backend_selection::BackendDesc::CoremlRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDesc::WebNN => todo!(),
-            crate::backend_selection::BackendDesc::ExternalBackend => todo!(),
+            crate::backend_selection::BackendDevice::OnnxRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::TrtxRuntime { cuda_device_idx } => todo!(),
+            crate::backend_selection::BackendDevice::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::WebNN => todo!(),
+            crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
         };
         Ok(Self { backend })
     }
@@ -256,22 +260,22 @@ impl MLContext {
         todo!()
     }
 
-    pub async fn read_tensor<T>(this: &MLContext, tensor: &MLTensor, array: &mut [T]) {
+    pub async fn read_tensor<T>(&mut self, tensor: &MLTensor, array: &mut [T]) {
         todo!();
     }
 
-    pub async fn write_tensor<T>(this: &MLContext, tensor: &MLTensor, array: &[T]) {
+    pub async fn write_tensor<T>(&mut self, tensor: &MLTensor, array: &[T]) {
         todo!();
     }
 }
 
 #[derive(Debug)]
 pub struct MLBuilder<'context> {
-    backend: Box<dyn MLBackendBuilder<'context>>,
+    backend: Box<dyn MLBackendBuilder<'context> + 'context>,
 }
 
 impl<'context> MLBuilder<'context> {
-    fn new(context: &'context mut MLContext) -> Result<Self> {
+    fn new(context: &'context mut MLContext<'context>) -> Result<Self> {
         let backend = context.backend.create_builder()?;
         Ok(Self { backend })
     }
@@ -308,6 +312,6 @@ mod test {
 
         let desc = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
         let op_desc = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
-        assert_eq!(desc.operand_descriptor(), op_desc);
+        assert_eq!(*desc.operand_descriptor(), op_desc);
     }
 }

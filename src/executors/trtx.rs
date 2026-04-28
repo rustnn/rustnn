@@ -8,6 +8,7 @@ use std::sync::Once;
 
 use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
+use crate::mlcontext::ListDevices;
 use crate::mlcontext::MLBackendBuilder;
 use crate::mlcontext::MLBackendContext;
 
@@ -366,7 +367,8 @@ impl std::fmt::Debug for TrtxContext<'_> {
 }
 
 // TODO: should make logger static or remove from API. It is anyway a global for TRT
-static LOGGER: trtx::Logger = trtx::Logger::log_crate().unwrap();
+static LOGGER: std::sync::LazyLock<trtx::Logger> =
+    std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
@@ -383,7 +385,7 @@ impl<'context> TrtxContext<'context> {
 }
 
 pub(crate) struct TrtxBuilder<'builder> {
-    builder: trtx::NetworkDefinition<'builder>,
+    network: trtx::NetworkDefinition<'builder>,
 }
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -398,21 +400,51 @@ impl MLBackendBuilder<'_> for TrtxBuilder<'_> {
     }
 }
 
-impl<'context> MLBackendContext for TrtxContext<'context> {
+impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     fn accelerated(&self) -> bool {
         true
     }
 
     fn create_builder(
         &'_ mut self,
-    ) -> crate::error::Result<Box<dyn crate::mlcontext::MLBackendBuilder<'context>>> {
-        let builder = self
+    ) -> crate::error::Result<Box<dyn crate::mlcontext::MLBackendBuilder<'context> + 'context>>
+    {
+        let network = self
             .builder
             .create_network(0)
             .map_err(|e| Error::BuilderCreationError {
                 source: Box::new(e),
             })?;
-        Ok(Box::new(TrtxBuilder { builder }))
+        //self.networks.push(network);
+        Ok(Box::new(TrtxBuilder { network }))
+    }
+}
+
+impl ListDevices for dyn MLBackendContext<'_> {
+    fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
+        let Ok(device_count) = CudaContext::device_count() else {
+            return Vec::new();
+        };
+
+        let mut devices = Vec::new();
+        for cuda_device_idx in 0..device_count {
+            let Ok(cuda_ctx) = CudaContext::new(cuda_device_idx as usize) else {
+                continue;
+            };
+
+            let Ok((major, minor)) = cuda_ctx.compute_capability() else {
+                continue;
+            };
+
+            // Accept Ampere+ devices only (compute capability >= 8.0).
+            if major > 8 || (major == 8 && minor >= 0) {
+                devices.push(crate::backend_selection::BackendDevice::TrtxRuntime {
+                    cuda_device_idx: cuda_device_idx as u32,
+                });
+            }
+        }
+
+        devices
     }
 }
 
