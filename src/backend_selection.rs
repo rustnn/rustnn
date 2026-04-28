@@ -14,7 +14,7 @@ pub(crate) enum DeviceType {
 /// we currently only consider internal backends,
 /// might allow to register external backends in future
 /// like with converter registry
-pub(crate) enum BackendDesc {
+pub(crate) enum BackendDevice {
     OnnxRuntime {
         //ep_device_idx: u64,
         device_type: DeviceType,
@@ -32,7 +32,7 @@ pub(crate) enum BackendDesc {
 
 // TODO: pywebnn has device_type, and we could have backend preference for user to overwrite
 // autoselection
-pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDesc> {
+pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
     let want_trtx = false;
 
@@ -60,47 +60,47 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDesc> 
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_trtx && want_trtx =>
         {
-            BackendDesc::TrtxRuntime { cuda_device_idx: 0 }
+            BackendDevice::TrtxRuntime { cuda_device_idx: 0 }
         }
 
         // CoreML
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_coreml && want_coreml =>
         {
-            BackendDesc::CoremlRuntime {
+            BackendDevice::CoremlRuntime {
                 device_type: DeviceType::Gpu,
             }
         }
         (MLPowerPreference::LowPower, true) if have_coreml && want_coreml => {
-            BackendDesc::CoremlRuntime {
+            BackendDevice::CoremlRuntime {
                 device_type: DeviceType::Npu,
             }
         }
-        (_, false) if have_coreml && want_coreml => BackendDesc::CoremlRuntime {
+        (_, false) if have_coreml && want_coreml => BackendDevice::CoremlRuntime {
             device_type: DeviceType::Cpu,
         },
         // ORT
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_onnx && want_onnx =>
         {
-            BackendDesc::CoremlRuntime {
+            BackendDevice::CoremlRuntime {
                 device_type: DeviceType::Gpu,
             }
         }
         (MLPowerPreference::LowPower, true) if have_onnx && want_onnx => {
-            BackendDesc::CoremlRuntime {
+            BackendDevice::CoremlRuntime {
                 device_type: DeviceType::Npu,
             }
         }
-        (_, false) if have_onnx && want_onnx => BackendDesc::CoremlRuntime {
+        (_, false) if have_onnx && want_onnx => BackendDevice::CoremlRuntime {
             device_type: DeviceType::Cpu,
         },
         // WebNN
-        (_, _) if have_webnn && want_webnn => BackendDesc::WebNN,
+        (_, _) if have_webnn && want_webnn => BackendDevice::WebNN,
         _ => return Err(crate::error::Error::NoBackendAvialable),
     })
 }
 
-pub(crate) fn select_backend_by_gpu(gpu_device: &GpuDevice) -> Result<BackendDesc> {
+pub(crate) fn select_backend_by_gpu(gpu_device: &GpuDevice) -> Result<BackendDevice> {
     todo!()
 }
