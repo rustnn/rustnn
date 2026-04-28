@@ -34,6 +34,7 @@ pub(crate) enum BackendDevice {
 }
 
 impl BackendDevice {
+    #[allow(dead_code)]
     pub(crate) fn as_trtx_device(&self) -> Option<&u32> {
         if let Self::TrtxDevice { cuda_device_idx } = self {
             Some(cuda_device_idx)
