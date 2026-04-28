@@ -1,10 +1,9 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
-use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError};
+use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError, result, sys};
 use log::info;
 use log::trace;
 use log::warn;
-use ort::logging::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Once;
@@ -427,24 +426,44 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 impl ListDevices for TrtxContext<'_> {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
         trace!("Enumerating Trtx devices");
-        let Ok(device_count) = CudaContext::device_count() else {
+        let Ok(()) = result::init() else {
             warn!("Could not enumerate CUDA devices for TensorRT RTX");
+            return Vec::new();
+        };
+        let Ok(device_count) = result::device::get_count() else {
+            warn!("Could not get CUDA device count for TensorRT RTX");
             return Vec::new();
         };
 
         let mut devices = Vec::new();
         for cuda_device_idx in 0..device_count {
-            let Ok(cuda_ctx) = CudaContext::new(cuda_device_idx as usize) else {
+            let Ok(device) = result::device::get(cuda_device_idx) else {
                 continue;
             };
 
-            let Ok((major, minor)) = cuda_ctx.compute_capability() else {
+            // SAFETY: `device` is returned by `result::device::get`, so it is a valid CUdevice.
+            let Ok(major) = (unsafe {
+                result::device::get_attribute(
+                    device,
+                    sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                )
+            }) else {
+                continue;
+            };
+
+            // SAFETY: `device` is returned by `result::device::get`, so it is a valid CUdevice.
+            let Ok(minor) = (unsafe {
+                result::device::get_attribute(
+                    device,
+                    sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
+                )
+            }) else {
                 continue;
             };
 
             // Accept Ampere+ devices only (compute capability >= 8.0).
             if major > 8 || (major == 8 && minor >= 0) {
-                devices.push(crate::backend_selection::BackendDevice::TrtxRuntime {
+                devices.push(crate::backend_selection::BackendDevice::TrtxDevice {
                     cuda_device_idx: cuda_device_idx as u32,
                 });
             }
@@ -468,7 +487,11 @@ mod tests {
     #[test]
     #[cfg(feature = "trtx-runtime")]
     fn test_context_creation() {
-        use crate::executors::trtx::TrtxContext;
-        TrtxContext::new(0).unwrap();
+        let _ = pretty_env_logger::try_init();
+        use crate::{executors::trtx::TrtxContext, mlcontext::ListDevices};
+        let devices = TrtxContext::list_devices();
+        if let [first, ..] = devices.as_slice() {
+            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap();
+        }
     }
 }
