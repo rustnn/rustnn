@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
+#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+use crate::executors::trtx::TrtxGraph;
 use crate::{
     backend_selection::BackendDevice,
     error::{Error, Result},
@@ -33,11 +35,46 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()>;
     /*async*/
     fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()>;
+    fn dispatch(
+        &mut self,
+        graph: &mut MLGraph,
+        inputs: &HashMap<&str, MLTensor>,
+        outputs: &HashMap<&str, MLTensor>,
+    ) -> Result<()>;
 }
 
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
     /*async*/
-    fn build(&self) -> Result<MLGraph>;
+    fn build(&self) -> Result<MLGraph<'context>>;
+}
+
+// can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
+// dyn Any does not work since Any requires 'static
+#[derive(Debug)]
+pub(crate) enum MLBackendGraph<'context> {
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    TrtxEngine(TrtxGraph<'context>),
+    OnnxSession(),
+}
+
+impl<'context> MLBackendGraph<'context> {
+    pub(crate) fn as_trtx_engine(&self) -> Option<&TrtxGraph<'context>> {
+        if let Self::TrtxEngine(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+impl<'context> MLBackendGraph<'context> {
+    pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
+        if let Self::TrtxEngine(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 // types for MLContext
@@ -100,7 +137,9 @@ impl MLTensor {
 }
 
 #[derive(Debug)]
-pub struct MLGraph {}
+pub struct MLGraph<'context> {
+    pub(crate) backend: MLBackendGraph<'context>,
+}
 #[derive(Debug)]
 pub struct MLOpSupportLimits {}
 
@@ -315,7 +354,7 @@ impl<'context> MLBuilder<'context> {
         Ok(())
     }
 
-    async fn build() -> Result<MLGraph> {
+    async fn build() -> Result<MLGraph<'context>> {
         todo!()
     }
 }

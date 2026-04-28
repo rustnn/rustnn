@@ -20,7 +20,7 @@ pub enum Error {
     // TODO: this error can at moment also occur in other situations than conversion. We should make
     // GraphError more specific to graph conversion
     #[error("Failed to convert graph: {source}")]
-    GraphError {
+    GraphBuildError {
         #[from]
         source: GraphError,
     },
@@ -50,6 +50,11 @@ pub enum Error {
     TensorReadError {
         source: Box<dyn std::error::Error>,
         tensor: MLTensor,
+    },
+
+    #[error("Failed to dispatch graph: {source}")]
+    GraphDispatchError {
+        source: Box<dyn std::error::Error>,
     },
 }
 

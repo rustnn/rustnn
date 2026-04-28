@@ -1,12 +1,17 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError, result, sys};
+use cudarc::driver::{CudaEvent, DevicePtrMut};
+use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::Once;
+use trtx::CudaEngine;
+use trtx::ExecutionContext;
 
 use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
@@ -32,6 +37,59 @@ pub enum TrtxError {
     },
 }
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
+
+trait ToDispatchResult<T> {
+    fn to_dispatch_result(self) -> crate::error::Result<T>;
+}
+
+impl<T> ToDispatchResult<T> for trtx::Result<T> {
+    fn to_dispatch_result(self) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::GraphDispatchError { source: e.into() })
+    }
+}
+impl<T> ToDispatchResult<T> for std::result::Result<T, DriverError> {
+    fn to_dispatch_result(self) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::GraphDispatchError { source: e.into() })
+    }
+}
+
+trait ToReadTensorResult<T> {
+    fn to_read_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T>;
+}
+
+impl<T> ToReadTensorResult<T> for std::result::Result<T, DriverError> {
+    fn to_read_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::TensorReadError {
+            source: Box::new(e),
+            tensor: get_tensor(),
+        })
+    }
+}
+
+trait ToWriteTensorResult<T> {
+    fn to_write_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T>;
+}
+
+impl<T> ToWriteTensorResult<T> for std::result::Result<T, DriverError> {
+    fn to_write_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::TensorWriteError {
+            source: Box::new(e),
+            tensor: get_tensor(),
+        })
+    }
+}
 
 /// Bytes per element for TensorRT tensor data types (used for buffer sizing).
 fn trt_dtype_bytes_per_element(dtype: &trtx::DataType) -> usize {
@@ -344,6 +402,22 @@ pub fn run_trtx_with_inputs(
     })
 }
 
+pub(crate) struct TrtxGraph<'context> {
+    engine: CudaEngine<'context>,
+    exec: ExecutionContext<'context>,
+    cuda_stream: CudaStream,
+}
+
+impl std::fmt::Debug for TrtxGraph<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TrtxGraph")
+            .field("engine", &"")
+            .field("exec", &self.exec.name())
+            .field("cuda_stream", &self.cuda_stream)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct TrtxTensor {
     // todo: make all allocs owned by backend, only have view here
@@ -353,6 +427,7 @@ pub(crate) struct TrtxTensor {
 
 impl TrtxTensor {
     fn new(cuda_ctx: &Arc<CudaContext>, size: usize) -> TrtxResult<Self> {
+        debug!("Allocating CUDA tensor of size {size}");
         let stream = cuda_ctx.new_stream()?;
         let memory = stream.alloc_zeros(size)?;
         Ok(Self { memory, stream })
@@ -362,6 +437,7 @@ impl TrtxTensor {
 pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
+    events: Vec<CudaEvent>,
     runtime: trtx::Runtime<'context>,
     builder: trtx::Builder<'context>,
 }
@@ -387,9 +463,11 @@ impl<'context> TrtxContext<'context> {
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
         let builder = trtx::Builder::new(&LOGGER)?;
         let runtime = trtx::Runtime::new(&LOGGER)?;
+        debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
             tensors: vec![],
+            events: vec![],
             runtime,
             builder,
         })
@@ -406,9 +484,9 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
     }
 }
 
-impl MLBackendBuilder<'_> for TrtxBuilder<'_> {
+impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
     /*async */
-    fn build(&self) -> crate::error::Result<crate::mlcontext::MLGraph> {
+    fn build(&self) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
         todo!()
     }
 }
@@ -480,10 +558,10 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         let stream = &cuda_tensor.stream;
         stream
             .memcpy_dtoh(&cuda_tensor.memory, array)
-            .map_err(|e| crate::error::Error::TensorReadError {
-                source: e.into(),
-                tensor: tensor.clone(),
-            })?;
+            .to_read_tensor_result(|| tensor.clone())?;
+        stream
+            .synchronize()
+            .to_read_tensor_result(|| tensor.clone())?;
         Ok(())
     }
 
@@ -496,10 +574,65 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         let stream = &cuda_tensor.stream;
         stream
             .memcpy_htod(array, &mut cuda_tensor.memory)
-            .map_err(|e| crate::error::Error::TensorWriteError {
-                source: e.into(),
-                tensor: tensor.clone(),
-            })?;
+            .to_write_tensor_result(|| tensor.clone())?;
+        Ok(())
+    }
+
+    fn dispatch(
+        &mut self,
+        graph: &mut crate::mlcontext::MLGraph,
+        inputs: &HashMap<&str, MLTensor>,
+        outputs: &HashMap<&str, MLTensor>,
+    ) -> crate::error::Result<()> {
+        let graph = graph
+            .backend
+            .as_trtx_engine_mut()
+            .expect("Passed a graph that is not a Trtx engine to a TensorRT context");
+        // TODO: just create a u64 device value for cudastreamwaitvalue64?
+        let inference_stream = &graph.cuda_stream;
+
+        for (input, tensor) in inputs.iter() {
+            let cuda_tensor = &mut self.tensors[tensor.id];
+
+            let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            unsafe {
+                graph
+                    .exec
+                    .set_input_tensor_address(input, ptr as *mut c_void)
+                    .to_dispatch_result()?
+            };
+            let event = cuda_tensor.stream.record_event(None).to_dispatch_result()?;
+            inference_stream.wait(&event).to_dispatch_result()?;
+            self.events.push(event);
+        }
+        for (output, tensor) in outputs.iter() {
+            let cuda_tensor = &mut self.tensors[tensor.id];
+
+            let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            unsafe {
+                graph
+                    .exec
+                    .set_output_tensor_address(output, ptr as *mut c_void)
+                    .to_dispatch_result()?
+            };
+        }
+
+        unsafe {
+            graph
+                .exec
+                .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
+                .to_dispatch_result()?
+        };
+        let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
+        for (_output, tensor) in outputs.iter() {
+            let cuda_tensor = &mut self.tensors[tensor.id];
+            cuda_tensor
+                .stream
+                .wait(&inference_done)
+                .to_dispatch_result()?;
+        }
+        self.events.push(inference_done);
+
         Ok(())
     }
 }
