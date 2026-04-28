@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables)]
+
 use crate::{
     backend_selection::BackendDevice,
     error::{Error, Result},
@@ -21,6 +23,16 @@ pub(crate) trait ListDevices {
 pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn accelerated(&self) -> bool;
     fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder<'context> + 'context>>;
+    fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor>;
+    fn create_constant_tensor(
+        &mut self,
+        descriptor: &MLTensorDescriptor,
+        input_data: &[u8],
+    ) -> Result<MLTensor>;
+    /*async*/
+    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()>;
+    /*async*/
+    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()>;
 }
 
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
@@ -52,12 +64,12 @@ impl Display for MLContextLostInfo {
 }
 
 /// https://www.w3.org/TR/webnn/#api-mltensor
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MLTensor {
-    id: u64,
-    constant: bool,
+    pub(crate) id: usize,
+    pub(crate) constant: bool,
     /// internal slots as per https://www.w3.org/TR/webnn/#api-mltensor
-    descriptor: MLTensorDescriptor,
+    pub(crate) descriptor: MLTensorDescriptor,
     //context: &'context MLContext, // todo, omit context?
     //// pending promises, need to be canceled when tensor is destroyed
 }
@@ -93,7 +105,7 @@ pub struct MLGraph {}
 pub struct MLOpSupportLimits {}
 
 // https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor
-#[derive(Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLOperandDescriptor {
     data_type: MLOperandDataType,
     shape: Vec<u64>,
@@ -133,7 +145,7 @@ pub enum MLPowerPreference {
 /// https://www.w3.org/TR/webnn/#api-ml
 ///
 /// From specs: Note: MLContextOptions is under active development, and the design is expected to change,
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct MLContextOptions {
     pub(crate) power_preference: MLPowerPreference,
     pub(crate) accelerated: bool,
@@ -143,7 +155,7 @@ pub struct MLContextOptions {
 }
 
 /// https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor
-#[derive(Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLTensorDescriptor {
     operand_descriptor: MLOperandDescriptor,
     readable: bool,
@@ -213,6 +225,7 @@ impl<'context> MLContext<'context> {
         Ok(Self { backend })
     }
 
+    #[allow(unreachable_code)]
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let desc = select_backend_by_gpu(gpu_device)?;
         let backend = match desc {
@@ -240,8 +253,8 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
-    pub async fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> MLTensor {
-        todo!()
+    pub async fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
+        self.backend.create_tensor(descriptor)
     }
 
     // omit destroy()? We're not JS, objects can be destroyed via drop, we could do destroy stuff in Drop
@@ -262,12 +275,28 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
-    pub async fn read_tensor<T>(&mut self, tensor: &MLTensor, array: &mut [T]) {
-        todo!();
+    pub async fn read_tensor<T: bytemuck::Pod>(
+        &mut self,
+        tensor: &MLTensor,
+        array: &mut [T],
+    ) -> Result<()> {
+        if !tensor.readable() {
+            panic!("Attempt to write non-readable tensor: {tensor:?}");
+        }
+        self.backend
+            .read_tensor(tensor, bytemuck::cast_slice_mut(array))
     }
 
-    pub async fn write_tensor<T>(&mut self, tensor: &MLTensor, array: &[T]) {
-        todo!();
+    pub async fn write_tensor<T: bytemuck::Pod>(
+        &mut self,
+        tensor: &MLTensor,
+        array: &[T],
+    ) -> Result<()> {
+        if !tensor.writable() {
+            panic!("Attempt to write non-writeable tensor: {tensor:?}");
+        }
+        self.backend
+            .write_tensor(tensor, bytemuck::cast_slice(array))
     }
 }
 

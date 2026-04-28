@@ -13,6 +13,7 @@ use crate::graph::{OperandDescriptor, get_static_or_max_size};
 use crate::mlcontext::ListDevices;
 use crate::mlcontext::MLBackendBuilder;
 use crate::mlcontext::MLBackendContext;
+use crate::mlcontext::MLTensor;
 
 // Reexport to allow downstream users (e.g. pywebnn) to set path to TensorRT RTX lib
 pub use trtx::dynamically_load_tensorrt;
@@ -347,7 +348,15 @@ pub fn run_trtx_with_inputs(
 pub(crate) struct TrtxTensor {
     // todo: make all allocs owned by backend, only have view here
     memory: CudaSlice<u8>,
-    stream: CudaStream,
+    stream: Arc<CudaStream>,
+}
+
+impl TrtxTensor {
+    fn new(cuda_ctx: &Arc<CudaContext>, size: usize) -> TrtxResult<Self> {
+        let stream = cuda_ctx.new_stream()?;
+        let memory = stream.alloc_zeros(size)?;
+        Ok(Self { memory, stream })
+    }
 }
 
 pub(crate) struct TrtxContext<'context> {
@@ -387,6 +396,7 @@ impl<'context> TrtxContext<'context> {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
     network: trtx::NetworkDefinition<'builder>,
 }
@@ -403,6 +413,7 @@ impl MLBackendBuilder<'_> for TrtxBuilder<'_> {
     }
 }
 
+#[allow(unused_variables)]
 impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     fn accelerated(&self) -> bool {
         true
@@ -420,6 +431,76 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             })?;
         //self.networks.push(network);
         Ok(Box::new(TrtxBuilder { network }))
+    }
+
+    fn create_tensor(
+        &mut self,
+        descriptor: &crate::mlcontext::MLTensorDescriptor,
+    ) -> crate::error::Result<crate::mlcontext::MLTensor> {
+        let bits = descriptor.data_type().element_size_bits();
+        let elements = descriptor.shape().iter().copied().product::<u64>() as usize;
+        let size = bits * elements / 8;
+
+        let tensor = TrtxTensor::new(&self.cuda_ctx, size).map_err(|e| {
+            crate::error::Error::TensorCreationError {
+                source: e.into(),
+                descriptor: descriptor.clone(),
+            }
+        })?;
+        self.tensors.push(tensor);
+        Ok(MLTensor {
+            id: self.tensors.len() - 1,
+            constant: false,
+            descriptor: descriptor.clone(),
+        })
+    }
+
+    fn create_constant_tensor(
+        &mut self,
+        descriptor: &crate::mlcontext::MLTensorDescriptor,
+        input_data: &[u8],
+    ) -> crate::error::Result<crate::mlcontext::MLTensor> {
+        let mut tensor = self.create_tensor(descriptor)?;
+        tensor.constant = true;
+        self.write_tensor(&tensor, input_data).map_err(|e| {
+            crate::error::Error::TensorCreationError {
+                source: e.into(),
+                descriptor: descriptor.clone(),
+            }
+        })?; // need to free tensor in case of error
+        Ok(tensor)
+    }
+
+    fn read_tensor(
+        &mut self,
+        tensor: &crate::mlcontext::MLTensor,
+        array: &mut [u8],
+    ) -> crate::error::Result<()> {
+        let cuda_tensor = &self.tensors[tensor.id];
+        let stream = &cuda_tensor.stream;
+        stream
+            .memcpy_dtoh(&cuda_tensor.memory, array)
+            .map_err(|e| crate::error::Error::TensorReadError {
+                source: e.into(),
+                tensor: tensor.clone(),
+            })?;
+        Ok(())
+    }
+
+    fn write_tensor(
+        &mut self,
+        tensor: &crate::mlcontext::MLTensor,
+        array: &[u8],
+    ) -> crate::error::Result<()> {
+        let cuda_tensor = &mut self.tensors[tensor.id];
+        let stream = &cuda_tensor.stream;
+        stream
+            .memcpy_htod(array, &mut cuda_tensor.memory)
+            .map_err(|e| crate::error::Error::TensorWriteError {
+                source: e.into(),
+                tensor: tensor.clone(),
+            })?;
+        Ok(())
     }
 }
 
@@ -475,23 +556,87 @@ impl ListDevices for TrtxContext<'_> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "trtx-runtime")]
 mod tests {
-    #[test]
-    #[cfg(feature = "trtx-runtime-mock")]
-    fn test_trtx_executor_availability() {
-        // This test just verifies the module compiles in mock mode
-        // Real execution tests would require actual ONNX models
-        assert!(true, "TensorRT executor module compiled successfully");
-    }
+    use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
+    use crate::{executors::trtx::TrtxContext, mlcontext::ListDevices};
 
     #[test]
-    #[cfg(feature = "trtx-runtime")]
     fn test_context_creation() {
         let _ = pretty_env_logger::try_init();
         use crate::{executors::trtx::TrtxContext, mlcontext::ListDevices};
         let devices = TrtxContext::list_devices();
-        if let [first, ..] = devices.as_slice() {
-            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap();
-        }
+        let context = if let [first, ..] = devices.as_slice() {
+            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+        } else {
+            return;
+        };
+
+        assert!(context.accelerated());
+    }
+
+    #[test]
+    fn test_builder() {
+        let _ = pretty_env_logger::try_init();
+        let devices = TrtxContext::list_devices();
+        let mut context = if let [first, ..] = devices.as_slice() {
+            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+        } else {
+            return;
+        };
+
+        let _builder = context.create_builder().unwrap();
+    }
+
+    #[test]
+    fn test_create_tensors() {
+        let _ = pretty_env_logger::try_init();
+        let devices = TrtxContext::list_devices();
+        let mut context = if let [first, ..] = devices.as_slice() {
+            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+        } else {
+            return;
+        };
+
+        let mut desc = MLTensorDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+        desc.set_readable(true);
+        desc.set_writable(true);
+        let tensor = context.create_tensor(&desc).unwrap();
+
+        let upload = vec![1.0f32, 2., 3., 4.];
+        let mut download = vec![0.0f32; 4];
+        context
+            .write_tensor(&tensor, bytemuck::cast_slice(&upload))
+            .unwrap();
+        context
+            .read_tensor(&tensor, bytemuck::cast_slice_mut(&mut download))
+            .unwrap();
+        assert_eq!(&upload, &download);
+    }
+
+    #[test]
+    #[should_panic = "assertion failed: dst.len() >= src.len()"]
+    fn test_write_too_large_tensor() {
+        let _ = pretty_env_logger::try_init();
+        let devices = TrtxContext::list_devices();
+        let mut context = if let [first, ..] = devices.as_slice() {
+            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+        } else {
+            return;
+        };
+        let too_big = vec![0.0f32; 8];
+        let mut desc = MLTensorDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+        desc.set_readable(true);
+        desc.set_writable(true);
+        let tensor = context.create_tensor(&desc).unwrap();
+        context
+            .write_tensor(&tensor, bytemuck::cast_slice(&too_big))
+            .unwrap_err();
     }
 }
