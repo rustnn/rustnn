@@ -13,6 +13,7 @@ use crate::{
 // Backend traits
 
 pub(crate) trait ListDevices {
+    // TODO: should probably be a Result or just be an empty Vec when something is not working the
     fn list_devices() -> Vec<BackendDevice>;
 }
 
@@ -200,12 +201,12 @@ impl<'context> MLContext<'context> {
     pub async fn create(options: &MLContextOptions) -> Result<Self> {
         let desc = select_backend(options)?;
         let backend = match desc {
-            crate::backend_selection::BackendDevice::OnnxRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDevice::TrtxRuntime { cuda_device_idx } => Box::new(
+            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => Box::new(
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDevice::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
             crate::backend_selection::BackendDevice::WebNN => todo!(),
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
         };
@@ -215,9 +216,9 @@ impl<'context> MLContext<'context> {
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let desc = select_backend_by_gpu(gpu_device)?;
         let backend = match desc {
-            crate::backend_selection::BackendDevice::OnnxRuntime { device_type } => todo!(),
-            crate::backend_selection::BackendDevice::TrtxRuntime { cuda_device_idx } => todo!(),
-            crate::backend_selection::BackendDevice::CoremlRuntime { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => todo!(),
+            crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
             crate::backend_selection::BackendDevice::WebNN => todo!(),
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
         };
@@ -304,12 +305,12 @@ mod test {
             default_operand_desc.data_type()
         );
         assert_eq!(default_tensor_desc.data_type(), MLOperandDataType::Float32);
-        assert_eq!(default_tensor_desc.writable(), false);
-        assert_eq!(default_tensor_desc.readable(), false);
+        assert!(!default_tensor_desc.writable());
+        assert!(!default_tensor_desc.readable());
         default_tensor_desc.set_writable(true);
-        assert_eq!(default_tensor_desc.writable(), true);
+        assert!(default_tensor_desc.writable());
         default_tensor_desc.set_writable(true);
-        assert_eq!(default_tensor_desc.writable(), true);
+        assert!(default_tensor_desc.writable());
 
         let desc = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
         let op_desc = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);

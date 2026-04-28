@@ -48,6 +48,7 @@ webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true}
 log = "0.4.29"
+pretty_env_logger = "0.5.0"
 
 [build-dependencies]
 prost-build = "0.12"
