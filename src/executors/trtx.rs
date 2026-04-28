@@ -1,6 +1,9 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use cudarc::driver::{CudaContext, CudaSlice, CudaStream, DriverError};
+use log::info;
+use log::trace;
+use log::warn;
 use ort::logging::Logger;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -372,6 +375,7 @@ static LOGGER: std::sync::LazyLock<trtx::Logger> =
 
 impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
+        // this retains the primary context
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
         let builder = trtx::Builder::new(&LOGGER)?;
         let runtime = trtx::Runtime::new(&LOGGER)?;
@@ -420,9 +424,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     }
 }
 
-impl ListDevices for dyn MLBackendContext<'_> {
+impl ListDevices for TrtxContext<'_> {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
+        trace!("Enumerating Trtx devices");
         let Ok(device_count) = CudaContext::device_count() else {
+            warn!("Could not enumerate CUDA devices for TensorRT RTX");
             return Vec::new();
         };
 
@@ -444,6 +450,7 @@ impl ListDevices for dyn MLBackendContext<'_> {
             }
         }
 
+        info!("Found Trtx devices {devices:?} from {device_count} CUDA devices");
         devices
     }
 }

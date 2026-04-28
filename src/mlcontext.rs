@@ -15,6 +15,7 @@ use crate::{
 pub(crate) trait ListDevices {
     fn list_devices() -> Vec<BackendDevice>;
 }
+
 // could make public later if interface stabilized
 pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn accelerated(&self) -> bool;

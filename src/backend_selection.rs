@@ -1,6 +1,7 @@
 use crate::{
     error::Result,
-    mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
+    executors::trtx::TrtxContext,
+    mlcontext::{GpuDevice, ListDevices, MLContextOptions, MLPowerPreference},
 };
 
 // this is a concept of pywebnn
@@ -14,6 +15,7 @@ pub(crate) enum DeviceType {
 /// we currently only consider internal backends,
 /// might allow to register external backends in future
 /// like with converter registry
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub(crate) enum BackendDevice {
     OnnxRuntime {
         //ep_device_idx: u64,
@@ -34,7 +36,8 @@ pub(crate) enum BackendDevice {
 // autoselection
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
-    let want_trtx = false;
+    let want_trtx = true;
+    let trtx_devices = TrtxContext::list_devices();
 
     let have_onnx = cfg!(feature = "onnx-runtime");
     let want_onnx = true;
@@ -58,9 +61,12 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     Ok(match (options.power_preference, options.accelerated) {
         // Trtx
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
-            if have_trtx && want_trtx =>
+            if have_trtx
+                && want_trtx
+                && !trtx_devices.is_empty()
+                && trtx::dynamically_load_tensorrt(None::<String>).is_ok() =>
         {
-            BackendDevice::TrtxRuntime { cuda_device_idx: 0 }
+            *trtx_devices.first().unwrap()
         }
 
         // CoreML
