@@ -20,9 +20,15 @@ pub enum Error {
     // TODO: this error can at moment also occur in other situations than conversion. We should make
     // GraphError more specific to graph conversion
     #[error("Failed to convert graph: {source}")]
-    GraphBuildError {
+    GraphConversionError {
         #[from]
         source: GraphError,
+    },
+
+    #[error("Failed to convert graph: {source}")]
+    GraphBuildError {
+        #[from]
+        source: Box<dyn std::error::Error>,
     },
 
     #[error("Failed to run inference: {source}")]
