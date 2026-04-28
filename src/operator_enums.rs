@@ -14,6 +14,17 @@ pub enum MLOperandDataType {
     Uint8,
 }
 
+impl MLOperandDataType {
+    pub(crate) const fn element_size_bits(self) -> usize {
+        match self {
+            MLOperandDataType::Float32 | MLOperandDataType::Int32 | MLOperandDataType::Uint32 => 32,
+            MLOperandDataType::Float16 => 16,
+            MLOperandDataType::Int64 | MLOperandDataType::Uint64 => 64,
+            MLOperandDataType::Int8 | MLOperandDataType::Uint8 => 8,
+        }
+    }
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLLstmWeightLayout {

@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use crate::graph::DataType;
+use crate::{
+    graph::DataType,
+    mlcontext::{MLTensor, MLTensorDescriptor},
+};
 use serde_json::Error as JsonError;
 use thiserror::Error;
 
@@ -23,18 +26,30 @@ pub enum Error {
     },
 
     #[error("Failed to run inference: {source}")]
-    InferenceError {
-        source: Box<dyn std::error::Error>,
-    },
+    InferenceError { source: Box<dyn std::error::Error> },
 
     #[error("Failed to create context: {source}")]
-    ContextCreationError {
-        source: Box<dyn std::error::Error>,
-    },
+    ContextCreationError { source: Box<dyn std::error::Error> },
 
     #[error("Failed to create builder: {source}")]
-    BuilderCreationError {
+    BuilderCreationError { source: Box<dyn std::error::Error> },
+
+    #[error("Failed to tensor: {source}")]
+    TensorCreationError {
         source: Box<dyn std::error::Error>,
+        descriptor: MLTensorDescriptor,
+    },
+
+    #[error("Failed to write tensor: {source}")]
+    TensorWriteError {
+        source: Box<dyn std::error::Error>,
+        tensor: MLTensor,
+    },
+
+    #[error("Failed to read tensor: {source}")]
+    TensorReadError {
+        source: Box<dyn std::error::Error>,
+        tensor: MLTensor,
     },
 }
 
