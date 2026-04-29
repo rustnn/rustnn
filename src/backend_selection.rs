@@ -50,6 +50,7 @@ pub(crate) enum BackendDevice {
     ExternalBackend,
 }
 
+#[allow(dead_code)]
 impl BackendDevice {
     fn is_npu(&self) -> bool {
         match self {
