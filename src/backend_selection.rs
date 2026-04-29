@@ -68,6 +68,7 @@ impl BackendDevice {
         }
     }
 
+    #[allow(dead_code)]
     fn is_cpu(&self) -> bool {
         match self {
             BackendDevice::OnnxDevice { device_type }
