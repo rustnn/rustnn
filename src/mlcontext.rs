@@ -2,10 +2,13 @@
 
 use log::info;
 
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-use crate::executors::trtx::{TrtxContext, TrtxGraph};
 use crate::{
     GraphInfo, backend_selection::BackendDevice, backends::ort::OrtContext, error::Result,
+};
+#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+use crate::{
+    error::Error,
+    executors::trtx::{TrtxContext, TrtxGraph},
 };
 use std::{collections::HashMap, fmt::Display};
 
