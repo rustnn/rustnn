@@ -1,4 +1,5 @@
 pub mod backend_selection;
+pub mod backends;
 pub mod converters;
 pub mod debug;
 pub mod error;
@@ -16,7 +17,6 @@ pub mod shape_inference;
 pub mod tensor;
 pub mod validator;
 pub mod webnn_json;
-pub mod backends;
 
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;

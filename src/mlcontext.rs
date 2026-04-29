@@ -5,10 +5,7 @@ use log::info;
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::executors::trtx::{TrtxContext, TrtxGraph};
 use crate::{
-    GraphInfo,
-    backend_selection::BackendDevice,
-    backends::ort::OrtContext,
-    error::{Error, Result},
+    GraphInfo, backend_selection::BackendDevice, backends::ort::OrtContext, error::Result,
 };
 use std::{collections::HashMap, fmt::Display};
 
@@ -58,7 +55,10 @@ pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
 pub(crate) enum MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     TrtxEngine(TrtxGraph<'context>),
-    OnnxSession(crate::backends::ort::OrtGraph),
+    OnnxSession(
+        crate::backends::ort::OrtGraph,
+        std::marker::PhantomData<&'context ()>,
+    ),
 }
 
 impl<'context> MLBackendGraph<'context> {
@@ -72,10 +72,10 @@ impl<'context> MLBackendGraph<'context> {
     }
 
     pub(crate) fn as_onnx_session_mut(&mut self) -> Option<&mut crate::backends::ort::OrtGraph> {
-        if let Self::OnnxSession(g) = self {
-            Some(g)
-        } else {
-            None
+        match self {
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            Self::TrtxEngine(_) => None,
+            Self::OnnxSession(g, _) => Some(g),
         }
     }
 }
