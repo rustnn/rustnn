@@ -1,12 +1,12 @@
+#[cfg(feature = "onnx-runtime")]
+use crate::executors::onnx::ensure_ort_initialized;
 use crate::{
-    backends::ort::OrtContext,
     error::Result,
-    executors::onnx::ensure_ort_initialized,
     mlcontext::{GpuDevice, ListDevices, MLContextOptions, MLPowerPreference},
 };
 
 #[cfg(feature = "trtx-runtime")]
-use crate::executors::trtx::TrtxContext;
+use crate::{backends::ort::OrtContext, executors::trtx::TrtxContext};
 
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -16,6 +16,7 @@ pub(crate) enum DeviceType {
     Npu,
 }
 
+#[cfg(feature = "onnx-runtime")]
 impl From<ort::memory::DeviceType> for DeviceType {
     fn from(value: ort::memory::DeviceType) -> Self {
         match value {
@@ -43,7 +44,9 @@ pub(crate) enum BackendDevice {
         //device_idx: u64,
         device_type: DeviceType,
     },
-    WebNN,
+    WebNN {
+        options: MLContextOptions,
+    },
     ExternalBackend,
 }
 
@@ -53,7 +56,7 @@ impl BackendDevice {
             BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Npu,
             BackendDevice::TrtxDevice { .. } => false,
-            BackendDevice::WebNN => todo!(),
+            BackendDevice::WebNN { .. } => false,
             BackendDevice::ExternalBackend => todo!(),
         }
     }
@@ -63,7 +66,7 @@ impl BackendDevice {
             BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Gpu,
             BackendDevice::TrtxDevice { .. } => true,
-            BackendDevice::WebNN => todo!(),
+            BackendDevice::WebNN { .. } => false,
             BackendDevice::ExternalBackend => todo!(),
         }
     }
@@ -74,7 +77,7 @@ impl BackendDevice {
             BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Cpu,
             BackendDevice::TrtxDevice { .. } => false,
-            BackendDevice::WebNN => todo!(),
+            BackendDevice::WebNN { .. } => false,
             BackendDevice::ExternalBackend => todo!(),
         }
     }
@@ -90,8 +93,14 @@ impl BackendDevice {
     }
 }
 
+#[cfg(feature = "web")]
+pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
+    BackendDevice::WebNN(options.clone())
+}
+
 // TODO: pywebnn has device_type, and we could have backend preference for user to overwrite
 // autoselection
+#[cfg(not(feature = "web"))]
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
@@ -100,8 +109,10 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let trtx_devices = TrtxContext::list_devices();
 
+    #[cfg(feature = "onnx-runtime")]
     let have_onnx = cfg!(feature = "onnx-runtime");
-    let want_onnx = true; // onnxruntime stuck in loading
+    #[cfg(feature = "onnx-runtime")]
+    let want_onnx = true;
 
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
     let want_coreml = false;
@@ -148,6 +159,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             device_type: DeviceType::Cpu,
         },
         // ORT
+        #[cfg(feature = "onnx-runtime")]
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_onnx
                 && want_onnx
@@ -156,6 +168,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
+        #[cfg(feature = "onnx-runtime")]
         (MLPowerPreference::Default | MLPowerPreference::LowPower, true)
             if have_onnx
                 && want_onnx
@@ -166,6 +179,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         // TODO: confirm whether we are allowed to return CPU, if user wanted accelerated (IRC
         // chrome did have this behavior in browser)
+        #[cfg(feature = "onnx-runtime")]
         (_, _)
             if have_onnx
                 && want_onnx
@@ -176,7 +190,9 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
 
         // WebNN
-        (_, _) if have_webnn && want_webnn => BackendDevice::WebNN,
+        (_, _) if have_webnn && want_webnn => BackendDevice::WebNN {
+            options: options.clone(),
+        },
         _ => return Err(crate::error::Error::NoBackendAvialable),
     })
 }

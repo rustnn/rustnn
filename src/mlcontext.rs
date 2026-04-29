@@ -2,15 +2,14 @@
 
 use log::info;
 
-use crate::{
-    GraphInfo, backend_selection::BackendDevice, backends::ort::OrtContext, error::Result,
-};
+use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::{
+    backends::ort::OrtContext,
     error::Error,
     executors::trtx::{TrtxContext, TrtxGraph},
 };
-use std::{collections::HashMap, fmt::Display};
+use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 use crate::{
     backend_selection::{select_backend, select_backend_by_gpu},
@@ -58,10 +57,12 @@ pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
 pub(crate) enum MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     TrtxEngine(TrtxGraph<'context>),
+    #[cfg(feature = "onnx-runtime")]
     OnnxSession(
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
+    PhantomData(PhantomData<&'context u8>),
 }
 
 impl<'context> MLBackendGraph<'context> {
@@ -74,11 +75,11 @@ impl<'context> MLBackendGraph<'context> {
         }
     }
 
+    #[cfg(feature = "onnx-runtime")]
     pub(crate) fn as_onnx_session_mut(&mut self) -> Option<&mut crate::backends::ort::OrtGraph> {
         match self {
-            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-            Self::TrtxEngine(_) => None,
             Self::OnnxSession(g, _) => Some(g),
+            _ => None,
         }
     }
 }
@@ -265,6 +266,7 @@ impl<'context> MLContext<'context> {
         let desc = select_backend(options)?;
         info!("Backend selected: {desc:?}");
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match desc {
+            #[cfg(feature = "onnx-runtime")]
             crate::backend_selection::BackendDevice::OnnxDevice { ep_device_idx, .. } => {
                 Box::new(OrtContext::new_from_ep_idx(ep_device_idx)?)
             }
@@ -274,7 +276,7 @@ impl<'context> MLContext<'context> {
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
             crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
-            crate::backend_selection::BackendDevice::WebNN => todo!(),
+            crate::backend_selection::BackendDevice::WebNN { .. } => todo!(),
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
             _ => todo!(),
         };
@@ -288,7 +290,7 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::OnnxDevice { .. } => todo!(),
             crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
-            crate::backend_selection::BackendDevice::WebNN => todo!(),
+            crate::backend_selection::BackendDevice::WebNN { .. } => todo!(),
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
         };
         Ok(Self { backend })
