@@ -96,7 +96,9 @@ impl BackendDevice {
 
 #[cfg(feature = "web")]
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
-    BackendDevice::WebNN(options.clone())
+    BackendDevice::WebNN {
+        options: options.clone(),
+    }
 }
 
 // TODO: pywebnn has device_type, and we could have backend preference for user to overwrite

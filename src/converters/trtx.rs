@@ -12715,8 +12715,8 @@ mod tests {
 
     #[test]
     fn test_engine_io_binding_names_use_operand_names() {
-        use crate::graph::{Operand, OperandDescriptor, OperandKind};
         use crate::graph::to_dimension_vector;
+        use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
             shape: to_dimension_vector(&[1, 1]),
@@ -12754,8 +12754,8 @@ mod tests {
 
     #[test]
     fn test_engine_io_binding_names_duplicate_disambiguation() {
-        use crate::graph::{Operand, OperandDescriptor, OperandKind};
         use crate::graph::to_dimension_vector;
+        use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
             shape: to_dimension_vector(&[1]),
