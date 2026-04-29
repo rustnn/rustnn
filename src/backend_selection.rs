@@ -120,11 +120,6 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
     let want_coreml = false;
 
-    // not merged yet
-    //let have_webnn = cfg!(all(feature = "web", target_arch = "wasm32"));
-    let have_webnn = false;
-    let want_webnn = true;
-
     // TODO: also check whether WebNN is available
     //#[cfg(target_arch = "wasm32")]
     //{
