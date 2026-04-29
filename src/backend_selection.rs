@@ -152,10 +152,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             if have_onnx
                 && want_onnx
                 && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices()
-                    .iter()
-                    .filter(|d| d.is_gpu())
-                    .next() =>
+                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_gpu()) =>
         {
             *first
         }
@@ -163,10 +160,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             if have_onnx
                 && want_onnx
                 && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices()
-                    .iter()
-                    .filter(|d| d.is_npu())
-                    .next() =>
+                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_npu()) =>
         {
             *first
         }
@@ -176,10 +170,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             if have_onnx
                 && want_onnx
                 && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices()
-                    .iter()
-                    .filter(|d| d.is_cpu())
-                    .next() =>
+                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_cpu()) =>
         {
             *first
         }
