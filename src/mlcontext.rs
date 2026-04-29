@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_variables)]
 
+use log::info;
+
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::executors::trtx::TrtxGraph;
 use crate::{
@@ -256,8 +258,10 @@ pub struct MLContext<'context> {
 
 impl<'context> MLContext<'context> {
     // those are methods on `create_context`
-    pub async fn create(options: &MLContextOptions) -> Result<Self> {
+    //pub async
+    pub fn create(options: &MLContextOptions) -> Result<Self> {
         let desc = select_backend(options)?;
+        info!("Backend selected: {desc:?}");
         let backend = match desc {
             crate::backend_selection::BackendDevice::OnnxDevice { device_type } => todo!(),
             crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => Box::new(
@@ -391,5 +395,16 @@ mod test {
         let desc = MLTensorDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
         let op_desc = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![3, 4]);
         assert_eq!(*desc.operand_descriptor(), op_desc);
+    }
+
+    #[test]
+    fn test_create_context() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions {
+            power_preference: MLPowerPreference::Default,
+            accelerated: true,
+        })
+        .unwrap();
+        dbg!(&context);
     }
 }

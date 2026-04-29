@@ -101,12 +101,12 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_onnx && want_onnx =>
         {
-            BackendDevice::CoremlDevice {
+            BackendDevice::OnnxDevice {
                 device_type: DeviceType::Gpu,
             }
         }
         (MLPowerPreference::LowPower, true) if have_onnx && want_onnx => {
-            BackendDevice::CoremlDevice {
+            BackendDevice::OnnxDevice {
                 device_type: DeviceType::Npu,
             }
         }
