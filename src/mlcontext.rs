@@ -58,7 +58,7 @@ pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
 pub(crate) enum MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     TrtxEngine(TrtxGraph<'context>),
-    OnnxSession(std::marker::PhantomData<&'context u8>),
+    OnnxSession(crate::backends::ort::OrtGraph),
 }
 
 impl<'context> MLBackendGraph<'context> {
@@ -66,6 +66,14 @@ impl<'context> MLBackendGraph<'context> {
     pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
         if let Self::TrtxEngine(v) = self {
             Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn as_onnx_session_mut(&mut self) -> Option<&mut crate::backends::ort::OrtGraph> {
+        if let Self::OnnxSession(g) = self {
+            Some(g)
         } else {
             None
         }
