@@ -1188,8 +1188,8 @@ fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
         .or_else(|| v.as_u64().map(|u| u as i64))
 }
 
-/// Build TensorRT input list from WPT graph. Tensor names match [`TrtxConverter::engine_binding_name`]
-/// (operand index), not WebNN/WPT logical names, so TensorRT QDQ rewrite does not misfire on names like `...ZeroPoint`.
+/// Build TensorRT input list from WPT graph. Tensor names match [`TrtxConverter::engine_io_tensor_name`]
+/// (graph operand names when set, else `webnn_operand_{id}`).
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn wpt_graph_to_trtx_inputs(
     graph: &WptGraph,
@@ -1333,7 +1333,7 @@ pub fn wpt_graph_to_trtx_inputs(
         };
 
         inputs.push(rustnn::TrtxInput {
-            name: TrtxConverter::engine_binding_name(op_id),
+            name: TrtxConverter::engine_io_tensor_name(graph_info, op_id),
             data,
         });
     }

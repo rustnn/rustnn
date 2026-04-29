@@ -231,9 +231,8 @@ fn run() -> Result<(), GraphError> {
                     format: converted.format.to_string(),
                 });
             }
-            // Native WebNN->TRT engines use `TrtxConverter::engine_binding_name(operand_id)` so TRT's
-            // QDQ optimizer does not match user names (e.g. WPT `quantizeLinearZeroPoint`). ONNX models
-            // keep protobuf I/O names from `artifacts`.
+            // Native WebNN->TRT engines use [`TrtxConverter::engine_io_tensor_name`] (operand names
+            // from the graph when set). ONNX models keep protobuf I/O names from `artifacts`.
             let inputs: Vec<rustnn::TrtxInput> = if converted.format == "trtx" {
                 let mut v = Vec::with_capacity(graph.input_operands.len());
                 for &op_id in &graph.input_operands {
@@ -259,7 +258,7 @@ fn run() -> Result<(), GraphError> {
                         .max(1);
                     let byte_len = total * desc.data_type.bytes_per_element();
                     v.push(rustnn::TrtxInput {
-                        name: TrtxConverter::engine_binding_name(op_id),
+                        name: TrtxConverter::engine_io_tensor_name(&graph, op_id),
                         data: vec![0u8; byte_len],
                     });
                 }
