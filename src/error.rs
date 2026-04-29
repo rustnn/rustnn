@@ -14,6 +14,9 @@ pub enum Error {
     #[error("No backend is avaialbel for context creation")]
     NoBackendAvialable,
 
+    #[error("No device of selected type available")]
+    NoDeviceAvailable,
+
     #[error("Lost MLContext: {0}")]
     ContextLost(String),
 
@@ -59,9 +62,7 @@ pub enum Error {
     },
 
     #[error("Failed to dispatch graph: {source}")]
-    GraphDispatchError {
-        source: Box<dyn std::error::Error>,
-    },
+    GraphDispatchError { source: Box<dyn std::error::Error> },
 }
 
 #[derive(Debug, Error)]

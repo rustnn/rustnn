@@ -3,12 +3,12 @@
 use log::info;
 
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-use crate::executors::trtx::TrtxGraph;
+use crate::executors::trtx::{TrtxContext, TrtxGraph};
 use crate::{
     GraphInfo,
     backend_selection::BackendDevice,
+    backends::ort::OrtContext,
     error::{Error, Result},
-    executors::trtx::TrtxContext,
 };
 use std::{collections::HashMap, fmt::Display};
 
@@ -58,20 +58,11 @@ pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
 pub(crate) enum MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     TrtxEngine(TrtxGraph<'context>),
-    OnnxSession(),
+    OnnxSession(std::marker::PhantomData<&'context u8>),
 }
 
 impl<'context> MLBackendGraph<'context> {
-    pub(crate) fn as_trtx_engine(&self) -> Option<&TrtxGraph<'context>> {
-        if let Self::TrtxEngine(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-}
-
-impl<'context> MLBackendGraph<'context> {
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
         if let Self::TrtxEngine(v) = self {
             Some(v)
@@ -262,8 +253,11 @@ impl<'context> MLContext<'context> {
     pub fn create(options: &MLContextOptions) -> Result<Self> {
         let desc = select_backend(options)?;
         info!("Backend selected: {desc:?}");
-        let backend = match desc {
-            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => todo!(),
+        let backend: Box<dyn MLBackendContext<'context> + 'context> = match desc {
+            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => {
+                Box::new(OrtContext::new_from_ty(device_type)?)
+            }
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
             crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => Box::new(
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
@@ -271,6 +265,7 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
             crate::backend_selection::BackendDevice::WebNN => todo!(),
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
+            _ => todo!(),
         };
         Ok(Self { backend })
     }
@@ -303,7 +298,8 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
-    pub async fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
+    // async
+    pub fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
         self.backend.create_tensor(descriptor)
     }
 
@@ -325,7 +321,8 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
-    pub async fn read_tensor<T: bytemuck::Pod>(
+    //async
+    pub fn read_tensor<T: bytemuck::Pod>(
         &mut self,
         tensor: &MLTensor,
         array: &mut [T],
@@ -337,11 +334,8 @@ impl<'context> MLContext<'context> {
             .read_tensor(tensor, bytemuck::cast_slice_mut(array))
     }
 
-    pub async fn write_tensor<T: bytemuck::Pod>(
-        &mut self,
-        tensor: &MLTensor,
-        array: &[T],
-    ) -> Result<()> {
+    //async
+    pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
         if !tensor.writable() {
             panic!("Attempt to write non-writeable tensor: {tensor:?}");
         }
@@ -400,11 +394,24 @@ mod test {
     #[test]
     fn test_create_context() {
         let _ = pretty_env_logger::try_init();
-        let context = MLContext::create(&MLContextOptions {
+        let mut context = MLContext::create(&MLContextOptions {
             power_preference: MLPowerPreference::Default,
             accelerated: true,
         })
         .unwrap();
         dbg!(&context);
+        let mut desc = MLTensorDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+        desc.set_readable(true);
+        desc.set_writable(true);
+        let tensor = context.create_tensor(&desc).unwrap();
+
+        let upload = vec![1.0f32, 2., 3., 4.];
+        let mut download = vec![0.0f32; 4];
+        context.write_tensor(&tensor, &upload).unwrap();
+        context.read_tensor(&tensor, &mut download).unwrap();
+        assert_eq!(&upload, &download);
     }
 }

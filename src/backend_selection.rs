@@ -1,8 +1,12 @@
 use crate::{
+    backends::ort::OrtContext,
     error::Result,
-    executors::{onnx::ensure_ort_initialized, trtx::TrtxContext},
+    executors::onnx::ensure_ort_initialized,
     mlcontext::{GpuDevice, ListDevices, MLContextOptions, MLPowerPreference},
 };
+
+#[cfg(feature = "trtx-runtime")]
+use crate::executors::trtx::TrtxContext;
 
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -10,6 +14,16 @@ pub(crate) enum DeviceType {
     Cpu,
     Gpu,
     Npu,
+}
+
+impl From<ort::memory::DeviceType> for DeviceType {
+    fn from(value: ort::memory::DeviceType) -> Self {
+        match value {
+            ort::memory::DeviceType::CPU => Self::Cpu,
+            ort::memory::DeviceType::GPU => Self::Gpu,
+            ort::memory::DeviceType::NPU => Self::Gpu,
+        }
+    }
 }
 
 /// we currently only consider internal backends,
@@ -34,6 +48,37 @@ pub(crate) enum BackendDevice {
 }
 
 impl BackendDevice {
+    fn is_npu(&self) -> bool {
+        match self {
+            BackendDevice::OnnxDevice { device_type }
+            | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Npu,
+            BackendDevice::TrtxDevice { .. } => false,
+            BackendDevice::WebNN => todo!(),
+            BackendDevice::ExternalBackend => todo!(),
+        }
+    }
+
+    fn is_gpu(&self) -> bool {
+        match self {
+            BackendDevice::OnnxDevice { device_type }
+            | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Gpu,
+            BackendDevice::TrtxDevice { .. } => true,
+            BackendDevice::WebNN => todo!(),
+            BackendDevice::ExternalBackend => todo!(),
+        }
+    }
+
+    fn is_cpu(&self) -> bool {
+        match self {
+            BackendDevice::OnnxDevice { device_type }
+            | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Cpu,
+            BackendDevice::TrtxDevice { .. } => false,
+            BackendDevice::WebNN => todo!(),
+            BackendDevice::ExternalBackend => todo!(),
+        }
+    }
+
+    #[cfg(feature = "trtx-runtime")]
     #[allow(dead_code)]
     pub(crate) fn as_trtx_device(&self) -> Option<&u32> {
         if let Self::TrtxDevice { cuda_device_idx } = self {
@@ -47,12 +92,15 @@ impl BackendDevice {
 // TODO: pywebnn has device_type, and we could have backend preference for user to overwrite
 // autoselection
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let want_trtx = true;
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let trtx_devices = TrtxContext::list_devices();
 
     let have_onnx = cfg!(feature = "onnx-runtime");
-    let want_onnx = true;
+    let want_onnx = true; // onnxruntime stuck in loading
 
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
     let want_coreml = false;
@@ -72,6 +120,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
 
     Ok(match (options.power_preference, options.accelerated) {
         // Trtx
+        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_trtx
                 && want_trtx
@@ -99,21 +148,33 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         },
         // ORT
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
-            if have_onnx && want_onnx && ensure_ort_initialized().is_ok() =>
+            if have_onnx
+                && want_onnx
+                && ensure_ort_initialized().is_ok()
+                && OrtContext::list_devices()
+                    .iter()
+                    .find(|d| d.is_gpu())
+                    .is_some() =>
         {
             BackendDevice::OnnxDevice {
                 device_type: DeviceType::Gpu,
             }
         }
-        (MLPowerPreference::LowPower, true)
-            if have_onnx && want_onnx && ensure_ort_initialized().is_ok() =>
+        (MLPowerPreference::Default | MLPowerPreference::LowPower, true)
+            if have_onnx
+                && want_onnx
+                && ensure_ort_initialized().is_ok()
+                && OrtContext::list_devices()
+                    .iter()
+                    .find(|d| d.is_npu())
+                    .is_some() =>
         {
             BackendDevice::OnnxDevice {
                 device_type: DeviceType::Npu,
             }
         }
-        (_, false) if have_onnx && want_onnx && ensure_ort_initialized().is_ok() => {
-            BackendDevice::CoremlDevice {
+        (_, _) if have_onnx && want_onnx && ensure_ort_initialized().is_ok() => {
+            BackendDevice::OnnxDevice {
                 device_type: DeviceType::Cpu,
             }
         }
