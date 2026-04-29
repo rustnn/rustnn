@@ -6,6 +6,7 @@ use std::sync::Once;
 
 use log::{error, info};
 use ndarray::{ArrayD, IxDyn};
+use ort::environment::Environment;
 use ort::session::SessionInputValue;
 
 use half;
@@ -27,7 +28,9 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
         let success = ort::init()
             .with_name("rustnn")
             .with_execution_providers([
-                ort::execution_providers::CPUExecutionProvider::default().build()
+                ort::ep::CPUExecutionProvider::default().build(),
+                //ort::ep::NVRTXExecutionProvider::default().build(),
+                //ort::ep::CUDAExecutionProvider::default().build(),
             ])
             .commit();
 
@@ -37,6 +40,11 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
                 reason: "ort init failed - unable to initialize ONNX Runtime".to_string(),
             });
         }
+        let env = Environment::current();
+        if let Ok(env) = env {
+            env.set_log_level(ort::logging::LogLevel::Verbose);
+        }
+        info!("Loaded");
     });
     result
 }
