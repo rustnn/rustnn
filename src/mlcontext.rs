@@ -262,8 +262,8 @@ impl<'context> MLContext<'context> {
         let desc = select_backend(options)?;
         info!("Backend selected: {desc:?}");
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match desc {
-            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => {
-                Box::new(OrtContext::new_from_ty(device_type)?)
+            crate::backend_selection::BackendDevice::OnnxDevice { ep_device_idx, .. } => {
+                Box::new(OrtContext::new_from_ep_idx(ep_device_idx)?)
             }
             #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
             crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => Box::new(
@@ -282,7 +282,7 @@ impl<'context> MLContext<'context> {
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let desc = select_backend_by_gpu(gpu_device)?;
         let backend = match desc {
-            crate::backend_selection::BackendDevice::OnnxDevice { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::OnnxDevice { .. } => todo!(),
             crate::backend_selection::BackendDevice::TrtxDevice { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
             crate::backend_selection::BackendDevice::WebNN => todo!(),
