@@ -1,6 +1,6 @@
 use crate::{
     error::Result,
-    executors::trtx::TrtxContext,
+    executors::{onnx::ensure_ort_initialized, trtx::TrtxContext},
     mlcontext::{GpuDevice, ListDevices, MLContextOptions, MLPowerPreference},
 };
 
@@ -99,20 +99,24 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         },
         // ORT
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
-            if have_onnx && want_onnx =>
+            if have_onnx && want_onnx && ensure_ort_initialized().is_ok() =>
         {
             BackendDevice::OnnxDevice {
                 device_type: DeviceType::Gpu,
             }
         }
-        (MLPowerPreference::LowPower, true) if have_onnx && want_onnx => {
+        (MLPowerPreference::LowPower, true)
+            if have_onnx && want_onnx && ensure_ort_initialized().is_ok() =>
+        {
             BackendDevice::OnnxDevice {
                 device_type: DeviceType::Npu,
             }
         }
-        (_, false) if have_onnx && want_onnx => BackendDevice::CoremlDevice {
-            device_type: DeviceType::Cpu,
-        },
+        (_, false) if have_onnx && want_onnx && ensure_ort_initialized().is_ok() => {
+            BackendDevice::CoremlDevice {
+                device_type: DeviceType::Cpu,
+            }
+        }
         // WebNN
         (_, _) if have_webnn && want_webnn => BackendDevice::WebNN,
         _ => return Err(crate::error::Error::NoBackendAvialable),
