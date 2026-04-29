@@ -189,11 +189,6 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
-
-        // WebNN
-        (_, _) if have_webnn && want_webnn => BackendDevice::WebNN {
-            options: options.clone(),
-        },
         _ => return Err(crate::error::Error::NoBackendAvialable),
     })
 }
