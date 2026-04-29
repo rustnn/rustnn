@@ -345,6 +345,16 @@ pub(crate) struct OrtContext {
 }
 
 impl OrtContext {
+    pub(crate) fn new_from_ep_idx(device_idx: usize) -> crate::error::Result<Self> {
+        ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
+        let env =
+            Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })?;
+        Ok(Self {
+            env,
+            device_idx,
+            tensors: Vec::new(),
+        })
+    }
     pub(crate) fn new_from_ty(
         device_type: crate::backend_selection::DeviceType,
     ) -> crate::error::Result<Self> {
@@ -402,13 +412,14 @@ impl ListDevices for OrtContext {
         };
 
         let mut rtn = vec![];
-        for d in env.devices() {
+        for (idx, d) in env.devices().enumerate() {
             debug!(
                 "Saw ONNX device {:?}",
                 &(&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
             );
             rtn.push(BackendDevice::OnnxDevice {
                 device_type: d.ty().into(),
+                ep_device_idx: idx,
             })
         }
 

@@ -33,7 +33,7 @@ impl From<ort::memory::DeviceType> for DeviceType {
 #[allow(dead_code)]
 pub(crate) enum BackendDevice {
     OnnxDevice {
-        //ep_device_idx: u64,
+        ep_device_idx: usize,
         device_type: DeviceType,
     },
     TrtxDevice {
@@ -50,7 +50,7 @@ pub(crate) enum BackendDevice {
 impl BackendDevice {
     fn is_npu(&self) -> bool {
         match self {
-            BackendDevice::OnnxDevice { device_type }
+            BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Npu,
             BackendDevice::TrtxDevice { .. } => false,
             BackendDevice::WebNN => todo!(),
@@ -60,7 +60,7 @@ impl BackendDevice {
 
     fn is_gpu(&self) -> bool {
         match self {
-            BackendDevice::OnnxDevice { device_type }
+            BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Gpu,
             BackendDevice::TrtxDevice { .. } => true,
             BackendDevice::WebNN => todo!(),
@@ -71,7 +71,7 @@ impl BackendDevice {
     #[allow(dead_code)]
     fn is_cpu(&self) -> bool {
         match self {
-            BackendDevice::OnnxDevice { device_type }
+            BackendDevice::OnnxDevice { device_type, .. }
             | BackendDevice::CoremlDevice { device_type } => *device_type == DeviceType::Cpu,
             BackendDevice::TrtxDevice { .. } => false,
             BackendDevice::WebNN => todo!(),
@@ -152,33 +152,38 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             if have_onnx
                 && want_onnx
                 && ensure_ort_initialized().is_ok()
-                && OrtContext::list_devices()
+                && let Some(first) = OrtContext::list_devices()
                     .iter()
-                    .find(|d| d.is_gpu())
-                    .is_some() =>
+                    .filter(|d| d.is_gpu())
+                    .next() =>
         {
-            BackendDevice::OnnxDevice {
-                device_type: DeviceType::Gpu,
-            }
+            *first
         }
         (MLPowerPreference::Default | MLPowerPreference::LowPower, true)
             if have_onnx
                 && want_onnx
                 && ensure_ort_initialized().is_ok()
-                && OrtContext::list_devices()
+                && let Some(first) = OrtContext::list_devices()
                     .iter()
-                    .find(|d| d.is_npu())
-                    .is_some() =>
+                    .filter(|d| d.is_npu())
+                    .next() =>
         {
-            BackendDevice::OnnxDevice {
-                device_type: DeviceType::Npu,
-            }
+            *first
         }
-        (_, _) if have_onnx && want_onnx && ensure_ort_initialized().is_ok() => {
-            BackendDevice::OnnxDevice {
-                device_type: DeviceType::Cpu,
-            }
+        // TODO: confirm whether we are allowed to return CPU, if user wanted accelerated (IRC
+        // chrome did have this behavior in browser)
+        (_, _)
+            if have_onnx
+                && want_onnx
+                && ensure_ort_initialized().is_ok()
+                && let Some(first) = OrtContext::list_devices()
+                    .iter()
+                    .filter(|d| d.is_cpu())
+                    .next() =>
+        {
+            *first
         }
+
         // WebNN
         (_, _) if have_webnn && want_webnn => BackendDevice::WebNN,
         _ => return Err(crate::error::Error::NoBackendAvialable),
