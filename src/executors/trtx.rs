@@ -647,8 +647,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     fn dispatch(
         &mut self,
         graph: &mut crate::mlcontext::MLGraph,
-        inputs: &HashMap<&str, MLTensor>,
-        outputs: &HashMap<&str, MLTensor>,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
     ) -> crate::error::Result<()> {
         let graph = graph
             .backend

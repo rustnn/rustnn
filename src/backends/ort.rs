@@ -323,7 +323,7 @@ fn copy_dyn_value_to_buffer(
 
 fn write_outputs_from_session<'s>(
     session_outputs: &SessionOutputs<'s>,
-    outputs: &HashMap<&str, MLTensor>,
+    outputs: &HashMap<&str, &MLTensor>,
     tensors: &mut [OrtTensor],
 ) -> crate::error::Result<()> {
     for (&name, ml_tensor) in outputs.iter() {
@@ -355,6 +355,8 @@ impl OrtContext {
             tensors: Vec::new(),
         })
     }
+
+    #[allow(dead_code)]
     pub(crate) fn new_from_ty(
         device_type: crate::backend_selection::DeviceType,
     ) -> crate::error::Result<Self> {
@@ -503,8 +505,8 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, MLTensor>,
-        outputs: &HashMap<&str, MLTensor>,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
     ) -> crate::error::Result<()> {
         let ort_graph =
             graph

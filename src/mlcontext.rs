@@ -38,8 +38,8 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, MLTensor>,
-        outputs: &HashMap<&str, MLTensor>,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
     ) -> Result<()>;
 }
 
@@ -318,11 +318,11 @@ impl<'context> MLContext<'context> {
 
     pub fn dispatch(
         &mut self,
-        graph: &MLGraph,
-        inputs: &HashMap<&str, MLTensor>,
-        outputs: &HashMap<&str, MLTensor>,
-    ) {
-        todo!()
+        graph: &mut MLGraph,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
+    ) -> crate::error::Result<()> {
+        self.backend.dispatch(graph, inputs, outputs)
     }
 
     pub fn op_support_limits(&self) -> MLOpSupportLimits {
@@ -358,7 +358,7 @@ pub struct MLGraphBuilder<'context> {
 }
 
 impl<'context> MLGraphBuilder<'context> {
-    fn new(context: &'context mut MLContext<'context>) -> Result<Self> {
+    fn new(context: &'_ mut MLContext<'context>) -> Result<Self> {
         let backend = context.backend.create_builder()?;
         Ok(Self { backend })
     }
@@ -375,7 +375,7 @@ impl<'context> MLGraphBuilder<'context> {
 
 #[cfg(test)]
 mod test {
-    use crate::mlcontext::*;
+    use crate::{mlcontext::*, webnn_json::from_graph_json};
 
     #[test]
     fn test_tensor_desc() {
@@ -421,5 +421,60 @@ mod test {
         context.write_tensor(&tensor, &upload).unwrap();
         context.read_tensor(&tensor, &mut download).unwrap();
         assert_eq!(&upload, &download);
+    }
+
+    #[test]
+    fn test_dispatch() {
+        let contents = r#"
+webnn_graph "sample_graph" v1 {
+  inputs {
+    lhs: f32[2, 2];
+  }
+
+  consts {
+    rhs: f32[2, 2] @scalar(1.0);
+  }
+
+  nodes {
+    sum = add(lhs, rhs);
+  }
+
+  outputs { sum; }
+}"#;
+
+        let _ = pretty_env_logger::try_init();
+        let sanitized = crate::loader::sanitize_webnn_identifiers(contents);
+        let graph_json = webnn_graph::parser::parse_wg_text(&sanitized).unwrap();
+        let graph_info = from_graph_json(&graph_json).unwrap();
+
+        let mut context = MLContext::create(&MLContextOptions {
+            power_preference: MLPowerPreference::Default,
+            accelerated: true,
+        })
+        .unwrap();
+        dbg!(&context);
+        let mut desc = MLTensorDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+        desc.set_readable(true);
+        desc.set_writable(true);
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        builder.load_graph(&graph_info).unwrap();
+        let mut graph = builder.build(&HashMap::new()).unwrap();
+
+        let tensor = context.create_tensor(&desc).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("lhs", &tensor);
+        let mut outputs = HashMap::new();
+        outputs.insert("sum", &tensor);
+
+        let upload = vec![1.0f32, 2., 3., 4.];
+        let mut download = vec![0.0f32; 4];
+        context.write_tensor(&tensor, &upload).unwrap();
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        context.read_tensor(&tensor, &mut download).unwrap();
+        assert_eq!(&vec![2.0f32, 3., 4., 5.], &download);
     }
 }
