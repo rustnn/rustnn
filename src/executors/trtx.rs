@@ -222,7 +222,7 @@ fn execute_trtx_engine(
     let mut context = engine.create_execution_context()?;
 
     // Get tensor information
-    let num_tensors = engine.get_nb_io_tensors()?;
+    let num_tensors = engine.nb_io_tensors()?;
 
     // Prepare CUDA buffers for inputs and outputs
     let mut device_buffers: Vec<(String, trtx::DeviceBuffer)> = Vec::new();
@@ -231,12 +231,12 @@ fn execute_trtx_engine(
     // Process each tensor - allocate buffers for ALL tensors (inputs and outputs)
     // TensorRT requires ALL tensor addresses to be set, even for intermediate results
     for i in 0..num_tensors {
-        let name = engine.get_tensor_name(i)?;
-        let dtype = engine.get_tensor_dtype(&name)?;
+        let name = engine.io_tensor_name(i)?;
+        let dtype = engine.tensor_data_type(&name)?;
         let bytes_per_elem = trt_dtype_bytes_per_element(&dtype);
 
         if let Some(input) = inputs.iter().find(|inp| inp.name == name) {
-            let expected_shape_i64 = engine.get_tensor_shape(&name)?;
+            let expected_shape_i64 = engine.tensor_shape(&name)?;
             let expected_shape: Vec<usize> =
                 expected_shape_i64.iter().map(|&d| d as usize).collect();
             let expected_size = expected_shape.iter().product::<usize>() * bytes_per_elem;
@@ -260,7 +260,7 @@ fn execute_trtx_engine(
             device_buffers.push((name.clone(), buffer));
         } else {
             // Non-input tensor (output or intermediate) - allocate buffer
-            let shape_i64 = engine.get_tensor_shape(&name)?;
+            let shape_i64 = engine.tensor_shape(&name)?;
             let shape: Vec<usize> = shape_i64.iter().map(|&d| d as usize).collect();
 
             let num_elements: usize = shape.iter().product();
@@ -278,7 +278,7 @@ fn execute_trtx_engine(
 
     // Execute inference
     unsafe {
-        context.enqueue_v3(trtx::cuda::get_default_stream())?;
+        context.enqueue_v3(trtx::cuda::default_stream())?;
     }
 
     // Synchronize to ensure completion

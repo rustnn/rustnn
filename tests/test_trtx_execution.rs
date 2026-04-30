@@ -202,12 +202,12 @@ mod tests {
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
-        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_tensors = engine.nb_io_tensors()?;
         assert_eq!(num_tensors, 3, "Expected 3 tensors (2 inputs + 1 output)");
 
-        let input_a_name = engine.get_tensor_name(0)?;
-        let input_b_name = engine.get_tensor_name(1)?;
-        let output_name = engine.get_tensor_name(2)?;
+        let input_a_name = engine.tensor_name(0)?;
+        let input_b_name = engine.tensor_name(1)?;
+        let output_name = engine.tensor_name(2)?;
 
         // Calculate output size from graph's output operand descriptor
         let output_operand_id = graph.output_operands[0];
@@ -286,11 +286,11 @@ mod tests {
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
-        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_tensors = engine.nb_io_tensors()?;
         assert_eq!(num_tensors, 2, "Expected 2 tensors (input + output)");
 
-        let input_name = engine.get_tensor_name(0)?;
-        let output_name = engine.get_tensor_name(1)?;
+        let input_name = engine.tensor_name(0)?;
+        let output_name = engine.tensor_name(1)?;
 
         // Calculate output size from graph's output operand descriptor
         let output_operand_id = graph.output_operands[0];
@@ -359,7 +359,7 @@ mod tests {
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
-        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_tensors = engine.nb_io_tensors()?;
         let num_inputs = graph.input_operands.len();
         let num_graph_outputs = graph.output_operands.len();
         // Note: TensorRT may have more outputs than graph.output_operands due to intermediate values
@@ -445,7 +445,7 @@ mod tests {
 
         // Set tensor addresses for all inputs
         for (i, buffer) in input_buffers.iter().enumerate() {
-            let tensor_name = engine.get_tensor_name(i as i32)?;
+            let tensor_name = engine.tensor_name(i as i32)?;
             unsafe {
                 context.set_tensor_address(&tensor_name, buffer.as_ptr())?;
             }
@@ -453,7 +453,7 @@ mod tests {
 
         // Set tensor addresses for all outputs
         for (i, buffer) in output_buffers.iter().enumerate() {
-            let tensor_name = engine.get_tensor_name((num_inputs + i) as i32)?;
+            let tensor_name = engine.tensor_name((num_inputs + i) as i32)?;
             unsafe {
                 context.set_tensor_address(&tensor_name, buffer.as_ptr())?;
             }
@@ -911,12 +911,12 @@ mod tests {
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
-        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_tensors = engine.nb_io_tensors()?;
         assert_eq!(num_tensors, 3, "Expected 3 tensors (2 inputs + 1 output)");
 
-        let input_a_name = engine.get_tensor_name(0)?;
-        let input_b_name = engine.get_tensor_name(1)?;
-        let output_name = engine.get_tensor_name(2)?;
+        let input_a_name = engine.tensor_name(0)?;
+        let input_b_name = engine.tensor_name(1)?;
+        let output_name = engine.tensor_name(2)?;
 
         // Allocate device buffers
         let input_a_size = input_a.len() * std::mem::size_of::<f32>();
@@ -1131,13 +1131,13 @@ mod tests {
         let mut context = engine.create_execution_context()?;
 
         // Get tensor info
-        let num_tensors = engine.get_nb_io_tensors()?;
+        let num_tensors = engine.nb_io_tensors()?;
         assert_eq!(num_tensors, 4, "Expected 4 tensors (3 inputs + 1 output)");
 
-        let input_a_name = engine.get_tensor_name(0)?;
-        let input_b_name = engine.get_tensor_name(1)?;
-        let input_c_name = engine.get_tensor_name(2)?;
-        let output_name = engine.get_tensor_name(3)?;
+        let input_a_name = engine.tensor_name(0)?;
+        let input_b_name = engine.tensor_name(1)?;
+        let input_c_name = engine.tensor_name(2)?;
+        let output_name = engine.tensor_name(3)?;
 
         // Allocate device buffers
         let input_a_size = input_a.len() * std::mem::size_of::<f32>();
