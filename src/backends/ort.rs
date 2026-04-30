@@ -114,7 +114,7 @@ impl<'context> MLBackendBuilder<'context> for OrtBuilder<'context> {
     fn load_graph(
         &mut self,
         graph: &'context GraphInfo,
-    ) -> crate::error::Result<LoadedGraphOperands<'context>> {
+    ) -> crate::error::Result<LoadedGraphOperands> {
         self.graph = Some(graph);
         Ok(LoadedGraphOperands::default())
     }

@@ -214,7 +214,7 @@ pub struct MLTensorDescriptor {
     writable: bool,
 }
 
-#[derive(Debug, Eq, PartialEq, Default, Clone)]
+#[derive(Debug, Eq, PartialEq, Default, Copy, Clone)]
 pub struct MLOperand {
     pub(crate) id: usize,
 }
@@ -374,7 +374,7 @@ impl<'context> MLGraphBuilder<'context> {
         Ok(Self { backend })
     }
 
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<LoadedGraphOperands<'context>> {
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<LoadedGraphOperands> {
         self.backend.load_graph(graph)
     }
 
