@@ -44,6 +44,9 @@ jobs:
       - name: Is Cargo.lock consistent with Cargo.toml?
         run: cargo fetch --locked
 
+      - name: Run cargo fmt check
+        run: cargo fmt --all -- --check
+
       - name: Run cargo check
         run: cargo check
 
@@ -58,9 +61,6 @@ jobs:
 
       - name: Run cargo test (library only)
         run: cargo test --lib
-
-      - name: Run cargo fmt check
-        run: cargo fmt --all -- --check
 
       - name: Check backend operator report is up to date
         run: |
