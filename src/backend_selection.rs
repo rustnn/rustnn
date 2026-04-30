@@ -5,8 +5,10 @@ use crate::{
     mlcontext::{GpuDevice, ListDevices, MLContextOptions, MLPowerPreference},
 };
 
+#[cfg(feature = "onnx-runtime")]
+use crate::backends::ort::OrtContext;
 #[cfg(feature = "trtx-runtime")]
-use crate::{backends::ort::OrtContext, executors::trtx::TrtxContext};
+use crate::executors::trtx::TrtxContext;
 
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]

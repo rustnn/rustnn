@@ -17,8 +17,8 @@ use crate::converters::{GraphConverter, OnnxConverter};
 use crate::error::Error;
 use crate::executors::onnx::ensure_ort_initialized;
 use crate::mlcontext::{
-    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLOperand, MLTensor,
-    MLTensorDescriptor,
+    ListDevices, LoadedGraphOperands, MLBackendBuilder, MLBackendContext, MLGraph, MLOperand,
+    MLTensor, MLTensorDescriptor,
 };
 
 trait ToDispatchResult<T> {
@@ -111,9 +111,12 @@ impl<'context> MLBackendBuilder<'context> for OrtBuilder<'context> {
         })
     }
 
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
+    fn load_graph(
+        &mut self,
+        graph: &'context GraphInfo,
+    ) -> crate::error::Result<LoadedGraphOperands<'context>> {
         self.graph = Some(graph);
-        Ok(())
+        Ok(LoadedGraphOperands::default())
     }
 }
 

@@ -444,7 +444,7 @@ pub(crate) struct TrtxContext<'context> {
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
     runtime: Rc<Mutex<trtx::Runtime<'context>>>,
-    config: Rc<Mutex<trtx::BuilderConfig>>, // needs to be destroyed before builder
+    config: Rc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
     builder: Rc<Mutex<trtx::Builder<'context>>>,
 }
 
@@ -486,12 +486,12 @@ impl<'context> TrtxContext<'context> {
 pub(crate) struct TrtxBuilder<'builder> {
     network: trtx::NetworkDefinition<'builder>,
     builder: Rc<Mutex<trtx::Builder<'builder>>>,
-    config: Rc<Mutex<trtx::BuilderConfig>>,
+    config: Rc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
     runtime: Rc<Mutex<trtx::Runtime<'builder>>>,
     operands: HashMap<String, MLOperand>,
     tensors: Vec<Tensor<'builder>>,
-    //_parser: Option<OnnxParser<'builder>>,
+    strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
 }
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -563,8 +563,10 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
             let tensor = self.network.output(i)?;
             let id = self.tensors.len();
             let operand = MLOperand { id };
-            self.operands.insert(tensor.name(&self.network)?, operand);
+            let name = tensor.name(&self.network)?;
+            self.operands.insert(name.clone(), operand);
             self.tensors.push(tensor);
+            operands.outputs.insert(name, operand);
         }
 
         Ok(operands)
@@ -598,6 +600,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             tensors: vec![],
+            strings: vec![],
         }))
     }
 
