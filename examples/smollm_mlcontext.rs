@@ -4,8 +4,12 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use log::info;
 use rustnn::{
-    ContextProperties, GraphValidator, load_graph_from_path,
-    mlcontext::{MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference},
+    ContextProperties, DataType, GraphValidator, ValidationArtifacts, load_graph_from_path,
+    mlcontext::{
+        MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLPowerPreference, MLTensor,
+        MLTensorDescriptor,
+    },
+    operator_enums::MLOperandDataType,
 };
 use tokenizers::Tokenizer;
 
@@ -22,10 +26,6 @@ struct Args {
     max_new_tokens: usize,
     #[arg(long, default_value_t = 500_000_000_000usize)]
     tensor_limit: usize,
-    #[arg(long)]
-    trace: bool,
-    #[arg(long)]
-    trace_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +62,7 @@ fn argmax(values: &[f32]) -> usize {
     best_idx
 }
 
-fn detect_layout(artifacts: &rustnn::ValidationArtifacts) -> anyhow::Result<Layout> {
+fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
     let mut num_layers = 0usize;
     let mut num_heads = None;
     let mut max_cache_len = None;
@@ -120,6 +120,154 @@ fn init_state(layout: &Layout) -> StepState {
     }
 }
 
+fn datatype_to_ml(dt: DataType) -> anyhow::Result<MLOperandDataType> {
+    match dt {
+        DataType::Float32 => Ok(MLOperandDataType::Float32),
+        DataType::Float16 => Ok(MLOperandDataType::Float16),
+        DataType::Int32 => Ok(MLOperandDataType::Int32),
+        DataType::Uint32 => Ok(MLOperandDataType::Uint32),
+        DataType::Int64 => Ok(MLOperandDataType::Int64),
+        DataType::Uint64 => Ok(MLOperandDataType::Uint64),
+        DataType::Int8 => Ok(MLOperandDataType::Int8),
+        DataType::Uint8 => Ok(MLOperandDataType::Uint8),
+        DataType::Int4 | DataType::Uint4 => bail!("Int4/Uint4 not supported in MLContext"),
+    }
+}
+
+fn make_tensor(
+    context: &mut MLContext,
+    desc: &rustnn::OperandDescriptor,
+    readable: bool,
+    writable: bool,
+) -> anyhow::Result<MLTensor> {
+    let shape: Vec<u64> = desc.shape.iter().map(|d| dim_to_usize(d) as u64).collect();
+    let data_type = datatype_to_ml(desc.data_type)?;
+    let mut td = MLTensorDescriptor::new(data_type, shape);
+    td.set_readable(readable);
+    td.set_writable(writable);
+    context
+        .create_tensor(&td)
+        .map_err(|e| anyhow!("create tensor: {e:?}"))
+}
+
+fn create_tensors(
+    context: &mut MLContext,
+    artifacts: &ValidationArtifacts,
+) -> anyhow::Result<(HashMap<String, MLTensor>, HashMap<String, MLTensor>)> {
+    let mut inputs = HashMap::new();
+    for (name, desc) in &artifacts.input_names_to_descriptors {
+        inputs.insert(name.clone(), make_tensor(context, desc, false, true)?);
+    }
+    let mut outputs = HashMap::new();
+    for (name, desc) in &artifacts.output_names_to_descriptors {
+        outputs.insert(name.clone(), make_tensor(context, desc, true, false)?);
+    }
+    Ok((inputs, outputs))
+}
+
+fn write_inputs(
+    context: &mut MLContext,
+    inputs: &HashMap<String, MLTensor>,
+    layout: &Layout,
+    state: &StepState,
+    token_id: i64,
+) -> anyhow::Result<()> {
+    for (name, tensor) in inputs {
+        if name == "input_ids" {
+            context
+                .write_tensor(tensor, &[token_id])
+                .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
+        } else if name == "position_ids" {
+            context
+                .write_tensor(tensor, &[state.current_pos as i64])
+                .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
+        } else if name == "attention_mask" {
+            let total = tensor.shape().iter().product::<u64>() as usize;
+            let mut mask = vec![0i64; total];
+            let fill = (state.current_pos + 1).min(total);
+            for i in 0..fill {
+                mask[i] = 1;
+            }
+            context
+                .write_tensor(tensor, &mask)
+                .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
+        } else if name.starts_with("past_key_values_") {
+            let data = state
+                .cache
+                .get(name)
+                .ok_or_else(|| anyhow!("missing cache entry: {name}"))?;
+            context
+                .write_tensor(tensor, data.as_slice())
+                .map_err(|e| anyhow!("write {name}: {e:?}"))?;
+        } else {
+            bail!("unknown input: {name}");
+        }
+    }
+    Ok(())
+}
+
+// Reads present_{layer}_{key,value} outputs back into the CPU cache buffers,
+// then reads and returns the logits vector.
+//
+// The model uses fixed-size KV cache tensors ([1, heads, max_cache_len, head_dim]),
+// so the full updated cache is available as a present output each step.
+fn read_outputs_and_update_cache(
+    context: &mut MLContext,
+    outputs: &HashMap<String, MLTensor>,
+    layout: &Layout,
+    state: &mut StepState,
+) -> anyhow::Result<Vec<f32>> {
+    for layer in 0..layout.num_layers {
+        for kv in ["key", "value"] {
+            let present_name = format!("present_{layer}_{kv}");
+            let past_name = format!("past_key_values_{layer}_{kv}");
+            if let Some(tensor) = outputs.get(&present_name) {
+                let cache = state
+                    .cache
+                    .get_mut(&past_name)
+                    .ok_or_else(|| anyhow!("missing cache: {past_name}"))?;
+                context
+                    .read_tensor(tensor, cache.as_mut_slice())
+                    .map_err(|e| anyhow!("read {present_name}: {e:?}"))?;
+            }
+        }
+    }
+
+    let logits_tensor = outputs
+        .get(&layout.logits_name)
+        .ok_or_else(|| anyhow!("missing logits: {}", layout.logits_name))?;
+    let len = logits_tensor.shape().iter().product::<u64>() as usize;
+    let mut logits = vec![0f32; len];
+    context
+        .read_tensor(logits_tensor, &mut logits)
+        .map_err(|e| anyhow!("read logits: {e:?}"))?;
+    Ok(logits)
+}
+
+fn run_step(
+    context: &mut MLContext,
+    graph: &mut MLGraph,
+    input_tensors: &HashMap<String, MLTensor>,
+    output_tensors: &HashMap<String, MLTensor>,
+    layout: &Layout,
+    state: &mut StepState,
+    token_id: i64,
+) -> anyhow::Result<usize> {
+    write_inputs(context, input_tensors, layout, state, token_id)?;
+
+    let inputs: HashMap<&str, &MLTensor> =
+        input_tensors.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let outputs: HashMap<&str, &MLTensor> =
+        output_tensors.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    context
+        .dispatch(graph, &inputs, &outputs)
+        .map_err(|e| anyhow!("dispatch at pos={}: {e:?}", state.current_pos))?;
+
+    let logits = read_outputs_and_update_cache(context, output_tensors, layout, state)?;
+    state.current_pos += 1;
+    Ok(argmax(&logits))
+}
+
 fn main() -> anyhow::Result<()> {
     if !std::env::var("RUST_LOG").is_ok() {
         unsafe { std::env::set_var("RUST_LOG", "info") };
@@ -175,13 +323,27 @@ fn main() -> anyhow::Result<()> {
     if prompt_ids.is_empty() {
         bail!("prompt produced zero tokens");
     }
-    //if prompt_ids.len() >= layout.max_cache_len {
-    //bail!(
-    //"prompt too long: {} tokens (must be < {})",
-    //prompt_ids.len(),
-    //layout.max_cache_len
-    //);
-    //}
+
+    let context_properties = ContextProperties {
+        tensor_byte_length_limit: args.tensor_limit,
+        ..Default::default()
+    };
+    let artifacts = GraphValidator::new(&graph_info, context_properties)
+        .validate()
+        .map_err(|e| anyhow!("validate graph: {e}"))?;
+    let layout = detect_layout(&artifacts)?;
+    info!(
+        "Layout: {} layers, {} heads, cache_len={}, head_dim={}",
+        layout.num_layers, layout.num_heads, layout.max_cache_len, layout.head_dim
+    );
+
+    if prompt_ids.len() >= layout.max_cache_len {
+        bail!(
+            "prompt too long: {} tokens (must be < {})",
+            prompt_ids.len(),
+            layout.max_cache_len
+        );
+    }
 
     let mut context = MLContext::create(&MLContextOptions {
         power_preference: MLPowerPreference::Default,
@@ -195,17 +357,57 @@ fn main() -> anyhow::Result<()> {
     let mut graph = builder
         .build_graph_info(&graph_info)
         .map_err(|e| anyhow!("Failed to build graph:\n{e}"))?;
-    info!("Finished");
+    info!("Graph built");
 
-    let context_properties = ContextProperties {
-        tensor_byte_length_limit: args.tensor_limit,
-        ..Default::default()
-    };
-    let artifacts = GraphValidator::new(&graph_info, context_properties)
-        .validate()
-        .map_err(|e| anyhow!("validate graph: {e}"))?;
-    let layout = detect_layout(&artifacts)?;
+    let (input_tensors, output_tensors) = create_tensors(&mut context, &artifacts)?;
+    info!(
+        "Created {} input tensors, {} output tensors",
+        input_tensors.len(),
+        output_tensors.len()
+    );
+
     let mut state = init_state(&layout);
+    let mut last_token = 0usize;
+
+    info!("Prefill ({} tokens)...", prompt_ids.len());
+    for token_id in &prompt_ids {
+        last_token = run_step(
+            &mut context,
+            &mut graph,
+            &input_tensors,
+            &output_tensors,
+            &layout,
+            &mut state,
+            *token_id as i64,
+        )?;
+    }
+
+    info!("Decoding (max {} tokens)...", args.max_new_tokens);
+    let mut generated = Vec::new();
+    for _ in 0..args.max_new_tokens {
+        generated.push(last_token as u32);
+        if state.current_pos >= layout.max_cache_len {
+            break;
+        }
+        last_token = run_step(
+            &mut context,
+            &mut graph,
+            &input_tensors,
+            &output_tensors,
+            &layout,
+            &mut state,
+            last_token as i64,
+        )?;
+    }
+
+    let generated_text = tokenizer
+        .decode(&generated, false)
+        .map_err(|e| anyhow!("decode generated text: {e}"))?;
+
+    println!("Prompt: {}", args.prompt);
+    println!("Prompt token ids: {:?}", prompt_ids);
+    println!("Generated token ids: {:?}", generated);
+    println!("Generated text: {}", generated_text);
 
     Ok(())
 }
