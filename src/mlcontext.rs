@@ -45,16 +45,10 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     ) -> Result<()>;
 }
 
-#[derive(Debug, Default)]
-pub struct LoadedGraphOperands {
-    pub inputs: HashMap<String, MLOperand>,
-    pub outputs: HashMap<String, MLOperand>,
-}
-
 pub(crate) trait MLBackendBuilder<'context>: std::fmt::Debug {
     /*async*/
     fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>>;
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<LoadedGraphOperands>;
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<()>;
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -366,20 +360,33 @@ impl<'context> MLContext<'context> {
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context> {
     backend: Box<dyn MLBackendBuilder<'context> + 'context>,
+
+    ///[[hasBuilt]] of type boolean
+    ///
+    /// Whether MLGraphBuilder.build() has been called. Once built, the MLGraphBuilder can no longer create operators or compile MLGraphs.
+    has_built: bool,
 }
 
 impl<'context> MLGraphBuilder<'context> {
     fn new(context: &'_ mut MLContext<'context>) -> Result<Self> {
         let backend = context.backend.create_builder()?;
-        Ok(Self { backend })
+        Ok(Self {
+            backend,
+            has_built: false,
+        })
     }
 
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> Result<LoadedGraphOperands> {
-        self.backend.load_graph(graph)
+    fn build_graph_info(&mut self, graph: &'context GraphInfo) -> Result<MLGraph<'context>> {
+        self.backend.load_graph(graph)?;
+        self.backend.build(&HashMap::new())
     }
 
     /*async*/
     fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>> {
+        if self.has_built {
+            panic!("Called MLGraphBuilder::build more than once on a MLGraph");
+        }
+        self.has_built = true;
         self.backend.build(outputs)
     }
 }
@@ -472,8 +479,7 @@ webnn_graph "sample_graph" v1 {
         desc.set_writable(true);
 
         let mut builder = MLGraphBuilder::new(&mut context).unwrap();
-        builder.load_graph(&graph_info).unwrap();
-        let mut graph = builder.build(&HashMap::new()).unwrap();
+        let mut graph = builder.build_graph_info(&graph_info).unwrap();
 
         let tensor = context.create_tensor(&desc).unwrap();
         let mut inputs = HashMap::new();

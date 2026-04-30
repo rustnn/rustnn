@@ -16,8 +16,9 @@
 ))]
 // A lot of test code is not used for WASM, we just ignore that instead of annotating every non-web
 // function
-#[cfg(target_arch = "wasm32")]
-#[allow(dead_code, unused_imports)]
+#![cfg(target_arch = "wasm32")]
+#![allow(dead_code, unused_imports)]
+
 mod wpt_conformance;
 
 #[cfg(target_arch = "wasm32")]

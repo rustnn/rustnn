@@ -18,8 +18,8 @@ use crate::GraphInfo;
 use crate::converters::TrtxConverter;
 use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
+use crate::mlcontext::MLTensor;
 use crate::mlcontext::{ListDevices, MLOperand};
-use crate::mlcontext::{LoadedGraphOperands, MLTensor};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
@@ -503,15 +503,17 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
     /*async */
     fn build(
         &mut self,
-        _outputs: &HashMap<&str, MLOperand>,
+        outputs: &HashMap<&str, MLOperand>,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        // TODO: keep track of id->tensor during building via builder API and also get this mapping
-        // from converter API
-
-        //for (name, tensor) in outputs.iter() {
-        //let trt_tensor = self.network.get_te
-        // unset all outputs, then set outputs according to MLOperands
-        //}
+        let num_outputs = self.network.nb_outputs();
+        // Outputs already not set already via load_graph API
+        if num_outputs == 0 {
+            for (k, v) in outputs {
+                let tensor = self.tensors[v.id];
+                tensor.set_name(&mut self.network, k)?;
+                self.network.mark_output(&tensor);
+            }
+        }
 
         let host_mem = self
             .builder
@@ -544,36 +546,8 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
         })
     }
 
-    fn load_graph(
-        &mut self,
-        graph: &'context GraphInfo,
-    ) -> crate::error::Result<LoadedGraphOperands> {
-        TrtxConverter::build_network(graph, &mut self.network)?;
-
-        let mut operands = LoadedGraphOperands::default();
-
-        for i in 0..self.network.nb_inputs() {
-            let tensor = self.network.input(i)?;
-            let id = self.tensors.len();
-            let operand = MLOperand { id };
-            let name = tensor.name(&self.network)?;
-
-            self.operands.insert(name.clone(), operand);
-            self.tensors.push(tensor);
-            operands.inputs.insert(name, operand);
-        }
-        for i in 0..self.network.nb_outputs() {
-            let tensor = self.network.output(i)?;
-            let id = self.tensors.len();
-            let operand = MLOperand { id };
-            let name = tensor.name(&self.network)?;
-
-            self.operands.insert(name.clone(), operand);
-            self.tensors.push(tensor);
-            operands.outputs.insert(name, operand);
-        }
-
-        Ok(operands)
+    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
+        Ok(TrtxConverter::build_network(graph, &mut self.network)?)
     }
 }
 
