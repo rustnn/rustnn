@@ -3,9 +3,11 @@
 use log::info;
 
 use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
+
+#[cfg(feature = "onnx-runtime")]
+use crate::backends::ort::OrtContext;
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::{
-    backends::ort::OrtContext,
     error::Error,
     executors::trtx::{TrtxContext, TrtxGraph},
 };
