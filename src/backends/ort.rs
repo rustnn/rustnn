@@ -159,7 +159,48 @@ fn session_input_from_host(
         });
     };
     let elements: usize = shape_usize.iter().product();
-    let expected = elements.saturating_mul(elem_sz).max(elem_sz);
+
+    // 0-element tensors (e.g. empty KV cache at pos=0) must be handled before the byte-length
+    // check: create_tensor allocates max(1) byte but the check below would require elem_sz bytes.
+    // Use ndarray which handles zero-sized dimensions correctly, same as executors/onnx.rs.
+    if elements == 0 {
+        macro_rules! empty_ndarray {
+            ($rust_ty:ty) => {{
+                let array: ArrayD<$rust_ty> =
+                    ArrayD::from_shape_vec(IxDyn(&shape_usize), vec![]).map_err(|e| {
+                        Error::GraphDispatchError {
+                            source: format!("0-element input '{}': {e}", input_info.name()).into(),
+                        }
+                    })?;
+                Value::from_array(array)
+                    .map_err(|e| Error::GraphDispatchError { source: e.into() })?
+                    .into_dyn()
+            }};
+        }
+        let dyn_val: DynValue = match ty {
+            TensorElementType::Float32 => empty_ndarray!(f32),
+            TensorElementType::Float16 => empty_ndarray!(half::f16),
+            TensorElementType::Int8 => empty_ndarray!(i8),
+            TensorElementType::Uint8 => empty_ndarray!(u8),
+            TensorElementType::Int32 => empty_ndarray!(i32),
+            TensorElementType::Uint32 => empty_ndarray!(u32),
+            TensorElementType::Int64 => empty_ndarray!(i64),
+            TensorElementType::Uint64 => empty_ndarray!(u64),
+            _ => {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "input '{}': unsupported element type {:?} for 0-element tensor",
+                        input_info.name(),
+                        ty
+                    )
+                    .into(),
+                });
+            }
+        };
+        return Ok(SessionInputValue::from(dyn_val));
+    }
+
+    let expected = elements.saturating_mul(elem_sz);
     if bytes.len() != expected {
         return Err(Error::GraphDispatchError {
             source: format!(
@@ -175,23 +216,12 @@ fn session_input_from_host(
     let shape_i64: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
     let dyn_val: DynValue = match ty {
         TensorElementType::Float32 => {
-            let v = if shape_usize.contains(&0) {
-                let data: Vec<f32> = bytemuck::cast_slice(bytes).to_vec();
-                let array = ArrayD::from_shape_vec(IxDyn(&shape_usize), data).map_err(|e| {
-                    Error::GraphDispatchError {
-                        source: format!("ndarray input {}: {e}", input_info.name()).into(),
-                    }
-                })?;
-                Value::from_array(array)
-                    .map_err(|e| Error::GraphDispatchError { source: e.into() })?
-            } else {
-                Value::from_array((
-                    shape_i64.as_slice(),
-                    bytemuck::cast_slice::<u8, f32>(bytes).to_vec(),
-                ))
-                .map_err(|e| Error::GraphDispatchError { source: e.into() })?
-            };
-            v.into_dyn()
+            Value::from_array((
+                shape_i64.as_slice(),
+                bytemuck::cast_slice::<u8, f32>(bytes).to_vec(),
+            ))
+            .map_err(|e| Error::GraphDispatchError { source: e.into() })?
+            .into_dyn()
         }
         TensorElementType::Float16 => {
             let u16s: Vec<u16> = bytemuck::cast_slice(bytes).to_vec();

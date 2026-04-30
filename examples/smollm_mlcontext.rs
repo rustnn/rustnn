@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use log::info;
 use rustnn::{
-    ContextProperties, DataType, GraphValidator, ValidationArtifacts, load_graph_from_path,
+    ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
     mlcontext::{
         MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLPowerPreference, MLTensor,
         MLTensorDescriptor,
@@ -35,6 +35,7 @@ struct Layout {
     max_cache_len: usize,
     head_dim: usize,
     logits_name: String,
+    vocab_size: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -92,12 +93,25 @@ fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
         }
     }
 
+    let logits_name = logits_name.ok_or_else(|| anyhow!("failed to detect logits output"))?;
+    let logits_desc = artifacts
+        .output_names_to_descriptors
+        .get(&logits_name)
+        .ok_or_else(|| anyhow!("missing logits descriptor"))?;
+    let vocab_size = dim_to_usize(
+        logits_desc
+            .shape
+            .last()
+            .ok_or_else(|| anyhow!("empty logits shape"))?,
+    );
+
     Ok(Layout {
         num_layers,
         num_heads: num_heads.ok_or_else(|| anyhow!("failed to detect num_heads"))?,
         max_cache_len: max_cache_len.ok_or_else(|| anyhow!("failed to detect cache_len"))?,
         head_dim: head_dim.ok_or_else(|| anyhow!("failed to detect head_dim"))?,
-        logits_name: logits_name.ok_or_else(|| anyhow!("failed to detect logits output"))?,
+        logits_name,
+        vocab_size,
     })
 }
 
@@ -120,150 +134,216 @@ fn init_state(layout: &Layout) -> StepState {
     }
 }
 
-fn datatype_to_ml(dt: DataType) -> anyhow::Result<MLOperandDataType> {
-    match dt {
-        DataType::Float32 => Ok(MLOperandDataType::Float32),
-        DataType::Float16 => Ok(MLOperandDataType::Float16),
-        DataType::Int32 => Ok(MLOperandDataType::Int32),
-        DataType::Uint32 => Ok(MLOperandDataType::Uint32),
-        DataType::Int64 => Ok(MLOperandDataType::Int64),
-        DataType::Uint64 => Ok(MLOperandDataType::Uint64),
-        DataType::Int8 => Ok(MLOperandDataType::Int8),
-        DataType::Uint8 => Ok(MLOperandDataType::Uint8),
-        DataType::Int4 | DataType::Uint4 => bail!("Int4/Uint4 not supported in MLContext"),
-    }
-}
-
 fn make_tensor(
     context: &mut MLContext,
-    desc: &rustnn::OperandDescriptor,
-    readable: bool,
+    dtype: MLOperandDataType,
+    shape: Vec<u64>,
     writable: bool,
+    readable: bool,
 ) -> anyhow::Result<MLTensor> {
-    let shape: Vec<u64> = desc.shape.iter().map(|d| dim_to_usize(d) as u64).collect();
-    let data_type = datatype_to_ml(desc.data_type)?;
-    let mut td = MLTensorDescriptor::new(data_type, shape);
-    td.set_readable(readable);
+    let mut td = MLTensorDescriptor::new(dtype, shape);
     td.set_writable(writable);
+    td.set_readable(readable);
     context
         .create_tensor(&td)
         .map_err(|e| anyhow!("create tensor: {e:?}"))
 }
 
-fn create_tensors(
-    context: &mut MLContext,
-    artifacts: &ValidationArtifacts,
-) -> anyhow::Result<(HashMap<String, MLTensor>, HashMap<String, MLTensor>)> {
-    let mut inputs = HashMap::new();
-    for (name, desc) in &artifacts.input_names_to_descriptors {
-        inputs.insert(name.clone(), make_tensor(context, desc, false, true)?);
-    }
-    let mut outputs = HashMap::new();
-    for (name, desc) in &artifacts.output_names_to_descriptors {
-        outputs.insert(name.clone(), make_tensor(context, desc, true, false)?);
-    }
-    Ok((inputs, outputs))
-}
-
-fn write_inputs(
-    context: &mut MLContext,
-    inputs: &HashMap<String, MLTensor>,
-    layout: &Layout,
+// Copies compacted (contiguous) past tokens from the padded CPU cache into a flat buffer.
+fn compact_kv(
     state: &StepState,
-    token_id: i64,
-) -> anyhow::Result<()> {
-    for (name, tensor) in inputs {
-        if name == "input_ids" {
-            context
-                .write_tensor(tensor, &[token_id])
-                .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
-        } else if name == "position_ids" {
-            context
-                .write_tensor(tensor, &[state.current_pos as i64])
-                .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
-        } else if name == "attention_mask" {
-            let total = tensor.shape().iter().product::<u64>() as usize;
-            let mut mask = vec![0i64; total];
-            let fill = (state.current_pos + 1).min(total);
-            for i in 0..fill {
-                mask[i] = 1;
-            }
-            context
-                .write_tensor(tensor, &mask)
-                .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
-        } else if name.starts_with("past_key_values_") {
-            let data = state
-                .cache
-                .get(name)
-                .ok_or_else(|| anyhow!("missing cache entry: {name}"))?;
-            context
-                .write_tensor(tensor, data.as_slice())
-                .map_err(|e| anyhow!("write {name}: {e:?}"))?;
-        } else {
-            bail!("unknown input: {name}");
-        }
-    }
-    Ok(())
-}
-
-// Reads present_{layer}_{key,value} outputs back into the CPU cache buffers,
-// then reads and returns the logits vector.
-//
-// The model uses fixed-size KV cache tensors ([1, heads, max_cache_len, head_dim]),
-// so the full updated cache is available as a present output each step.
-fn read_outputs_and_update_cache(
-    context: &mut MLContext,
-    outputs: &HashMap<String, MLTensor>,
     layout: &Layout,
-    state: &mut StepState,
-) -> anyhow::Result<Vec<f32>> {
-    for layer in 0..layout.num_layers {
-        for kv in ["key", "value"] {
-            let present_name = format!("present_{layer}_{kv}");
-            let past_name = format!("past_key_values_{layer}_{kv}");
-            if let Some(tensor) = outputs.get(&present_name) {
-                let cache = state
-                    .cache
-                    .get_mut(&past_name)
-                    .ok_or_else(|| anyhow!("missing cache: {past_name}"))?;
-                context
-                    .read_tensor(tensor, cache.as_mut_slice())
-                    .map_err(|e| anyhow!("read {present_name}: {e:?}"))?;
-            }
+    layer: usize,
+    kv: &str,
+    past_len: usize,
+) -> Vec<f32> {
+    if past_len == 0 {
+        return Vec::new();
+    }
+    let cache = state
+        .cache
+        .get(&format!("past_key_values_{}_{}", layer, kv))
+        .unwrap();
+    let mut out = vec![0.0f32; layout.num_heads * past_len * layout.head_dim];
+    for h in 0..layout.num_heads {
+        for t in 0..past_len {
+            let src = (h * layout.max_cache_len + t) * layout.head_dim;
+            let dst = (h * past_len + t) * layout.head_dim;
+            out[dst..dst + layout.head_dim].copy_from_slice(&cache[src..src + layout.head_dim]);
         }
     }
-
-    let logits_tensor = outputs
-        .get(&layout.logits_name)
-        .ok_or_else(|| anyhow!("missing logits: {}", layout.logits_name))?;
-    let len = logits_tensor.shape().iter().product::<u64>() as usize;
-    let mut logits = vec![0f32; len];
-    context
-        .read_tensor(logits_tensor, &mut logits)
-        .map_err(|e| anyhow!("read logits: {e:?}"))?;
-    Ok(logits)
+    out
 }
 
+// Stores the last token's KV slice from the present output into the padded CPU cache at
+// current_pos. Mirrors smollm_webnn_rust's update_kv_cache logic.
+fn store_present(
+    state: &mut StepState,
+    layout: &Layout,
+    layer: usize,
+    kv: &str,
+    present: &[f32],
+    seq_len: usize,
+) {
+    let cache = state
+        .cache
+        .get_mut(&format!("past_key_values_{}_{}", layer, kv))
+        .unwrap();
+    for h in 0..layout.num_heads {
+        let dst = (h * layout.max_cache_len + state.current_pos) * layout.head_dim;
+        let src = (h * seq_len + (seq_len - 1)) * layout.head_dim;
+        cache[dst..dst + layout.head_dim].copy_from_slice(&present[src..src + layout.head_dim]);
+    }
+}
+
+// Creates tensors with the correct dynamic shapes for each step:
+// - attention_mask: [1, current_pos+1]
+// - past KV: [1, heads, current_pos, head_dim]
+// - present KV: [1, heads, current_pos+1, head_dim]
+// This mirrors how smollm_webnn_rust provides varying-shape OnnxInputs each step.
 fn run_step(
     context: &mut MLContext,
     graph: &mut MLGraph,
-    input_tensors: &HashMap<String, MLTensor>,
-    output_tensors: &HashMap<String, MLTensor>,
     layout: &Layout,
     state: &mut StepState,
     token_id: i64,
+    logits_tensor: &MLTensor,
 ) -> anyhow::Result<usize> {
-    write_inputs(context, input_tensors, layout, state, token_id)?;
+    let past_len = state.current_pos;
+    let seq_len = past_len + 1;
+    let h = layout.num_heads as u64;
+    let d = layout.head_dim as u64;
 
-    let inputs: HashMap<&str, &MLTensor> =
-        input_tensors.iter().map(|(k, v)| (k.as_str(), v)).collect();
-    let outputs: HashMap<&str, &MLTensor> =
-        output_tensors.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let t_input_ids =
+        make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    context
+        .write_tensor(&t_input_ids, &[token_id])
+        .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
+
+    let t_position_ids =
+        make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    context
+        .write_tensor(&t_position_ids, &[past_len as i64])
+        .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
+
+    let t_attn_mask = make_tensor(
+        context,
+        MLOperandDataType::Int64,
+        vec![1, seq_len as u64],
+        true,
+        false,
+    )?;
+    context
+        .write_tensor(&t_attn_mask, &vec![1i64; seq_len])
+        .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
+
+    let mut past_k = Vec::with_capacity(layout.num_layers);
+    let mut past_v = Vec::with_capacity(layout.num_layers);
+    for layer in 0..layout.num_layers {
+        let k_data = compact_kv(state, layout, layer, "key", past_len);
+        let t_k = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, past_len as u64, d],
+            true,
+            false,
+        )?;
+        if !k_data.is_empty() {
+            context
+                .write_tensor(&t_k, &k_data)
+                .map_err(|e| anyhow!("write past_key {layer}: {e:?}"))?;
+        }
+        past_k.push(t_k);
+
+        let v_data = compact_kv(state, layout, layer, "value", past_len);
+        let t_v = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, past_len as u64, d],
+            true,
+            false,
+        )?;
+        if !v_data.is_empty() {
+            context
+                .write_tensor(&t_v, &v_data)
+                .map_err(|e| anyhow!("write past_val {layer}: {e:?}"))?;
+        }
+        past_v.push(t_v);
+    }
+
+    let mut pres_k = Vec::with_capacity(layout.num_layers);
+    let mut pres_v = Vec::with_capacity(layout.num_layers);
+    for _ in 0..layout.num_layers {
+        pres_k.push(make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, seq_len as u64, d],
+            false,
+            true,
+        )?);
+        pres_v.push(make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, seq_len as u64, d],
+            false,
+            true,
+        )?);
+    }
+
+    // Name strings must outlive the HashMap borrows below.
+    let past_k_names: Vec<String> = (0..layout.num_layers)
+        .map(|l| format!("past_key_values_{l}_key"))
+        .collect();
+    let past_v_names: Vec<String> = (0..layout.num_layers)
+        .map(|l| format!("past_key_values_{l}_value"))
+        .collect();
+    let pres_k_names: Vec<String> = (0..layout.num_layers)
+        .map(|l| format!("present_{l}_key"))
+        .collect();
+    let pres_v_names: Vec<String> = (0..layout.num_layers)
+        .map(|l| format!("present_{l}_value"))
+        .collect();
+
+    let mut inputs: HashMap<&str, &MLTensor> = HashMap::new();
+    inputs.insert("input_ids", &t_input_ids);
+    inputs.insert("position_ids", &t_position_ids);
+    inputs.insert("attention_mask", &t_attn_mask);
+    for i in 0..layout.num_layers {
+        inputs.insert(&past_k_names[i], &past_k[i]);
+        inputs.insert(&past_v_names[i], &past_v[i]);
+    }
+
+    let mut outputs: HashMap<&str, &MLTensor> = HashMap::new();
+    outputs.insert(&layout.logits_name, logits_tensor);
+    for i in 0..layout.num_layers {
+        outputs.insert(&pres_k_names[i], &pres_k[i]);
+        outputs.insert(&pres_v_names[i], &pres_v[i]);
+    }
+
     context
         .dispatch(graph, &inputs, &outputs)
         .map_err(|e| anyhow!("dispatch at pos={}: {e:?}", state.current_pos))?;
 
-    let logits = read_outputs_and_update_cache(context, output_tensors, layout, state)?;
+    let kv_elems = layout.num_heads * seq_len * layout.head_dim;
+    for layer in 0..layout.num_layers {
+        let mut k = vec![0f32; kv_elems];
+        context
+            .read_tensor(&pres_k[layer], &mut k)
+            .map_err(|e| anyhow!("read present_key {layer}: {e:?}"))?;
+        store_present(state, layout, layer, "key", &k, seq_len);
+
+        let mut v = vec![0f32; kv_elems];
+        context
+            .read_tensor(&pres_v[layer], &mut v)
+            .map_err(|e| anyhow!("read present_val {layer}: {e:?}"))?;
+        store_present(state, layout, layer, "value", &v, seq_len);
+    }
+
+    let mut logits = vec![0f32; layout.vocab_size];
+    context
+        .read_tensor(logits_tensor, &mut logits)
+        .map_err(|e| anyhow!("read logits: {e:?}"))?;
+
     state.current_pos += 1;
     Ok(argmax(&logits))
 }
@@ -333,8 +413,12 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow!("validate graph: {e}"))?;
     let layout = detect_layout(&artifacts)?;
     info!(
-        "Layout: {} layers, {} heads, cache_len={}, head_dim={}",
-        layout.num_layers, layout.num_heads, layout.max_cache_len, layout.head_dim
+        "Layout: {} layers, {} heads, cache_len={}, head_dim={}, vocab={}",
+        layout.num_layers,
+        layout.num_heads,
+        layout.max_cache_len,
+        layout.head_dim,
+        layout.vocab_size
     );
 
     if prompt_ids.len() >= layout.max_cache_len {
@@ -359,12 +443,26 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow!("Failed to build graph:\n{e}"))?;
     info!("Graph built");
 
-    let (input_tensors, output_tensors) = create_tensors(&mut context, &artifacts)?;
-    info!(
-        "Created {} input tensors, {} output tensors",
-        input_tensors.len(),
-        output_tensors.len()
-    );
+    // Logits output is always [1, 1, vocab_size] — create it once and reuse across all steps.
+    let logits_ndim = artifacts
+        .output_names_to_descriptors
+        .get(&layout.logits_name)
+        .map(|d| d.shape.len())
+        .unwrap_or(3);
+    let logits_shape: Vec<u64> = (0..logits_ndim)
+        .map(|i| {
+            if i + 1 == logits_ndim {
+                layout.vocab_size as u64
+            } else {
+                1u64
+            }
+        })
+        .collect();
+    let mut logits_td = MLTensorDescriptor::new(MLOperandDataType::Float32, logits_shape);
+    logits_td.set_readable(true);
+    let logits_tensor = context
+        .create_tensor(&logits_td)
+        .map_err(|e| anyhow!("create logits tensor: {e:?}"))?;
 
     let mut state = init_state(&layout);
     let mut last_token = 0usize;
@@ -374,11 +472,10 @@ fn main() -> anyhow::Result<()> {
         last_token = run_step(
             &mut context,
             &mut graph,
-            &input_tensors,
-            &output_tensors,
             &layout,
             &mut state,
             *token_id as i64,
+            &logits_tensor,
         )?;
     }
 
@@ -392,11 +489,10 @@ fn main() -> anyhow::Result<()> {
         last_token = run_step(
             &mut context,
             &mut graph,
-            &input_tensors,
-            &output_tensors,
             &layout,
             &mut state,
             last_token as i64,
+            &logits_tensor,
         )?;
     }
 
