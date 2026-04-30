@@ -305,8 +305,10 @@ mod app {
         let mut trace = TraceLogger::new(&args)?;
 
         let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
-        let mut context = ContextProperties::default();
-        context.tensor_byte_length_limit = args.tensor_limit;
+        let context = ContextProperties {
+            tensor_byte_length_limit: args.tensor_limit,
+            ..Default::default()
+        };
         let artifacts = GraphValidator::new(&graph, context)
             .validate()
             .map_err(|e| format!("validate graph: {e}"))?;
@@ -355,7 +357,7 @@ mod app {
                 .iter()
                 .find(|o| o.name == layout.logits_name)
                 .ok_or_else(|| format!("missing logits output: {}", layout.logits_name))?;
-            let argmax_after = argmax(&logits.float32_data.as_ref().unwrap());
+            let argmax_after = argmax(logits.float32_data.as_ref().unwrap());
             trace.log(&format!(
                 "TRACE phase=prefill pos={} logits_argmax={}",
                 pos_before, argmax_after
@@ -371,7 +373,7 @@ mod app {
                 .iter()
                 .find(|o| o.name == layout.logits_name)
                 .ok_or_else(|| format!("missing logits output: {}", layout.logits_name))?;
-            let next_id = argmax(&logits.float32_data.as_deref().unwrap()) as u32;
+            let next_id = argmax(logits.float32_data.as_deref().unwrap()) as u32;
             generated.push(next_id);
             trace.log(&format!(
                 "TRACE phase=decode_select pos={} selected_token={}",
@@ -399,7 +401,7 @@ mod app {
                 .iter()
                 .find(|o| o.name == layout.logits_name)
                 .ok_or_else(|| format!("missing logits output: {}", layout.logits_name))?;
-            let argmax_after = argmax(&logits_after.float32_data.as_ref().unwrap());
+            let argmax_after = argmax(logits_after.float32_data.as_ref().unwrap());
             trace.log(&format!(
                 "TRACE phase=decode_run pos={} logits_argmax={}",
                 pos_before, argmax_after

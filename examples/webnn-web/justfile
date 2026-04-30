@@ -1,0 +1,15 @@
+debug:
+    RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo build 
+    --target wasm32-unknown-unknown
+    wasm-bindgen --target web --keep-debug \
+        --no-typescript \
+        --out-dir ./out/ \
+        --out-name "webnn_web_example" \
+        ./target/wasm32-unknown-unknown/debug/webnn_web_example.wasm
+    miniserve . --index index.html
+
+clean:
+    cargo clean
+    rm -rf ./out/
+
+

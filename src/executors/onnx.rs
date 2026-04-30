@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Once;
 
+use log::{error, info};
 use ndarray::{ArrayD, IxDyn};
+use ort::environment::Environment;
 use ort::session::SessionInputValue;
 
 use half;
@@ -19,21 +21,30 @@ use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_l
 
 static INIT: Once = Once::new();
 
-fn ensure_ort_initialized() -> Result<(), GraphError> {
+pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
     let mut result = Ok(());
     INIT.call_once(|| {
+        info!("Loading onnxruntime");
         let success = ort::init()
             .with_name("rustnn")
             .with_execution_providers([
-                ort::execution_providers::CPUExecutionProvider::default().build()
+                ort::ep::CPUExecutionProvider::default().build(),
+                //ort::ep::NVRTXExecutionProvider::default().build(),
+                //ort::ep::CUDAExecutionProvider::default().build(),
             ])
             .commit();
 
         if !success {
+            error!("Failed to load onnxruntime");
             result = Err(GraphError::OnnxRuntimeFailed {
                 reason: "ort init failed - unable to initialize ONNX Runtime".to_string(),
             });
         }
+        let env = Environment::current();
+        if let Ok(env) = env {
+            env.set_log_level(ort::logging::LogLevel::Verbose);
+        }
+        info!("Loaded");
     });
     result
 }
