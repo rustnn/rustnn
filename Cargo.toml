@@ -18,7 +18,7 @@ exclude = [
 ]
 
 [features]
-default = []
+default = ["onnx-runtime"]
 dynamic-inputs = []
 coreml-runtime = ["objc"]
 onnx-runtime = ["ort", "ndarray", "tokenizers", "dep:tempfile"]
@@ -147,6 +147,8 @@ wasm-bindgen-futures = { version = "0.4", git = "https://github.com/theHamsta/wa
 pollster = { version = "0.4.0", optional = true }
 
 [patch.crates-io]
+trtx = { path = "/home/stephan/projects/trtx-rs/trtx" }
+trtx-sys = { path = "/home/stephan/projects/trtx-rs/trtx-sys" }
 wasm-bindgen = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 wasm-bindgen-shared = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 wasm-bindgen-macro = { git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }

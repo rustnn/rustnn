@@ -868,6 +868,7 @@ impl TrtxConverter {
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
             "resample2d" => Self::add_resample2d_op(graph, network, tensor_map, operation)?,
+            "shape" => Self::add_shape_op(network, tensor_map, operation)?,
 
             // NOTE: RNN operations (lstm, lstmCell, gru, gruCell) deferred
             // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
@@ -1280,6 +1281,50 @@ impl TrtxConverter {
             })
     }
 
+    /// Cast a tensor to `target_dtype` if it doesn't already have that type.
+    fn cast_to_dtype_if_needed<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        target_dtype: trtx::DataType,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let current = tensor.data_type(&*network);
+        if current == target_dtype {
+            let id = network
+                .add_identity(tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("cast_to_dtype identity: {e}"),
+                })?;
+            return id.output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("cast_to_dtype identity output: {e}"),
+            });
+        }
+        let cast = network
+            .add_cast(tensor, target_dtype)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("cast_to_dtype cast layer: {e}"),
+            })?;
+        cast.output(&*network, 0).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("cast_to_dtype cast output: {e}"),
+        })
+    }
+
+    /// Return the wider of two integer TRT DataTypes (INT64 > INT32 > INT8 etc.).
+    /// For non-integer or float types returns None, meaning no automatic widening.
+    fn wider_int_dtype(a: trtx::DataType, b: trtx::DataType) -> Option<trtx::DataType> {
+        use trtx::DataType as D;
+        match (a, b) {
+            (x, y) if x == y => Some(x),
+            (D::kINT64, _) | (_, D::kINT64) => Some(D::kINT64),
+            (D::kINT32, D::kINT8) | (D::kINT8, D::kINT32) => Some(D::kINT32),
+            (D::kINT32, D::kUINT8) | (D::kUINT8, D::kINT32) => Some(D::kINT32),
+            _ => None,
+        }
+    }
+
     /// Add elementwise operation
     fn add_elementwise_op<'a>(
         _graph: &GraphInfo,
@@ -1303,8 +1348,20 @@ impl TrtxConverter {
             })?;
 
         // Ensure broadcast compatibility (this may reshape tensors if needed)
-        let (bc_input0, bc_input1) =
+        let (mut bc_input0, mut bc_input1) =
             Self::ensure_broadcast_compatible(network, input0, input1, operation.op_type())?;
+
+        // TensorRT requires both elementwise inputs to share the same data type.
+        // When integer types differ (e.g. INT32 constant vs INT64 shape/input_ids), widen the
+        // narrower one so the graph builds without an API-usage error.
+        let dtype0 = bc_input0.data_type(&*network);
+        let dtype1 = bc_input1.data_type(&*network);
+        if dtype0 != dtype1 {
+            if let Some(target) = Self::wider_int_dtype(dtype0, dtype1) {
+                bc_input0 = Self::cast_to_dtype_if_needed(network, &bc_input0, target)?;
+                bc_input1 = Self::cast_to_dtype_if_needed(network, &bc_input1, target)?;
+            }
+        }
 
         let layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
@@ -1350,8 +1407,18 @@ impl TrtxConverter {
             })?;
 
         // Ensure broadcast compatibility
-        let (bc_input0, bc_input1) =
+        let (mut bc_input0, mut bc_input1) =
             Self::ensure_broadcast_compatible(network, input0, input1, operation.op_type())?;
+
+        // Widen mismatched integer types (e.g. INT32 vs INT64) before comparison.
+        let dtype0 = bc_input0.data_type(&*network);
+        let dtype1 = bc_input1.data_type(&*network);
+        if dtype0 != dtype1 {
+            if let Some(target) = Self::wider_int_dtype(dtype0, dtype1) {
+                bc_input0 = Self::cast_to_dtype_if_needed(network, &bc_input0, target)?;
+                bc_input1 = Self::cast_to_dtype_if_needed(network, &bc_input1, target)?;
+            }
+        }
 
         // Comparison operation returns BOOL
         let layer = network
@@ -2423,6 +2490,38 @@ impl TrtxConverter {
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    fn add_shape_op<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_id = operation.input_operands()[0];
+        let input = tensor_map
+            .get(&input_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Input operand {} not found for shape op", input_id),
+            })?;
+
+        let layer = network
+            .add_shape(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add shape layer: {}", e),
+            })?;
+
+        let output = layer
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get shape output: {}", e),
+            })?;
+
+        let output_id = operation.output_operands_slice()[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -6808,28 +6907,44 @@ impl TrtxConverter {
 
         // Clamp indices to [-dim_size, dim_size - 1] (WebNN/conformance behavior).
         // TensorRT elementwise requires same rank; repeat scalar to match indices shape.
-        let clamp_min_val = -dim_size;
-        let clamp_max_val = dim_size - 1;
+        let clamp_min_val = -dim_size as i64;
+        let clamp_max_val = (dim_size - 1) as i64;
         let num_elements: usize = indices_operand
             .descriptor
             .shape
             .iter()
             .map(get_static_or_max_size)
             .product::<u32>() as usize;
-        let min_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_min_val.to_le_bytes())
-            .collect();
-        let max_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_max_val.to_le_bytes())
-            .collect();
+        // Match constant dtype to the indices tensor to avoid TRT type-mismatch errors
+        // (e.g. input_ids is INT64 but dim_size is i32).
+        let indices_trt_dtype = indices.data_type(&*network);
+        let (min_data, max_data, const_dtype) = if indices_trt_dtype == trtx::DataType::kINT64 {
+            let min_data: Vec<u8> = (0..num_elements)
+                .flat_map(|_| clamp_min_val.to_le_bytes())
+                .collect();
+            let max_data: Vec<u8> = (0..num_elements)
+                .flat_map(|_| clamp_max_val.to_le_bytes())
+                .collect();
+            (min_data, max_data, trtx::DataType::kINT64)
+        } else {
+            let min_i32 = clamp_min_val as i32;
+            let max_i32 = clamp_max_val as i32;
+            let min_data: Vec<u8> = (0..num_elements)
+                .flat_map(|_| min_i32.to_le_bytes())
+                .collect();
+            let max_data: Vec<u8> = (0..num_elements)
+                .flat_map(|_| max_i32.to_le_bytes())
+                .collect();
+            (min_data, max_data, trtx::DataType::kINT32)
+        };
         let min_const = network
-            .add_small_constant_copied(&indices_shape_i64, &min_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &min_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add gather clamp min constant: {}", e),
             })?;
         let max_const = network
-            .add_small_constant_copied(&indices_shape_i64, &max_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &max_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add gather clamp max constant: {}", e),
@@ -6964,13 +7079,13 @@ impl TrtxConverter {
             });
         }
 
-        let mins_k: Vec<i32> = data_operand.descriptor.shape[..k]
+        let mins_k: Vec<i64> = data_operand.descriptor.shape[..k]
             .iter()
-            .map(|d| -(get_static_or_max_size(d) as i32))
+            .map(|d| -(get_static_or_max_size(d) as i64))
             .collect();
-        let maxs_k: Vec<i32> = data_operand.descriptor.shape[..k]
+        let maxs_k: Vec<i64> = data_operand.descriptor.shape[..k]
             .iter()
-            .map(|d| get_static_or_max_size(d) as i32 - 1)
+            .map(|d| get_static_or_max_size(d) as i64 - 1)
             .collect();
 
         let idx_dims: Vec<u32> = indices_operand
@@ -6991,26 +7106,40 @@ impl TrtxConverter {
         } else {
             idx_dims[..r - 1].iter().map(|&x| x as usize).product()
         };
+
+        // Match constant dtype to actual indices tensor type to avoid TRT elementwise type errors.
+        let indices_trt_dtype = indices.data_type(&*network);
+        let bytes_per_elem: usize = if indices_trt_dtype == trtx::DataType::kINT64 { 8 } else { 4 };
         let mut min_data: Vec<u8> =
-            Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(4));
+            Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(bytes_per_elem));
         let mut max_data: Vec<u8> =
-            Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(4));
+            Vec::with_capacity(prefix_count.saturating_mul(k).saturating_mul(bytes_per_elem));
         for _ in 0..prefix_count {
             for j in 0..k {
-                min_data.extend_from_slice(&mins_k[j].to_le_bytes());
-                max_data.extend_from_slice(&maxs_k[j].to_le_bytes());
+                if indices_trt_dtype == trtx::DataType::kINT64 {
+                    min_data.extend_from_slice(&mins_k[j].to_le_bytes());
+                    max_data.extend_from_slice(&maxs_k[j].to_le_bytes());
+                } else {
+                    min_data.extend_from_slice(&(mins_k[j] as i32).to_le_bytes());
+                    max_data.extend_from_slice(&(maxs_k[j] as i32).to_le_bytes());
+                }
             }
         }
+        let const_dtype = if indices_trt_dtype == trtx::DataType::kINT64 {
+            trtx::DataType::kINT64
+        } else {
+            trtx::DataType::kINT32
+        };
 
         let indices_shape_i64: Vec<i64> = idx_dims.iter().map(|&d| d as i64).collect();
         let min_const = network
-            .add_small_constant_copied(&indices_shape_i64, &min_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &min_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("gatherND: clamp min constant: {}", e),
             })?;
         let max_const = network
-            .add_small_constant_copied(&indices_shape_i64, &max_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &max_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("gatherND: clamp max constant: {}", e),
@@ -11349,7 +11478,7 @@ impl TrtxConverter {
         if axis_i32 < 0 {
             axis_i32 += ndim;
         }
-        axis_i32 = axis_i32.max(0).min(ndim.saturating_sub(1));
+        axis_i32 = axis_i32.max(0).min((ndim - 1).max(0));
         layer.set_axis(network, axis_i32);
 
         // Extract output tensor from layer
@@ -11942,28 +12071,38 @@ impl TrtxConverter {
             .collect();
         let indices_shape_i64: Vec<i64> = indices_shape.iter().map(|&d| d as i64).collect();
 
-        let clamp_min_val = -dim_size;
-        let clamp_max_val = dim_size - 1;
+        let clamp_min_val = -dim_size as i64;
+        let clamp_max_val = (dim_size - 1) as i64;
         let num_elements: usize = indices_operand
             .descriptor
             .shape
             .iter()
             .map(get_static_or_max_size)
             .product::<u32>() as usize;
-        let min_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_min_val.to_le_bytes())
-            .collect();
-        let max_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_max_val.to_le_bytes())
-            .collect();
+        let indices_trt_dtype = indices_tensor.data_type(&*network);
+        let (min_data, max_data, const_dtype) = if indices_trt_dtype == trtx::DataType::kINT64 {
+            (
+                (0..num_elements).flat_map(|_| clamp_min_val.to_le_bytes()).collect::<Vec<u8>>(),
+                (0..num_elements).flat_map(|_| clamp_max_val.to_le_bytes()).collect::<Vec<u8>>(),
+                trtx::DataType::kINT64,
+            )
+        } else {
+            let min_i32 = clamp_min_val as i32;
+            let max_i32 = clamp_max_val as i32;
+            (
+                (0..num_elements).flat_map(|_| min_i32.to_le_bytes()).collect::<Vec<u8>>(),
+                (0..num_elements).flat_map(|_| max_i32.to_le_bytes()).collect::<Vec<u8>>(),
+                trtx::DataType::kINT32,
+            )
+        };
         let min_const = network
-            .add_small_constant_copied(&indices_shape_i64, &min_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &min_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("gatherElements: clamp min constant: {}", e),
             })?;
         let max_const = network
-            .add_small_constant_copied(&indices_shape_i64, &max_data, trtx::DataType::kINT32)
+            .add_small_constant_copied(&indices_shape_i64, &max_data, const_dtype)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("gatherElements: clamp max constant: {}", e),
