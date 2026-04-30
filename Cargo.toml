@@ -169,6 +169,8 @@ wasm-bindgen-test = { git = "https://github.com/theHamsta/wasm-bindgen", branch 
 js-sys = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 wasm-bindgen-futures = { version = "0.4", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 pollster = "0.4"
+dirs = "6.0.0"
+anyhow = "1.0.102"
 
 [lib]
 name = "rustnn"
