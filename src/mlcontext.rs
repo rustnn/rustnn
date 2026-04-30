@@ -370,7 +370,7 @@ pub struct MLGraphBuilder<'context> {
 }
 
 impl<'context> MLGraphBuilder<'context> {
-    fn new(context: &'_ mut MLContext<'context>) -> Result<Self> {
+    pub fn new(context: &'_ mut MLContext<'context>) -> Result<Self> {
         let backend = context.backend.create_builder()?;
         Ok(Self {
             backend,
@@ -378,13 +378,13 @@ impl<'context> MLGraphBuilder<'context> {
         })
     }
 
-    fn build_graph_info(&mut self, graph: &'context GraphInfo) -> Result<MLGraph<'context>> {
+    pub fn build_graph_info(&mut self, graph: &'context GraphInfo) -> Result<MLGraph<'context>> {
         self.backend.load_graph(graph)?;
         self.backend.build(&HashMap::new())
     }
 
     /*async*/
-    fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>> {
+    pub fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>> {
         if self.has_built {
             panic!("Called MLGraphBuilder::build more than once on a MLGraph");
         }

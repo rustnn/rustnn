@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
@@ -11,7 +12,6 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::session::{Session, SessionOutputs};
 use ort::value::{DynValue, Outlet, TensorElementType, Value, ValueType};
 
-use crate::GraphInfo;
 use crate::backend_selection::BackendDevice;
 use crate::converters::{GraphConverter, OnnxConverter};
 use crate::error::Error;
@@ -20,6 +20,7 @@ use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLOperand, MLTensor,
     MLTensorDescriptor,
 };
+use crate::{GraphError, GraphInfo, ONNX_EXTERNAL_WEIGHTS_FILENAME};
 
 trait ToDispatchResult<T> {
     fn to_dispatch_result(self) -> crate::error::Result<T>;
@@ -96,9 +97,28 @@ impl<'context> MLBackendBuilder<'context> for OrtBuilder<'context> {
             source: "build called before load_graph".into(),
         })?;
         let converted = OnnxConverter.convert(graph_info)?;
+
+        let mut builder = Session::builder()
+            .map_err(|e| GraphError::OnnxRuntimeFailed {
+                reason: format!("session builder failed: {e}"),
+            })?
+            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .map_err(|e| GraphError::OnnxRuntimeFailed {
+                reason: format!("set opt level failed: {e}"),
+            })?;
+        if let Some(weights) = converted.weights_data {
+            builder = builder
+                .with_external_initializer_file_in_memory(
+                    ONNX_EXTERNAL_WEIGHTS_FILENAME,
+                    Cow::Owned(weights.to_vec()),
+                )
+                .map_err(|e| GraphError::OnnxRuntimeFailed {
+                    reason: format!("set external initializer failed: {e}"),
+                })?;
+        }
+
         ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        let session = Session::builder()
-            .map_err(|e| Error::GraphBuildError { source: e.into() })?
+        let session = builder
             .with_optimization_level(GraphOptimizationLevel::Disable)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?
             .commit_from_memory(&converted.data)
