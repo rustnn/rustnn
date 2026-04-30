@@ -547,7 +547,7 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
     fn load_graph(
         &mut self,
         graph: &'context GraphInfo,
-    ) -> crate::error::Result<LoadedGraphOperands<'context>> {
+    ) -> crate::error::Result<LoadedGraphOperands> {
         TrtxConverter::build_network(graph, &mut self.network)?;
 
         let mut operands = LoadedGraphOperands::default();
@@ -556,14 +556,18 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
             let tensor = self.network.input(i)?;
             let id = self.tensors.len();
             let operand = MLOperand { id };
-            self.operands.insert(tensor.name(&self.network)?, operand);
+            let name = tensor.name(&self.network)?;
+
+            self.operands.insert(name.clone(), operand);
             self.tensors.push(tensor);
+            operands.inputs.insert(name, operand);
         }
         for i in 0..self.network.nb_outputs() {
             let tensor = self.network.output(i)?;
             let id = self.tensors.len();
             let operand = MLOperand { id };
             let name = tensor.name(&self.network)?;
+
             self.operands.insert(name.clone(), operand);
             self.tensors.push(tensor);
             operands.outputs.insert(name, operand);
