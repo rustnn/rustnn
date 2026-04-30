@@ -7,7 +7,7 @@ use crate::{
 
 #[cfg(feature = "onnx-runtime")]
 use crate::backends::ort::OrtContext;
-#[cfg(feature = "trtx-runtime")]
+#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::executors::trtx::TrtxContext;
 
 // this is a concept of pywebnn
