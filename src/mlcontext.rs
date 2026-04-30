@@ -195,8 +195,8 @@ pub enum MLPowerPreference {
 /// From specs: Note: MLContextOptions is under active development, and the design is expected to change,
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub struct MLContextOptions {
-    pub(crate) power_preference: MLPowerPreference,
-    pub(crate) accelerated: bool,
+    pub power_preference: MLPowerPreference,
+    pub accelerated: bool,
     // could add our own experimental options
     // could add device_type (CPU, NPU, GPU) like pywebnn
     // could add backend preference
