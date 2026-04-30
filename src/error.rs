@@ -63,6 +63,13 @@ pub enum Error {
 
     #[error("Failed to dispatch graph: {source}")]
     GraphDispatchError { source: Box<dyn std::error::Error> },
+
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[error("An error in the Trtx: {source}")]
+    TrtxError {
+        #[from]
+        source: trtx::Error,
+    },
 }
 
 #[derive(Debug, Error)]

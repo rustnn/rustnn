@@ -18,8 +18,8 @@ use crate::GraphInfo;
 use crate::converters::TrtxConverter;
 use crate::error::{Error, GraphError};
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
-use crate::mlcontext::MLTensor;
 use crate::mlcontext::{ListDevices, MLOperand};
+use crate::mlcontext::{LoadedGraphOperands, MLTensor};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
@@ -489,7 +489,8 @@ pub(crate) struct TrtxBuilder<'builder> {
     config: Rc<Mutex<trtx::BuilderConfig>>,
     cuda_context: Arc<CudaContext>,
     runtime: Rc<Mutex<trtx::Runtime<'builder>>>,
-    _tensors: Vec<Tensor<'builder>>,
+    operands: HashMap<String, MLOperand>,
+    tensors: Vec<Tensor<'builder>>,
     //_parser: Option<OnnxParser<'builder>>,
 }
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -543,8 +544,30 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
         })
     }
 
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
-        TrtxConverter::build_network(graph, &mut self.network).map_err(|e| e.into())
+    fn load_graph(
+        &mut self,
+        graph: &'context GraphInfo,
+    ) -> crate::error::Result<LoadedGraphOperands<'context>> {
+        TrtxConverter::build_network(graph, &mut self.network)?;
+
+        let mut operands = LoadedGraphOperands::default();
+
+        for i in 0..self.network.nb_inputs() {
+            let tensor = self.network.input(i)?;
+            let id = self.tensors.len();
+            let operand = MLOperand { id };
+            self.operands.insert(tensor.name(&self.network)?, operand);
+            self.tensors.push(tensor);
+        }
+        for i in 0..self.network.nb_outputs() {
+            let tensor = self.network.output(i)?;
+            let id = self.tensors.len();
+            let operand = MLOperand { id };
+            self.operands.insert(tensor.name(&self.network)?, operand);
+            self.tensors.push(tensor);
+        }
+
+        Ok(operands)
     }
 }
 
@@ -573,7 +596,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             config: Rc::clone(&self.config),
             runtime: Rc::clone(&self.runtime),
             cuda_context: Arc::clone(&self.cuda_ctx),
-            _tensors: vec![],
+            operands: HashMap::new(),
+            tensors: vec![],
         }))
     }
 
