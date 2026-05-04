@@ -166,12 +166,10 @@ fn session_input_from_host(
     if elements == 0 {
         macro_rules! empty_ndarray {
             ($rust_ty:ty) => {{
-                let array: ArrayD<$rust_ty> =
-                    ArrayD::from_shape_vec(IxDyn(&shape_usize), vec![]).map_err(|e| {
-                        Error::GraphDispatchError {
-                            source: format!("0-element input '{}': {e}", input_info.name()).into(),
-                        }
-                    })?;
+                let array: ArrayD<$rust_ty> = ArrayD::from_shape_vec(IxDyn(&shape_usize), vec![])
+                    .map_err(|e| Error::GraphDispatchError {
+                    source: format!("0-element input '{}': {e}", input_info.name()).into(),
+                })?;
                 Value::from_array(array)
                     .map_err(|e| Error::GraphDispatchError { source: e.into() })?
                     .into_dyn()
@@ -215,14 +213,12 @@ fn session_input_from_host(
 
     let shape_i64: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
     let dyn_val: DynValue = match ty {
-        TensorElementType::Float32 => {
-            Value::from_array((
-                shape_i64.as_slice(),
-                bytemuck::cast_slice::<u8, f32>(bytes).to_vec(),
-            ))
-            .map_err(|e| Error::GraphDispatchError { source: e.into() })?
-            .into_dyn()
-        }
+        TensorElementType::Float32 => Value::from_array((
+            shape_i64.as_slice(),
+            bytemuck::cast_slice::<u8, f32>(bytes).to_vec(),
+        ))
+        .map_err(|e| Error::GraphDispatchError { source: e.into() })?
+        .into_dyn(),
         TensorElementType::Float16 => {
             let u16s: Vec<u16> = bytemuck::cast_slice(bytes).to_vec();
             let f16_data: Vec<half::f16> = u16s.iter().map(|&b| half::f16::from_bits(b)).collect();

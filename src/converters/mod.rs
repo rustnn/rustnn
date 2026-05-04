@@ -11,7 +11,7 @@ mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
 #[cfg(feature = "web")]
-mod webnn;
+pub(crate) mod webnn;
 #[cfg(not(feature = "web"))]
 mod weight_file_builder;
 

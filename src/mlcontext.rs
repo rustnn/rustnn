@@ -6,6 +6,8 @@ use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
 #[cfg(feature = "onnx-runtime")]
 use crate::backends::ort::OrtContext;
+#[cfg(feature = "web")]
+use crate::backends::webnn::{WebNNContext, WebNNGraph};
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::{
     error::Error,
@@ -64,6 +66,8 @@ pub(crate) enum MLBackendGraph<'context> {
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
+    #[cfg(feature = "web")]
+    WebNNGraph(WebNNGraph, std::marker::PhantomData<&'context ()>),
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -82,6 +86,15 @@ impl<'context> MLBackendGraph<'context> {
         match self {
             Self::OnnxSession(g, _) => Some(g),
             _ => None,
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub(crate) fn as_webnn_graph_mut(&mut self) -> Option<&mut WebNNGraph> {
+        if let Self::WebNNGraph(g, _) = self {
+            Some(g)
+        } else {
+            None
         }
     }
 }
@@ -278,7 +291,10 @@ impl<'context> MLContext<'context> {
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
             crate::backend_selection::BackendDevice::CoremlDevice { device_type } => todo!(),
-            crate::backend_selection::BackendDevice::WebNN { .. } => todo!(),
+            #[cfg(feature = "web")]
+            crate::backend_selection::BackendDevice::WebNN { options } => {
+                Box::new(WebNNContext::from_options(&options)?)
+            }
             crate::backend_selection::BackendDevice::ExternalBackend => todo!(),
             _ => todo!(),
         };

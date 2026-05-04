@@ -112,52 +112,50 @@ fn get_operand(operands: &[Option<MlOperand>], index: u32) -> &MlOperand {
         .expect("operand not found")
 }
 
-impl WebNNConverter {
-    pub async fn convert_async(
-        &self,
-        context: &MlContext,
-        graph_info: &GraphInfo,
-    ) -> Result<ConvertedGraph> {
-        let builder = MlGraphBuilder::new(context)
-            .map_err(|_e| WebNNConverterError::FailedToCreateMlBuilder)?;
+pub(crate) async fn build_ml_graph(
+    context: &MlContext,
+    graph_info: &GraphInfo,
+) -> Result<web_sys::MlGraph> {
+    let builder =
+        MlGraphBuilder::new(context).map_err(|_e| WebNNConverterError::FailedToCreateMlBuilder)?;
 
-        let mut operands = graph_info
-            .operands
-            .iter()
-            .enumerate()
-            .map(|(i, o)| {
-                let dtype = dtype_to_dtype(o.descriptor.data_type)?;
-                let shape = shape_to_shape(&o.descriptor.shape);
-                let desc = MlOperandDescriptor::new(dtype, &shape);
+    let mut operands = graph_info
+        .operands
+        .iter()
+        .enumerate()
+        .map(|(i, o)| {
+            let dtype = dtype_to_dtype(o.descriptor.data_type)?;
+            let shape = shape_to_shape(&o.descriptor.shape);
+            let desc = MlOperandDescriptor::new(dtype, &shape);
 
-                Ok(match o.kind {
-                    crate::OperandKind::Input => {
-                        Some(builder.input(o.name.as_deref().unwrap_or(""), &desc))
-                    }
-                    crate::OperandKind::Constant => {
-                        Some(builder.constant_with_ml_operand_descriptor_and_u8_array(
-                            &desc,
-                            &Uint8Array::new_from_slice(get_constant_data(graph_info, i as u32)?),
-                        ))
-                    }
-                    crate::OperandKind::Output => None,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        for op in graph_info.operations.iter() {
-            for id in op.input_operands().iter().copied() {
-                let invalid = operands
-                    .get(id as usize)
-                    .map(|op: &Option<MlOperand>| op.is_none())
-                    .unwrap_or(false);
-                if invalid {
-                    return Err(WebNNConverterError::InvalidId(id).into());
+            Ok(match o.kind {
+                crate::OperandKind::Input => {
+                    Some(builder.input(o.name.as_deref().unwrap_or(""), &desc))
                 }
+                crate::OperandKind::Constant => {
+                    Some(builder.constant_with_ml_operand_descriptor_and_u8_array(
+                        &desc,
+                        &Uint8Array::new_from_slice(get_constant_data(graph_info, i as u32)?),
+                    ))
+                }
+                crate::OperandKind::Output => None,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    for op in graph_info.operations.iter() {
+        for id in op.input_operands().iter().copied() {
+            let invalid = operands
+                .get(id as usize)
+                .map(|op: &Option<MlOperand>| op.is_none())
+                .unwrap_or(false);
+            if invalid {
+                return Err(WebNNConverterError::InvalidId(id).into());
             }
-            let ml_opts = MlOperatorOptions::new();
-            ml_opts.set_label(op.attributes().label());
-            let out = match op {
+        }
+        let ml_opts = MlOperatorOptions::new();
+        ml_opts.set_label(op.attributes().label());
+        let out = match op {
                 crate::Operation::Add {
                     a,
                     b,
@@ -1158,37 +1156,46 @@ impl WebNNConverter {
                     )]
                 }
             };
-            for (&k, v) in op.output_operands_slice().iter().zip(out.iter()) {
-                let k = k as usize;
-                if operands.len() >= k {
-                    operands.resize(k + 1, None);
-                }
-                operands[k] = Some(v.clone());
+        for (&k, v) in op.output_operands_slice().iter().zip(out.iter()) {
+            let k = k as usize;
+            if operands.len() >= k {
+                operands.resize(k + 1, None);
             }
+            operands[k] = Some(v.clone());
         }
+    }
 
-        let output = js_sys::Object::new_typed();
+    let output = js_sys::Object::new_typed();
 
-        for (id, op) in graph_info.operands.iter().enumerate() {
-            if op.kind == crate::OperandKind::Output {
-                Reflect::set(
-                    &output,
-                    &operand_name(graph_info, id as u32).into(),
-                    &get_operand(&operands, id as u32).clone(),
-                )
-                .unwrap();
-            }
+    for (id, op) in graph_info.operands.iter().enumerate() {
+        if op.kind == crate::OperandKind::Output {
+            Reflect::set(
+                &output,
+                &operand_name(graph_info, id as u32).into(),
+                &get_operand(&operands, id as u32).clone(),
+            )
+            .unwrap();
         }
+    }
+    JsFuture::from(builder.build(&output))
+        .await
+        .map(web_sys::MlGraph::from)
+        .map_err(|e| GraphError::from(WebNNConverterError::FailedToBuildGraph(e)))
+}
+
+impl WebNNConverter {
+    pub async fn convert_async(
+        &self,
+        context: &MlContext,
+        graph_info: &GraphInfo,
+    ) -> Result<ConvertedGraph> {
+        let ml_graph = build_ml_graph(context, graph_info).await?;
         Ok(ConvertedGraph {
             format: "webnn",
             content_type: "application/octet-stream",
             data: vec![],
             weights_data: None,
-            graph: Some(
-                JsFuture::from(builder.build(&output))
-                    .await
-                    .map_err(WebNNConverterError::FailedToBuildGraph)?,
-            ),
+            graph: Some(ml_graph),
         })
     }
 }

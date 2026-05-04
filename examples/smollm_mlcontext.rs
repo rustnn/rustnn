@@ -214,14 +214,12 @@ fn run_step(
     let h = layout.num_heads as u64;
     let d = layout.head_dim as u64;
 
-    let t_input_ids =
-        make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    let t_input_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
     context
         .write_tensor(&t_input_ids, &[token_id])
         .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
 
-    let t_position_ids =
-        make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    let t_position_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
     context
         .write_tensor(&t_position_ids, &[past_len as i64])
         .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
