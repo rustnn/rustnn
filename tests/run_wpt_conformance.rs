@@ -12,7 +12,6 @@
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime",
-    feature = "web",
 ))]
 // A lot of test code is not used for WASM, we just ignore that instead of annotating every non-web
 // function

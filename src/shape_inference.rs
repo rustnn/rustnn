@@ -847,6 +847,10 @@ pub fn infer_pool2d_shape(
 ///
 /// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
 /// `outputShapeRounding` is ignored (WebNN).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "public helper preserves the existing decomposed pool2d API"
+)]
 pub fn infer_pool2d_shape_dimensions(
     input_shape: &[Dimension],
     layout: &str,

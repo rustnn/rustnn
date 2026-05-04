@@ -3761,15 +3761,14 @@ mod tests {
         } else {
             Vec::new()
         };
-        let operator = Operation::from_operator_options(
+        Operation::from_operator_options(
             op_type,
             &input_operands,
             &attributes,
             &output_ids,
             OperationExtras::default(),
         )
-        .expect("valid test op");
-        operator
+        .expect("valid test op")
     }
     #[cfg(feature = "dynamic-inputs")]
     use crate::protos::coreml::mil_spec::dimension;

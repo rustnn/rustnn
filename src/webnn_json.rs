@@ -1312,12 +1312,11 @@ mod tests {
                     &serde_json::Value::Object(attrs),
                 )
                 .expect("leakyRelu options");
-                let operator = Operation::LeakyRelu {
+                Operation::LeakyRelu {
                     input: 0,
                     options: attributes.as_leaky_relu().cloned(),
                     outputs: vec![1],
-                };
-                operator
+                }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),

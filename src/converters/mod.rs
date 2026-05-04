@@ -3,27 +3,17 @@ use std::collections::HashMap;
 use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
-#[cfg(not(feature = "web"))]
 mod coreml_mlprogram;
-#[cfg(not(feature = "web"))]
 pub mod onnx;
 mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
-#[cfg(feature = "web")]
-mod webnn;
-#[cfg(not(feature = "web"))]
 mod weight_file_builder;
 
-#[cfg(not(feature = "web"))]
 pub use coreml_mlprogram::CoremlMlProgramConverter;
-#[cfg(not(feature = "web"))]
 pub use onnx::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use trtx::TrtxConverter;
-#[cfg(feature = "web")]
-pub use webnn::WebNNConverter;
-#[cfg(not(feature = "web"))]
 pub(crate) use weight_file_builder::WeightFileBuilder;
 
 /// Filename (relative to the `.onnx` file directory) for ONNX external initializer data produced by the ONNX converter.
@@ -50,8 +40,6 @@ pub struct ConvertedGraph {
     pub data: Vec<u8>,
     /// Optional weight file data for formats that require external weights (e.g., CoreML Float16)
     pub weights_data: Option<Vec<u8>>,
-    #[cfg(feature = "web")]
-    pub graph: Option<web_sys::MlGraph>,
 }
 
 pub trait GraphConverter {
@@ -68,15 +56,10 @@ impl ConverterRegistry {
         let mut registry = Self {
             converters: HashMap::new(),
         };
-        #[cfg(not(feature = "web"))]
-        {
-            registry.register(Box::new(OnnxConverter));
-            registry.register(Box::new(CoremlMlProgramConverter));
-            #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-            registry.register(Box::new(TrtxConverter::new()));
-        }
-        #[cfg(feature = "web")]
-        registry.register(Box::new(WebNNConverter::default()));
+        registry.register(Box::new(OnnxConverter));
+        registry.register(Box::new(CoremlMlProgramConverter));
+        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+        registry.register(Box::new(TrtxConverter::new()));
         registry
     }
 
@@ -103,7 +86,6 @@ impl ConverterRegistry {
 }
 
 #[cfg(test)]
-#[cfg(not(feature = "web"))]
 mod tests {
     use super::{ConverterRegistry, GraphConverter};
     use crate::error::GraphError;

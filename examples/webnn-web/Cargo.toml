@@ -89,7 +89,7 @@ wasm-bindgen = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen
 js-sys = { version = "*", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 wasm-bindgen-futures = { version = "0.4", git = "https://github.com/theHamsta/wasm-bindgen", branch = "webnn" }
 rustnn = { path = "../..", features = ["web"] }
-webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
+webnn-graph = "0.3"
 anyhow = "1.0"
 
 [patch.crates-io]

@@ -7,9 +7,6 @@ pub mod tolerance;
 pub mod wpt_to_graph;
 pub mod wpt_types;
 
-#[cfg(target_arch = "wasm32")]
-pub mod webnn_runner;
-
 use std::fs;
 
 use tolerance::get_operation_tolerance;
@@ -962,105 +959,5 @@ pub fn run_all() -> Result<(), String> {
             msg,
             more
         ))
-    }
-}
-
-#[cfg(test)]
-#[cfg(feature = "web")]
-mod test {
-
-    use js_sys::{Float32Array, Reflect};
-    use rustnn::{converters::WebNNConverter, webnn_json::from_graph_json};
-    use wasm_bindgen::prelude::*;
-    use wasm_bindgen_futures::JsFuture;
-    use web_sys::{
-        MlContext, MlContextOptions, MlOperandDataType, MlPowerPreference, MlTensorDescriptor,
-        window,
-    };
-
-    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
-    use wasm_bindgen_test::wasm_bindgen_test;
-    #[wasm_bindgen_test]
-    async fn one_plus_one() {
-        let contents = r#"
-webnn_graph "sample_graph" v1 {
-  inputs {
-    lhs: f32[2, 2];
-  }
-
-  consts {
-    rhs: f32[2, 2] @scalar(1.0);
-  }
-
-  nodes {
-    sum = add(lhs, rhs);
-  }
-
-  outputs { sum; }
-}"#;
-
-        let sanitized = rustnn::loader::sanitize_webnn_identifiers(contents);
-        // Parse .webnn text format
-        let graph_json = webnn_graph::parser::parse_wg_text(&sanitized).unwrap();
-
-        let graph_info = from_graph_json(&graph_json).unwrap();
-        web_sys::console::log_1(&format!("Parsed successfully: {graph_info:?}").into());
-
-        // will generate for internal MlContext
-        //let converted = WebNNConverter::default().convert_async(&graph_info).await.unwrap();
-
-        // Let's create for own context
-        let window = window().expect("no global `window` exists");
-        let navigator = window.navigator();
-        let ml = navigator.ml();
-
-        web_sys::console::log_1(&"Requesting WebNN Context...".into());
-        let options = MlContextOptions::new();
-        options.set_accelerated(true);
-        options.set_power_preference(MlPowerPreference::HighPerformance);
-        let promise = ml.create_context_with_ml_context_options(&options);
-        let result = JsFuture::from(promise).await.unwrap();
-        let context: MlContext = result.dyn_into().unwrap();
-        let converted = WebNNConverter::default()
-            .convert_async(&context, &graph_info)
-            .await
-            .unwrap();
-
-        let graph = converted.graph.unwrap();
-        web_sys::console::log_1(&graph);
-
-        let array = Float32Array::new_from_slice(&[1., 1., 1., 1.]);
-        let desc = MlTensorDescriptor::new(MlOperandDataType::Float32, &[2.into(), 2.into()]);
-        desc.set_writable(true);
-        let input = JsFuture::from(context.create_tensor(&desc)).await.unwrap();
-        context.write_tensor_with_buffer_source(&input, &array);
-        let desc = MlTensorDescriptor::new(MlOperandDataType::Float32, &[2.into(), 2.into()]);
-        desc.set_readable(true);
-        let output = JsFuture::from(context.create_tensor(&desc)).await.unwrap();
-
-        let inputs = js_sys::Object::new_typed();
-        Reflect::set(&inputs, &"lhs".into(), &input).unwrap();
-        let outputs = js_sys::Object::new_typed();
-        Reflect::set(&outputs, &"sum".into(), &output).unwrap();
-        let before = array.to_vec();
-        web_sys::console::log_2(&"Before dispatch".into(), &array);
-        context.dispatch(&graph, &inputs, &outputs);
-        JsFuture::from(context.read_tensor_with_buffer_source(&output, &array))
-            .await
-            .unwrap();
-        web_sys::console::log_2(&"After dispatch".into(), &array);
-        let after = array.to_vec();
-
-        assert!(&before != &after);
-        assert_eq!(&[1., 1., 1., 1.], before.as_slice());
-        assert_eq!(&[2., 2., 2., 2.], after.as_slice());
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    #[wasm_bindgen_test]
-    async fn run_wpt_conformance_webnn() {
-        crate::wpt_conformance::webnn_runner::run_all_webnn()
-            .await
-            .unwrap();
     }
 }

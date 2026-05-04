@@ -6,9 +6,69 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 
 ## [Unreleased]
 
+## [0.5.12] - 2026-05-04
+
+### Overview
+- 49 commits since `v0.5.11`.
+- Focus areas: new WebNN backend, large ONNX model support, dynamic shapes, strong-typed graph enums, WebNN spec alignment, and broad CoreML MLProgram correctness fixes.
+
+### Added
+- **WebNN backend** (#70) for direct WebNN execution.
+- **Dynamic dimension support** (#16) for flexible input shapes.
+- **Large ONNX file support** (#104) via external initializers.
+- **New operators across ONNX / CoreML / WebNN JSON pipelines:**
+  - `cumulativeSum` (#49)
+  - `roundEven` (#48)
+  - `reverse` (#46)
+  - `gruCell` ONNX lowering with WPT conformance (#50)
+  - CoreML `gatherElements` (#69)
+- **Public API surface:**
+  - Expose `converters::trtx::TrtxConverter::build_network` (#105).
+  - Re-export `dynamically_load_tensorrt` (#79).
+  - Make model compilation function public (#77).
+  - Common `OperatorOptions::label` field (#98).
+- WPT tests and a runner for the TRT-RTX backend, with conversion fixes (4393d1c).
+
 ### Changed
-- **WebNN spec alignment:** Replaced `round` with `roundEven` (spec name). Legacy JSON with `op_type: "round"` is still accepted and treated as `roundEven`.
+- **WebNN spec alignment:** Replaced `round` with `roundEven` (spec name). Legacy JSON with `op_type: "round"` is still accepted and treated as `roundEven` (#61, #48).
 - **Removed non-spec operators:** Dropped operators not in the current WebNN API: `asin`, `acos`, `atan`, `sinh`, `cosh`, `asinh`, `acosh`, `atanh`. Use only spec-defined operations for new graphs.
+- **Strong-typed graph model:**
+  - Refactored `Graph` / `GraphInfo` to use an enum for operator options (#57).
+  - Refactored graph to use an `Operator` enum instead of a generic operator with attributes (8202236).
+  - Added strong enums across the codebase (#90).
+  - Use `MLOperandDataType` end-to-end (#99).
+- `OperatorOptions` spec cleanup (#80).
+- `shape_inference` cleanup (#93).
+- Removed traces of signed axis handling from tests/examples (#71).
+- CI: `cargo fmt` runs at the beginning (#113).
+- `make test` now runs fmt and backend operator-support drift check (#64).
+- Multiple `cargo clippy --fix` passes and lint cleanup (#95, b4aef95).
+- Bumped `trtx` to v0.5.0 (#112), refreshed `Cargo.lock` (#91).
+
+### Fixed
+- **CoreML MLProgram:**
+  - Always emit `reshape` `shape` input (#106).
+  - Always emit `slice` `begin` and `size` inputs (#107).
+  - Always emit required `conv2d` / `conv_transpose2d` params (#103).
+  - Explicit `gelu` `mode=EXACT` (#102).
+  - 0-D scalar rank mismatch in `neg` (#108) and `hard_swish` (#109).
+  - Various boolean operations (#72).
+  - Pool op fixes (#63).
+  - Casing for `argMax` / `argMin` (#58).
+  - General regressions (#68).
+- **ONNX conversion:**
+  - `roundEven` mapped to ONNX `Round` (#51).
+  - Integer `relu` overflow (#43).
+  - `scatter` dtype propagation (#42).
+  - `tile` scalar conversion with empty repetitions (#45).
+  - Restored WPT pass rate (#52).
+- **trtx backend:** Updated converter for #93 (#94); fixed failing rustnnpt tests (#87); test fix-up after trtx v0.5.0 bump (#114).
+- **Validation / shape:**
+  - Allow optional unused inputs during graph validation (#44).
+  - Fix dynamic shape handling (#74).
+  - Add epsilon to `reciprocal` (#66).
+  - `gemm` handling (#65).
+- rustnnpt gate ONNX Runtime dylib setup (#53).
 
 ## [0.5.2] - 2025-12-28
 

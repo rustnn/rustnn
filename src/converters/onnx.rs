@@ -45,7 +45,7 @@ use webnn_onnx_utils::{
 ///
 /// Tensors using `int32_data` / `float_data` / `int64_data` are left unchanged. Only non-empty `raw_data`
 /// is moved so large weight tensors leave the main `ModelProto`.
-fn onnx_pack_external_initializer_raw_data(initializers: &mut Vec<TensorProto>) -> Option<Vec<u8>> {
+fn onnx_pack_external_initializer_raw_data(initializers: &mut [TensorProto]) -> Option<Vec<u8>> {
     // Align each tensor's external slice to a page boundary. This is not required by ONNX; it can help
     // mmap / large sequential file I/O patterns and some runtimes that prefer aligned tensor views.
     const ALIGN: usize = 4096;
@@ -10164,13 +10164,10 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![{
-                let operator = Operation::Identity {
-                    input: 0,
-                    options: None,
-                    outputs: vec![1],
-                };
-                operator
+            operations: vec![Operation::Identity {
+                input: 0,
+                options: None,
+                outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
