@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
 use crate::operator_options::{MLDimension, MLDynamicDimension};
-pub use crate::operators::Operation;
+use crate::operators::Operation;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
@@ -18,47 +18,6 @@ pub struct DynamicDimension {
 pub enum Dimension {
     Static(u32),
     Dynamic(DynamicDimension),
-}
-
-impl Dimension {
-    pub fn as_static(&self) -> Option<&u32> {
-        if let Self::Static(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    /// Returns `true` if the dimension is [`Dynamic`].
-    ///
-    /// [`Dynamic`]: Dimension::Dynamic
-    #[must_use]
-    pub fn is_dynamic(&self) -> bool {
-        matches!(self, Self::Dynamic(..))
-    }
-
-    /// Returns `true` if the dimension is [`Static`].
-    ///
-    /// [`Static`]: Dimension::Static
-    #[must_use]
-    pub fn is_static(&self) -> bool {
-        matches!(self, Self::Static(..))
-    }
-
-    pub fn as_dynamic(&self) -> Option<&DynamicDimension> {
-        if let Self::Dynamic(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    pub fn get_static_or_max_size(&self) -> u32 {
-        match self {
-            Dimension::Static(v) => *v,
-            Dimension::Dynamic(d) => d.max_size,
-        }
-    }
 }
 
 pub fn to_dimension_vector(shape: &[u32]) -> Vec<Dimension> {

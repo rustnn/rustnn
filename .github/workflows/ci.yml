@@ -16,8 +16,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
 
       - name: Install protobuf compiler
         run: |
@@ -71,12 +69,6 @@ jobs:
       - name: Run backend operator report parser tests
         run: |
           python3 -m unittest scripts/test_generate_backend_operator_report.py
-
-      - name: Build wasm32
-        run: |
-          RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown -F web
-          RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown --tests -F web
-          RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown --no-default-features -F web
 
   rustnnpt-gate:
     name: RustNNPT Conformance Gate

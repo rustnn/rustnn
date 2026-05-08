@@ -1359,11 +1359,7 @@ pub fn expected_output_to_f32(spec: &WptTensorSpec) -> Vec<f32> {
 }
 
 /// Expected output as i32 slice (for int32 validation).
-#[cfg(any(
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
-    feature = "web"
-))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn expected_output_to_i32(spec: &WptTensorSpec) -> Vec<i32> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
@@ -1399,11 +1395,7 @@ pub fn expected_output_to_i32(spec: &WptTensorSpec) -> Vec<i32> {
 }
 
 /// Expected output as u32 slice (for uint32 validation).
-#[cfg(any(
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
-    feature = "web"
-))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn expected_output_to_u32(spec: &WptTensorSpec) -> Vec<u32> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
@@ -1432,11 +1424,7 @@ pub fn expected_output_to_u32(spec: &WptTensorSpec) -> Vec<u32> {
 }
 
 /// Expected output as u8 slice (for uint8 validation).
-#[cfg(any(
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
-    feature = "web"
-))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn expected_output_to_u8(spec: &WptTensorSpec) -> Vec<u8> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
@@ -1465,11 +1453,7 @@ pub fn expected_output_to_u8(spec: &WptTensorSpec) -> Vec<u8> {
 }
 
 /// Expected output as i8 slice (for int8 validation).
-#[cfg(any(
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
-    feature = "web"
-))]
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn expected_output_to_i8(spec: &WptTensorSpec) -> Vec<i8> {
     let shape = spec.shape();
     let n: usize = shape.iter().map(|&d| d as usize).product();
