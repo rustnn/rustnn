@@ -581,4 +581,31 @@ impl<'context> MLBackendContext<'context> for OrtContext {
         write_outputs_from_session(&session_outputs, outputs, &mut self.tensors)?;
         Ok(())
     }
+
+    fn rustnn_resize_tensor(
+        &mut self,
+        tensor: &mut MLTensor,
+        new_shape: &[u64],
+    ) -> crate::error::Result<()> {
+        let mut new_desc = tensor.descriptor().clone();
+        new_desc.set_shape(new_shape.to_vec());
+
+        let new_bytes = tensor_byte_len(&new_desc)?;
+        let host = &mut self.tensors[tensor.id].memory;
+        if new_bytes > host.len() {
+            host.resize(new_bytes, 0u8);
+        }
+        tensor.descriptor = new_desc;
+        Ok(())
+    }
+
+    fn rustnn_set_tensor_capacity(
+        &mut self,
+        tensor: &mut MLTensor,
+        _max_shape: &[u64],
+    ) -> crate::error::Result<()> {
+        let new_bytes = tensor_byte_len(tensor.descriptor())?;
+        self.tensors[tensor.id].memory = vec![0u8; new_bytes.max(1)];
+        Ok(())
+    }
 }

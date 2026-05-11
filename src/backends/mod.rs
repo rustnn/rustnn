@@ -67,6 +67,22 @@ pub mod ort {
         ) -> crate::error::Result<()> {
             todo!()
         }
+
+        fn rustnn_resize_tensor(
+            &mut self,
+            _tensor: &mut mlcontext::MLTensor,
+            _new_shape: &[u64],
+        ) -> crate::error::Result<()> {
+            todo!()
+        }
+
+        fn rustnn_set_tensor_capacity(
+            &mut self,
+            _tensor: &mut mlcontext::MLTensor,
+            _max_shape: &[u64],
+        ) -> crate::error::Result<()> {
+            todo!()
+        }
     }
 }
 
@@ -129,6 +145,22 @@ pub mod trtx {
             _graph: &mut mlcontext::MLGraph,
             _inputs: &std::collections::HashMap<&str, &mlcontext::MLTensor>,
             _outputs: &std::collections::HashMap<&str, &mlcontext::MLTensor>,
+        ) -> crate::error::Result<()> {
+            todo!()
+        }
+
+        fn rustnn_resize_tensor(
+            &mut self,
+            _tensor: &mut mlcontext::MLTensor,
+            _new_shape: &[u64],
+        ) -> crate::error::Result<()> {
+            todo!()
+        }
+
+        fn rustnn_set_tensor_capacity(
+            &mut self,
+            _tensor: &mut mlcontext::MLTensor,
+            _max_shape: &[u64],
         ) -> crate::error::Result<()> {
             todo!()
         }

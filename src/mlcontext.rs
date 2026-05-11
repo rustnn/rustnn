@@ -28,6 +28,9 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn accelerated(&self) -> bool;
     fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder<'context> + 'context>>;
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor>;
+    fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()>;
+    fn rustnn_set_tensor_capacity(&mut self, tensor: &mut MLTensor, max_shape: &[u64])
+    -> Result<()>;
     fn create_constant_tensor(
         &mut self,
         descriptor: &MLTensorDescriptor,
@@ -141,6 +144,10 @@ impl MLTensor {
     pub fn destroyed(&self) -> bool {
         todo!() // JS has a isDestroyed method
     }
+
+    pub(crate) fn descriptor(&self) -> &MLTensorDescriptor {
+        &self.descriptor
+    }
 }
 
 #[derive(Debug)]
@@ -176,6 +183,13 @@ impl MLOperandDescriptor {
 
     pub fn set_shape(&mut self, shape: Vec<u64>) {
         self.shape = shape;
+    }
+
+    pub(crate) fn rustnn_required_bytes(&self) -> usize {
+        let bits = self.data_type().rustnn_element_size_bits();
+        let elements = self.shape().iter().copied().product::<u64>() as usize;
+        let size = bits * elements / 8;
+        size
     }
 }
 
@@ -218,6 +232,12 @@ impl std::ops::Deref for MLTensorDescriptor {
 
     fn deref(&self) -> &Self::Target {
         &self.operand_descriptor
+    }
+}
+
+impl std::ops::DerefMut for MLTensorDescriptor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.operand_descriptor
     }
 }
 

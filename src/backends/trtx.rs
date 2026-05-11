@@ -273,9 +273,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         &mut self,
         descriptor: &crate::mlcontext::MLTensorDescriptor,
     ) -> crate::error::Result<crate::mlcontext::MLTensor> {
-        let bits = descriptor.data_type().rustnn_element_size_bits();
-        let elements = descriptor.shape().iter().copied().product::<u64>() as usize;
-        let size = bits * elements / 8;
+        let size = descriptor.rustnn_required_bytes();
 
         let tensor = TrtxTensor::new(&self.cuda_ctx, size).map_err(|e| {
             crate::error::Error::TensorCreationError {
@@ -391,6 +389,38 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         }
         self.events.push(inference_done);
 
+        Ok(())
+    }
+
+    fn rustnn_resize_tensor(
+        &mut self,
+        tensor: &mut MLTensor,
+        new_shape: &[u64],
+    ) -> crate::error::Result<()> {
+        let mut new_desc = tensor.descriptor().clone();
+        new_desc.set_shape(new_shape.to_vec());
+
+        let new_bytes = new_desc.rustnn_required_bytes();
+        let cuda_tensor = &mut self.tensors[tensor.id];
+
+        if new_bytes > cuda_tensor.memory.num_bytes() {
+            cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? }
+        }
+        tensor.descriptor = new_desc;
+        Ok(())
+    }
+
+    fn rustnn_set_tensor_capacity(
+        &mut self,
+        tensor: &mut MLTensor,
+        max_shape: &[u64],
+    ) -> crate::error::Result<()> {
+        let new_bytes = ((max_shape.iter().product::<u64>() as usize
+            * tensor.data_type().rustnn_element_size_bits())
+            / 8) as usize;
+
+        let cuda_tensor = &mut self.tensors[tensor.id];
+        cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? };
         Ok(())
     }
 }
