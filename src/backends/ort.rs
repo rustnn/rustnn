@@ -280,15 +280,24 @@ fn copy_dyn_value_to_buffer(
     buf: &mut [u8],
 ) -> crate::error::Result<()> {
     let expected = tensor_byte_len(descriptor)?;
-    if buf.len() != expected {
+    if buf.len() < expected {
         return Err(Error::GraphDispatchError {
             source: format!(
-                "output '{name}': buffer length {} does not match descriptor ({expected} bytes)",
+                "output '{name}': buffer too small for descriptor shape {:?}: need {expected} bytes, storage {}",
+                descriptor.shape(),
                 buf.len()
             )
             .into(),
         });
     }
+    if buf.len() != expected {
+        debug!(
+            target: "rustnn::backends::ort",
+            "output '{name}': copy {expected} logical bytes into storage {} bytes (oversized buffer / rustnn_set_tensor_capacity)",
+            buf.len()
+        );
+    }
+    let dst = &mut buf[..expected];
     match descriptor.data_type() {
         crate::operator_enums::MLOperandDataType::Float32 => {
             let (_, sl) =
@@ -297,7 +306,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Float16 => {
             let (_, sl) =
@@ -307,7 +327,18 @@ fn copy_dyn_value_to_buffer(
                         source: format!("output '{name}': {e}").into(),
                     })?;
             let u16s: Vec<u16> = sl.iter().map(|h| h.to_bits()).collect();
-            buf.copy_from_slice(bytemuck::cast_slice(&u16s));
+            let src = bytemuck::cast_slice(&u16s);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Int32 => {
             let (_, sl) =
@@ -316,7 +347,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Uint32 => {
             let (_, sl) =
@@ -325,7 +367,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Int64 => {
             let (_, sl) =
@@ -334,7 +387,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Uint64 => {
             let (_, sl) =
@@ -343,7 +407,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Int8 => {
             let (_, sl) =
@@ -352,7 +427,18 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(bytemuck::cast_slice(sl));
+            let src = bytemuck::cast_slice(sl);
+            if src.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        src.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(src);
         }
         crate::operator_enums::MLOperandDataType::Uint8 => {
             let (_, sl) =
@@ -361,7 +447,17 @@ fn copy_dyn_value_to_buffer(
                     .map_err(|e| Error::GraphDispatchError {
                         source: format!("output '{name}': {e}").into(),
                     })?;
-            buf.copy_from_slice(sl);
+            if sl.len() != expected {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}': ORT tensor {} bytes, descriptor expects {}",
+                        sl.len(),
+                        expected
+                    )
+                    .into(),
+                });
+            }
+            dst.copy_from_slice(sl);
         }
     }
     Ok(())
@@ -379,6 +475,16 @@ fn write_outputs_from_session<'s>(
             });
         };
         let buf = &mut tensors[ml_tensor.id].memory;
+        let logical = tensor_byte_len(&ml_tensor.descriptor)?;
+        debug!(
+            target: "rustnn::backends::ort",
+            "write_output '{}' tensor_id={} shape={:?} logical_bytes={} storage_bytes={}",
+            name,
+            ml_tensor.id,
+            ml_tensor.shape(),
+            logical,
+            buf.len()
+        );
         copy_dyn_value_to_buffer(name, value, &ml_tensor.descriptor, buf)?;
     }
     Ok(())
@@ -515,18 +621,33 @@ impl<'context> MLBackendContext<'context> for OrtContext {
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
         let host = &self.tensors[tensor.id].memory;
-        if array.len() < host.len() {
+        let logical = tensor_byte_len(tensor.descriptor())?;
+        if host.len() > logical {
+            debug!(
+                target: "rustnn::backends::ort",
+                "read_tensor tensor_id={} shape={:?} logical_bytes={} storage_bytes={}",
+                tensor.id,
+                tensor.shape(),
+                logical,
+                host.len()
+            );
+        }
+        if array.len() < logical {
             return Err(Error::TensorReadError {
                 source: format!(
-                    "buffer too small: need {} bytes, got {}",
-                    host.len(),
+                    "buffer too small: need {} logical bytes, got {}",
+                    logical,
                     array.len()
                 )
                 .into(),
                 tensor: tensor.clone(),
             });
         }
-        array[..host.len()].copy_from_slice(host);
+        let slice = host.get(..logical).ok_or_else(|| Error::TensorReadError {
+            source: format!("tensor storage shorter than logical size ({logical} bytes)").into(),
+            tensor: tensor.clone(),
+        })?;
+        array[..logical].copy_from_slice(slice);
         Ok(())
     }
 
@@ -568,10 +689,35 @@ impl<'context> MLBackendContext<'context> for OrtContext {
             let tensor = inputs.get(name).ok_or_else(|| Error::GraphDispatchError {
                 source: format!("missing input '{name}' for ONNX dispatch").into(),
             })?;
-            let bytes = &self.tensors[tensor.id].memory;
+            let full = &self.tensors[tensor.id].memory;
+            let logical = tensor_byte_len(tensor.descriptor())?;
+            let bytes = full
+                .get(..logical)
+                .ok_or_else(|| Error::GraphDispatchError {
+                    source: format!(
+                        "input '{name}': tensor buffer shorter than logical size ({logical} bytes)"
+                    )
+                    .into(),
+                })?;
+            debug!(
+                target: "rustnn::backends::ort",
+                "dispatch input '{}' tensor_id={} shape={:?} logical_bytes={} storage_bytes={}",
+                name,
+                tensor.id,
+                tensor.shape(),
+                logical,
+                full.len()
+            );
             let v = session_input_from_host(input_info, tensor.shape(), bytes)?;
             input_session_values.push(v);
         }
+
+        debug!(
+            target: "rustnn::backends::ort",
+            "ORT session.run: {} inputs, {} output bindings",
+            input_session_values.len(),
+            outputs.len()
+        );
 
         let session_outputs = ort_graph
             .session
@@ -587,25 +733,63 @@ impl<'context> MLBackendContext<'context> for OrtContext {
         tensor: &mut MLTensor,
         new_shape: &[u64],
     ) -> crate::error::Result<()> {
+        let id = tensor.id;
+        let old_shape = tensor.descriptor().shape().to_vec();
+        let old_cap = self.tensors[tensor.id].memory.len();
+
         let mut new_desc = tensor.descriptor().clone();
         new_desc.set_shape(new_shape.to_vec());
 
         let new_bytes = tensor_byte_len(&new_desc)?;
         let host = &mut self.tensors[tensor.id].memory;
-        if new_bytes > host.len() {
+        let grew = new_bytes > host.len();
+        if grew {
             host.resize(new_bytes, 0u8);
         }
         tensor.descriptor = new_desc;
+
+        debug!(
+            target: "rustnn::backends::ort",
+            "rustnn_resize_tensor tensor_id={} old_shape={:?} new_shape={:?} old_cap={} new_cap={} logical_bytes={} grew={}",
+            id,
+            old_shape,
+            new_shape,
+            old_cap,
+            host.len(),
+            new_bytes,
+            grew
+        );
         Ok(())
     }
 
     fn rustnn_set_tensor_capacity(
         &mut self,
         tensor: &mut MLTensor,
-        _max_shape: &[u64],
+        max_shape: &[u64],
     ) -> crate::error::Result<()> {
-        let new_bytes = tensor_byte_len(tensor.descriptor())?;
-        self.tensors[tensor.id].memory = vec![0u8; new_bytes.max(1)];
+        let bits = tensor.data_type().rustnn_element_size_bits();
+        let elements: u64 = max_shape
+            .iter()
+            .try_fold(1u64, |acc, &d| acc.checked_mul(d))
+            .ok_or_else(|| Error::GraphDispatchError {
+                source: "rustnn_set_tensor_capacity: shape element count overflow".into(),
+            })?;
+        let new_bytes = (elements as usize)
+            .checked_mul(bits)
+            .and_then(|b| b.checked_div(8))
+            .ok_or_else(|| Error::GraphDispatchError {
+                source: "rustnn_set_tensor_capacity: byte length overflow".into(),
+            })?;
+        let alloc = new_bytes.max(1);
+        self.tensors[tensor.id].memory = vec![0u8; alloc];
+        debug!(
+            target: "rustnn::backends::ort",
+            "rustnn_set_tensor_capacity tensor_id={} max_shape={:?} alloc_bytes={} (logical descriptor unchanged: {:?})",
+            tensor.id,
+            max_shape,
+            alloc,
+            tensor.descriptor().shape()
+        );
         Ok(())
     }
 }

@@ -21,7 +21,7 @@ exclude = [
 default = []
 dynamic-inputs = []
 coreml-runtime = ["objc"]
-onnx-runtime = ["ort", "ndarray", "tokenizers", "dep:tempfile"]
+onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
 trtx-runtime = ["trtx", "cudarc"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
 
@@ -45,7 +45,6 @@ ort = { version = "=2.0.0-rc.12", optional = true, features = [
     "load-dynamic",
     "api-24",
 ] }
-tokenizers = { version = "0.22", optional = true }
 half = "2.4"
 trtx = { version = "0.5.0", optional = true }
 regex = "1.11"
@@ -60,6 +59,7 @@ pretty_env_logger = "0.5.0"
 prost-build = "0.12"
 
 [dev-dependencies]
+tokenizers = { version = "0.22" }
 tempfile = "3.8"
 half = "2.4"
 safetensors = "0.7"

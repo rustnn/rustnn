@@ -2,7 +2,7 @@ use std::{collections::HashMap, path::PathBuf, process::Command};
 
 use anyhow::{Context, anyhow, bail};
 use clap::Parser;
-use log::info;
+use log::{debug, info};
 use rustnn::{
     ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
     mlcontext::{
@@ -42,6 +42,19 @@ struct Layout {
 struct StepState {
     cache: HashMap<String, Vec<f32>>,
     current_pos: usize,
+}
+
+/// Per-step ONNX I/O tensors allocated once and resized each token (see `rustnn_resize_tensor` /
+/// `rustnn_set_tensor_capacity`).
+#[derive(Debug)]
+struct StepTensors {
+    input_ids: MLTensor,
+    position_ids: MLTensor,
+    attention_mask: MLTensor,
+    past_k: Vec<MLTensor>,
+    past_v: Vec<MLTensor>,
+    present_k: Vec<MLTensor>,
+    present_v: Vec<MLTensor>,
 }
 
 fn dim_to_usize(dim: &rustnn::graph::Dimension) -> usize {
@@ -149,6 +162,92 @@ fn make_tensor(
         .map_err(|e| anyhow!("create tensor: {e:?}"))
 }
 
+fn init_step_tensors(context: &mut MLContext, layout: &Layout) -> anyhow::Result<StepTensors> {
+    let h = layout.num_heads as u64;
+    let d = layout.head_dim as u64;
+    let max_seq = layout.max_cache_len as u64;
+    let max_past = layout.max_cache_len.saturating_sub(1) as u64;
+
+    let input_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    let position_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+
+    let mut attention_mask =
+        make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
+    context
+        .rustnn_set_tensor_capacity(&mut attention_mask, &[1, max_seq])
+        .map_err(|e| anyhow!("set_tensor_capacity attention_mask: {e:?}"))?;
+
+    let mut past_k = Vec::with_capacity(layout.num_layers);
+    let mut past_v = Vec::with_capacity(layout.num_layers);
+    let mut present_k = Vec::with_capacity(layout.num_layers);
+    let mut present_v = Vec::with_capacity(layout.num_layers);
+
+    for _ in 0..layout.num_layers {
+        let mut pk = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, 0, d],
+            true,
+            false,
+        )?;
+        context
+            .rustnn_set_tensor_capacity(&mut pk, &[1, h, max_past, d])
+            .map_err(|e| anyhow!("set_tensor_capacity past_key: {e:?}"))?;
+        past_k.push(pk);
+
+        let mut pv = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, 0, d],
+            true,
+            false,
+        )?;
+        context
+            .rustnn_set_tensor_capacity(&mut pv, &[1, h, max_past, d])
+            .map_err(|e| anyhow!("set_tensor_capacity past_value: {e:?}"))?;
+        past_v.push(pv);
+
+        let mut prk = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, 1, d],
+            false,
+            true,
+        )?;
+        context
+            .rustnn_set_tensor_capacity(&mut prk, &[1, h, max_seq, d])
+            .map_err(|e| anyhow!("set_tensor_capacity present_key: {e:?}"))?;
+        present_k.push(prk);
+
+        let mut prv = make_tensor(
+            context,
+            MLOperandDataType::Float32,
+            vec![1, h, 1, d],
+            false,
+            true,
+        )?;
+        context
+            .rustnn_set_tensor_capacity(&mut prv, &[1, h, max_seq, d])
+            .map_err(|e| anyhow!("set_tensor_capacity present_value: {e:?}"))?;
+        present_v.push(prv);
+    }
+
+    debug!(
+        "smollm_mlcontext init_step_tensors: max_seq={max_seq} max_past={max_past} heads={h} head_dim={d} layers={}",
+        layout.num_layers
+    );
+
+    Ok(StepTensors {
+        input_ids,
+        position_ids,
+        attention_mask,
+        past_k,
+        past_v,
+        present_k,
+        present_v,
+    })
+}
+
 // Copies compacted (contiguous) past tokens from the padded CPU cache into a flat buffer.
 fn compact_kv(
     state: &StepState,
@@ -196,15 +295,13 @@ fn store_present(
     }
 }
 
-// Creates tensors with the correct dynamic shapes for each step:
-// - attention_mask: [1, current_pos+1]
-// - past KV: [1, heads, current_pos, head_dim]
-// - present KV: [1, heads, current_pos+1, head_dim]
-// This mirrors how smollm_webnn_rust provides varying-shape OnnxInputs each step.
+// Each step: resize cached tensors to the active shapes, write inputs, dispatch, read outputs.
+// Buffers were pre-sized with `rustnn_set_tensor_capacity` in `init_step_tensors`.
 fn run_step(
     context: &mut MLContext,
     graph: &mut MLGraph,
     layout: &Layout,
+    tensors: &mut StepTensors,
     state: &mut StepState,
     token_id: i64,
     logits_tensor: &MLTensor,
@@ -214,78 +311,56 @@ fn run_step(
     let h = layout.num_heads as u64;
     let d = layout.head_dim as u64;
 
-    let t_input_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
-    context
-        .write_tensor(&t_input_ids, &[token_id])
-        .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
+    debug!(
+        "smollm_mlcontext run_step: current_pos={} token_id={} seq_len={} past_kv_shape=[1,{},{},{}] present_shape=[1,{},{},{}] layers={}",
+        state.current_pos, token_id, seq_len, h, past_len, d, h, seq_len, d, layout.num_layers
+    );
 
-    let t_position_ids = make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
     context
-        .write_tensor(&t_position_ids, &[past_len as i64])
-        .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
+        .rustnn_resize_tensor(&mut tensors.attention_mask, &[1, seq_len as u64])
+        .map_err(|e| anyhow!("resize attention_mask: {e:?}"))?;
 
-    let t_attn_mask = make_tensor(
-        context,
-        MLOperandDataType::Int64,
-        vec![1, seq_len as u64],
-        true,
-        false,
-    )?;
-    context
-        .write_tensor(&t_attn_mask, &vec![1i64; seq_len])
-        .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
-
-    let mut past_k = Vec::with_capacity(layout.num_layers);
-    let mut past_v = Vec::with_capacity(layout.num_layers);
     for layer in 0..layout.num_layers {
-        let k_data = compact_kv(state, layout, layer, "key", past_len);
-        let t_k = make_tensor(
-            context,
-            MLOperandDataType::Float32,
-            vec![1, h, past_len as u64, d],
-            true,
-            false,
-        )?;
-        if !k_data.is_empty() {
-            context
-                .write_tensor(&t_k, &k_data)
-                .map_err(|e| anyhow!("write past_key {layer}: {e:?}"))?;
-        }
-        past_k.push(t_k);
-
-        let v_data = compact_kv(state, layout, layer, "value", past_len);
-        let t_v = make_tensor(
-            context,
-            MLOperandDataType::Float32,
-            vec![1, h, past_len as u64, d],
-            true,
-            false,
-        )?;
-        if !v_data.is_empty() {
-            context
-                .write_tensor(&t_v, &v_data)
-                .map_err(|e| anyhow!("write past_val {layer}: {e:?}"))?;
-        }
-        past_v.push(t_v);
+        context
+            .rustnn_resize_tensor(&mut tensors.past_k[layer], &[1, h, past_len as u64, d])
+            .map_err(|e| anyhow!("resize past_key layer {layer}: {e:?}"))?;
+        context
+            .rustnn_resize_tensor(&mut tensors.past_v[layer], &[1, h, past_len as u64, d])
+            .map_err(|e| anyhow!("resize past_value layer {layer}: {e:?}"))?;
+        context
+            .rustnn_resize_tensor(&mut tensors.present_k[layer], &[1, h, seq_len as u64, d])
+            .map_err(|e| anyhow!("resize present_key layer {layer}: {e:?}"))?;
+        context
+            .rustnn_resize_tensor(&mut tensors.present_v[layer], &[1, h, seq_len as u64, d])
+            .map_err(|e| anyhow!("resize present_value layer {layer}: {e:?}"))?;
     }
 
-    let mut pres_k = Vec::with_capacity(layout.num_layers);
-    let mut pres_v = Vec::with_capacity(layout.num_layers);
-    for _ in 0..layout.num_layers {
-        pres_k.push(make_tensor(
-            context,
-            MLOperandDataType::Float32,
-            vec![1, h, seq_len as u64, d],
-            false,
-            true,
-        )?);
-        pres_v.push(make_tensor(
-            context,
-            MLOperandDataType::Float32,
-            vec![1, h, seq_len as u64, d],
-            false,
-            true,
-        )?);
+    context
+        .write_tensor(&tensors.input_ids, &[token_id])
+        .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
+
+    context
+        .write_tensor(&tensors.position_ids, &[past_len as i64])
+        .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
+
+    context
+        .write_tensor(&tensors.attention_mask, &vec![1i64; seq_len])
+        .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
+
+    for layer in 0..layout.num_layers {
+        let k_data = compact_kv(state, layout, layer, "key", past_len);
+        if !k_data.is_empty() {
+            context
+                .write_tensor(&tensors.past_k[layer], &k_data)
+                .map_err(|e| anyhow!("write past_key {layer}: {e:?}"))?;
+        }
+
+        let v_data = compact_kv(state, layout, layer, "value", past_len);
+        if !v_data.is_empty() {
+            context
+                .write_tensor(&tensors.past_v[layer], &v_data)
+                .map_err(|e| anyhow!("write past_val {layer}: {e:?}"))?;
+        }
     }
 
     // Name strings must outlive the HashMap borrows below.
@@ -303,19 +378,19 @@ fn run_step(
         .collect();
 
     let mut inputs: HashMap<&str, &MLTensor> = HashMap::new();
-    inputs.insert("input_ids", &t_input_ids);
-    inputs.insert("position_ids", &t_position_ids);
-    inputs.insert("attention_mask", &t_attn_mask);
+    inputs.insert("input_ids", &tensors.input_ids);
+    inputs.insert("position_ids", &tensors.position_ids);
+    inputs.insert("attention_mask", &tensors.attention_mask);
     for i in 0..layout.num_layers {
-        inputs.insert(&past_k_names[i], &past_k[i]);
-        inputs.insert(&past_v_names[i], &past_v[i]);
+        inputs.insert(&past_k_names[i], &tensors.past_k[i]);
+        inputs.insert(&past_v_names[i], &tensors.past_v[i]);
     }
 
     let mut outputs: HashMap<&str, &MLTensor> = HashMap::new();
     outputs.insert(&layout.logits_name, logits_tensor);
     for i in 0..layout.num_layers {
-        outputs.insert(&pres_k_names[i], &pres_k[i]);
-        outputs.insert(&pres_v_names[i], &pres_v[i]);
+        outputs.insert(&pres_k_names[i], &tensors.present_k[i]);
+        outputs.insert(&pres_v_names[i], &tensors.present_v[i]);
     }
 
     context
@@ -326,13 +401,13 @@ fn run_step(
     for layer in 0..layout.num_layers {
         let mut k = vec![0f32; kv_elems];
         context
-            .read_tensor(&pres_k[layer], &mut k)
+            .read_tensor(&tensors.present_k[layer], &mut k)
             .map_err(|e| anyhow!("read present_key {layer}: {e:?}"))?;
         store_present(state, layout, layer, "key", &k, seq_len);
 
         let mut v = vec![0f32; kv_elems];
         context
-            .read_tensor(&pres_v[layer], &mut v)
+            .read_tensor(&tensors.present_v[layer], &mut v)
             .map_err(|e| anyhow!("read present_val {layer}: {e:?}"))?;
         store_present(state, layout, layer, "value", &v, seq_len);
     }
@@ -462,6 +537,8 @@ fn main() -> anyhow::Result<()> {
         .create_tensor(&logits_td)
         .map_err(|e| anyhow!("create logits tensor: {e:?}"))?;
 
+    let mut step_tensors = init_step_tensors(&mut context, &layout)?;
+
     let mut state = init_state(&layout);
     let mut last_token = 0usize;
 
@@ -471,6 +548,7 @@ fn main() -> anyhow::Result<()> {
             &mut context,
             &mut graph,
             &layout,
+            &mut step_tensors,
             &mut state,
             *token_id as i64,
             &logits_tensor,
@@ -481,6 +559,10 @@ fn main() -> anyhow::Result<()> {
     let mut generated = Vec::new();
     for _ in 0..args.max_new_tokens {
         generated.push(last_token as u32);
+        let piece = tokenizer
+            .decode(&[last_token as u32], false)
+            .unwrap_or_else(|e| format!("<decode error: {e}>"));
+        print!("{piece}");
         if state.current_pos >= layout.max_cache_len {
             break;
         }
@@ -488,6 +570,7 @@ fn main() -> anyhow::Result<()> {
             &mut context,
             &mut graph,
             &layout,
+            &mut step_tensors,
             &mut state,
             last_token as i64,
             &logits_tensor,
@@ -499,8 +582,6 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow!("decode generated text: {e}"))?;
 
     println!("Prompt: {}", args.prompt);
-    println!("Prompt token ids: {:?}", prompt_ids);
-    println!("Generated token ids: {:?}", generated);
     println!("Generated text: {}", generated_text);
 
     Ok(())

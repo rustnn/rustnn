@@ -347,6 +347,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         // TODO: just create a u64 device value for cudastreamwaitvalue64?
         let inference_stream = &graph.cuda_stream;
 
+        // TODO: set shape for dynamic networks and validate shape of input/output
+        // tensors with what the network expect (done automatically by setting io_shapes?)
+
         for (input, tensor) in inputs.iter() {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
@@ -380,7 +383,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 .to_dispatch_result()?
         };
         let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
-        for (_output, tensor) in outputs.iter() {
+        for tensor in outputs.values() {
             let cuda_tensor = &mut self.tensors[tensor.id];
             cuda_tensor
                 .stream
@@ -402,8 +405,13 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
         let new_bytes = new_desc.rustnn_required_bytes();
         let cuda_tensor = &mut self.tensors[tensor.id];
+        debug!(
+            "Resizing tensor {cuda_tensor:?} old desc: {:?}, new shape {new_shape:?}, new bytes {new_bytes}",
+            tensor.descriptor.shape()
+        );
 
         if new_bytes > cuda_tensor.memory.num_bytes() {
+            debug!("Need to reallocate for new size {new_bytes} bytes");
             cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? }
         }
         tensor.descriptor = new_desc;
@@ -415,9 +423,18 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &mut MLTensor,
         max_shape: &[u64],
     ) -> crate::error::Result<()> {
-        let new_bytes = ((max_shape.iter().product::<u64>() as usize
+        let new_bytes = (max_shape.iter().product::<u64>() as usize
             * tensor.data_type().rustnn_element_size_bits())
-            / 8) as usize;
+            / 8;
+        let required_bytes = tensor.descriptor().rustnn_required_bytes();
+        if new_bytes < required_bytes {
+            return Err(Error::TensorCapacityError {
+                requested_shape: max_shape.to_vec(),
+                current_shape: tensor.shape().to_vec(),
+                requested_bytes: new_bytes as u64,
+                required_bytes: required_bytes as u64,
+            });
+        }
 
         let cuda_tensor = &mut self.tensors[tensor.id];
         cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? };

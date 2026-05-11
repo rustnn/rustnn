@@ -8,6 +8,7 @@ pub mod graph;
 pub mod graphviz;
 pub mod loader;
 pub mod mlcontext;
+pub mod mlgraphbuilder;
 pub mod operator_enums;
 pub mod operator_options;
 pub mod operators;

@@ -29,8 +29,11 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     fn create_builder(&mut self) -> Result<Box<dyn MLBackendBuilder<'context> + 'context>>;
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor>;
     fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()>;
-    fn rustnn_set_tensor_capacity(&mut self, tensor: &mut MLTensor, max_shape: &[u64])
-    -> Result<()>;
+    fn rustnn_set_tensor_capacity(
+        &mut self,
+        tensor: &mut MLTensor,
+        max_shape: &[u64],
+    ) -> Result<()>;
     fn create_constant_tensor(
         &mut self,
         descriptor: &MLTensorDescriptor,
@@ -276,7 +279,7 @@ impl MLTensorDescriptor {
 
 #[derive(Debug)]
 pub struct MLContext<'context> {
-    backend: Box<dyn MLBackendContext<'context> + 'context>,
+    pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
 }
 
 impl<'context> MLContext<'context> {
@@ -368,39 +371,17 @@ impl<'context> MLContext<'context> {
         self.backend
             .write_tensor(tensor, bytemuck::cast_slice(array))
     }
-}
 
-#[derive(Debug)]
-pub struct MLGraphBuilder<'context> {
-    backend: Box<dyn MLBackendBuilder<'context> + 'context>,
-
-    ///[[hasBuilt]] of type boolean
-    ///
-    /// Whether MLGraphBuilder.build() has been called. Once built, the MLGraphBuilder can no longer create operators or compile MLGraphs.
-    has_built: bool,
-}
-
-impl<'context> MLGraphBuilder<'context> {
-    pub fn new(context: &'_ mut MLContext<'context>) -> Result<Self> {
-        let backend = context.backend.create_builder()?;
-        Ok(Self {
-            backend,
-            has_built: false,
-        })
+    pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
+        self.backend.rustnn_resize_tensor(tensor, new_shape)
     }
 
-    pub fn build_graph_info(&mut self, graph: &'context GraphInfo) -> Result<MLGraph<'context>> {
-        self.backend.load_graph(graph)?;
-        self.backend.build(&HashMap::new())
-    }
-
-    /*async*/
-    pub fn build(&mut self, outputs: &HashMap<&str, MLOperand>) -> Result<MLGraph<'context>> {
-        if self.has_built {
-            panic!("Called MLGraphBuilder::build more than once on a MLGraph");
-        }
-        self.has_built = true;
-        self.backend.build(outputs)
+    pub fn rustnn_set_tensor_capacity(
+        &mut self,
+        tensor: &mut MLTensor,
+        max_shape: &[u64],
+    ) -> Result<()> {
+        self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
     }
 }
 

@@ -63,6 +63,16 @@ pub enum Error {
         tensor: MLTensor,
     },
 
+    #[error(
+        "Set capacity error: requested to set capacity to max shape {requested_shape:?} with {required_bytes} bytes but current shape is {current_shape:?} which needs {required_bytes} bytes"
+    )]
+    TensorCapacityError {
+        requested_shape: Vec<u64>,
+        current_shape: Vec<u64>,
+        requested_bytes: u64,
+        required_bytes: u64,
+    },
+
     #[error("Failed to dispatch graph: {source}")]
     GraphDispatchError { source: Box<dyn std::error::Error> },
 
@@ -72,6 +82,7 @@ pub enum Error {
         #[from]
         source: trtx::Error,
     },
+
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     #[error("An CUDA error occurred: {source}")]
     CudaError {
