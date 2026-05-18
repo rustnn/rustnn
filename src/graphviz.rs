@@ -14,11 +14,13 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
             OperandKind::Input => "oval",
             OperandKind::Constant => "diamond",
             OperandKind::Output => "doublecircle",
+            OperandKind::Intermediate => "oval",
         };
         let fill = match operand.kind {
             OperandKind::Input => "#d0e6ff",
             OperandKind::Constant => "#f0f0f0",
             OperandKind::Output => "#d6f5d6",
+            OperandKind::Intermediate => "#d6f5d6",
         };
         let mut label_lines = vec![format!(
             "{} operand {}",
@@ -26,6 +28,7 @@ pub fn graph_to_dot(graph: &GraphInfo) -> String {
                 OperandKind::Input => "Input",
                 OperandKind::Constant => "Constant",
                 OperandKind::Output => "Output",
+                OperandKind::Intermediate => "Intermediate",
             },
             idx
         )];

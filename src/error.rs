@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use crate::{
+    Operand, Operation,
     graph::DataType,
-    mlcontext::{MLTensor, MLTensorDescriptor},
+    mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use cudarc::driver::DriverError;
@@ -10,6 +11,131 @@ use serde_json::Error as JsonError;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Error)]
+pub enum ShapeInferenceError {
+    #[error(
+        "Input operands have inconsistent data types:\noperation:\n{operation:#?}\ninputs:\n{inputs:#?}"
+    )]
+    InconsistentDataTypes {
+        operation: Operation,
+        inputs: Vec<(MLOperand, Operand)>,
+    },
+
+    #[error(
+        "Where condition does not have uint8 data type:\noperation:\n{operation:#?}\ninputs:\n{inputs:#?}"
+    )]
+    NonUint8Condition {
+        operation: Operation,
+        inputs: Vec<(MLOperand, Operand)>,
+    },
+
+    #[error(
+        "Broadcast shape inference failed: {source}\noperation:\n{operation:#?}\ninputs:\n{inputs:#?}"
+    )]
+    BroadcastError {
+        operation: Operation,
+        inputs: Vec<(MLOperand, Operand)>,
+        #[source]
+        source: GraphError,
+    },
+
+    #[error(
+        "Concat shape inference failed: {source}\noperation:\n{operation:#?}\ninputs:\n{inputs:#?}"
+    )]
+    ConcatError {
+        operation: Operation,
+        inputs: Vec<(MLOperand, Operand)>,
+        #[source]
+        source: GraphError,
+    },
+
+    #[error(
+        "Expand shape inference failed: {source}\noperation:\n{operation:#?}\ninput:\n{input:#?}"
+    )]
+    ExpandError {
+        operation: Operation,
+        input: (MLOperand, Operand),
+        #[source]
+        source: GraphError,
+    },
+
+    #[error(
+        "Slice shape inference failed: start and sizes must be have same rank as input tensor:\noperation:\n{operation:#?}\ninput:\n{input:#?}"
+    )]
+    SliceErrorWrongStartSizes {
+        operation: Operation,
+        input: (MLOperand, Operand),
+    },
+
+    #[error("{op_name} shape inference failed: {source}\noperation:\n{operation:#?}")]
+    InferError {
+        op_name: &'static str,
+        operation: Operation,
+        #[source]
+        source: GraphError,
+    },
+
+    #[error(
+        "Operation had options object missing. Should be fixed by RustNN:\noperation: {operation:#?}"
+    )]
+    MissingOptions { operation: Operation },
+
+    #[error(
+        "Invalid split sizes: the number of splits must devide the input rank evenly:\noperation:\n{operation:#?}\ninput:\n{input:#?}"
+    )]
+    InvalidSplitSizes {
+        operation: Operation,
+        input: (MLOperand, Operand),
+    },
+}
+
+// TODO: use graph_operation_to_webnn_node for error reporting the problematic node?
+#[derive(Debug, Error)]
+pub enum GraphBuilderError {
+    #[error("Failed to build: requested MLGraphBuilder.build with an empty output map")]
+    EmptyOutputHashMap,
+
+    #[error("Failed to build: did not provide an input name for tensor with descriptor {0:?}")]
+    EmptyInputName(MLOperandDescriptor),
+
+    #[error("Failed to build: did not provide name for MLOperand {0:?}")]
+    EmptyOutputName(MLOperand),
+
+    #[error(
+        "Failed to build: requested an MLOperand with id {id} as an output that is already an input:\n{operand:#?}"
+    )]
+    RequestedInputAsOutput { operand: Operand, id: usize },
+
+    #[error(
+        "Failed to build: requested an MLOperand with id {id} as an output that is already an constant:\n{operand:#?}"
+    )]
+    RequestedConstantAsOutput { operand: Operand, id: usize },
+
+    #[error("Graph already built: a MLGraphBuilder can only build one graph")]
+    GraphAlreadyBuilt,
+
+    #[error("Invalid operand {0:?}. Was this operand produced by a different GraphBuilder?")]
+    InvalidOperand(MLOperand),
+
+    #[error("Shape inference failed: {source}")]
+    ShapeInferenceError {
+        #[from]
+        source: Box<ShapeInferenceError>,
+    },
+
+    #[error("Internal data type cannot be converted to MLOperandDataType: {data_type:?}")]
+    InternalDataType { data_type: DataType },
+
+    #[error(
+        "Tried to create a constant from a slice/vec with wrong size: required {required_size} bytes, provided {provided_size} bytes for descriptor {descriptor:?}"
+    )]
+    WrongConstantSize {
+        descriptor: MLOperandDescriptor,
+        required_size: usize,
+        provided_size: usize,
+    },
+}
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -30,7 +156,13 @@ pub enum Error {
         source: GraphError,
     },
 
-    #[error("Failed to convert graph: {source}")]
+    #[error("An error occurred while using the graph builder API: {source}")]
+    GraphBuilderError {
+        #[from]
+        source: GraphBuilderError,
+    },
+
+    #[error("Failed to build graph: {source}")]
     GraphBuildError {
         #[from]
         source: Box<dyn std::error::Error>,
@@ -72,6 +204,39 @@ pub enum Error {
         requested_bytes: u64,
         required_bytes: u64,
     },
+
+    #[error(
+        "Tensor aliasing is not allowed in a dispatch call! The following tensor is used for multiple bindings ({first_binding:?} and {other_binding:?}): {aliased_tensor:#?}"
+    )]
+    DuplicateTensorBinding {
+        aliased_tensor: MLTensor,
+        first_binding: String,
+        other_binding: String,
+    },
+
+    #[error("Cannot write to non-writable tensor: {tensor:#?}")]
+    WriteToNonWritableTensor { tensor: MLTensor },
+
+    #[error(
+        "Write size does not match: write size: {write_size}, required size: {required_size}, tensor: {tensor:#?}"
+    )]
+    WrongWriteSize {
+        write_size: usize,
+        required_size: usize,
+        tensor: MLTensor,
+    },
+
+    #[error(
+        "Read size does not match: read size: {read_size}, required size: {required_size}, tensor: {tensor:#?}"
+    )]
+    WrongReadSize {
+        read_size: usize,
+        required_size: usize,
+        tensor: MLTensor,
+    },
+
+    #[error("Cannot read from non-readable tensor: {tensor:#?}")]
+    ReadToNonReadableTensor { tensor: MLTensor },
 
     #[error("Failed to dispatch graph: {source}")]
     GraphDispatchError { source: Box<dyn std::error::Error> },

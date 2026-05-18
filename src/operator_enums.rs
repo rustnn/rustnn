@@ -1,3 +1,4 @@
+use crate::{DataType, error::GraphBuilderError};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -12,6 +13,41 @@ pub enum MLOperandDataType {
     Uint64,
     Int8,
     Uint8,
+}
+
+impl TryFrom<DataType> for MLOperandDataType {
+    type Error = GraphBuilderError;
+    fn try_from(value: DataType) -> Result<Self, Self::Error> {
+        Ok(match value {
+            DataType::Float32 => Self::Float32,
+            DataType::Float16 => Self::Float16,
+            DataType::Int32 => Self::Int32,
+            DataType::Uint32 => Self::Uint32,
+            DataType::Int64 => Self::Int64,
+            DataType::Uint64 => Self::Uint64,
+            DataType::Int8 => Self::Int8,
+            DataType::Uint8 => Self::Uint8,
+            DataType::Int4 => return Err(GraphBuilderError::InternalDataType { data_type: value }),
+            DataType::Uint4 => {
+                return Err(GraphBuilderError::InternalDataType { data_type: value });
+            }
+        })
+    }
+}
+
+impl From<MLOperandDataType> for DataType {
+    fn from(val: MLOperandDataType) -> Self {
+        match val {
+            MLOperandDataType::Float32 => DataType::Float32,
+            MLOperandDataType::Float16 => DataType::Float16,
+            MLOperandDataType::Int32 => DataType::Int32,
+            MLOperandDataType::Uint32 => DataType::Uint32,
+            MLOperandDataType::Int64 => DataType::Int64,
+            MLOperandDataType::Uint64 => DataType::Uint64,
+            MLOperandDataType::Int8 => DataType::Int8,
+            MLOperandDataType::Uint8 => DataType::Uint8,
+        }
+    }
 }
 
 impl MLOperandDataType {

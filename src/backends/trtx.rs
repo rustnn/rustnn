@@ -16,7 +16,6 @@ use trtx::ExecutionContext;
 use trtx::Tensor;
 
 use crate::GraphInfo;
-use crate::converters::TrtxConverter;
 use crate::error::Error;
 
 use crate::mlcontext::MLTensor;
@@ -171,7 +170,7 @@ impl<'context> TrtxContext<'context> {
 
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
-    network: trtx::NetworkDefinition<'builder>,
+    network: Option<trtx::NetworkDefinition<'builder>>,
     builder: Rc<Mutex<trtx::Builder<'builder>>>,
     config: Rc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
@@ -186,27 +185,20 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
     }
 }
 
-impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
+impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'context> {
     /*async */
     fn build(
         &mut self,
-        outputs: &HashMap<&str, MLOperand>,
+        graph: GraphInfo,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        let num_outputs = self.network.nb_outputs();
-        // Outputs already not set already via load_graph API
-        if num_outputs == 0 {
-            for (k, v) in outputs {
-                let tensor = self.tensors[v.id];
-                tensor.set_name(&mut self.network, k)?;
-                self.network.mark_output(&tensor);
-            }
-        }
+        let mut network = self.network.take().unwrap();
+        crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
 
         let host_mem = self
             .builder
             .lock()
             .unwrap()
-            .build_serialized_network(&mut self.network, &mut self.config.lock().unwrap())
+            .build_serialized_network(&mut network, &mut self.config.lock().unwrap())
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
         self.cuda_context.bind_to_thread()?;
@@ -232,10 +224,6 @@ impl<'context> MLBackendBuilder<'context> for TrtxBuilder<'context> {
             }),
         })
     }
-
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
-        Ok(TrtxConverter::build_network(graph, &mut self.network)?)
-    }
 }
 
 #[allow(unused_variables)]
@@ -244,18 +232,23 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         true
     }
 
-    fn create_builder(
+    fn create_builder<'builder>(
         &'_ mut self,
-    ) -> crate::error::Result<Box<dyn crate::mlcontext::MLBackendBuilder<'context> + 'context>>
+    ) -> crate::error::Result<
+        Box<dyn crate::mlcontext::MLBackendBuilder<'context, 'builder> + 'builder>,
+    >
+    where
+        'context: 'builder,
     {
-        let network = self
-            .builder
-            .lock()
-            .unwrap()
-            .create_network(0)
-            .map_err(|e| Error::BuilderCreationError {
-                source: Box::new(e),
-            })?;
+        let network = Some(
+            self.builder
+                .lock()
+                .unwrap()
+                .create_network(0)
+                .map_err(|e| Error::BuilderCreationError {
+                    source: Box::new(e),
+                })?,
+        );
         //self.networks.push(network);
         Ok(Box::new(TrtxBuilder {
             network,
@@ -312,6 +305,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<()> {
         let cuda_tensor = &self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
+        debug!(
+            "Downloading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
+            array.as_ptr(),
+            array.len(),
+        );
         stream
             .memcpy_dtoh(&cuda_tensor.memory, array)
             .to_read_tensor_result(|| tensor.clone())?;
@@ -328,6 +326,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<()> {
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
+        debug!(
+            "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
+            array.as_ptr(),
+            array.len(),
+        );
         stream
             .memcpy_htod(array, &mut cuda_tensor.memory)
             .to_write_tensor_result(|| tensor.clone())?;
@@ -350,6 +353,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
 
+        // TODO: trtx converter uses the wrong names. Need to match with GraphInfo's input/output
+        // tensor names
         for (input, tensor) in inputs.iter() {
             let cuda_tensor = &mut self.tensors[tensor.id];
 

@@ -388,7 +388,6 @@ pub struct MLConstantOptions {
     pub label: String,
     pub init: Option<String>,
     pub data: Option<String>, // base64
-    #[serde(default, rename = "dataType")]
     pub data_type: String,
     #[serde(default)]
     pub shape: Vec<u32>,

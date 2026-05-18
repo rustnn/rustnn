@@ -100,6 +100,9 @@ impl<'a> GraphValidator<'a> {
             }
 
             match operand.kind {
+                OperandKind::Intermediate => {
+                    // should do validation
+                }
                 OperandKind::Input => {
                     let name = operand.name.as_ref().ok_or(GraphError::MissingInputName {
                         operand: operand_id,
@@ -261,6 +264,9 @@ impl<'a> GraphValidator<'a> {
                 OperandKind::Input => {
                     // Imported graphs may carry optional inputs that are not consumed by the
                     // selected subgraph (for example, shared Q/DQ parameter bundles).
+                    continue;
+                }
+                OperandKind::Intermediate => {
                     continue;
                 }
             }

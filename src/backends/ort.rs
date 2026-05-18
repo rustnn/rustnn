@@ -17,8 +17,7 @@ use crate::converters::{GraphConverter, OnnxConverter};
 use crate::error::Error;
 use crate::executors::onnx::ensure_ort_initialized;
 use crate::mlcontext::{
-    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLOperand, MLTensor,
-    MLTensorDescriptor,
+    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
 };
 use crate::{GraphError, GraphInfo, ONNX_EXTERNAL_WEIGHTS_FILENAME};
 
@@ -46,12 +45,14 @@ fn tensor_byte_len(descriptor: &MLTensorDescriptor) -> crate::error::Result<usiz
 
 fn ort_tensor_element_size(ty: TensorElementType) -> Option<usize> {
     match ty {
-        TensorElementType::Float32 => Some(4),
-        TensorElementType::Float16 => Some(2),
-        TensorElementType::Int8 | TensorElementType::Uint8 | TensorElementType::Bool => Some(1),
-        TensorElementType::Int16 | TensorElementType::Uint16 => Some(2),
-        TensorElementType::Int32 | TensorElementType::Uint32 => Some(4),
         TensorElementType::Int64 | TensorElementType::Uint64 => Some(8),
+        TensorElementType::Float32 | TensorElementType::Int32 | TensorElementType::Uint32 => {
+            Some(4)
+        }
+        TensorElementType::Float16 | TensorElementType::Int16 | TensorElementType::Uint16 => {
+            Some(2)
+        }
+        TensorElementType::Int8 | TensorElementType::Uint8 | TensorElementType::Bool => Some(1),
         _ => None,
     }
 }
@@ -88,15 +89,9 @@ impl fmt::Debug for OrtBuilder<'_> {
     }
 }
 
-impl<'context> MLBackendBuilder<'context> for OrtBuilder<'context> {
-    fn build(
-        &mut self,
-        _outputs: &HashMap<&str, MLOperand>,
-    ) -> crate::error::Result<MLGraph<'context>> {
-        let graph_info = self.graph.ok_or_else(|| Error::GraphBuildError {
-            source: "build called before load_graph".into(),
-        })?;
-        let converted = OnnxConverter.convert(graph_info)?;
+impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'context> {
+    fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
+        let converted = OnnxConverter.convert(&graph_info)?;
 
         let mut builder = Session::builder()
             .map_err(|e| GraphError::OnnxRuntimeFailed {
@@ -129,11 +124,6 @@ impl<'context> MLBackendBuilder<'context> for OrtBuilder<'context> {
                 std::marker::PhantomData,
             ),
         })
-    }
-
-    fn load_graph(&mut self, graph: &'context GraphInfo) -> crate::error::Result<()> {
-        self.graph = Some(graph);
-        Ok(())
     }
 }
 
@@ -521,7 +511,7 @@ impl OrtContext {
             .inspect(|d| {
                 debug!(
                     "Saw ONNX device {:?}",
-                    &(&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
+                    (&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
                 )
             })
             .position(|d| device_type == d.ty().into())
@@ -569,7 +559,7 @@ impl ListDevices for OrtContext {
         for (idx, d) in env.devices().enumerate() {
             debug!(
                 "Saw ONNX device {:?}",
-                &(&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
+                (&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
             );
             rtn.push(BackendDevice::Onnx {
                 device_type: d.ty().into(),
@@ -587,9 +577,12 @@ impl<'context> MLBackendContext<'context> for OrtContext {
         device.ty() != DeviceType::CPU
     }
 
-    fn create_builder(
+    fn create_builder<'builder>(
         &mut self,
-    ) -> crate::error::Result<Box<dyn MLBackendBuilder<'context> + 'context>> {
+    ) -> crate::error::Result<Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>>
+    where
+        'context: 'builder,
+    {
         Ok(Box::new(OrtBuilder { graph: None }))
     }
 

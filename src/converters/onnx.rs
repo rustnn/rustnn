@@ -45,7 +45,7 @@ use webnn_onnx_utils::{
 ///
 /// Tensors using `int32_data` / `float_data` / `int64_data` are left unchanged. Only non-empty `raw_data`
 /// is moved so large weight tensors leave the main `ModelProto`.
-fn onnx_pack_external_initializer_raw_data(initializers: &mut Vec<TensorProto>) -> Option<Vec<u8>> {
+fn onnx_pack_external_initializer_raw_data(initializers: &mut [TensorProto]) -> Option<Vec<u8>> {
     // Align each tensor's external slice to a page boundary. This is not required by ONNX; it can help
     // mmap / large sequential file I/O patterns and some runtimes that prefer aligned tensor views.
     const ALIGN: usize = 4096;
@@ -6773,8 +6773,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .unwrap_or((None, None)),
                     _ => (None, None),
                 };
-                let min_value = min_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
-                let max_value = max_value_raw.and_then(|v| if v.is_nan() { None } else { Some(v) });
+                let min_value = min_value_raw.filter(|&v| !v.is_nan());
+                let max_value = max_value_raw.filter(|&v| !v.is_nan());
                 let is_float_input = matches!(input_dtype, DataType::Float32 | DataType::Float16);
                 let min_value = if is_float_input {
                     Some(min_value.unwrap_or(f64::NEG_INFINITY))
