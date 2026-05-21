@@ -386,7 +386,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
                             shape: Vec::new(),            // Will be inferred
                             pending_permutation: Vec::new(),
                         },
-                        kind: OperandKind::Output, // Mark as Output (intermediate results)
+                        kind: OperandKind::Intermediate,
                     });
 
                     Ok::<u32, GraphError>(idx)
