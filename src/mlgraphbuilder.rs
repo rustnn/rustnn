@@ -2566,6 +2566,7 @@ mod test {
         let mut output_cpu = vec![0.0f32; 4];
         context.read_tensor(&output, &mut output_cpu).unwrap();
         assert_eq!(output_cpu, &[3.0f32, 4., 5., 6.]);
+        inputs.remove("b");
         context.dispatch(&mut graph2, &inputs, &outputs).unwrap();
         context.read_tensor(&output, &mut output_cpu).unwrap();
         assert_eq!(output_cpu, &[4.0f32, 5., 6., 7.]);
