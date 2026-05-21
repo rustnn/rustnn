@@ -1637,18 +1637,21 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
 
         debug!("Building graph with {} operands", graph.operands.len());
-        trace!("Building graph:\n{graph:#?}");
-        trace!("Graph webnn JSON:\n{}", {
-            if let Ok(graph_json) = to_graph_json(&graph, false) {
-                webnn_graph::serialize::serialize_graph_to_wg_text(
-                    &graph_json,
-                    SerializeOptions { quantized: false },
-                )
-                .unwrap_or_else(|_| String::new())
-            } else {
-                String::new()
-            }
-        });
+        // Verbose info for small graphs
+        if graph.operands.len() < 20 {
+            trace!("Building graph:\n{graph:#?}");
+            trace!("Graph webnn JSON:\n{}", {
+                if let Ok(graph_json) = to_graph_json(&graph, false) {
+                    webnn_graph::serialize::serialize_graph_to_wg_text(
+                        &graph_json,
+                        SerializeOptions { quantized: false },
+                    )
+                    .unwrap_or_else(|_| String::new())
+                } else {
+                    String::new()
+                }
+            });
+        }
 
         self.backend.build(graph)
     }
