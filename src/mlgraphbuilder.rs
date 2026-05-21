@@ -2434,6 +2434,65 @@ mod test {
     }
 
     #[test]
+    fn unused_incompatible_inputs() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+            return;
+        };
+
+        let mut context = context.unwrap();
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+        let incompatible_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [3].to_vec(),
+        );
+
+        // simple graph
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &mat_desc).unwrap();
+        let _unused = builder.input("unused", &mat_desc).unwrap();
+        let incompatible = builder.input("incompatible", &incompatible_desc).unwrap();
+        // incompatible broadcast shape
+        builder.sub(a, incompatible).unwrap_err();
+        assert_eq!(builder.rustnn_operand_shape(a).unwrap(), mat_desc.shape());
+        let a = builder.identity(a).unwrap();
+        let output = builder.identity(a).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("out", output);
+        let mut graph = builder.build(&outputs).unwrap();
+        dbg!(&graph);
+
+        let mut a_desc = MLTensorDescriptor::from_operand_descriptor(&mat_desc);
+        a_desc.set_writable(true);
+        a_desc.set_readable(true);
+        let inc_desc = MLTensorDescriptor::from_operand_descriptor(&incompatible_desc);
+
+        let a = context.create_tensor(&a_desc).unwrap();
+        let unused = context.create_tensor(&a_desc).unwrap();
+        let incompatible = context.create_tensor(&inc_desc).unwrap();
+        let output = context.create_tensor(&a_desc).unwrap();
+
+        // Only a is used, still need to provide all of them,
+        // TODO: currently not validated
+        let mut inputs = HashMap::new();
+        inputs.insert("a", &a);
+        inputs.insert("unused", &unused);
+        inputs.insert("incompatible", &incompatible);
+        let mut outputs = HashMap::new();
+        outputs.insert("out", &output);
+        context.write_tensor(&a, &[3.0f32, 4., 5., 6.]).unwrap();
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut output_cpu = vec![0.0f32; 4];
+        context.read_tensor(&output, &mut output_cpu).unwrap();
+        assert_eq!(output_cpu, &[3.0f32, 4., 5., 6.]);
+    }
+
+    #[test]
     fn add_mat_plus_scalar() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
