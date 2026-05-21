@@ -352,9 +352,6 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
         // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
-
-        // TODO: trtx converter uses the wrong names. Need to match with GraphInfo's input/output
-        // tensor names
         for (input, tensor) in inputs.iter() {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
