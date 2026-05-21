@@ -584,7 +584,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 | "sqrt" | "erf" | "sin" | "cos" | "tan" | "sign" | "reciprocal" | "roundEven"
                 | "softplus" | "softsign" | "softmax" | "gelu" | "linear" | "identity" | "cast"
                 | "reverse" | "cumulativesum" | "cumulative_sum" | "logical_not" | "isnan"
-                | "isinfinite" | "quantizelinear" | "dequantizelinear" => {
+                | "isinfinite" | "quantizelinear" | "dequantizelinear"
+                // Normalization ops preserve the input tensor rank and extents.
+                | "batchnormalization" | "instancenormalization" | "layernormalization" => {
                     input_shapes.first().cloned()
                 }
                 "grucell" | "gru_cell" => {
@@ -1134,6 +1136,26 @@ mod tests {
 
     fn ushape(shape: &[u32]) -> Vec<u32> {
         shape.to_vec()
+    }
+
+    #[test]
+    fn infer_output_shapes_layer_normalization_preserves_input_shape() {
+        let text = r#"
+        webnn_graph "ln_test" v1 {
+            inputs { x: f32[1, 64, 3072]; }
+            nodes {
+                [y] = layerNormalization(x, epsilon=1e-06);
+            }
+            outputs { y; }
+        }"#;
+        let graph_json = webnn_graph::parser::parse_wg_text(text).expect("parse");
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+        let y_idx = graph_info.output_operands[0];
+        assert_eq!(
+            graph_info.operands[y_idx as usize].descriptor.shape,
+            to_dimension_vector(&[1, 64, 3072]),
+            "layerNormalization output shape should match input"
+        );
     }
 
     #[test]
