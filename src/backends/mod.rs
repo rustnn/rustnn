@@ -1,5 +1,7 @@
 use crate::mlcontext;
 
+pub mod caching;
+
 #[cfg(feature = "onnx-runtime")]
 pub mod ort;
 

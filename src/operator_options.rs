@@ -33,7 +33,7 @@ pub type OperandIndex = u32;
 // ---------------------------------------------------------------------------
 
 /// MLDynamicDimension. IDL: `dictionary MLDynamicDimension { required DOMString name; required [EnforceRange] unsigned long maxSize; };`
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLDynamicDimension {
     pub name: String,
@@ -42,7 +42,7 @@ pub struct MLDynamicDimension {
 
 /// MLDimension. IDL: `typedef ([EnforceRange] unsigned long or MLDynamicDimension) MLDimension;`
 /// In JSON: either a number (static) or an object `{ "name": string, "maxSize": number }` (dynamic).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
 pub enum MLDimension {
     Static(u32),
@@ -220,7 +220,7 @@ impl OperationExtras {
 /// MLOperatorOptions. Base type for all operator options (label only).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mloperatoroptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLOperatorOptions {
     #[serde(default)]
@@ -234,7 +234,7 @@ pub struct MLOperatorOptions {
 /// MLArgMinMaxOptions. argMin / argMax (axis is a builder method parameter, not in this dictionary).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlargminmaxoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
     #[serde(default)]
@@ -269,6 +269,16 @@ pub struct MLBatchNormalizationOptions {
     pub epsilon: f64,
 }
 
+impl std::hash::Hash for MLBatchNormalizationOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.scale.hash(state);
+        self.bias.hash(state);
+        self.axis.hash(state);
+        self.epsilon.to_le_bytes().hash(state);
+    }
+}
+
 impl Default for MLBatchNormalizationOptions {
     fn default() -> Self {
         Self {
@@ -284,7 +294,7 @@ impl Default for MLBatchNormalizationOptions {
 /// MLClampOptions. clamp.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlclampoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLClampOptions {
     #[serde(default)]
@@ -301,7 +311,7 @@ fn default_conv_groups() -> u32 {
 /// MLConv2dOptions. conv2d.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlconv2doptions>
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConv2dOptions {
     #[serde(default)]
@@ -337,7 +347,7 @@ impl Default for MLConv2dOptions {
 }
 
 /// MLConvTranspose2dOptions. convTranspose2d.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConvTranspose2dOptions {
     #[serde(default)]
@@ -381,7 +391,7 @@ impl Default for MLConvTranspose2dOptions {
 ///
 /// Not an IDL dictionary; closest normative API is [`MLGraphBuilder`](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder) (`constant()` methods).
 // TODO MTAX non-existing struct. defer removal for now since it's not like any other operation.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
     #[serde(default)]
@@ -396,7 +406,7 @@ pub struct MLConstantOptions {
 /// MLCumulativeSumOptions. cumulativeSum (axis is a builder method parameter).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlcumulativesumoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLCumulativeSumOptions {
     #[serde(default)]
@@ -423,6 +433,13 @@ pub struct MLEluOptions {
     pub alpha: f64,
 }
 
+impl std::hash::Hash for MLEluOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.alpha.to_le_bytes().hash(state);
+    }
+}
+
 impl Default for MLEluOptions {
     fn default() -> Self {
         Self {
@@ -435,7 +452,7 @@ impl Default for MLEluOptions {
 /// MLGatherOptions. gather / gatherElements (batchDimensions is a gatherElements parameter in WebNN).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgatheroptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGatherOptions {
     #[serde(default)]
@@ -484,10 +501,21 @@ impl Default for MLGemmOptions {
     }
 }
 
+impl std::hash::Hash for MLGemmOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.c.hash(state);
+        self.alpha.to_le_bytes().hash(state);
+        self.beta.to_le_bytes().hash(state);
+        self.a_transpose.hash(state);
+        self.b_transpose.hash(state);
+    }
+}
+
 /// MLGruOptions. gru.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgruoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruOptions {
     #[serde(default)]
@@ -509,7 +537,7 @@ pub struct MLGruOptions {
 /// MLGruCellOptions. gruCell.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlgrucelloptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruCellOptions {
     #[serde(default)]
@@ -545,6 +573,14 @@ pub struct MLHardSigmoidOptions {
     pub beta: f64,
 }
 
+impl std::hash::Hash for MLHardSigmoidOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.alpha.to_be_bytes().hash(state);
+        self.beta.to_be_bytes().hash(state);
+    }
+}
+
 impl Default for MLHardSigmoidOptions {
     fn default() -> Self {
         Self {
@@ -573,6 +609,16 @@ pub struct MLInstanceNormalizationOptions {
     pub epsilon: f64,
     #[serde(default)]
     pub layout: String,
+}
+
+impl std::hash::Hash for MLInstanceNormalizationOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.scale.hash(state);
+        self.bias.hash(state);
+        self.epsilon.to_le_bytes().hash(state);
+        self.layout.hash(state);
+    }
 }
 
 impl Default for MLInstanceNormalizationOptions {
@@ -607,6 +653,16 @@ pub struct MLLayerNormalizationOptions {
     pub epsilon: f64,
 }
 
+impl std::hash::Hash for MLLayerNormalizationOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.scale.hash(state);
+        self.bias.hash(state);
+        self.axes.hash(state);
+        self.epsilon.to_le_bytes().hash(state);
+    }
+}
+
 impl Default for MLLayerNormalizationOptions {
     fn default() -> Self {
         Self {
@@ -633,6 +689,13 @@ pub struct MLLeakyReluOptions {
     pub label: String,
     #[serde(default = "default_leaky_relu_alpha")]
     pub alpha: f64,
+}
+
+impl std::hash::Hash for MLLeakyReluOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.alpha.to_le_bytes().hash(state);
+    }
 }
 
 impl Default for MLLeakyReluOptions {
@@ -666,6 +729,14 @@ pub struct MLLinearOptions {
     pub beta: f64,
 }
 
+impl std::hash::Hash for MLLinearOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.alpha.to_le_bytes().hash(state);
+        self.beta.to_le_bytes().hash(state);
+    }
+}
+
 impl Default for MLLinearOptions {
     fn default() -> Self {
         Self {
@@ -679,7 +750,7 @@ impl Default for MLLinearOptions {
 /// MLLstmOptions. lstm.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllstmoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
     #[serde(default)]
@@ -701,7 +772,7 @@ pub struct MLLstmOptions {
 /// MLLstmCellOptions. lstmCell.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mllstmcelloptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmCellOptions {
     #[serde(default)]
@@ -718,7 +789,7 @@ pub struct MLLstmCellOptions {
 /// MLPadOptions. pad (beginning/ending padding are builder method parameters).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlpadoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPadOptions {
     #[serde(default)]
@@ -732,7 +803,7 @@ pub struct MLPadOptions {
 /// MLPool2dOptions. averagePool2d / l2Pool2d / maxPool2d.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlpool2doptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPool2dOptions {
     #[serde(default)]
@@ -758,7 +829,7 @@ pub struct MLPool2dOptions {
 /// `axes`: None = key omitted (spec default: all axes); Some(v) = use v (Some(vec![]) = reduce over no axes).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlreduceoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReduceOptions {
     #[serde(default)]
@@ -788,11 +859,21 @@ pub struct MLResample2dOptions {
     pub axes: Vec<u32>,
 }
 
+impl std::hash::Hash for MLResample2dOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.mode.hash(state);
+        bytemuck::cast_slice::<f32, u8>(&self.scales).hash(state);
+        self.sizes.hash(state);
+        self.axes.hash(state);
+    }
+}
+
 /// MLReverseOptions. reverse.
 /// axes: omitted => reverse all dimensions; present and [] => reverse none (identity); present and [..] => reverse those axes.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlreverseoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReverseOptions {
     #[serde(default)]
@@ -804,7 +885,7 @@ pub struct MLReverseOptions {
 /// MLScatterOptions. scatterElements / scatterND.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlscatteroptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLScatterOptions {
     #[serde(default)]
@@ -816,7 +897,7 @@ pub struct MLScatterOptions {
 /// MLSliceOptions. slice (starts and sizes are builder method parameters).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlsliceoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSliceOptions {
     #[serde(default)]
@@ -828,7 +909,7 @@ pub struct MLSliceOptions {
 /// MLSplitOptions. split (splits is a builder method parameter).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlsplitoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSplitOptions {
     #[serde(default)]
@@ -840,7 +921,7 @@ pub struct MLSplitOptions {
 /// MLTransposeOptions. transpose.
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mltransposeoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTransposeOptions {
     #[serde(default)]
@@ -860,7 +941,7 @@ pub struct MLTransposeOptions {
 /// MLSqueezeOptions. squeeze (emulation-only; not in WebNN IDL).
 ///
 /// WebNN emulation: <https://www.w3.org/TR/webnn/#squeeze>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSqueezeOptions {
     #[serde(default)]
@@ -872,7 +953,7 @@ pub struct MLSqueezeOptions {
 /// MLUnsqueezeOptions. unsqueeze (emulation-only; not in WebNN IDL).
 ///
 /// WebNN emulation: <https://www.w3.org/TR/webnn/#unsqueeze>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLUnsqueezeOptions {
     #[serde(default)]
@@ -885,7 +966,7 @@ pub struct MLUnsqueezeOptions {
 /// WebNN: when "upper" is not present, default is true (keep upper triangular).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mltriangularoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTriangularOptions {
     #[serde(default)]

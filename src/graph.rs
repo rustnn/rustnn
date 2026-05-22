@@ -4,17 +4,19 @@ use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
 use crate::error::GraphError;
+use std::hash::{Hash, Hasher};
+
 use crate::operator_options::{MLDimension, MLDynamicDimension};
 use crate::operators::Operation;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicDimension {
     pub name: String,
     pub max_size: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
 pub enum Dimension {
     Static(u32),
@@ -111,7 +113,7 @@ impl DataType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct OperandDescriptor {
     pub data_type: DataType,
     #[serde(default)]
@@ -160,7 +162,7 @@ impl OperandDescriptor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum OperandKind {
     Input,
@@ -171,7 +173,7 @@ pub enum OperandKind {
     Intermediate,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct Operand {
     pub kind: OperandKind,
     pub descriptor: OperandDescriptor,
@@ -294,6 +296,19 @@ impl GraphInfo {
         }
 
         Ok((inputs, outputs))
+    }
+
+    pub fn hash_identifier_without_weights(&self, suffix: &str) -> String {
+        let mut hasher = seahash::SeaHasher::new();
+        self.input_operands.hash(&mut hasher);
+        self.output_operands.hash(&mut hasher);
+        self.operands.hash(&mut hasher);
+        self.operations.hash(&mut hasher);
+        let reproduciable_hash_64bit = hasher.finish();
+        format!(
+            "{reproduciable_hash_64bit:x}_{}_{suffix}",
+            self.operands.len()
+        )
     }
 }
 

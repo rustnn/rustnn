@@ -54,6 +54,8 @@ webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch 
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true }
 log = "0.4.29"
 pretty_env_logger = "0.5.0"
+seahash = "4.1.0"
+dirs = "6.0.0"
 
 [build-dependencies]
 prost-build = "0.12"

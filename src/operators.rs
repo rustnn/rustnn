@@ -61,7 +61,7 @@ use crate::{
 /// One variant per WebNN graph builder. Each variant has named operand fields and the
 /// corresponding options struct, so operand roles are explicit and independent of
 /// input_operands order.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub enum Operation {
     // ---------- Binary element-wise (MLOperatorOptions) ----------
     /// [add()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-add)
@@ -1024,6 +1024,204 @@ impl Operation {
         }
     }
 
+    /// Input operand indices for this operation (same order as WebNN builder arguments).
+    pub fn inputs(&self) -> Vec<OperandIndex> {
+        match self {
+            Operation::Add { a, b, .. } => vec![*a, *b],
+            Operation::Sub { a, b, .. } => vec![*a, *b],
+            Operation::Mul { a, b, .. } => vec![*a, *b],
+            Operation::Div { a, b, .. } => vec![*a, *b],
+            Operation::Pow { a, b, .. } => vec![*a, *b],
+            Operation::Max { a, b, .. } => vec![*a, *b],
+            Operation::Min { a, b, .. } => vec![*a, *b],
+            Operation::Matmul { a, b, .. } => vec![*a, *b],
+            Operation::Equal { a, b, .. } => vec![*a, *b],
+            Operation::NotEqual { a, b, .. } => vec![*a, *b],
+            Operation::Greater { a, b, .. } => vec![*a, *b],
+            Operation::GreaterOrEqual { a, b, .. } => vec![*a, *b],
+            Operation::Lesser { a, b, .. } => vec![*a, *b],
+            Operation::LesserOrEqual { a, b, .. } => vec![*a, *b],
+            Operation::Abs { input, .. } => vec![*input],
+            Operation::Ceil { input, .. } => vec![*input],
+            Operation::Cos { input, .. } => vec![*input],
+            Operation::Exp { input, .. } => vec![*input],
+            Operation::Floor { input, .. } => vec![*input],
+            Operation::Log { input, .. } => vec![*input],
+            Operation::Neg { input, .. } => vec![*input],
+            Operation::Sin { input, .. } => vec![*input],
+            Operation::Tan { input, .. } => vec![*input],
+            Operation::Erf { input, .. } => vec![*input],
+            Operation::Identity { input, .. } => vec![*input],
+            Operation::Reciprocal { input, .. } => vec![*input],
+            Operation::Sign { input, .. } => vec![*input],
+            Operation::Sqrt { input, .. } => vec![*input],
+            Operation::Tanh { input, .. } => vec![*input],
+            Operation::Relu { input, .. } => vec![*input],
+            Operation::Sigmoid { input, .. } => vec![*input],
+            Operation::LogicalAnd { a, b, .. } => vec![*a, *b],
+            Operation::LogicalOr { a, b, .. } => vec![*a, *b],
+            Operation::LogicalNot { input, .. } => vec![*input],
+            Operation::LogicalXor { a, b, .. } => vec![*a, *b],
+            Operation::Where {
+                condition,
+                true_value,
+                false_value,
+                ..
+            } => vec![*condition, *true_value, *false_value],
+            Operation::ArgMax { input, .. } => vec![*input],
+            Operation::ArgMin { input, .. } => vec![*input],
+            Operation::BatchNormalization {
+                input,
+                mean,
+                variance,
+                ..
+            } => vec![*input, *mean, *variance],
+            Operation::Cast { input, .. } => vec![*input],
+            Operation::Clamp { input, .. } => vec![*input],
+            Operation::Constant { .. } => vec![],
+            Operation::Conv2d {
+                input,
+                filter,
+                options, // batch
+                ..
+            } => {
+                let mut inputs = vec![*input, *filter];
+                match options {
+                    Some(MLConv2dOptions {
+                        bias: Some(bias), ..
+                    }) => inputs.push(*bias),
+                    _ => (),
+                }
+
+                inputs
+            }
+            Operation::ConvTranspose2d { input, filter, .. } => vec![*input, *filter],
+            Operation::Concat { inputs, .. } => inputs.clone(),
+            Operation::CumulativeSum { input, .. } => vec![*input],
+            Operation::Expand { input, .. } => vec![*input],
+            Operation::Elu { input, .. } => vec![*input],
+            Operation::Gather { input, indices, .. } => vec![*input, *indices],
+            Operation::GatherElements { input, indices, .. } => vec![*input, *indices],
+            Operation::Gemm { a, b, .. } => vec![*a, *b],
+            Operation::Gru {
+                input,
+                weight,
+                recurrence,
+                ..
+            } => vec![*input, *weight, *recurrence],
+            Operation::GruCell {
+                input,
+                weight,
+                recurrence,
+                hidden_state,
+                options,
+                ..
+            } => {
+                let o = options.clone().unwrap_or_default();
+                let mut ids = vec![*input, *weight, *recurrence, *hidden_state];
+                if let Some(id) = o.bias {
+                    ids.push(id);
+                }
+                if let Some(id) = o.recurrent_bias {
+                    ids.push(id);
+                }
+                ids
+            }
+            Operation::HardSigmoid { input, .. } => vec![*input],
+            Operation::HardSwish { input, .. } => vec![*input],
+            Operation::InstanceNormalization { input, .. } => vec![*input],
+            Operation::LayerNormalization { input, .. } => vec![*input],
+            Operation::LeakyRelu { input, .. } => vec![*input],
+            Operation::Linear { input, .. } => vec![*input],
+            Operation::Lstm {
+                input,
+                weight,
+                recurrence,
+                ..
+            } => vec![*input, *weight, *recurrence],
+            Operation::LstmCell {
+                input,
+                weight,
+                recurrence,
+                hidden_state,
+                cell_state,
+                ..
+            } => vec![*input, *weight, *recurrence, *hidden_state, *cell_state],
+            Operation::Pad { input, .. } => vec![*input],
+            Operation::AveragePool2d { input, .. } => vec![*input],
+            Operation::MaxPool2d { input, .. } => vec![*input],
+            Operation::L2Pool2d { input, .. } => vec![*input],
+            Operation::GlobalAveragePool { input, .. } => vec![*input],
+            Operation::GlobalMaxPool { input, .. } => vec![*input],
+            Operation::ReduceSum { input, .. } => vec![*input],
+            Operation::ReduceMean { input, .. } => vec![*input],
+            Operation::ReduceMax { input, .. } => vec![*input],
+            Operation::ReduceMin { input, .. } => vec![*input],
+            Operation::ReduceProduct { input, .. } => vec![*input],
+            Operation::ReduceL1 { input, .. } => vec![*input],
+            Operation::ReduceL2 { input, .. } => vec![*input],
+            Operation::ReduceLogSum { input, .. } => vec![*input],
+            Operation::ReduceLogSumExp { input, .. } => vec![*input],
+            Operation::ReduceSumSquare { input, .. } => vec![*input],
+            Operation::Reshape { input, .. } => vec![*input],
+            Operation::Resample2d { input, .. } => vec![*input],
+            Operation::Reverse { input, .. } => vec![*input],
+            Operation::ScatterElements {
+                input,
+                indices,
+                updates,
+                ..
+            } => vec![*input, *indices, *updates],
+            Operation::Softmax { input, .. } => vec![*input],
+            Operation::Slice { input, .. } => vec![*input],
+            Operation::Split { input, .. } => vec![*input],
+            Operation::Transpose { input, .. } => vec![*input],
+            Operation::Squeeze { input, .. } => vec![*input],
+            Operation::Unsqueeze { input, .. } => vec![*input],
+            Operation::Tile { input, .. } => vec![*input],
+            Operation::Triangular { input, .. } => vec![*input],
+            Operation::Prelu { input, slope, .. } => vec![*input, *slope],
+            Operation::QuantizeLinear {
+                input,
+                scale,
+                zero_point,
+                ..
+            } => {
+                let mut inps = vec![*input, *scale];
+                if let Some(z) = zero_point {
+                    inps.push(*z);
+                }
+                inps
+            }
+            Operation::DequantizeLinear {
+                input,
+                scale,
+                zero_point,
+                ..
+            } => {
+                let mut inps = vec![*input, *scale];
+                if let Some(z) = zero_point {
+                    inps.push(*z);
+                }
+                inps
+            }
+            Operation::Softplus { input, .. } => vec![*input],
+            Operation::Softsign { input, .. } => vec![*input],
+            Operation::Gelu { input, .. } => vec![*input],
+            Operation::Shape { input, .. } => vec![*input],
+            Operation::ScatterND {
+                input,
+                indices,
+                updates,
+                ..
+            } => vec![*input, *indices, *updates],
+            Operation::GatherND { input, indices, .. } => vec![*input, *indices],
+            Operation::IsNaN { input, .. } => vec![*input],
+            Operation::IsInfinite { input, .. } => vec![*input],
+            Operation::RoundEven { input, .. } => vec![*input],
+        }
+    }
+
     /// Output operand id(s) recorded for this operation (same order as WebNN builder results).
     pub fn outputs(&self) -> &[OperandIndex] {
         match self {
@@ -1247,9 +1445,9 @@ impl Operation {
         }
     }
 
-    /// Legacy input operand indices. Derived from this operation.
+    /// Legacy input operand indices. Same as [`Self::inputs`].
     pub fn input_operands(&self) -> Vec<u32> {
-        self.to_legacy().1
+        self.inputs()
     }
 
     /// Legacy attributes. Derived from this operation.

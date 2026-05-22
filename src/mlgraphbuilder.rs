@@ -1875,6 +1875,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
         let id = graph.operands.len();
         graph.operands.push(operand);
+        graph
+            .id_to_constant_tensor_operand_map
+            .insert(id as u32, format!("{id}"));
         graph.constant_operand_ids_to_handles.insert(
             id as u32,
             crate::ConstantData {
@@ -1916,6 +1919,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
         let id = graph.operands.len();
         graph.operands.push(operand);
+        graph
+            .id_to_constant_tensor_operand_map
+            .insert(id as u32, format!("{id}"));
         graph.constant_operand_ids_to_handles.insert(
             id as u32,
             crate::ConstantData {

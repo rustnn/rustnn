@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::{
     Operand, Operation,
+    backends::caching::CacheError,
     graph::DataType,
     mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
@@ -149,6 +150,17 @@ pub enum GraphBuilderError {
         "Build with invalid operand: operand {operand:?} assigned to name {name:?} is not part of this graph"
     )]
     BuildWithInvalidOperand { operand: MLOperand, name: String },
+
+    #[error("A cache error occurred: {source}")]
+    CacheError {
+        #[from]
+        source: CacheError,
+    },
+
+    // TODO: this should not be needed, instead GraphInfo should ensure via methods to be always consistent
+    // and impossible to construct invalid variants
+    #[error("Internal error: inconsistent GraphInfo: {message}")]
+    InconsistentGraphInfo { message: String },
 }
 
 #[derive(Debug, Error)]

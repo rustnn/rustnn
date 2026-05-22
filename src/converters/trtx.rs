@@ -110,7 +110,7 @@ impl TrtxConverter {
     /// Map WebNN DataType to TensorRT DataType enum.
     /// TensorRT has no kUINT32; we use kINT32 (same 4-byte layout, bit-identical for cast output).
     /// TensorRT has no kUINT64; we use kINT64 (same 8-byte layout, bit-identical for elementwise).
-    fn webnn_to_trt_dtype(dtype: DataType) -> Result<TrtDataType, GraphError> {
+    pub(crate) fn webnn_to_trt_dtype(dtype: DataType) -> Result<TrtDataType, GraphError> {
         match dtype {
             DataType::Float32 => Ok(TrtDataType::kFLOAT),
             DataType::Float16 => Ok(TrtDataType::kHALF),
@@ -534,11 +534,21 @@ impl TrtxConverter {
                         .collect();
                     network.add_small_constant_copied(&add_dims, &int32_bytes, TrtDataType::kINT32)
                 } else {
-                    network.add_constant(
+                    let mut layer = network.add_constant(
                         &add_dims,
                         data,
                         Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
-                    )
+                    );
+                    if let Ok(layer) = layer.as_mut() {
+                        //TODO: use API to name weights
+                        layer
+                            .set_name(network, &format!("{operand_id}"))
+                            .map_err(|e| GraphError::ConversionFailed {
+                                format: "trtx".to_string(),
+                                reason: format!("Failed to set constant name: {e}"),
+                            })?;
+                    }
+                    layer
                 }
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),

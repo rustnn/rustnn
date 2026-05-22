@@ -1,7 +1,7 @@
 use crate::{DataType, error::GraphBuilderError};
 use serde::{Deserialize, Serialize};
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLOperandDataType {
     #[default]
