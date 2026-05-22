@@ -299,6 +299,21 @@ pub enum GraphError {
         expected: usize,
         actual: usize,
     },
+
+    #[error(
+        "graph input operand ids doesn't match the ids of OperandKind::Input: {input_ids:?} vs {input_ids_in_operands:?}"
+    )]
+    InputIdListMismatch {
+        input_ids: Vec<u32>,
+        input_ids_in_operands: Vec<u32>,
+    },
+    #[error(
+        "graph output operand ids doesn't match the ids of OperandKind::Input: {output_ids:?} vs {output_ids_in_operands:?}"
+    )]
+    OutputIdListMismatch {
+        output_ids: Vec<u32>,
+        output_ids_in_operands: Vec<u32>,
+    },
     #[error("graph input operand list does not match operand table")]
     InputOperandListMismatch,
     #[error("graph output operand list does not match operand table")]

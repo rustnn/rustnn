@@ -2594,8 +2594,7 @@ mod test {
         let incompatible = context.create_tensor(&inc_desc).unwrap();
         let output = context.create_tensor(&a_desc).unwrap();
 
-        // Only a is used, still need to provide all of them,
-        // TODO: currently not validated
+        // All declared graph inputs must be provided at dispatch (including unused ones).
         let mut inputs = HashMap::new();
         inputs.insert("a", &a);
         inputs.insert("unused", &unused);

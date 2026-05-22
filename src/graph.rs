@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
+use crate::error::GraphError;
 use crate::operator_options::{MLDimension, MLDynamicDimension};
 use crate::operators::Operation;
 
@@ -214,11 +215,92 @@ impl GraphInfo {
             .iter()
             .any(|operand| operand.descriptor.has_dynamic_dimensions())
     }
+
+    /// Ensures `input_operands` / `output_operands` match operands tagged as graph I/O.
+    pub fn validate_io_operand_lists(&self) -> Result<(), GraphError> {
+        let mut derived_inputs = Vec::new();
+        let mut derived_outputs = Vec::new();
+
+        for (idx, operand) in self.operands.iter().enumerate() {
+            match operand.kind {
+                OperandKind::Input => derived_inputs.push(idx as u32),
+                OperandKind::Output => derived_outputs.push(idx as u32),
+                OperandKind::Constant | OperandKind::Intermediate => {}
+            }
+        }
+
+        if derived_inputs != self.input_operands {
+            return Err(GraphError::InputIdListMismatch {
+                input_ids: self.input_operands.clone(),
+                input_ids_in_operands: derived_inputs,
+            });
+        }
+        if derived_outputs != self.output_operands {
+            return Err(GraphError::OutputIdListMismatch {
+                output_ids: self.input_operands.clone(),
+                output_ids_in_operands: derived_inputs,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Named input/output operands for `MLGraph` dispatch, after list consistency checks.
+    pub fn io_binding_maps(
+        &self,
+    ) -> Result<
+        (
+            HashMap<String, OperandDescriptor>,
+            HashMap<String, OperandDescriptor>,
+        ),
+        GraphError,
+    > {
+        self.validate_io_operand_lists()?;
+
+        let mut inputs = HashMap::new();
+        for &id in &self.input_operands {
+            let operand = self.operand(id).expect("validated above");
+            let name = operand
+                .name
+                .as_ref()
+                .ok_or(GraphError::MissingInputName { operand: id })?;
+            if name.is_empty() {
+                return Err(GraphError::MissingInputName { operand: id });
+            }
+            if inputs
+                .insert(name.clone(), operand.descriptor.clone())
+                .is_some()
+            {
+                return Err(GraphError::DuplicateInputName { name: name.clone() });
+            }
+        }
+
+        let mut outputs = HashMap::new();
+        for &id in &self.output_operands {
+            let operand = self.operand(id).expect("validated above");
+            let name = operand
+                .name
+                .as_ref()
+                .ok_or(GraphError::MissingOutputName { operand: id })?;
+            if name.is_empty() {
+                return Err(GraphError::MissingOutputName { operand: id });
+            }
+            if outputs
+                .insert(name.clone(), operand.descriptor.clone())
+                .is_some()
+            {
+                return Err(GraphError::DuplicateOutputName { name: name.clone() });
+            }
+        }
+
+        Ok((inputs, outputs))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::GraphError;
 
     #[test]
     fn test_data_type_bytes_per_element() {
@@ -396,6 +478,111 @@ mod tests {
         assert_eq!(
             deserialized.operands[0].descriptor.data_type,
             DataType::Uint4
+        );
+    }
+
+    fn sample_io_graph() -> GraphInfo {
+        GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: to_dimension_vector(&[2, 2]),
+                        pending_permutation: vec![],
+                    },
+                    name: Some("x".to_string()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: to_dimension_vector(&[2, 2]),
+                        pending_permutation: vec![],
+                    },
+                    name: Some("y".to_string()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn validate_io_operand_lists_accepts_consistent_graph() {
+        assert!(sample_io_graph().validate_io_operand_lists().is_ok());
+        assert!(sample_io_graph().io_binding_maps().is_ok());
+    }
+
+    #[test]
+    fn validate_io_operand_lists_rejects_extra_input_operand_id() {
+        let mut graph = sample_io_graph();
+        graph.input_operands.push(99);
+        std::assert_matches!(
+            graph.validate_io_operand_lists(),
+            Err(GraphError::InputIdListMismatch { .. })
+        );
+    }
+
+    #[test]
+    fn validate_io_operand_lists_rejects_invalid_operand_id_in_list() {
+        let mut graph = sample_io_graph();
+        graph.input_operands = vec![0, 99];
+        graph.operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: to_dimension_vector(&[1]),
+                pending_permutation: vec![],
+            },
+            name: Some("z".to_string()),
+        });
+        std::assert_matches!(
+            graph.validate_io_operand_lists(),
+            Err(GraphError::InputIdListMismatch { .. })
+        );
+    }
+
+    #[test]
+    fn validate_io_operand_lists_rejects_missing_input_in_list() {
+        let mut graph = sample_io_graph();
+        graph.operands.push(Operand {
+            kind: OperandKind::Input,
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: to_dimension_vector(&[1]),
+                pending_permutation: vec![],
+            },
+            name: Some("z".to_string()),
+        });
+        std::assert_matches!(
+            graph.validate_io_operand_lists(),
+            Err(GraphError::InputIdListMismatch { .. })
+        );
+    }
+
+    #[test]
+    fn validate_io_operand_lists_rejects_wrong_kind_in_input_list() {
+        let mut graph = sample_io_graph();
+        graph.input_operands = vec![1];
+        std::assert_matches!(
+            graph.validate_io_operand_lists(),
+            Err(GraphError::InputIdListMismatch { .. })
+        );
+    }
+
+    #[test]
+    fn validate_io_operand_lists_rejects_output_kind_not_in_list() {
+        let mut graph = sample_io_graph();
+        graph.operands[0].kind = OperandKind::Output;
+        graph.output_operands.push(0);
+        std::assert_matches!(
+            graph.validate_io_operand_lists(),
+            Err(GraphError::InputIdListMismatch { .. })
         );
     }
 }

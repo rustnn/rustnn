@@ -213,8 +213,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             .create_execution_context()
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
-        Ok(MLGraph {
-            backend: MLBackendGraph::TrtxEngine(TrtxGraph {
+        MLGraph::new(
+            MLBackendGraph::TrtxEngine(TrtxGraph {
                 _engine: engine,
                 exec,
                 cuda_stream: self
@@ -222,7 +222,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                     .new_stream()
                     .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
             }),
-        })
+            &graph,
+        )
     }
 }
 

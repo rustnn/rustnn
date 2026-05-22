@@ -118,12 +118,13 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
             .map_err(|e| Error::GraphBuildError { source: e.into() })?
             .commit_from_memory(&converted.data)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        Ok(MLGraph {
-            backend: crate::mlcontext::MLBackendGraph::OnnxSession(
+        MLGraph::new(
+            crate::mlcontext::MLBackendGraph::OnnxSession(
                 OrtGraph { session },
                 std::marker::PhantomData,
             ),
-        })
+            &graph_info,
+        )
     }
 }
 

@@ -173,6 +173,7 @@ impl<'a> GraphValidator<'a> {
             }
         }
 
+        self.graph.validate_io_operand_lists()?;
         if graph_inputs != self.graph.input_operands {
             return Err(GraphError::InputOperandListMismatch);
         }
@@ -393,12 +394,20 @@ impl<'a> GraphValidator<'a> {
         let zero_point_shape_dims = &zero_point_desc.shape;
         let input_shape = input_desc.static_or_max_shape();
         let scale_shape = scale_desc.static_or_max_shape();
+
+        // TODO: not ideal that scalar [] and unknown are represented in the same way
         // Intermediate operation outputs may still carry unresolved shape metadata ([]).
         // Treat those as unknown to avoid rejecting valid subgraphs during early validation.
-        let input_shape_known =
-            !(input_shape_dims.is_empty() && matches!(input_operand.kind, OperandKind::Output));
-        let output_shape_known =
-            !(output_desc.shape.is_empty() && matches!(output_operand.kind, OperandKind::Output));
+        let input_shape_known = !(input_shape_dims.is_empty()
+            && matches!(
+                input_operand.kind,
+                OperandKind::Output | OperandKind::Intermediate
+            ));
+        let output_shape_known = !(output_desc.shape.is_empty()
+            && matches!(
+                output_operand.kind,
+                OperandKind::Output | OperandKind::Intermediate
+            ));
 
         if scale_shape_dims.is_empty() {
             if !zero_point_shape_dims.is_empty() {
@@ -749,7 +758,7 @@ mod tests {
 
         // Intermediate output with unresolved shape metadata ([]).
         let unresolved_intermediate = Operand {
-            kind: OperandKind::Output,
+            kind: OperandKind::Intermediate,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
                 shape: vec![],
@@ -802,7 +811,7 @@ mod tests {
         };
 
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        assert!(validator.validate().is_ok());
+        validator.validate().unwrap();
     }
 
     #[test]

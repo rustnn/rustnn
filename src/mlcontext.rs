@@ -6,8 +6,9 @@ use crate::OperandDescriptor;
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
-use crate::graph::{Dimension, get_static_or_max_size};
+use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
+use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
 use crate::backends::ort::OrtContext;
@@ -167,7 +168,97 @@ impl MLTensor {
 #[derive(Debug)]
 pub struct MLGraph<'context> {
     pub(crate) backend: MLBackendGraph<'context>,
+
+    // inputs/outputs of compiled graph
+    pub input_descriptors: HashMap<String, OperandDescriptor>,
+    pub output_descriptors: HashMap<String, OperandDescriptor>,
 }
+
+impl<'context> MLGraph<'context> {
+    pub(crate) fn new(backend: MLBackendGraph<'context>, graph_info: &GraphInfo) -> Result<Self> {
+        let (input_descriptors, output_descriptors) = graph_info
+            .io_binding_maps()
+            .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        Ok(Self {
+            backend,
+            input_descriptors,
+            output_descriptors,
+        })
+    }
+
+    fn operand_descriptors(
+        operands: &HashMap<String, Operand>,
+    ) -> HashMap<String, OperandDescriptor> {
+        operands
+            .iter()
+            .map(|(name, op)| (name.clone(), op.descriptor.clone()))
+            .collect()
+    }
+
+    fn verify_dispatch_bindings(
+        &mut self,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
+    ) -> Result<()> {
+        let input_shapes: HashMap<String, Vec<usize>> = inputs
+            .iter()
+            .map(|(&name, tensor)| {
+                (
+                    name.to_string(),
+                    tensor.shape().iter().map(|&d| d as usize).collect(),
+                )
+            })
+            .collect();
+        let output_shapes: HashMap<String, Vec<usize>> = outputs
+            .iter()
+            .map(|(&name, tensor)| {
+                (
+                    name.to_string(),
+                    tensor.shape().iter().map(|&d| d as usize).collect(),
+                )
+            })
+            .collect();
+
+        let mut runtime_shape_state = RuntimeShapeState::new();
+        runtime_shape_state
+            .validate_named_shapes(&input_shapes, &self.input_descriptors, TensorKind::Input)
+            .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
+        runtime_shape_state
+            .validate_named_shapes(&output_shapes, &self.output_descriptors, TensorKind::Output)
+            .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
+
+        for (&name, tensor) in inputs {
+            let expected = self.input_descriptors.get(name).expect("validated above");
+            if DataType::from(tensor.data_type()) != expected.data_type {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "input '{name}' data type mismatch (expected {:?}, got {:?})",
+                        expected.data_type,
+                        tensor.data_type()
+                    )
+                    .into(),
+                });
+            }
+        }
+
+        for (&name, tensor) in outputs {
+            let expected = self.output_descriptors.get(name).expect("validated above");
+            if DataType::from(tensor.data_type()) != expected.data_type {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "output '{name}' data type mismatch (expected {:?}, got {:?})",
+                        expected.data_type,
+                        tensor.data_type()
+                    )
+                    .into(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct MLOpSupportLimits {}
 
@@ -444,6 +535,7 @@ impl<'context> MLContext<'context> {
             }
         }
 
+        graph.verify_dispatch_bindings(inputs, outputs)?;
         self.backend.dispatch(graph, inputs, outputs)
     }
 

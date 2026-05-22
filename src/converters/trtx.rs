@@ -2510,6 +2510,8 @@ impl TrtxConverter {
                 })
         };
 
+        // Constant stored flat: 1D int8. Try 1D -> Reshape(4D) -> DQ so DQ sees Shuffle output not Constant.
+        let stored_flat = constants_stored_flat.contains(&input_id);
         let _input_dims =
             input
                 .dimensions(&*network)
