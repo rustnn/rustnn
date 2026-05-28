@@ -2532,12 +2532,12 @@ impl TrtxConverter {
                 })?;
         if use_dq_for_float32 {
             // int8/uint8 -> float32: only supported when input is a constant (stored flat). Tensor inputs not supported by TRT-RTX.
-            //if !stored_flat {
-                //return Err(GraphError::ConversionFailed {
-                    //format: "trtx".to_string(),
-                    //reason: "Cast int8/uint8 to float32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
-                //});
-            //}
+            if !stored_flat {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Cast int8/uint8 to float32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
+                });
+            }
             {
                 let original_shape: Vec<i64> = input_operand
                     .descriptor
@@ -2589,12 +2589,12 @@ impl TrtxConverter {
 
         if use_dq_then_cast_int32 {
             // int8/uint8 -> int32: only supported when input is constant (stored flat) or promoted scalar. Tensor inputs not supported by TRT-RTX.
-            //if !stored_flat {
-                //return Err(GraphError::ConversionFailed {
-                    //format: "trtx".to_string(),
-                    //reason: "Cast int8/uint8 to int32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
-                //});
-            //}
+            if !stored_flat {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: "Cast int8/uint8 to int32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
+                });
+            }
             {
                 let original_shape: Vec<i64> = input_operand
                     .descriptor

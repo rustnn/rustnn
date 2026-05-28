@@ -752,40 +752,6 @@ pub fn run_one_test_case_trtx(
     Ok(())
 }
 
-/// Skip cast tests that use int8/uint8 tensor inputs (TRT-RTX supports only constant inputs for cast).
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn trtx_skip_reason(test_case: &wpt_types::WptTestCase) -> Option<&'static str> {
-    return None
-    //const TRTX_CAST_SKIP: &[&str] = &[
-        //"cast int8 1D constant tensor to int32",
-        //"cast int8 4D tensor to float32",
-        //"cast int8 4D tensor to float16",
-        //"cast int8 4D tensor to int32",
-        //"cast int8 4D tensor to uint32",
-        //"cast int8 4D tensor to int64",
-        //"cast int8 4D tensor to uint8",
-        //"cast uint8 4D tensor to float32",
-        //"cast uint8 4D tensor to int32",
-    //];
-    //if TRTX_CAST_SKIP.contains(&test_case.name.as_str()) {
-        //return Some("TRT-RTX: int8/uint8 tensor input to cast not supported (constants only)");
-    //}
-    //// Clamp uint32: kINT32 elementwise uses signed comparison (maxValue >= 2^31 wrong). Clamp int64/uint64: add_constant does not support kINT64.
-    //const TRTX_CLAMP_UNSUPPORTED: &[&str] = &[
-        //"clamp int8 1D tensor",
-        //"clamp uint32 1D tensor",
-        //"clamp int64 1D tensor with bigint max",
-        //"clamp uint64 1D tensor with Number min and max",
-        //"clamp uint64 1D tensor with bigint max",
-    //];
-    //if TRTX_CLAMP_UNSUPPORTED.contains(&test_case.name.as_str()) {
-        //return Some(
-            //"TRT-RTX: clamp unsupported (uint32 signed comparison; int64/uint64 no kINT64 constants)",
-        //);
-    //}
-    //None
-}
-
 /// Run all WPT conformance tests using the TensorRT (trtx) backend.
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn run_all_trtx() -> Result<(), String> {
@@ -810,7 +776,7 @@ pub fn run_all_trtx() -> Result<(), String> {
     );
 
     let mut passed = 0usize;
-    let mut skipped = 0usize;
+    let skipped = 0usize;
     let mut failed = Vec::new();
     let mut total_cases = 0usize;
 
@@ -827,12 +793,6 @@ pub fn run_all_trtx() -> Result<(), String> {
 
         for test_case in &file.tests {
             println!("  running: {} :: {}", op, test_case.name);
-            if let Some(reason) = trtx_skip_reason(test_case) {
-                skipped += 1;
-                println!("    [SKIP] {}", reason);
-                test_results.push(format!("{}    [SKIP] {}", test_case.name, reason));
-                continue;
-            }
             match run_one_test_case_trtx(&file.operation, test_case) {
                 Ok(()) => {
                     passed += 1;
