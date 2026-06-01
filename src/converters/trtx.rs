@@ -2521,8 +2521,6 @@ impl TrtxConverter {
                 })
         };
 
-        // Constant stored flat: 1D int8. Try 1D -> Reshape(4D) -> DQ so DQ sees Shuffle output not Constant.
-        let stored_flat = constants_stored_flat.contains(&input_id);
         let _input_dims =
             input
                 .dimensions(&*network)
@@ -2531,13 +2529,6 @@ impl TrtxConverter {
                     reason: format!("Cast: failed to get input dimensions: {}", e),
                 })?;
         if use_dq_for_float32 {
-            // int8/uint8 -> float32: only supported when input is a constant (stored flat). Tensor inputs not supported by TRT-RTX.
-            if !stored_flat {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Cast int8/uint8 to float32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
-                });
-            }
             {
                 let original_shape: Vec<i64> = input_operand
                     .descriptor
@@ -2588,13 +2579,6 @@ impl TrtxConverter {
         }
 
         if use_dq_then_cast_int32 {
-            // int8/uint8 -> int32: only supported when input is constant (stored flat) or promoted scalar. Tensor inputs not supported by TRT-RTX.
-            if !stored_flat {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Cast int8/uint8 to int32: TRT-RTX supports only constant inputs (tensor inputs not supported)".to_string(),
-                });
-            }
             {
                 let original_shape: Vec<i64> = input_operand
                     .descriptor
