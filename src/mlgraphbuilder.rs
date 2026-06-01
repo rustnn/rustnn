@@ -1718,10 +1718,20 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .take()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
 
+        let mut duplicates = HashMap::<MLOperand, &str>::new();
         for (name, operand) in outputs.iter() {
-            // spec: If name is empty, then return a new promise in realm rejected with a TypeError.
-            if name.is_empty() {
-                return Err(GraphBuilderError::EmptyOutputHashMap.into());
+            match duplicates.entry(*operand) {
+                std::collections::hash_map::Entry::Occupied(occupied_entry) => {
+                    return Err(GraphBuilderError::DuplicateOutput {
+                        operand: *operand,
+                        first_name: occupied_entry.get().to_string(),
+                        second_name: name.to_string(),
+                    }
+                    .into());
+                }
+                std::collections::hash_map::Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(name);
+                }
             }
 
             if let Some(op) = graph.operands.get_mut(operand.id) {
@@ -1741,6 +1751,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                 }
                 op.kind = OperandKind::Output;
                 op.name = Some(name.to_string());
+            } else {
+                return Err(GraphBuilderError::BuildWithInvalidOperand {
+                    operand: *operand,
+                    name: name.to_string(),
+                }
+                .into());
             }
             graph.output_operands.push(operand.id as u32);
         }

@@ -368,7 +368,7 @@ pub struct MLTensorDescriptor {
     writable: bool,
 }
 
-#[derive(Debug, Eq, PartialEq, Default, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Default, Copy, Clone, Hash)]
 pub struct MLOperand {
     pub(crate) id: usize,
 }
@@ -608,6 +608,50 @@ impl<'context> MLContext<'context> {
 mod test {
     use crate::{mlcontext::*, mlgraphbuilder::MLGraphBuilder, webnn_json::from_graph_json};
 
+    fn create_add_graph_context_and_graph() -> Option<(MLContext<'static>, MLGraph<'static>)> {
+        let contents = r#"
+webnn_graph "sample_graph" v1 {
+  inputs {
+    lhs: f32[2, 2];
+  }
+
+  consts {
+    rhs: f32[2, 2] @scalar(1.0);
+  }
+
+  nodes {
+    sum = add(lhs, rhs);
+  }
+
+  outputs { sum; }
+}"#;
+
+        let _ = pretty_env_logger::try_init();
+        let sanitized = crate::loader::sanitize_webnn_identifiers(contents);
+        let graph_json = webnn_graph::parser::parse_wg_text(&sanitized).unwrap();
+        let graph_info = from_graph_json(&graph_json).unwrap();
+
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+            return None;
+        };
+
+        let mut context = context.unwrap();
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let graph = builder.build_graph_info(graph_info).unwrap();
+        drop(builder);
+
+        Some((context, graph))
+    }
+
+    fn rw_tensor_desc(shape: Vec<u64>) -> MLTensorDescriptor {
+        let mut desc =
+            MLTensorDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape);
+        desc.set_readable(true);
+        desc.set_writable(true);
+        desc
+    }
+
     #[test]
     fn test_tensor_desc() {
         let default_operand_desc = MLOperandDescriptor::default();
@@ -657,44 +701,11 @@ mod test {
 
     #[test]
     fn test_dispatch() {
-        let contents = r#"
-webnn_graph "sample_graph" v1 {
-  inputs {
-    lhs: f32[2, 2];
-  }
-
-  consts {
-    rhs: f32[2, 2] @scalar(1.0);
-  }
-
-  nodes {
-    sum = add(lhs, rhs);
-  }
-
-  outputs { sum; }
-}"#;
-
-        let _ = pretty_env_logger::try_init();
-        let sanitized = crate::loader::sanitize_webnn_identifiers(contents);
-        let graph_json = webnn_graph::parser::parse_wg_text(&sanitized).unwrap();
-        let graph_info = from_graph_json(&graph_json).unwrap();
-
-        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
             return;
         };
-        let mut context = context.unwrap();
         dbg!(&context);
-        let mut desc = MLTensorDescriptor::new(
-            crate::operator_enums::MLOperandDataType::Float32,
-            [2, 2].to_vec(),
-        );
-        desc.set_readable(true);
-        desc.set_writable(true);
-
-        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
-        let mut graph = builder.build_graph_info(graph_info).unwrap();
-        drop(builder); // TODO: should probably just consume builder on build
+        let desc = rw_tensor_desc([2, 2].to_vec());
 
         let tensor = context.create_tensor(&desc).unwrap();
         let mut inputs = HashMap::new();
@@ -710,5 +721,72 @@ webnn_graph "sample_graph" v1 {
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
         context.read_tensor(&tensor, &mut download).unwrap();
         assert_eq!(&vec![2.0f32, 3., 4., 5.], &download);
+    }
+
+    #[test]
+    fn test_dispatch_invalid_input_name_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+            return;
+        };
+
+        let desc = rw_tensor_desc([2, 2].to_vec());
+        let tensor = context.create_tensor(&desc).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("invalid_input", &tensor);
+        let mut outputs = HashMap::new();
+        outputs.insert("sum", &tensor);
+
+        let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
+        std::assert_matches!(
+            err,
+            crate::error::Error::GraphDispatchError { source }
+                if source.to_string() == "missing runtime input tensor `lhs`"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_invalid_input_shape_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+            return;
+        };
+
+        let desc = rw_tensor_desc([2, 3].to_vec());
+        let tensor = context.create_tensor(&desc).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("lhs", &tensor);
+        let mut outputs = HashMap::new();
+        outputs.insert("sum", &tensor);
+
+        let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
+        std::assert_matches!(
+            err,
+            crate::error::Error::GraphDispatchError { source }
+                if source.to_string()
+                    == "runtime input tensor `lhs` dimension 1 mismatch (expected 2, got 3)"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_invalid_output_shape_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+            return;
+        };
+
+        let in_desc = rw_tensor_desc([2, 2].to_vec());
+        let out_desc = rw_tensor_desc([2, 3].to_vec());
+        let input_tensor = context.create_tensor(&in_desc).unwrap();
+        let output_tensor = context.create_tensor(&out_desc).unwrap();
+        let mut inputs = HashMap::new();
+        inputs.insert("lhs", &input_tensor);
+        let mut outputs = HashMap::new();
+        outputs.insert("sum", &output_tensor);
+
+        let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
+        std::assert_matches!(
+            err,
+            crate::error::Error::GraphDispatchError { source }
+                if source.to_string()
+                    == "runtime output tensor `sum` dimension 1 mismatch (expected 2, got 3)"
+        );
     }
 }
