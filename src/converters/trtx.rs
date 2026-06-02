@@ -433,7 +433,6 @@ impl TrtxConverter {
     ) -> Result<(), GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let promoted_constants: HashSet<u32> = HashSet::new();
-        let constants_stored_flat: HashSet<u32> = HashSet::new();
         let io_binding_names = Self::engine_io_binding_names(graph);
 
         // Step 1: Add inputs
@@ -565,7 +564,6 @@ impl TrtxConverter {
                 network,
                 &mut tensor_map,
                 &promoted_constants,
-                &constants_stored_flat,
                 operation,
             )?;
         }
@@ -599,7 +597,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'network_definition>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'network_definition>>,
         promoted_constants: &HashSet<u32>,
-        constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let op_type = operation.op_type();
@@ -705,14 +702,7 @@ impl TrtxConverter {
             "erf" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kERF)?,
             "sign" => Self::add_unary_op(network, tensor_map, operation, UnaryOperation::kSIGN)?,
             "identity" => Self::add_identity_op(network, tensor_map, operation)?,
-            "cast" => Self::add_cast_op(
-                graph,
-                network,
-                tensor_map,
-                promoted_constants,
-                constants_stored_flat,
-                operation,
-            )?,
+            "cast" => Self::add_cast_op(graph, network, tensor_map, promoted_constants, operation)?,
             "quantizeLinear" => {
                 Self::add_quantize_linear_op(graph, network, tensor_map, operation)?
             }
@@ -2431,7 +2421,6 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         promoted_constants: &HashSet<u32>,
-        constants_stored_flat: &HashSet<u32>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
         let input_id = operation.input_operands()[0];
