@@ -210,9 +210,9 @@ mod tests {
         };
 
         // Should work with different cases
-        assert!(registry.convert("dummy", &graph).is_ok());
-        assert!(registry.convert("DUMMY", &graph).is_ok());
-        assert!(registry.convert("Dummy", &graph).is_ok());
+        registry.convert("dummy", &graph).unwrap();
+        registry.convert("DUMMY", &graph).unwrap();
+        registry.convert("Dummy", &graph).unwrap();
     }
 
     #[test]

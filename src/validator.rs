@@ -651,7 +651,7 @@ mod tests {
     fn dynamic_shapes_validate_when_feature_enabled() {
         let graph = build_dynamic_relu_graph();
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        assert!(validator.validate().is_ok());
+        validator.validate().unwrap();
     }
 
     #[test]
@@ -665,7 +665,7 @@ mod tests {
             vec![1, 3, 1],
         );
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        assert!(validator.validate().is_ok());
+        validator.validate().unwrap();
     }
 
     #[test]
@@ -679,7 +679,7 @@ mod tests {
             vec![2, 2],
         );
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        assert!(validator.validate().is_ok());
+        validator.validate().unwrap();
     }
 
     #[test]
@@ -1314,7 +1314,7 @@ mod tests {
         };
 
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        assert!(validator.validate().is_ok());
+        validator.validate().unwrap();
     }
 
     #[test]

@@ -1570,7 +1570,7 @@ mod tests {
         };
 
         let result = from_graph_json(&graph_json);
-        assert!(result.is_ok());
+        result.unwrap();
 
         // Test Uint32, Int64, Uint64, Int8, Uint8
         let types_to_test = vec![
@@ -1605,8 +1605,8 @@ mod tests {
                 outputs: BTreeMap::new(),
             };
 
-            let result = from_graph_json(&graph_json);
-            assert!(result.is_ok(), "Failed for type {:?}", dtype);
+            from_graph_json(&graph_json)
+                .unwrap_or_else(|e| panic!("Failed for type {:?}: {e}", dtype));
         }
     }
 
@@ -1822,7 +1822,7 @@ mod tests {
         };
 
         let result = from_graph_json(&graph_json);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1851,7 +1851,7 @@ mod tests {
         };
 
         let result = from_graph_json(&graph_json);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -1886,7 +1886,6 @@ mod tests {
 
         let result = from_graph_json(&graph_json);
         // Should succeed but create no output operands for the operation
-        assert!(result.is_ok());
         let graph_info = result.unwrap();
         assert_eq!(graph_info.operations.len(), 1);
         assert_eq!(graph_info.operations[0].output_operands().len(), 0);

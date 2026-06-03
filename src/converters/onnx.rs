@@ -9830,8 +9830,6 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
-
         let converted = result.unwrap();
         assert_eq!(converted.format, "onnx");
 
@@ -9918,8 +9916,6 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
-
         let converted = result.unwrap();
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
@@ -10004,8 +10000,6 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
-
         let converted = result.unwrap();
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();
@@ -10048,7 +10042,7 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -10075,7 +10069,7 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -10123,7 +10117,7 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[cfg(not(feature = "dynamic-inputs"))]
@@ -10238,8 +10232,6 @@ mod tests {
 
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
-        assert!(result.is_ok());
-
         let converted = result.unwrap();
         let model = ModelProto::decode(converted.data.as_slice()).unwrap();
         let graph_proto = model.graph.unwrap();

@@ -249,14 +249,7 @@ mod tests {
         fs::write(&json_path, json_content).unwrap();
 
         // Load the graph
-        let result = load_graph_from_path(&json_path);
-        assert!(
-            result.is_ok(),
-            "Failed to load JSON graph: {:?}",
-            result.err()
-        );
-
-        let graph = result.unwrap();
+        let graph = load_graph_from_path(&json_path).expect("Failed to load JSON graph");
         assert!(graph.operands.len() >= 2); // At least input and output
         assert_eq!(graph.input_operands.len(), 1);
         assert_eq!(graph.output_operands.len(), 1);
@@ -446,11 +439,8 @@ mod tests {
         fs::write(&weights_path, &weights_data).unwrap();
 
         // Load the graph - weights should be inlined automatically
-        let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok(), "Failed to load graph: {:?}", result.err());
-
         // The weight constant should have inline bytes instead of a reference
-        let graph = result.unwrap();
+        let graph = load_graph_from_path(&graph_path).expect("Failed to load graph");
         assert!(!graph.constant_operand_ids_to_handles.is_empty());
     }
 
@@ -513,8 +503,7 @@ mod tests {
         fs::write(&weights_path, &weights_data).unwrap();
 
         // Should successfully match sanitized name to dotted manifest name
-        let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok(), "Failed to load graph: {:?}", result.err());
+        load_graph_from_path(&graph_path).expect("Failed to load graph");
     }
 
     #[test]
@@ -543,7 +532,7 @@ mod tests {
 
         // Should succeed even without manifest/weights
         let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -568,7 +557,7 @@ mod tests {
 
         // Should succeed by falling back to non-inlined weights
         let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 
     #[test]
@@ -693,9 +682,7 @@ mod tests {
         fs::write(&graph_path, graph_content).unwrap();
         write_safetensors_f32(&st_path, "weight", vec![2], &tensor_bytes);
 
-        let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok(), "load: {:?}", result.err());
-        let graph = result.unwrap();
+        let graph = load_graph_from_path(&graph_path).expect("load");
         assert!(!graph.constant_operand_ids_to_handles.is_empty());
     }
 
@@ -726,8 +713,7 @@ mod tests {
         fs::write(&graph_path, graph_content).unwrap();
         write_safetensors_f32(&st_path, "onnx::weight", vec![2], &tensor_bytes);
 
-        let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok(), "load: {:?}", result.err());
+        load_graph_from_path(&graph_path).expect("load");
     }
 
     #[test]
@@ -765,8 +751,7 @@ mod tests {
             &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40],
         );
 
-        let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok(), "safetensors should win: {:?}", result.err());
+        load_graph_from_path(&graph_path).expect("safetensors should win");
     }
 
     #[test]
@@ -857,6 +842,6 @@ mod tests {
 
         // Should match namespace separator (:: -> __)
         let result = load_graph_from_path(&graph_path);
-        assert!(result.is_ok());
+        result.unwrap();
     }
 }

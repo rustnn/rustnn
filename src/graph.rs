@@ -514,8 +514,8 @@ mod tests {
 
     #[test]
     fn validate_io_operand_lists_accepts_consistent_graph() {
-        assert!(sample_io_graph().validate_io_operand_lists().is_ok());
-        assert!(sample_io_graph().io_binding_maps().is_ok());
+        sample_io_graph().validate_io_operand_lists().unwrap();
+        sample_io_graph().io_binding_maps().unwrap();
     }
 
     #[test]

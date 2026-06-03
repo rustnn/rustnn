@@ -2551,9 +2551,9 @@ mod tests {
 
     #[test]
     fn test_validate_reshape_valid() {
-        assert!(validate_reshape(&[2, 3], &[6]).is_ok());
-        assert!(validate_reshape(&[2, 3, 4], &[6, 4]).is_ok());
-        assert!(validate_reshape(&[6], &[2, 3]).is_ok());
+        validate_reshape(&[2, 3], &[6]).unwrap();
+        validate_reshape(&[2, 3, 4], &[6, 4]).unwrap();
+        validate_reshape(&[6], &[2, 3]).unwrap();
     }
 
     #[test]

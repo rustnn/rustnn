@@ -172,11 +172,9 @@ mod tests {
     fn validates_static_shape() {
         let mut state = RuntimeShapeState::new();
         let desc = input_desc(vec![Dimension::Static(2), Dimension::Static(3)]);
-        assert!(
-            state
-                .validate_shape("x", &[2, 3], &desc, TensorKind::Input)
-                .is_ok()
-        );
+        state
+            .validate_shape("x", &[2, 3], &desc, TensorKind::Input)
+            .unwrap();
     }
 
     #[test]
@@ -250,11 +248,9 @@ mod tests {
         let mut actual = HashMap::new();
         actual.insert("x".to_string(), vec![2, 3]);
 
-        assert!(
-            state
-                .validate_named_shapes(&actual, &descs, TensorKind::Input)
-                .is_ok()
-        );
+        state
+            .validate_named_shapes(&actual, &descs, TensorKind::Input)
+            .unwrap();
     }
 
     #[test]
@@ -285,8 +281,8 @@ mod tests {
 
     #[test]
     fn validates_shape_data_length() {
-        assert!(validate_shape_data_length("x", &[2, 3], 6).is_ok());
-        assert!(validate_shape_data_length("x", &[], 1).is_ok());
+        validate_shape_data_length("x", &[2, 3], 6).unwrap();
+        validate_shape_data_length("x", &[], 1).unwrap();
     }
 
     #[test]
