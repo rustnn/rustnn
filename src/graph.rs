@@ -237,8 +237,8 @@ impl GraphInfo {
         }
         if derived_outputs != self.output_operands {
             return Err(GraphError::OutputIdListMismatch {
-                output_ids: self.input_operands.clone(),
-                output_ids_in_operands: derived_inputs,
+                output_ids: self.output_operands.clone(),
+                output_ids_in_operands: derived_outputs,
             });
         }
 

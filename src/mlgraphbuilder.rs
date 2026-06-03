@@ -1760,6 +1760,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             }
             graph.output_operands.push(operand.id as u32);
         }
+        // HashMap iteration order is nondeterministic; keep output_operands in operand-index order.
+        graph.output_operands.sort_unstable();
 
         debug!("Building graph with {} operands", graph.operands.len());
         // Verbose info for small graphs
