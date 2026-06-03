@@ -22,9 +22,9 @@ use crate::shape_inference::{
     infer_conv_transpose2d_shape, infer_conv2d_shape, infer_expand_shape_dimensions,
     infer_gather_shape_dimensions, infer_gemm_shape_dimensions, infer_global_pool_shape,
     infer_matmul_shape_dimensions, infer_pad_shape, infer_pool2d_shape_dimensions,
-    infer_prelu_shape, infer_reduce_shape_dimensions, infer_split_shapes, infer_squeeze_shape,
-    infer_tile_shape, infer_transpose_shape_dimensions, infer_triangular_shape,
-    infer_unsqueeze_shape_dimensions,
+    infer_prelu_shape, infer_reduce_shape_dimensions, infer_scatter_nd_shape, infer_split_shapes,
+    infer_squeeze_shape, infer_tile_shape, infer_transpose_shape_dimensions,
+    infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
 use crate::webnn_json::to_graph_json;
 use crate::{DataType, Operand, OperandDescriptor, OperandKind, Operation};
@@ -407,6 +407,40 @@ fn gather_nd_shape(
     })
 }
 
+fn scatter_nd_shape(
+    input: MLOperand,
+    updates: MLOperand,
+    indices: MLOperand,
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let input_op = get_operand(input, graph)?;
+    let indices_op = get_operand(indices, graph)?;
+    let updates_op = get_operand(updates, graph)?;
+
+    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
+
+    let fully_static =
+        |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
+    if fully_static(&input_op.descriptor.shape)
+        && fully_static(&indices_op.descriptor.shape)
+        && fully_static(&updates_op.descriptor.shape)
+    {
+        let _validated = infer_shape_err(
+            "scatterND",
+            operation,
+            infer_scatter_nd_shape(
+                &shape_dims_u32(&input_op.descriptor.shape),
+                &shape_dims_u32(&indices_op.descriptor.shape),
+                &shape_dims_u32(&updates_op.descriptor.shape),
+            )
+            .map(|shape| to_dimension_vector(&shape)),
+        )?;
+    }
+
+    Ok(input_op.descriptor.clone())
+}
+
 fn argminmax_shape(
     input: MLOperand,
     operation: &Operation,
@@ -765,26 +799,42 @@ fn where_shape(
 
     check_same_data_type(&inputs[1..], operation, &operands[1..])?;
 
-    let mut output_descriptor = operands[0].descriptor.clone();
-    for op in operands.iter().skip(1) {
-        output_descriptor.shape = crate::shape_inference::broadcast_shapes_dimensions(
-            &output_descriptor.shape,
-            &op.descriptor.shape,
-        )
-        .map_err(|e| {
-            Box::new(ShapeInferenceError::BroadcastError {
-                operation: operation.clone(),
-                inputs: inputs
-                    .iter()
-                    .copied()
-                    .zip(operands.iter().map(|&o| o.clone()))
-                    .collect(),
-                source: e,
-            })
-        })?;
-    }
+    let mut output_shape = crate::shape_inference::broadcast_shapes_dimensions(
+        &operands[1].descriptor.shape,
+        &operands[2].descriptor.shape,
+    )
+    .map_err(|e| {
+        Box::new(ShapeInferenceError::BroadcastError {
+            operation: operation.clone(),
+            inputs: inputs
+                .iter()
+                .copied()
+                .zip(operands.iter().map(|&o| o.clone()))
+                .collect(),
+            source: e,
+        })
+    })?;
+    output_shape = crate::shape_inference::broadcast_shapes_dimensions(
+        &operands[0].descriptor.shape,
+        &output_shape,
+    )
+    .map_err(|e| {
+        Box::new(ShapeInferenceError::BroadcastError {
+            operation: operation.clone(),
+            inputs: inputs
+                .iter()
+                .copied()
+                .zip(operands.iter().map(|&o| o.clone()))
+                .collect(),
+            source: e,
+        })
+    })?;
 
-    Ok(output_descriptor)
+    Ok(OperandDescriptor {
+        data_type: operands[1].descriptor.data_type,
+        shape: output_shape,
+        pending_permutation: vec![],
+    })
 }
 
 fn same_shape(
@@ -816,6 +866,43 @@ fn same_shape(
     }
 
     Ok(output_descriptor)
+}
+
+/// Shape inference for element-wise logical ops (`equal`, `logicalAnd`, `logicalNot`, …).
+///
+/// WebNN always outputs `uint8` (0/1) for these ops regardless of input dtype
+/// (see MLGraphBuilder element-wise logical operations in the WebNN spec).
+fn element_wise_logical_shape(
+    inputs: &[MLOperand],
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let mut output = same_shape(inputs, operation, graph)?;
+    output.data_type = DataType::Uint8;
+    Ok(output)
+}
+
+fn unary_element_wise_logical_shape(
+    input: MLOperand,
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let mut output = preserve_input_shape(input, operation, graph)?;
+    output.data_type = DataType::Uint8;
+    Ok(output)
+}
+
+fn cast_shape(
+    input: MLOperand,
+    data_type: MLOperandDataType,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let operand = get_operand(input, graph)?;
+    Ok(OperandDescriptor {
+        data_type: data_type.into(),
+        shape: operand.descriptor.shape.clone(),
+        pending_permutation: vec![],
+    })
 }
 
 /// Generates `fn_name(input)` / `fn_name(input, extra, …)` and matching `_with_options` on `MLGraphBuilder`.
@@ -1165,7 +1252,7 @@ fn shape_inference_single_output(
             b,
             options,
             outputs,
-        } => same_shape(
+        } => element_wise_logical_shape(
             &[MLOperand { id: *a as usize }, MLOperand { id: *b as usize }],
             operation,
             graph,
@@ -1189,16 +1276,32 @@ fn shape_inference_single_output(
         | Operation::Erf { input, .. }
         | Operation::Reciprocal { input, .. }
         | Operation::Sign { input, .. }
-        | Operation::LogicalNot { input, .. }
         | Operation::Identity { input, .. }
         | Operation::BatchNormalization { input, .. }
-        | Operation::Cast { input, .. }
         | Operation::RoundEven { input, .. }
         | Operation::Clamp { input, .. } => same_shape(
             &[MLOperand {
                 id: *input as usize,
             }],
             operation,
+            graph,
+        ),
+
+        Operation::LogicalNot { input, .. } => unary_element_wise_logical_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            operation,
+            graph,
+        ),
+
+        Operation::Cast {
+            input, data_type, ..
+        } => cast_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            *data_type,
             graph,
         ),
 
@@ -1334,15 +1437,22 @@ fn shape_inference_single_output(
         | Operation::Reverse { input, .. }
         | Operation::Softmax { input, .. }
         | Operation::Softplus { input, .. }
-        | Operation::Softsign { input, .. }
-        | Operation::IsNaN { input, .. }
-        | Operation::IsInfinite { input, .. } => preserve_input_shape(
+        | Operation::Softsign { input, .. } => preserve_input_shape(
             MLOperand {
                 id: *input as usize,
             },
             operation,
             graph,
         ),
+        Operation::IsNaN { input, .. } | Operation::IsInfinite { input, .. } => {
+            unary_element_wise_logical_shape(
+                MLOperand {
+                    id: *input as usize,
+                },
+                operation,
+                graph,
+            )
+        }
         Operation::Pad {
             input,
             beginning_padding,
@@ -1541,20 +1651,19 @@ fn shape_inference_single_output(
             indices,
             updates,
             ..
-        } => todo!(),
-        //scatter_nd_shape(
-        //MLOperand {
-        //id: *input as usize,
-        //},
-        //MLOperand {
-        //id: *indices as usize,
-        //},
-        //MLOperand {
-        //id: *updates as usize,
-        //},
-        //operation,
-        //graph,
-        //),
+        } => scatter_nd_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *updates as usize,
+            },
+            MLOperand {
+                id: *indices as usize,
+            },
+            operation,
+            graph,
+        ),
         Operation::GatherND { input, indices, .. } => gather_nd_shape(
             MLOperand {
                 id: *input as usize,
@@ -1969,6 +2078,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         condition,
         true_value,
         false_value
+    );
+    impl_ternary_op!(
+        scatter_nd,
+        scatter_nd_with_options,
+        ScatterND,
+        input,
+        indices,
+        updates
     );
     impl_ternary_optional_op!(
         quantize_linear,
