@@ -11,6 +11,8 @@ use std::fs;
 
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use insta::assert_debug_snapshot;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+use log::{debug, warn};
 use tolerance::get_operation_tolerance;
 use wpt_to_graph::wpt_data_dir;
 use wpt_types::load_wpt_file;
@@ -756,7 +758,7 @@ pub fn run_one_test_case_trtx(
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub fn run_all_trtx() -> Result<(), String> {
     // Reduce TensorRT log noise: only warning and more severe.
-    unsafe { std::env::set_var("RUSTNN_TRTX_LOG_VERBOSITY", "error") };
+    let _ = pretty_env_logger::try_init();
 
     let dir = wpt_data_dir();
     if !dir.exists() {
@@ -797,12 +799,14 @@ pub fn run_all_trtx() -> Result<(), String> {
                 Ok(()) => {
                     passed += 1;
                     println!("    [OK]");
+                    debug!("{}    [OK]", test_case.name);
                     test_results.push(format!("{}    [OK]", test_case.name));
                 }
                 Err(e) => {
                     failed.push((format!("{}::{}", op, test_case.name), e.clone()));
                     println!("    [FAIL]\n{}", e);
                     test_results.push(format!("{}    [FAIL]\n{}", test_case.name, e));
+                    warn!("{}    [FAIL]\n{}", test_case.name, e);
                 }
             }
         }

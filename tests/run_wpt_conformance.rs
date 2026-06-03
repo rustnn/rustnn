@@ -45,7 +45,7 @@ fn run_wpt_conformance_tests() {
 #[test]
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn run_wpt_conformance_tests_trtx() {
-    let result = std::panic::catch_unwind(|| wpt_conformance::run_all_trtx());
+    let result = std::panic::catch_unwind(wpt_conformance::run_all_trtx);
     match result {
         Ok(Ok(())) => {}
         // failure expected for now. Tracked with snapshots (failure on regressions)

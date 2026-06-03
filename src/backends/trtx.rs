@@ -199,8 +199,9 @@ impl<'context> TrtxContext<'context> {
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
         let mut builder = trtx::Builder::new(&LOGGER)?;
         let mut config = builder.create_config()?;
-        // Strip weights from engine and allow refitting
-        config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT);
+        // Strip marked weights weights from engine and makes them refittable, keeps other weights
+        // (mostly scalars)
+        config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT_INDIVIDUAL);
         config.set_flag(trtx::trtx_sys::BuilderFlag::kSTRIP_PLAN);
         let config = Rc::new(config.into());
         let runtime = Rc::new(trtx::Runtime::new(&LOGGER)?.into());
@@ -273,6 +274,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
+            for constant_id in graph.constant_operand_ids_to_handles.keys() {
+                network.mark_weights_refittable(&format!("{constant_id}"))?;
+            }
 
             let host_mem = self
                 .builder
@@ -326,7 +330,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                     }
                     .into());
                 }
-                let weight_name = format!("{id} CONSTANT");
+                let weight_name = format!("{id}");
                 trace!("Trying to refit weight {weight_name}");
                 unsafe {
                     refitter.set_named_weights_with_location(
