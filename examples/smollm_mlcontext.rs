@@ -1,8 +1,14 @@
+//! SmolLM generation via MLContext (dynamic KV-cache shapes).
+//!
+//! Build with `dynamic-inputs` (required) and a runtime, e.g.:
+//! `cargo run --example smollm_mlcontext --features dynamic-inputs,burn-runtime-cpu -- --backend burn-cpu`
 use std::{collections::HashMap, io::Write, path::PathBuf, process::Command};
 
 use anyhow::{Context, anyhow, bail};
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use log::{debug, info};
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+use rustnn::BackendPreference;
 use rustnn::{
     ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
     mlcontext::{
@@ -12,6 +18,17 @@ use rustnn::{
     operator_enums::MLOperandDataType,
 };
 use tokenizers::Tokenizer;
+
+#[derive(Debug, Clone, Copy, ValueEnum, Default)]
+enum BackendArg {
+    /// Use `accelerated` / `powerPreference` autoselection (TensorRT, ONNX, etc.).
+    #[default]
+    Auto,
+    #[cfg(feature = "burn-runtime-cpu")]
+    BurnCpu,
+    #[cfg(feature = "burn-runtime-webgpu")]
+    BurnWebGpu,
+}
 
 #[derive(Parser, Debug)]
 #[command(about = "Pure Rust SmolLM generation from .webnn + tokenizer.json")]
@@ -26,6 +43,9 @@ struct Args {
     max_new_tokens: usize,
     #[arg(long, default_value_t = 500_000_000_000usize)]
     tensor_limit: usize,
+    /// Backend: `auto` (default), `burn-cpu`, or `burn-webgpu` (requires matching feature).
+    #[arg(long, value_enum, default_value_t = BackendArg::Auto)]
+    backend: BackendArg,
 }
 
 #[derive(Debug, Clone)]
@@ -505,7 +525,20 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    let mut context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true))
+    let mut context_options = MLContextOptions::new(MLPowerPreference::Default, true);
+    match args.backend {
+        BackendArg::Auto => {}
+        #[cfg(feature = "burn-runtime-cpu")]
+        BackendArg::BurnCpu => {
+            context_options = context_options.with_backend_preference(BackendPreference::BurnCpu);
+        }
+        #[cfg(feature = "burn-runtime-webgpu")]
+        BackendArg::BurnWebGpu => {
+            context_options =
+                context_options.with_backend_preference(BackendPreference::BurnWebGpu);
+        }
+    }
+    let mut context = MLContext::create(&context_options)
         .map_err(|e| anyhow!("Failed to create MLContext: {e:?}"))?;
 
     let mut builder = MLGraphBuilder::new(&mut context)

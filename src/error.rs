@@ -348,6 +348,12 @@ pub enum GraphError {
     TrtxRuntimeUnavailable,
     #[error("tensorrt runtime failed: {reason}")]
     TrtxRuntimeFailed { reason: String },
+    #[error(
+        "burn runtime is only available with the `burn-runtime-cpu` or `burn-runtime-webgpu` feature enabled"
+    )]
+    BurnRuntimeUnavailable,
+    #[error("burn runtime failed: {reason}")]
+    BurnRuntimeFailed { reason: String },
     #[error("shape inference failed: {reason}")]
     ShapeInferenceFailed { reason: String },
     #[error("graph uses dynamic dimensions but the `dynamic-inputs` feature is not enabled")]
@@ -555,6 +561,9 @@ mod tests {
 
         let trtx_err = GraphError::TrtxRuntimeUnavailable;
         assert!(format!("{}", trtx_err).contains("tensorrt runtime"));
+
+        let burn_err = GraphError::BurnRuntimeUnavailable;
+        assert!(format!("{}", burn_err).contains("burn runtime"));
     }
 
     #[test]

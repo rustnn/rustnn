@@ -21,16 +21,19 @@ fn recurse(dir: &Path, files: &mut Vec<String>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut config = prost_build::Config::new();
-    config.bytes(["."]); // Fix clippy::needless_borrows_for_generic_args
+    #[cfg(feature = "coreml-converter")]
+    {
+        let mut config = prost_build::Config::new();
+        config.bytes(["."]); // Fix clippy::needless_borrows_for_generic_args
 
-    let coreml_dir = "protos/coreml";
+        let coreml_dir = "protos/coreml";
 
-    let mut coreml_files = collect_protos(coreml_dir);
-    coreml_files.sort();
+        let mut coreml_files = collect_protos(coreml_dir);
+        coreml_files.sort();
 
-    // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
-    config.compile_protos(&coreml_files, &[coreml_dir])?;
+        // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
+        config.compile_protos(&coreml_files, &[coreml_dir])?;
+    }
 
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");

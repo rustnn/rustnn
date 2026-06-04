@@ -137,6 +137,10 @@ pub enum BackendKind {
     CoreML,
     /// NVIDIA TensorRT backend
     TensorRT,
+    /// Burn NdArray CPU backend
+    BurnCpu,
+    /// Burn Wgpu WebGPU backend
+    BurnWebGpu,
 }
 
 impl std::fmt::Display for DeviceKind {
@@ -157,6 +161,8 @@ impl std::fmt::Display for BackendKind {
             BackendKind::OnnxGpu => write!(f, "onnx_gpu"),
             BackendKind::CoreML => write!(f, "coreml"),
             BackendKind::TensorRT => write!(f, "tensorrt"),
+            BackendKind::BurnCpu => write!(f, "burn_cpu"),
+            BackendKind::BurnWebGpu => write!(f, "burn_webgpu"),
         }
     }
 }

@@ -10,6 +10,8 @@ use crate::graph::{Dimension, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
 use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+use crate::backends::burn::{BurnContext, BurnRuntimeKind};
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
@@ -75,6 +77,8 @@ pub(crate) enum MLBackendGraph<'context> {
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
+    #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+    BurnPlan(crate::backends::burn::BurnCompiledGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -92,6 +96,16 @@ impl<'context> MLBackendGraph<'context> {
     pub(crate) fn as_onnx_session_mut(&mut self) -> Option<&mut crate::backends::ort::OrtGraph> {
         match self {
             Self::OnnxSession(g, _) => Some(g),
+            _ => None,
+        }
+    }
+
+    #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+    pub(crate) fn as_burn_plan_mut(
+        &mut self,
+    ) -> Option<&mut crate::backends::burn::BurnCompiledGraph> {
+        match self {
+            Self::BurnPlan(plan) => Some(plan),
             _ => None,
         }
     }
@@ -228,6 +242,31 @@ pub enum MLPowerPreference {
     LowPower,
 }
 
+/// rustnn-specific backend preference for [`MLContextOptions`].
+///
+/// This is not part of the W3C WebNN API. Use it to pin an exact runtime such as Burn CPU or
+/// Burn WebGPU instead of relying on `accelerated` / `powerPreference` autoselection.
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum BackendPreference {
+    #[cfg(feature = "burn-runtime-cpu")]
+    BurnCpu,
+    #[cfg(feature = "burn-runtime-webgpu")]
+    BurnWebGpu,
+}
+
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+impl BackendPreference {
+    pub(crate) fn to_backend_device(self) -> BackendDevice {
+        match self {
+            #[cfg(feature = "burn-runtime-cpu")]
+            Self::BurnCpu => BackendDevice::BurnCpu,
+            #[cfg(feature = "burn-runtime-webgpu")]
+            Self::BurnWebGpu => BackendDevice::BurnWebGpu,
+        }
+    }
+}
+
 /// https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions
 /// https://www.w3.org/TR/webnn/#api-ml
 ///
@@ -266,6 +305,29 @@ impl MLContextOptions {
 
     pub fn set_accelerated(&mut self, accelerated: bool) {
         self.accelerated = accelerated;
+    }
+
+    /// Pin a specific backend instead of using autoselection.
+    #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+    pub fn with_backend_preference(mut self, preference: BackendPreference) -> Self {
+        self.backend_hint = Some(preference.to_backend_device());
+        self
+    }
+
+    #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+    pub fn set_backend_preference(&mut self, preference: BackendPreference) {
+        self.backend_hint = Some(preference.to_backend_device());
+    }
+
+    #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+    pub fn backend_preference(&self) -> Option<BackendPreference> {
+        match self.backend_hint? {
+            #[cfg(feature = "burn-runtime-cpu")]
+            BackendDevice::BurnCpu => Some(BackendPreference::BurnCpu),
+            #[cfg(feature = "burn-runtime-webgpu")]
+            BackendDevice::BurnWebGpu => Some(BackendPreference::BurnWebGpu),
+            _ => None,
+        }
     }
 }
 
@@ -383,7 +445,17 @@ impl<'context> MLContext<'context> {
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::Coreml { device_type: _ } => {
+                return Err(Error::NoBackendAvialable);
+            }
+            #[cfg(feature = "burn-runtime-cpu")]
+            crate::backend_selection::BackendDevice::BurnCpu => {
+                Box::new(BurnContext::new(BurnRuntimeKind::Cpu))
+            }
+            #[cfg(feature = "burn-runtime-webgpu")]
+            crate::backend_selection::BackendDevice::BurnWebGpu => {
+                Box::new(BurnContext::new(BurnRuntimeKind::WebGpu))
+            }
         };
         Ok(Self { backend })
     }
@@ -393,8 +465,12 @@ impl<'context> MLContext<'context> {
         let desc = select_backend_by_gpu(gpu_device)?;
         let backend = match desc {
             crate::backend_selection::BackendDevice::Onnx { .. } => todo!(),
-            crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => todo!(),
-            crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::Trtx { cuda_device_idx: _ } => todo!(),
+            crate::backend_selection::BackendDevice::Coreml { device_type: _ } => todo!(),
+            #[cfg(feature = "burn-runtime-cpu")]
+            crate::backend_selection::BackendDevice::BurnCpu => todo!(),
+            #[cfg(feature = "burn-runtime-webgpu")]
+            crate::backend_selection::BackendDevice::BurnWebGpu => todo!(),
         };
         Ok(Self { backend })
     }

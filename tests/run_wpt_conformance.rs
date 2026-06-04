@@ -1,15 +1,27 @@
-//! WPT WebNN conformance tests (ONNX and/or TensorRT backend).
+//! WPT WebNN conformance tests (ONNX, TensorRT, and/or Burn backends).
 //!
-//! ONNX: cargo test --test run_wpt_conformance --features onnx-runtime [-- run_wpt_conformance_tests]
-//! TensorRT: cargo test --test run_wpt_conformance --features trtx-runtime-mock [-- run_wpt_conformance_tests_trtx]
+//! ONNX:
+//!   cargo test --test run_wpt_conformance --features onnx-runtime -- run_wpt_conformance_tests --nocapture
 //!
-//! Add -- --nocapture to see which tests are found and run.
-//! ONNX requires native library >= 1.23 on PATH; wrong version is skipped with a message.
+//! TensorRT:
+//!   cargo test --test run_wpt_conformance --features trtx-runtime-mock -- run_wpt_conformance_tests_trtx --nocapture
+//!
+//! Burn CPU:
+//!   cargo test --test run_wpt_conformance --features burn-runtime-cpu -- run_wpt_conformance_tests_burn_cpu --nocapture
+//!
+//! Burn WebGPU:
+//!   cargo test --test run_wpt_conformance --features burn-runtime-webgpu -- run_wpt_conformance_tests_burn_webgpu --nocapture
+//!
+//! Makefile: `make burn-wpt-cpu`, `make burn-wpt-webgpu`
+//!
+//! Unsupported Burn ops and non-float32 cases are reported as [SKIP], not failures.
 
 #![cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
 ))]
 mod wpt_conformance;
 
@@ -59,6 +71,46 @@ fn run_wpt_conformance_tests_trtx() {
                 "unknown panic".to_string()
             };
             panic!("WPT conformance test (TRTX) panicked: {}", msg);
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "burn-runtime-cpu")]
+fn run_wpt_conformance_tests_burn_cpu() {
+    let result = std::panic::catch_unwind(|| wpt_conformance::run_all_burn_cpu());
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("WPT conformance tests (Burn CPU) failed: {}", e),
+        Err(panic_payload) => {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            panic!("WPT conformance test (Burn CPU) panicked: {}", msg);
+        }
+    }
+}
+
+#[test]
+#[cfg(feature = "burn-runtime-webgpu")]
+fn run_wpt_conformance_tests_burn_webgpu() {
+    let result = std::panic::catch_unwind(|| wpt_conformance::run_all_burn_webgpu());
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("WPT conformance tests (Burn WebGPU) failed: {}", e),
+        Err(panic_payload) => {
+            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
+                (*s).to_string()
+            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            panic!("WPT conformance test (Burn WebGPU) panicked: {}", msg);
         }
     }
 }

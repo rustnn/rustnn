@@ -395,8 +395,7 @@ impl<'a> GraphValidator<'a> {
         let scale_shape = scale_desc.static_or_max_shape();
         // Intermediate operation outputs may still carry unresolved shape metadata ([]).
         // Treat those as unknown to avoid rejecting valid subgraphs during early validation.
-        let input_shape_known =
-            !(input_shape_dims.is_empty() && matches!(input_operand.kind, OperandKind::Output));
+        let input_shape_known = !input_shape_dims.is_empty();
         let output_shape_known =
             !(output_desc.shape.is_empty() && matches!(output_operand.kind, OperandKind::Output));
 

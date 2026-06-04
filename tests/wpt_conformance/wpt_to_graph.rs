@@ -20,6 +20,8 @@
 //! Operations are built with [`rustnn::operators::Operation::from_json_attributes`]: one JSON attributes
 //! object per op (WebNN camelCase names) plus operand wiring.
 
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+use rustnn::BurnInput;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use rustnn::converters::TrtxConverter;
 use rustnn::graph::{
@@ -1165,6 +1167,87 @@ pub fn wpt_graph_to_onnx_inputs(
     Ok(inputs)
 }
 
+/// Build Burn input list from WPT graph (non-constant inputs only, float32 PoC).
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+pub fn wpt_graph_to_burn_inputs(
+    graph: &WptGraph,
+    input_names: &[String],
+) -> Result<Vec<BurnInput>, String> {
+    let mut inputs = Vec::new();
+    for name in input_names {
+        let spec = graph
+            .inputs
+            .get(name)
+            .ok_or_else(|| format!("input {} not found", name))?;
+        let shape: Vec<usize> = spec.shape().iter().map(|&d| d as usize).collect();
+        let n: usize = shape.iter().product::<usize>().max(1);
+        let dtype = spec.data_type();
+        let mut buf = vec![0.0f32; n];
+        let arr_opt: Option<&Vec<serde_json::Value>> = spec.data.as_array();
+        match dtype {
+            "float32" => {
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        buf[i] = parse_float_for_tensor(v).unwrap_or(buf[i]);
+                    }
+                } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+                    buf.fill(f);
+                }
+            }
+            "float16" => {
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        let f = parse_float_for_tensor(v).unwrap_or(0.0);
+                        buf[i] = half::f16::from_f32(f).to_f32();
+                    }
+                } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+                    buf.fill(half::f16::from_f32(f).to_f32());
+                }
+            }
+            "int32" | "int8" | "int64" => {
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        buf[i] = parse_int_for_tensor(v).unwrap_or(0) as f32;
+                    }
+                } else if let Some(x) = parse_int_for_tensor(&spec.data) {
+                    buf.fill(x as f32);
+                }
+            }
+            "uint8" | "uint32" => {
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        buf[i] = parse_uint_for_tensor(v).unwrap_or(0) as f32;
+                    }
+                } else if let Some(x) = parse_uint_for_tensor(&spec.data) {
+                    buf.fill(x as f32);
+                }
+            }
+            "uint64" => {
+                if let Some(arr) = arr_opt {
+                    for (i, v) in arr.iter().enumerate().take(n) {
+                        buf[i] = parse_uint_for_tensor(v).unwrap_or(0) as f32;
+                    }
+                } else if let Some(x) = parse_uint_for_tensor(&spec.data) {
+                    buf.fill(x as f32);
+                }
+            }
+            other => {
+                return Err(format!(
+                    "unsupported burn input data type {other} for `{name}`"
+                ));
+            }
+        }
+        inputs.push(BurnInput {
+            name: name.clone(),
+            shape,
+            data: buf,
+            int64_data: None,
+            uint64_data: None,
+        });
+    }
+    Ok(inputs)
+}
+
 /// Encode f32 values as little-endian float16 bytes for TensorRT kHALF.
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn f32_to_f16_bytes(slice: &[f32]) -> Vec<u8> {
@@ -1176,8 +1259,12 @@ fn f32_to_f16_bytes(slice: &[f32]) -> Vec<u8> {
 }
 
 /// Parse one JSON value to i64 for integer tensor inputs.
-/// For bigint strings (e.g. "-9223372036854775807n"), parse as i64 directly to avoid f64 precision loss.
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(any(
+    feature = "trtx-runtime-mock",
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
+))]
 fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
     v.as_i64()
         .or_else(|| {
@@ -1186,6 +1273,22 @@ fn parse_int_for_tensor(v: &serde_json::Value) -> Option<i64> {
         })
         .or_else(|| parse_number(v).map(|f| f as i64))
         .or_else(|| v.as_u64().map(|u| u as i64))
+}
+
+#[cfg(any(
+    feature = "trtx-runtime-mock",
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
+))]
+fn parse_uint_for_tensor(v: &serde_json::Value) -> Option<u64> {
+    v.as_u64()
+        .or_else(|| {
+            v.as_str()
+                .and_then(|s| s.trim_end_matches('n').parse::<u64>().ok())
+        })
+        .or_else(|| parse_number(v).map(|f| f as u64))
+        .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
 }
 
 /// Build TensorRT input list from WPT graph. Tensor names match [`TrtxConverter::engine_io_tensor_name`]

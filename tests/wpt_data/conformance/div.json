@@ -2460,6 +2460,49 @@
           }
         }
       }
+    },
+    {
+      "name": "div int32 4D tensors",
+      "graph": {
+        "inputs": {
+          "inputA": {
+            "data": [
+              19, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ],
+            "descriptor": {
+              "shape": [2, 2, 2, 3],
+              "dataType": "int32"
+            }
+          },
+          "inputB": {
+            "data": [
+              2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+            ],
+            "descriptor": {
+              "shape": [2, 2, 2, 3],
+              "dataType": "int32"
+            }
+          }
+        },
+        "operators": [
+          {
+            "name": "div",
+            "arguments": [{ "a": "inputA" }, { "b": "inputB" }],
+            "outputs": "output"
+          }
+        ],
+        "expectedOutputs": {
+          "output": {
+            "data": [
+              10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            ],
+            "descriptor": {
+              "shape": [2, 2, 2, 3],
+              "dataType": "int32"
+            }
+          }
+        }
+      }
     }
   ]
 }

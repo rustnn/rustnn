@@ -1,4 +1,5 @@
 // Allow clippy warnings in generated protobuf code
+#[cfg(feature = "coreml-converter")]
 #[allow(clippy::all)]
 pub mod coreml {
     pub mod core_ml_models {
@@ -26,6 +27,7 @@ pub mod coreml {
 }
 
 // Re-export ONNX protos from webnn-onnx-utils to ensure type compatibility
+#[cfg(feature = "onnx-runtime")]
 pub mod onnx {
     pub use webnn_onnx_utils::protos::onnx::*;
 }

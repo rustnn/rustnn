@@ -174,3 +174,22 @@ Executor-level operator coverage follows converter coverage for this backend.
 - `greaterOrEqual`, `reduceLogSum`, `where`
 - `hardSigmoid`, `reduceLogSumExp`
 
+## Burn Backend
+
+- Converter source: `src/converters/burn.rs`
+- Executor source: `src/executors/burn/interpreter.rs`
+- Converter operator count: **5**
+- Executor operator count: **5**
+
+### Converter Operators
+
+- `add`, `mul`, `reshape`
+- `identity`, `relu`
+
+### Executor Operators
+
+Executor-level operator coverage follows converter coverage for this backend.
+
+- `add`, `mul`, `reshape`
+- `identity`, `relu`
+

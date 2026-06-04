@@ -20,10 +20,29 @@ exclude = [
 [features]
 default = []
 dynamic-inputs = []
-coreml-runtime = ["objc"]
-onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
+coreml-converter = ["dep:prost", "dep:prost-types", "dep:prost-build"]
+coreml-runtime = ["objc", "coreml-converter"]
+onnx-runtime = [
+    "ort",
+    "ndarray",
+    "dep:tempfile",
+    "dep:webnn-onnx-utils",
+    "dep:prost",
+    "dep:prost-types",
+]
 trtx-runtime = ["trtx", "cudarc"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
+burn-plan = ["dep:postcard"]
+burn-runtime-cpu = ["burn-plan", "dep:burn", "dep:burn-ndarray"]
+burn-runtime-webgpu = [
+    "burn-plan",
+    "dep:burn",
+    "dep:burn-wgpu",
+    "dep:burn-ndarray",
+    "dep:futures-lite",
+    "dep:wgpu",
+]
+burn-runtime = ["burn-runtime-cpu", "burn-runtime-webgpu"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -32,8 +51,8 @@ serde_json = "1.0"
 serde_with = { version = "3.8", features = ["base64"] }
 thiserror = "1.0"
 base64 = "0.22"
-prost = "0.12"
-prost-types = "0.12"
+prost = { version = "0.12", optional = true }
+prost-types = { version = "0.12", optional = true }
 bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
@@ -48,15 +67,21 @@ ort = { version = "=2.0.0-rc.12", optional = true, features = [
 half = "2.4"
 trtx = { version = "0.6.0", optional = true }
 regex = "1.11"
-webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
-webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
+webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main", default-features = false }
+webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main", optional = true }
+postcard = { version = "1", optional = true, features = ["alloc"] }
+burn = { version = "0.21", optional = true, default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.21", optional = true }
+burn-wgpu = { version = "0.21", optional = true }
+futures-lite = { version = "2", optional = true }
+wgpu = { version = "29", optional = true }
 
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true }
 log = "0.4.29"
 pretty_env_logger = "0.5.0"
 
 [build-dependencies]
-prost-build = "0.12"
+prost-build = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokenizers = { version = "0.22" }
@@ -75,3 +100,7 @@ similar.opt-level = 3
 name = "rustnn"
 crate-type = ["rlib"]
 doctest = false
+
+[[example]]
+name = "smollm_mlcontext"
+required-features = ["dynamic-inputs"]

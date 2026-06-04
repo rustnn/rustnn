@@ -49,6 +49,10 @@ pub(crate) enum BackendDevice {
         //device_idx: u64,
         device_type: DeviceType,
     },
+    #[cfg(feature = "burn-runtime-cpu")]
+    BurnCpu,
+    #[cfg(feature = "burn-runtime-webgpu")]
+    BurnWebGpu,
     //WebNN {
     //options: MLContextOptions,
     //},
@@ -63,6 +67,10 @@ impl BackendDevice {
                 *device_type == DeviceType::Npu
             }
             BackendDevice::Trtx { .. } => false,
+            #[cfg(feature = "burn-runtime-cpu")]
+            BackendDevice::BurnCpu => false,
+            #[cfg(feature = "burn-runtime-webgpu")]
+            BackendDevice::BurnWebGpu => false,
         }
     }
 
@@ -72,6 +80,10 @@ impl BackendDevice {
                 *device_type == DeviceType::Gpu
             }
             BackendDevice::Trtx { .. } => true,
+            #[cfg(feature = "burn-runtime-cpu")]
+            BackendDevice::BurnCpu => false,
+            #[cfg(feature = "burn-runtime-webgpu")]
+            BackendDevice::BurnWebGpu => true,
         }
     }
 
@@ -82,6 +94,10 @@ impl BackendDevice {
                 *device_type == DeviceType::Cpu
             }
             BackendDevice::Trtx { .. } => false,
+            #[cfg(feature = "burn-runtime-cpu")]
+            BackendDevice::BurnCpu => true,
+            #[cfg(feature = "burn-runtime-webgpu")]
+            BackendDevice::BurnWebGpu => false,
         }
     }
 
@@ -107,6 +123,15 @@ impl BackendDevice {
 // autoselection
 //#[cfg(not(feature = "web"))]
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
+    if let Some(hint) = options.backend_hint {
+        return validate_backend_hint(hint);
+    }
+
+    #[cfg(feature = "burn-runtime-cpu")]
+    let have_burn_cpu = cfg!(feature = "burn-runtime-cpu");
+    #[cfg(feature = "burn-runtime-webgpu")]
+    let have_burn_webgpu = cfg!(feature = "burn-runtime-webgpu");
+
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
@@ -188,8 +213,71 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
+        #[cfg(feature = "burn-runtime-webgpu")]
+        (_, true) if have_burn_webgpu => BackendDevice::BurnWebGpu,
+        #[cfg(feature = "burn-runtime-cpu")]
+        (_, false) if have_burn_cpu => BackendDevice::BurnCpu,
+        #[cfg(all(feature = "burn-runtime-cpu", not(feature = "burn-runtime-webgpu")))]
+        (_, true) if have_burn_cpu => BackendDevice::BurnCpu,
         _ => return Err(crate::error::Error::NoBackendAvialable),
     })
+}
+
+fn validate_backend_hint(hint: BackendDevice) -> Result<BackendDevice> {
+    match hint {
+        #[cfg(feature = "burn-runtime-cpu")]
+        BackendDevice::BurnCpu => Ok(hint),
+        #[cfg(feature = "burn-runtime-webgpu")]
+        BackendDevice::BurnWebGpu => Ok(hint),
+        BackendDevice::Onnx { ep_device_idx, .. } => {
+            #[cfg(feature = "onnx-runtime")]
+            {
+                if ensure_ort_initialized().is_err() {
+                    return Err(crate::error::Error::NoBackendAvialable);
+                }
+                let devices = OrtContext::list_devices();
+                if devices.iter().any(|d| match d {
+                    BackendDevice::Onnx {
+                        ep_device_idx: idx, ..
+                    } => *idx == ep_device_idx,
+                    _ => false,
+                }) {
+                    Ok(hint)
+                } else {
+                    Err(crate::error::Error::NoBackendAvialable)
+                }
+            }
+            #[cfg(not(feature = "onnx-runtime"))]
+            {
+                let _ = ep_device_idx;
+                Err(crate::error::Error::NoBackendAvialable)
+            }
+        }
+        BackendDevice::Trtx { cuda_device_idx } => {
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            {
+                let devices = TrtxContext::list_devices();
+                if devices.iter().any(|d| {
+                    matches!(
+                        d,
+                        BackendDevice::Trtx {
+                            cuda_device_idx: idx
+                        } if *idx == cuda_device_idx
+                    )
+                }) {
+                    Ok(hint)
+                } else {
+                    Err(crate::error::Error::NoBackendAvialable)
+                }
+            }
+            #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
+            {
+                let _ = cuda_device_idx;
+                Err(crate::error::Error::NoBackendAvialable)
+            }
+        }
+        BackendDevice::Coreml { .. } => Err(crate::error::Error::NoBackendAvialable),
+    }
 }
 
 pub(crate) fn select_backend_by_gpu(_gpu_device: &GpuDevice) -> Result<BackendDevice> {

@@ -1,7 +1,7 @@
 //! WPT (Web Platform Tests) conformance test runner for WebNN.
 //!
 //! Runs tests from tests/wpt_data/conformance/*.json using the ONNX backend
-//! or the TensorRT (trtx) backend when enabled.
+//! or the TensorRT (trtx) backend when enabled, or Burn (NdArray / Wgpu) when enabled.
 
 pub mod tolerance;
 pub mod wpt_to_graph;
@@ -15,17 +15,25 @@ use tolerance::get_operation_tolerance;
 use wpt_to_graph::wpt_data_dir;
 use wpt_types::load_wpt_file;
 
+#[cfg(feature = "burn-plan")]
+use rustnn::converters::BurnConverter;
 use rustnn::converters::GraphConverter;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::converters::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use rustnn::converters::TrtxConverter;
+#[cfg(feature = "burn-runtime-cpu")]
+use rustnn::run_burn_cpu_with_inputs;
+#[cfg(feature = "burn-runtime-webgpu")]
+use rustnn::run_burn_webgpu_with_inputs;
 #[cfg(feature = "onnx-runtime")]
 use rustnn::run_onnx_with_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 use rustnn::run_trtx_with_inputs;
 
 use tolerance::validate_result;
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+use wpt_to_graph::wpt_graph_to_burn_inputs;
 #[cfg(feature = "onnx-runtime")]
 use wpt_to_graph::wpt_graph_to_onnx_inputs;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
@@ -476,6 +484,199 @@ pub fn run_one_test_case(
         }
     }
     Ok(())
+}
+
+/// Run a single WPT test case: build graph, run Burn NdArray CPU, validate outputs.
+#[cfg(feature = "burn-runtime-cpu")]
+pub fn run_one_test_case_burn_cpu(
+    operation: &str,
+    test_case: &wpt_types::WptTestCase,
+) -> Result<(), String> {
+    run_one_test_case_burn(operation, test_case, BurnBackend::Cpu)
+}
+
+/// Run a single WPT test case: build graph, run Burn Wgpu WebGPU, validate outputs.
+#[cfg(feature = "burn-runtime-webgpu")]
+pub fn run_one_test_case_burn_webgpu(
+    operation: &str,
+    test_case: &wpt_types::WptTestCase,
+) -> Result<(), String> {
+    run_one_test_case_burn(operation, test_case, BurnBackend::WebGpu)
+}
+
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+enum BurnBackend {
+    #[cfg(feature = "burn-runtime-cpu")]
+    Cpu,
+    #[cfg(feature = "burn-runtime-webgpu")]
+    WebGpu,
+}
+
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+fn run_one_test_case_burn(
+    operation: &str,
+    test_case: &wpt_types::WptTestCase,
+    backend: BurnBackend,
+) -> Result<(), String> {
+    let graph = &test_case.graph;
+    let (graph_info, input_names) = wpt_graph_to_graph_info(graph)?;
+    let inputs = wpt_graph_to_burn_inputs(graph, &input_names)?;
+
+    let converter = BurnConverter;
+    let converted = converter.convert(&graph_info).map_err(|e| e.to_string())?;
+
+    let outputs = match backend {
+        #[cfg(feature = "burn-runtime-cpu")]
+        BurnBackend::Cpu => {
+            run_burn_cpu_with_inputs(&converted.data, inputs).map_err(|e| e.to_string())?
+        }
+        #[cfg(feature = "burn-runtime-webgpu")]
+        BurnBackend::WebGpu => {
+            run_burn_webgpu_with_inputs(&converted.data, inputs).map_err(|e| e.to_string())?
+        }
+    };
+
+    let (tolerance_kind, tolerance_value) =
+        get_operation_tolerance(operation, test_case.tolerance.as_ref());
+
+    for (out_name, expected_spec) in &graph.expected_outputs {
+        let actual = outputs
+            .iter()
+            .find(|o| o.name == *out_name)
+            .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
+        let expected = expected_output_to_f32(expected_spec);
+        let (pass, msg) = validate_result(&actual.data, &expected, tolerance_kind, tolerance_value);
+        if !pass {
+            let inputs_str = format_inputs_for_failure(graph, &input_names);
+            let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+            let actual_str = format_f32_slice_for_failure(&actual.data, FAILURE_DISPLAY_LEN);
+            let shape = expected_spec.shape();
+            let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
+                let expected_nd = format_f32_nd(&expected, shape);
+                let actual_nd = format_f32_nd(&actual.data, shape);
+                format!(
+                    "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
+                    out_name, expected_nd, out_name, actual_nd
+                )
+            } else {
+                String::new()
+            };
+            return Err(format!(
+                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
+                operation,
+                test_case.name,
+                msg.unwrap_or_else(|| "validation failed".to_string()),
+                inputs_str,
+                out_name,
+                expected_str,
+                out_name,
+                actual_str,
+                nd_suffix
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+fn run_all_burn_with<F>(label: &str, run_one: F) -> Result<(), String>
+where
+    F: Fn(&str, &wpt_types::WptTestCase) -> Result<(), String>,
+{
+    let dir = wpt_data_dir();
+    if !dir.exists() {
+        return Err(format!("WPT data dir not found: {}", dir.display()));
+    }
+
+    let operations = discover_operations();
+    if operations.is_empty() {
+        return Err("No WPT conformance JSON files found".to_string());
+    }
+
+    println!("[{label}] data dir: {}", dir.display());
+    println!(
+        "[{label}] found {} operation(s): {}",
+        operations.len(),
+        operations.join(", ")
+    );
+
+    let mut passed = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = Vec::new();
+    let mut total_cases = 0usize;
+
+    for op in &operations {
+        let path = dir.join(format!("{}.json", op));
+        let json =
+            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
+
+        let num_tests = file.tests.len();
+        total_cases += num_tests;
+        println!("[{label}] operation '{}': {} test case(s)", op, num_tests);
+
+        for test_case in &file.tests {
+            println!("  running: {} :: {}", op, test_case.name);
+            match run_one(&file.operation, test_case) {
+                Ok(()) => {
+                    passed += 1;
+                    println!("    [OK]");
+                }
+                Err(e) if e.starts_with("[SKIP]") => {
+                    skipped += 1;
+                    println!("    [SKIP] {}", e.trim_start_matches("[SKIP] ").trim());
+                }
+                Err(e) => {
+                    failed.push((format!("{}::{}", op, test_case.name), e.clone()));
+                    println!("    [FAIL]\n{}", e);
+                }
+            }
+        }
+    }
+
+    println!(
+        "[{label}] total: {} passed, {} skipped, {} failed (of {} cases)",
+        passed,
+        skipped,
+        failed.len(),
+        total_cases
+    );
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        let msg = failed
+            .iter()
+            .take(10)
+            .map(|(name, e)| format!("  {}: {}", name, e))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let more = if failed.len() > 10 {
+            format!("\n  ... and {} more failures", failed.len() - 10)
+        } else {
+            String::new()
+        };
+        Err(format!(
+            "WPT conformance ({label}): {} passed, {} skipped, {} failed\n{}{}",
+            passed,
+            skipped,
+            failed.len(),
+            msg,
+            more
+        ))
+    }
+}
+
+/// Run all WPT conformance tests using the Burn NdArray CPU backend.
+#[cfg(feature = "burn-runtime-cpu")]
+pub fn run_all_burn_cpu() -> Result<(), String> {
+    run_all_burn_with("WPT-BURN-CPU", run_one_test_case_burn_cpu)
+}
+
+/// Run all WPT conformance tests using the Burn Wgpu WebGPU backend.
+#[cfg(feature = "burn-runtime-webgpu")]
+pub fn run_all_burn_webgpu() -> Result<(), String> {
+    run_all_burn_with("WPT-BURN-WGPU", run_one_test_case_burn_webgpu)
 }
 
 /// No tests are skipped; all WPT conformance cases are run.

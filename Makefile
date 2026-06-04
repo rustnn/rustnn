@@ -6,6 +6,7 @@ PNG_PATH ?= target/graph.png
 ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
+BURN_PATH ?= target/graph.burn
 ORT_VERSION ?= 1.24.3
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
@@ -64,7 +65,7 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 endif
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate burn burn-cpu-validate burn-webgpu-validate burn-wpt-cpu burn-wpt-webgpu validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -158,11 +159,27 @@ onnx-validate: onnx
 	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
 
 coreml:
-	$(CARGO) run -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
+	$(CARGO) run --features coreml-converter -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
 	@echo "CoreML graph written to $(COREML_PATH)"
 
 coreml-validate: coreml
 	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
+
+burn:
+	$(CARGO) run --features burn-runtime-cpu -- $(GRAPH_FILE) --convert burn --convert-output $(BURN_PATH)
+	@echo "Burn plan written to $(BURN_PATH)"
+
+burn-cpu-validate: burn
+	$(CARGO) run --features burn-runtime-cpu -- $(GRAPH_FILE) --convert burn --run-burn-cpu
+
+burn-webgpu-validate: burn
+	$(CARGO) run --features burn-runtime-webgpu -- $(GRAPH_FILE) --convert burn --run-burn-webgpu
+
+burn-wpt-cpu:
+	$(CARGO) test --test run_wpt_conformance --features burn-runtime-cpu -- run_wpt_conformance_tests_burn_cpu --nocapture
+
+burn-wpt-webgpu:
+	$(CARGO) test --test run_wpt_conformance --features burn-runtime-webgpu -- run_wpt_conformance_tests_burn_webgpu --nocapture
 
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
@@ -242,6 +259,13 @@ help:
 	@echo "CoreML Conversion:"
 	@echo "  coreml             - Convert graph to CoreML format"
 	@echo "  coreml-validate    - Convert and validate CoreML graph"
+	@echo ""
+	@echo "Burn Conversion:"
+	@echo "  burn               - Convert graph to Burn plan format"
+	@echo "  burn-cpu-validate  - Convert and execute on Burn NdArray CPU"
+	@echo "  burn-webgpu-validate - Convert and execute on Burn Wgpu WebGPU"
+	@echo "  burn-wpt-cpu       - Run WPT conformance tests on Burn NdArray CPU"
+	@echo "  burn-wpt-webgpu    - Run WPT conformance tests on Burn Wgpu WebGPU"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"

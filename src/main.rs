@@ -1,7 +1,9 @@
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
 ))]
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,13 +14,17 @@ use rustnn::converters::TrtxConverter;
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
 ))]
 use rustnn::graph::get_static_or_max_size;
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
 ))]
 use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
 
@@ -54,12 +60,22 @@ struct Cli {
     #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
     #[arg(long, requires = "convert")]
     run_trtx: bool,
+    /// Execute the converted Burn plan on the NdArray CPU backend.
+    #[cfg(feature = "burn-runtime-cpu")]
+    #[arg(long, requires = "convert")]
+    run_burn_cpu: bool,
+    /// Execute the converted Burn plan on the Wgpu WebGPU backend.
+    #[cfg(feature = "burn-runtime-webgpu")]
+    #[arg(long, requires = "convert")]
+    run_burn_webgpu: bool,
 }
 
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    feature = "burn-runtime-cpu",
+    feature = "burn-runtime-webgpu"
 ))]
 fn run() -> Result<(), GraphError> {
     let cli = Cli::parse();
@@ -96,14 +112,14 @@ fn run() -> Result<(), GraphError> {
         println!("  - operand {} -> {}", operand, deps.join(", "));
     }
 
-    if let Some(dot_path) = cli.export_dot {
+    if let Some(ref dot_path) = cli.export_dot {
         let dot = graph_to_dot(&graph);
         std::fs::write(&dot_path, dot).map_err(|err| GraphError::export(dot_path.clone(), err))?;
         println!("Exported Graphviz DOT to `{}`.", dot_path.display());
     }
 
-    if let Some(format) = cli.convert {
-        let converted = rustnn::ConverterRegistry::with_defaults().convert(&format, &graph)?;
+    if let Some(ref format) = cli.convert {
+        let converted = rustnn::ConverterRegistry::with_defaults().convert(format, &graph)?;
         if let Some(ref path) = cli.convert_output {
             std::fs::write(path, &converted.data)
                 .map_err(|err| GraphError::export(path.clone(), err))?;
@@ -135,6 +151,10 @@ fn run() -> Result<(), GraphError> {
             cli.run_onnx,
             #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
             cli.run_trtx,
+            #[cfg(feature = "burn-runtime-cpu")]
+            cli.run_burn_cpu,
+            #[cfg(feature = "burn-runtime-webgpu")]
+            cli.run_burn_webgpu,
         ]
         .iter()
         .any(|x| *x);
@@ -295,15 +315,75 @@ fn run() -> Result<(), GraphError> {
                 println!("  - {}: shape={:?}", out.name, out.shape);
             }
         }
+
+        #[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+        if burn_execution_requested(&cli) {
+            if converted.format != "burn" {
+                return Err(GraphError::UnsupportedRuntimeFormat {
+                    format: converted.format.to_string(),
+                });
+            }
+            let inputs: Vec<rustnn::BurnInput> = artifacts
+                .input_names_to_descriptors
+                .iter()
+                .map(|(name, desc)| {
+                    let shape: Vec<usize> = desc
+                        .shape
+                        .iter()
+                        .map(|dim| get_static_or_max_size(dim) as usize)
+                        .collect();
+                    let total: usize = shape.iter().product();
+                    rustnn::BurnInput {
+                        name: name.clone(),
+                        shape,
+                        data: vec![0f32; total.max(1)],
+                        int64_data: None,
+                        uint64_data: None,
+                    }
+                })
+                .collect();
+
+            #[cfg(feature = "burn-runtime-cpu")]
+            if cli.run_burn_cpu {
+                let outputs = rustnn::run_burn_cpu_with_inputs(&converted.data, inputs.clone())?;
+                println!("Executed Burn plan with zeroed inputs (NdArray CPU):");
+                for out in outputs {
+                    println!("  - {}: shape={:?}", out.name, out.shape);
+                }
+            }
+
+            #[cfg(feature = "burn-runtime-webgpu")]
+            if cli.run_burn_webgpu {
+                let outputs = rustnn::run_burn_webgpu_with_inputs(&converted.data, inputs)?;
+                println!("Executed Burn plan with zeroed inputs (Wgpu WebGPU):");
+                for out in outputs {
+                    println!("  - {}: shape={:?}", out.name, out.shape);
+                }
+            }
+        }
     }
     Ok(())
+}
+
+#[cfg(any(feature = "burn-runtime-cpu", feature = "burn-runtime-webgpu"))]
+fn burn_execution_requested(cli: &Cli) -> bool {
+    [
+        #[cfg(feature = "burn-runtime-cpu")]
+        cli.run_burn_cpu,
+        #[cfg(feature = "burn-runtime-webgpu")]
+        cli.run_burn_webgpu,
+    ]
+    .iter()
+    .any(|x| *x)
 }
 
 fn main() {
     #[cfg(any(
         feature = "onnx-runtime",
         feature = "trtx-runtime-mock",
-        feature = "trtx-runtime"
+        feature = "trtx-runtime",
+        feature = "burn-runtime-cpu",
+        feature = "burn-runtime-webgpu"
     ))]
     {
         if let Err(err) = run() {
@@ -314,12 +394,14 @@ fn main() {
     #[cfg(not(any(
         feature = "onnx-runtime",
         feature = "trtx-runtime-mock",
-        feature = "trtx-runtime"
+        feature = "trtx-runtime",
+        feature = "burn-runtime-cpu",
+        feature = "burn-runtime-webgpu"
     )))]
     {
         eprintln!(
-            "rustnn CLI requires a runtime feature. Build with --features onnx-runtime or \
-             --features trtx-runtime-mock (or trtx-runtime)."
+            "rustnn CLI requires a runtime feature. Build with --features onnx-runtime, \
+             burn-runtime-cpu, burn-runtime-webgpu, or trtx-runtime-mock (or trtx-runtime)."
         );
         std::process::exit(1);
     }

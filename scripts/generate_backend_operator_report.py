@@ -18,6 +18,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ONNX_SRC = ROOT / "src/converters/onnx.rs"
 COREML_SRC = ROOT / "src/converters/coreml_mlprogram.rs"
 TRTX_SRC = ROOT / "src/converters/trtx.rs"
+BURN_SRC = ROOT / "src/converters/burn.rs"
 OUTPUT = ROOT / "docs/development/backend-operator-support.md"
 
 
@@ -126,6 +127,23 @@ def parse_trtx_ops(text: str) -> list[str]:
     return canonicalize_ops(ops)
 
 
+def parse_burn_ops(text: str) -> list[str]:
+    marker = "fn execute_one(op: &Operation, tensors: &mut TensorMap)"
+    start = text.find(marker)
+    if start < 0:
+        return []
+    match_start = text.find("match op {", start)
+    if match_start < 0:
+        return []
+    block = extract_brace_block_after_marker(text, "match op {")
+    ops: list[str] = []
+    for m in re.finditer(r"Operation::([A-Za-z0-9_]+)\s*\{", block):
+        pascal = m.group(1)
+        camel = pascal[0].lower() + pascal[1:] if pascal else pascal
+        ops.append(camel)
+    return canonicalize_ops(ops)
+
+
 def extract_brace_block_after_marker(text: str, marker: str) -> str:
     start = text.find(marker)
     if start < 0:
@@ -222,10 +240,12 @@ def build_report() -> str:
     onnx_text = ONNX_SRC.read_text(encoding="utf-8")
     coreml_text = COREML_SRC.read_text(encoding="utf-8")
     trtx_text = TRTX_SRC.read_text(encoding="utf-8")
+    burn_text = BURN_SRC.read_text(encoding="utf-8") if BURN_SRC.exists() else ""
 
     onnx_ops = parse_onnx_ops(onnx_text)
     coreml_ops = parse_coreml_ops(coreml_text)
     trtx_ops = parse_trtx_ops(trtx_text)
+    burn_ops = parse_burn_ops(burn_text)
 
     backends = [
         BackendOps(
@@ -248,6 +268,13 @@ def build_report() -> str:
             executor_ops=trtx_ops,
             converter_source="src/converters/trtx.rs",
             executor_source="src/executors/trtx.rs",
+        ),
+        BackendOps(
+            backend="Burn Backend",
+            converter_ops=burn_ops,
+            executor_ops=burn_ops,
+            converter_source="src/converters/burn.rs",
+            executor_source="src/executors/burn/interpreter.rs",
         ),
     ]
     return render(backends)

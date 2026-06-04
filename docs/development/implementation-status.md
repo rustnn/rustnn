@@ -4,7 +4,7 @@
 
 ## Executive Summary
 
-rustnn implements 88 of 105 WebNN operations (84% coverage) with full backend support across ONNX Runtime, CoreML MLProgram, and TensorRT.
+rustnn implements 88 of 105 WebNN operations (84% coverage) with full backend support across ONNX Runtime, CoreML MLProgram, and TensorRT. A **Burn backend PoC** (5 ops, NdArray CPU + Wgpu WebGPU) uses a native `BurnGraphPlan` IR — see [burn-plan.md](../burn-plan.md).
 
 **Current Status:**
 - ✓ 88 operations fully implemented (Shape Inference + Python API + ONNX + CoreML)
