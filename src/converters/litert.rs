@@ -258,8 +258,18 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
             .unwrap_or_else(|| format!("operand_{}", id));
 
         let tensor_idx = if operand.kind == OperandKind::Constant {
-            if let Some(const_data) = graph.constant_operand_ids_to_handles.get(&id) {
-                ctx.add_constant(&name, &shape, tfl_type, &const_data.data)
+            if graph.constant_operand_ids_to_handles.contains_key(&id) {
+                ctx.add_constant(
+                    &name,
+                    &shape,
+                    tfl_type,
+                    graph
+                        .constant_data(id)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "litert".to_string(),
+                            reason: format!("Failed to resolve constant: {e}"),
+                        })?,
+                )
             } else {
                 ctx.add_tensor(&name, &shape, tfl_type, 0)
             }
@@ -652,10 +662,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             1,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: filter_bytes,
                 label: Some("w".into()),
-            },
+            }),
         );
 
         let graph = GraphInfo {

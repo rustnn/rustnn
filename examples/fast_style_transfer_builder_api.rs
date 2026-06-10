@@ -408,38 +408,50 @@ fn element_count(shape: &[u64]) -> Result<usize> {
 }
 
 fn f32_values(data: &[u8]) -> Vec<f32> {
-    data.chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect()
 }
 
 fn u16_values(data: &[u8]) -> Vec<u16> {
-    data.chunks_exact(2)
-        .map(|chunk| u16::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|chunk| u16::from_le_bytes(*chunk))
         .collect()
 }
 
 fn i32_values(data: &[u8]) -> Vec<i32> {
-    data.chunks_exact(4)
-        .map(|chunk| i32::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| i32::from_le_bytes(*chunk))
         .collect()
 }
 
 fn u32_values(data: &[u8]) -> Vec<u32> {
-    data.chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_le_bytes(*chunk))
         .collect()
 }
 
 fn i64_values(data: &[u8]) -> Vec<i64> {
-    data.chunks_exact(8)
-        .map(|chunk| i64::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| i64::from_le_bytes(*chunk))
         .collect()
 }
 
 fn u64_values(data: &[u8]) -> Vec<u64> {
-    data.chunks_exact(8)
-        .map(|chunk| u64::from_le_bytes(chunk.try_into().expect("exact chunk size")))
+    data.as_chunks::<8>()
+        .0
+        .iter()
+        .map(|chunk| u64::from_le_bytes(*chunk))
         .collect()
 }
 

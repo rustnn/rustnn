@@ -2743,6 +2743,7 @@ dependencies = [
  "half",
  "image",
  "insta",
+ "libc",
  "libtest-mimic",
  "litert",
  "litert-sys",
@@ -2768,6 +2769,7 @@ dependencies = [
  "trtx",
  "webnn-graph",
  "webnn-onnx-utils",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

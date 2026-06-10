@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::LazyLock;
 
 use serde::{Deserialize, Serialize};
-use serde_with::{base64::Base64, serde_as};
+use serde_with::serde_as;
 
 use crate::error::GraphError;
 use std::hash::{Hash, Hasher};
@@ -14,6 +16,229 @@ use crate::operators::Operation;
 pub struct DynamicDimension {
     pub name: String,
     pub max_size: u32,
+}
+
+const MAP_SIZE: usize = 10_073_741_824;
+#[cfg(windows)]
+static ZERO_MAP: LazyLock<Option<&[u8]>> = LazyLock::new(|| {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Memory::{
+        CreateFileMappingW, MEM_PRESERVE_PLACEHOLDER, MEM_RELEASE, MEM_REPLACE_PLACEHOLDER,
+        MEM_RESERVE, MEM_RESERVE_PLACEHOLDER, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile3,
+        PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, UnmapViewOfFileEx, VirtualAlloc2,
+        VirtualFree,
+    };
+
+    const VIEW_SIZE: usize = 1024 * 1024;
+
+    fn align_up(value: usize, alignment: usize) -> Option<usize> {
+        value
+            .checked_add(alignment.checked_sub(1)?)
+            .map(|value| value & !(alignment - 1))
+    }
+
+    let map_size = match align_up(MAP_SIZE, VIEW_SIZE) {
+        Some(map_size) => map_size,
+        None => {
+            log::warn!("zeroed memory size overflowed while aligning");
+            return None;
+        }
+    };
+
+    let section = unsafe {
+        CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            std::ptr::null(),
+            PAGE_READWRITE,
+            0,
+            VIEW_SIZE as u32,
+            std::ptr::null(),
+        )
+    };
+
+    if section.is_null() {
+        log::warn!(
+            "CreateFileMappingW for zeroed memory failed: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+
+    let addr = unsafe {
+        VirtualAlloc2(
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            map_size,
+            MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+            PAGE_NOACCESS,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+
+    if addr.is_null() {
+        log::warn!(
+            "VirtualAlloc2 placeholder for zeroed memory failed: {}",
+            std::io::Error::last_os_error()
+        );
+        unsafe {
+            CloseHandle(section);
+        }
+        return None;
+    }
+
+    let mut split_offset = 0;
+    while split_offset + VIEW_SIZE < map_size {
+        let split_addr = unsafe { (addr as *mut u8).add(split_offset) };
+        let split_success = unsafe {
+            VirtualFree(
+                split_addr as *mut _,
+                VIEW_SIZE,
+                MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER,
+            )
+        };
+
+        if split_success == 0 {
+            log::warn!(
+                "VirtualFree placeholder split failed at offset {}: {}",
+                split_offset,
+                std::io::Error::last_os_error()
+            );
+
+            let mut cleanup = 0;
+            while cleanup < split_offset {
+                let cleanup_addr = unsafe { (addr as *mut u8).add(cleanup) };
+                unsafe {
+                    VirtualFree(cleanup_addr as *mut _, 0, MEM_RELEASE);
+                }
+                cleanup += VIEW_SIZE;
+            }
+
+            let remaining_addr = unsafe { (addr as *mut u8).add(split_offset) };
+            unsafe {
+                VirtualFree(remaining_addr as *mut _, 0, MEM_RELEASE);
+                CloseHandle(section);
+            }
+            return None;
+        }
+
+        split_offset += VIEW_SIZE;
+    }
+
+    let mut mapped = 0;
+    while mapped < map_size {
+        let view_addr = unsafe { (addr as *mut u8).add(mapped) };
+        let view = unsafe {
+            MapViewOfFile3(
+                section,
+                std::ptr::null_mut(),
+                view_addr as *const _,
+                0,
+                VIEW_SIZE,
+                MEM_REPLACE_PLACEHOLDER,
+                PAGE_READONLY,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+
+        if view.Value != view_addr as *mut _ {
+            log::warn!(
+                "MapViewOfFile3 for zeroed memory failed at offset {}: {}",
+                mapped,
+                std::io::Error::last_os_error()
+            );
+
+            let mut cleanup = 0;
+            while cleanup < mapped {
+                let cleanup_addr = unsafe { (addr as *mut u8).add(cleanup) };
+                unsafe {
+                    UnmapViewOfFileEx(
+                        MEMORY_MAPPED_VIEW_ADDRESS {
+                            Value: cleanup_addr as *mut _,
+                        },
+                        MEM_PRESERVE_PLACEHOLDER,
+                    );
+                }
+                cleanup += VIEW_SIZE;
+            }
+
+            cleanup = 0;
+            while cleanup < map_size {
+                let cleanup_addr = unsafe { (addr as *mut u8).add(cleanup) };
+                unsafe {
+                    VirtualFree(cleanup_addr as *mut _, 0, MEM_RELEASE);
+                }
+                cleanup += VIEW_SIZE;
+            }
+
+            unsafe {
+                CloseHandle(section);
+            }
+            return None;
+        }
+
+        mapped += VIEW_SIZE;
+    }
+
+    unsafe {
+        CloseHandle(section);
+    }
+
+    Some(unsafe { std::slice::from_raw_parts(addr as *const u8, MAP_SIZE) })
+});
+
+#[cfg(unix)]
+static ZERO_MAP: LazyLock<Option<&[u8]>> = LazyLock::new(|| {
+    let addr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),                    // Let the OS choose the virtual address
+            MAP_SIZE,                                // Size of the allocation
+            libc::PROT_READ,                         // Strict Read-Only protection flag!
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, // Anonymous, not backed by a file
+            -1,                                      // No file descriptor
+            0,                                       // No offset
+        )
+    };
+
+    if addr == libc::MAP_FAILED {
+        use log::warn;
+
+        warn!(
+            "mmap for zeroed memory failed: {}",
+            std::io::Error::last_os_error()
+        );
+        return None;
+    }
+
+    Some(unsafe { std::slice::from_raw_parts(addr as *const u8, MAP_SIZE) })
+});
+
+pub(crate) fn get_zeroed_memory(offset: usize, len: usize) -> crate::error::Result<&'static [u8]> {
+    let map = ZERO_MAP.as_ref().ok_or_else(|| {
+        std::convert::Into::<crate::error::Error>::into(
+            crate::error::GraphBuilderError::FailedToGetZeroMap { offset, len },
+        )
+    })?;
+    let end = offset.checked_add(len).ok_or_else(|| {
+        std::convert::Into::<crate::error::Error>::into(
+            crate::error::GraphBuilderError::ZeroMapTooBig {
+                offset,
+                len,
+                map_size: MAP_SIZE,
+            },
+        )
+    })?;
+    if end > MAP_SIZE {
+        return Err(crate::error::GraphBuilderError::ZeroMapTooBig {
+            offset,
+            len,
+            map_size: MAP_SIZE,
+        }
+        .into());
+    }
+
+    Ok(&map[offset..end])
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -266,16 +491,165 @@ pub struct Operand {
     pub name: Option<String>,
 }
 
+pub trait WeightsContext<'context> {
+    fn resolve(
+        &mut self,
+        constant_ref: &'context ConstantReference,
+        descriptor: &OperandDescriptor,
+        id: u32,
+    ) -> crate::error::Result<&'context [u8]>;
+}
+pub struct DefaultWeightsContext {}
+
+impl<'context> WeightsContext<'context> for DefaultWeightsContext {
+    fn resolve(
+        &mut self,
+        constant: &'context ConstantReference,
+        descriptor: &OperandDescriptor,
+        id: u32,
+    ) -> crate::error::Result<&'context [u8]> {
+        match constant {
+            ConstantReference::OwnedData(ConstantData { data, .. }) => Ok(data),
+            ConstantReference::Zeroed | ConstantReference::ZeroedUniquePtr { .. } => {
+                let offset = if constant.is_zeroed() {
+                    0usize
+                } else {
+                    *constant.as_zeroed_unique_ptr().unwrap() as usize
+                };
+                get_zeroed_memory(
+                offset,
+                descriptor
+                    .byte_length().ok_or_else(|| crate::error::GraphBuilderError::RequestedConstantDataForDynamicallyShapedConstant { id , desc: descriptor.clone()})?,
+            )
+            }
+            ConstantReference::UrlRef(_)
+            | ConstantReference::FileRef(_)
+            | ConstantReference::OffsetRef(_)
+            | ConstantReference::StringRef(_)
+            | ConstantReference::IdRef(_)
+            | ConstantReference::Missing => {
+                Err(crate::error::GraphBuilderError::UnresolvedConstant {
+                    id,
+                    constant_ref: constant.clone(),
+                }
+                .into())
+            }
+        }
+    }
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrlRef {
+    pub etag: String,
+    pub url: String,
+    pub offset: u64,
+    pub len: u64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstantData {
-    #[serde_as(as = "Base64")]
     pub data: Vec<u8>,
     #[serde(default)]
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileRef {
+    pub path: PathBuf,
+    pub offset: usize,
+    pub len: usize,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OffsetRef {
+    pub offset: usize,
+    pub len: usize,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdRef {
+    pub id: u64,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StringRef {
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ConstantReference {
+    OwnedData(ConstantData),
+    UrlRef(UrlRef),
+    FileRef(FileRef),
+    OffsetRef(OffsetRef),
+    StringRef(StringRef),
+    IdRef(IdRef),
+    Zeroed,
+    ZeroedUniquePtr { offset: u64 }, // needed by TensorRT as distinct TRT weights can not share the same pointer
+    Missing,
+}
+
+impl ConstantReference {
+    pub fn as_owned_data(&self) -> Option<&ConstantData> {
+        match self {
+            Self::OwnedData(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if the constant reference is [`Zeroed`].
+    ///
+    /// [`Zeroed`]: ConstantReference::Zeroed
+    #[must_use]
+    pub fn is_zeroed(&self) -> bool {
+        matches!(self, Self::Zeroed)
+    }
+
+    pub fn as_zeroed_unique_ptr(&self) -> Option<&u64> {
+        if let Self::ZeroedUniquePtr { offset } = self {
+            Some(offset)
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if the constant reference is [`ZeroedUniquePtr`].
+    ///
+    /// [`ZeroedUniquePtr`]: ConstantReference::ZeroedUniquePtr
+    #[must_use]
+    pub fn is_zeroed_unique_ptr(&self) -> bool {
+        matches!(self, Self::ZeroedUniquePtr { .. })
+    }
+
+    pub fn as_id_ref(&self) -> Option<&IdRef> {
+        if let Self::IdRef(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if the constant reference is [`IdRef`].
+    ///
+    /// [`IdRef`]: ConstantReference::IdRef
+    #[must_use]
+    pub fn is_id_ref(&self) -> bool {
+        matches!(self, Self::IdRef(..))
+    }
+}
+
+#[derive(Debug, Serialize, Clone, Deserialize, Default)]
 pub struct GraphInfo {
     pub operands: Vec<Operand>,
     #[serde(default)]
@@ -285,7 +659,7 @@ pub struct GraphInfo {
     #[serde(default)]
     pub operations: Vec<Operation>,
     #[serde(default)]
-    pub constant_operand_ids_to_handles: HashMap<u32, ConstantData>,
+    pub constant_operand_ids_to_handles: HashMap<u32, ConstantReference>,
     #[serde(default)]
     pub id_to_constant_tensor_operand_map: HashMap<u32, String>,
     #[serde(default)]
@@ -293,6 +667,58 @@ pub struct GraphInfo {
 }
 
 impl GraphInfo {
+    pub fn constant_data(&self, id: u32) -> crate::error::Result<&[u8]> {
+        let constant = self
+            .constant_operand_ids_to_handles
+            .get(&id)
+            .ok_or(crate::error::GraphBuilderError::MissingConstantId { id })?;
+        let descriptor = &self
+            .operands
+            .get(id as usize)
+            .ok_or(crate::error::GraphBuilderError::MissingConstantId { id })?
+            .descriptor;
+        DefaultWeightsContext {}.resolve(constant, descriptor, id)
+    }
+
+    pub fn add_constant_reference(
+        &mut self,
+        descriptor: OperandDescriptor,
+        reference: ConstantReference,
+        name: Option<String>,
+    ) -> crate::error::Result<u32> {
+        let id = self
+            .operands
+            .len()
+            .try_into()
+            .map_err(|_e| GraphError::TooManyOperands {
+                count: self.operands.len(),
+            })?;
+
+        self.operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor,
+            name,
+        });
+        self.constant_operand_ids_to_handles.insert(id, reference);
+
+        Ok(id)
+    }
+
+    pub fn resolve_constant<'context>(
+        &'context self,
+        id: u32,
+        context: &mut (impl WeightsContext<'context> + 'context),
+    ) -> crate::error::Result<&'context [u8]> {
+        let constant = self.constant_operand_ids_to_handles.get(&id);
+        let Some(constant) = constant else {
+            return Err(crate::error::GraphBuilderError::MissingConstantId { id }.into());
+        };
+        let Some(operand) = self.operands.get(id as usize) else {
+            return Err(crate::error::GraphBuilderError::MissingConstantId { id }.into());
+        };
+        context.resolve(constant, &operand.descriptor, id)
+    }
+
     pub fn operand(&self, id: u32) -> Option<&Operand> {
         self.operands.get(id as usize)
     }

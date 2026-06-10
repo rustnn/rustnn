@@ -19,8 +19,8 @@
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
-    ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, to_dimension_vector,
+    ConstantData, ConstantReference, DataType, Dimension, DynamicDimension, GraphInfo, Operand,
+    OperandDescriptor, OperandKind, to_dimension_vector,
 };
 use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;
@@ -185,7 +185,17 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
                                 ),
                             })?;
                     let init = ConstInit::InlineBytes {
-                        bytes: constant.data.clone(),
+                        bytes: constant
+                            .as_owned_data()
+                            .ok_or_else(|| GraphError::ConversionFailed {
+                                format: "webnn-graph-json".to_string(),
+                                reason: format!(
+                                    "constant operand {} has no inline data",
+                                    operand.name.as_deref().unwrap_or("unknown")
+                                ),
+                            })?
+                            .data
+                            .clone(),
                     };
 
                     consts.insert(
@@ -240,7 +250,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
     let mut operands = Vec::new();
     let mut operations = Vec::new();
     let mut operand_map: BTreeMap<String, u32> = BTreeMap::new();
-    let mut constant_operand_ids_to_handles: HashMap<u32, ConstantData> = HashMap::new();
+    let mut constant_operand_ids_to_handles: HashMap<u32, ConstantReference> = HashMap::new();
     let mut input_operands = Vec::new();
     let mut output_operands = Vec::new();
 
@@ -336,7 +346,10 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             kind: OperandKind::Constant,
         });
 
-        constant_operand_ids_to_handles.insert(idx, ConstantData { data, label: None });
+        constant_operand_ids_to_handles.insert(
+            idx,
+            ConstantReference::OwnedData(ConstantData { data, label: None }),
+        );
     }
 
     // Process nodes (operations)
@@ -1266,10 +1279,10 @@ mod tests {
         let mut constant_map = HashMap::new();
         constant_map.insert(
             1u32,
-            ConstantData {
+            ConstantReference::OwnedData(ConstantData {
                 data: constant_data.clone(),
                 label: None,
-            },
+            }),
         );
 
         let graph = GraphInfo {
@@ -1727,8 +1740,7 @@ mod tests {
         assert_eq!(graph_info.operands.len(), 1);
         assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
         // Weight references should create empty data (to be filled by loader)
-        let const_data = graph_info.constant_operand_ids_to_handles.get(&0).unwrap();
-        assert_eq!(const_data.data.len(), 0);
+        assert_eq!(graph_info.constant_data(0).unwrap().len(), 0);
     }
 
     #[test]
@@ -2243,10 +2255,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             0u32,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: vec![0u8; 4],
                 label: None,
-            },
+            }),
         );
 
         let graph = GraphInfo {
