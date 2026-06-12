@@ -8833,7 +8833,7 @@ impl TrtxConverter {
             .map(|o| o.filter_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("oihw");
-        let (o, in_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
+        let (o, _in_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
             "oihw" => (fs[0], fs[1], fs[2], fs[3]),
             "hwio" => (fs[3], fs[2], fs[0], fs[1]),
             "ohwi" => (fs[0], fs[3], fs[1], fs[2]),
@@ -9238,7 +9238,7 @@ impl TrtxConverter {
             .map(|o| o.filter_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("iohw");
-        let (in_ch, out_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
+        let (_in_ch, out_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
             "iohw" => (fs[0], fs[1], fs[2], fs[3]),
             "oihw" => (fs[1], fs[0], fs[2], fs[3]),
             "hwio" => (fs[2], fs[3], fs[0], fs[1]),
