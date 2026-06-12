@@ -1818,86 +1818,21 @@ impl TrtxConverter {
                 reason: format!("Slope operand {} not found", operation.input_operands()[1]),
             })?;
 
-        // PReLU: output = x if x > 0, else slope * x
-        // Implemented as: max(0, x) + slope * min(0, x)
-
-        // ReLU part: max(0, x)
-        let relu_layer = network
-            .add_activation(input, ActivationType::kRELU)
+        let (input_bc, slope_bc) =
+            Self::ensure_broadcast_compatible(network, input, slope, "prelu_slope")?;
+        let layer = network
+            .add_parametric_relu(&input_bc, &slope_bc)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add relu for prelu: {}", e),
+                reason: format!("Failed to add parametric relu: {}", e),
             })?;
-        let relu_output =
-            relu_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get relu output: {}", e),
-                })?;
 
-        // Negative part: min(0, x)
-        let zero_layer = network
-            .add_activation(input, ActivationType::kRELU)
+        let output = layer
+            .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add second relu: {}", e),
+                reason: format!("Failed to get prelu output: {}", e),
             })?;
-        let zero_output =
-            zero_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get zero output: {}", e),
-                })?;
-
-        // x - relu(x) = min(0, x)
-        let neg_part_layer = network
-            .add_elementwise(input, &zero_output, ElementWiseOperation::kSUB)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to subtract for prelu: {}", e),
-            })?;
-        let neg_part =
-            neg_part_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get negative part: {}", e),
-                })?;
-
-        // slope * min(0, x) — TRT requires same rank for elementwise; reshape slope with leading 1s (WebNN broadcast).
-        let (neg_bc, slope_bc) =
-            Self::ensure_broadcast_compatible(network, &neg_part, slope, "prelu_slope")?;
-        let scaled_neg_layer = network
-            .add_elementwise(&neg_bc, &slope_bc, ElementWiseOperation::kPROD)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to scale negative part: {}", e),
-            })?;
-        let scaled_neg =
-            scaled_neg_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get scaled negative: {}", e),
-                })?;
-
-        // Final: relu + slope * neg_part
-        let final_layer = network
-            .add_elementwise(&relu_output, &scaled_neg, ElementWiseOperation::kSUM)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add prelu parts: {}", e),
-            })?;
-
-        let output =
-            final_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get prelu output: {}", e),
-                })?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
