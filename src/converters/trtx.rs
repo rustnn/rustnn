@@ -29,7 +29,7 @@ use super::{
     ConvertedGraph, GraphConverter, pool2d_shared::infer_pool2d_ceil_mode_from_output_sizes,
 };
 use crate::error::GraphError;
-use crate::executors::trtx::{create_trtx_logger, ensure_trtx_loaded};
+use crate::executors::trtx::create_trtx_logger;
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
@@ -12569,11 +12569,6 @@ impl GraphConverter for TrtxConverter {
                 format: "trtx".to_string(),
                 reason: e.to_string(),
             }
-        })?;
-
-        ensure_trtx_loaded().map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: e.to_string(),
         })?;
 
         // TODO: TRTX converter does not support dynamic dimensions yet

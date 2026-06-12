@@ -1,7 +1,6 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use std::collections::HashMap;
-use std::sync::Once;
 
 use crate::error::GraphError;
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
@@ -35,8 +34,6 @@ fn trt_dtype_to_string(dtype: &trtx::DataType) -> &'static str {
         _ => "float32",
     }
 }
-
-static TRTX_INIT: Once = Once::new();
 
 /// Log handler that only emits messages at or above a minimum severity.
 /// Used when RUSTNN_TRTX_LOG_VERBOSITY is set (e.g. by WPT test runner).
@@ -77,35 +74,6 @@ pub(crate) fn create_trtx_logger() -> Result<trtx::Logger, GraphError> {
     trtx::Logger::new(handler).map_err(|e| GraphError::TrtxRuntimeFailed {
         reason: format!("failed to create TensorRT logger: {e}"),
     })
-}
-
-/// Load TensorRT and ONNX parser libraries once per process (no-op when using mock).
-/// Called by the converter and executor so the library is loaded before any trtx API use.
-pub(crate) fn ensure_trtx_loaded() -> Result<(), GraphError> {
-    #[cfg(feature = "trtx-runtime")]
-    {
-        let mut result = Ok(());
-        TRTX_INIT.call_once(|| {
-            result = trtx::dynamically_load_tensorrt(None::<&str>).map_err(|e| {
-                GraphError::TrtxRuntimeFailed {
-                    reason: format!("failed to load TensorRT library: {e}"),
-                }
-            });
-            if result.is_ok() {
-                result = trtx::dynamically_load_tensorrt_onnxparser(None::<&str>).map_err(|e| {
-                    GraphError::TrtxRuntimeFailed {
-                        reason: format!("failed to load TensorRT ONNX parser library: {e}"),
-                    }
-                });
-            }
-        });
-        result
-    }
-    #[cfg(not(feature = "trtx-runtime"))]
-    {
-        TRTX_INIT.call_once(|| {});
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -150,8 +118,6 @@ pub fn run_trtx_zeroed(
     model_bytes: &[u8],
     inputs: &HashMap<String, OperandDescriptor>,
 ) -> Result<Vec<TrtxOutput>, GraphError> {
-    ensure_trtx_loaded()?;
-
     if is_onnx_format(model_bytes) {
         // ONNX path: trtx crate expects f32 inputs
         let mut input_tensors = Vec::new();
@@ -308,7 +274,6 @@ pub fn run_trtx_with_inputs(
     engine_bytes: &[u8],
     inputs: Vec<TrtxInput>,
 ) -> Result<Vec<TrtxOutputWithData>, GraphError> {
-    ensure_trtx_loaded()?;
     if is_onnx_format(engine_bytes) {
         return Err(GraphError::TrtxRuntimeFailed {
             reason: "run_trtx_with_inputs expects a serialized TensorRT engine, not ONNX bytes"
