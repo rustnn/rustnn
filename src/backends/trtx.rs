@@ -406,7 +406,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             operands: HashMap::new(),
             tensors: vec![],
             strings: vec![],
-            caching_enabled: true,
+            // disabled for now, since feature experimental.
+            // can be enabled with more test coverage, but will remain a double-sided sword
+            // e.g. if you change trtx converter, changes might not be visible, since cache skips conversion
+            // maybe the build hash of certain trtx related files could be included in hash
+            caching_enabled: false,
         }))
     }
 
