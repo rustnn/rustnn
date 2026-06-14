@@ -248,6 +248,7 @@ impl GraphInfo {
     }
 
     /// Named input/output operands for `MLGraph` dispatch, after list consistency checks.
+    #[allow(clippy::type_complexity)]
     pub fn io_binding_maps(
         &self,
     ) -> Result<
@@ -537,10 +538,10 @@ mod tests {
     fn validate_io_operand_lists_rejects_extra_input_operand_id() {
         let mut graph = sample_io_graph();
         graph.input_operands.push(99);
-        std::assert_matches!(
+        assert!(matches!(
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
-        );
+        ));
     }
 
     #[test]
@@ -556,10 +557,10 @@ mod tests {
             },
             name: Some("z".to_string()),
         });
-        std::assert_matches!(
+        assert!(matches!(
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
-        );
+        ));
     }
 
     #[test]
@@ -574,20 +575,20 @@ mod tests {
             },
             name: Some("z".to_string()),
         });
-        std::assert_matches!(
+        assert!(matches!(
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
-        );
+        ));
     }
 
     #[test]
     fn validate_io_operand_lists_rejects_wrong_kind_in_input_list() {
         let mut graph = sample_io_graph();
         graph.input_operands = vec![1];
-        std::assert_matches!(
+        assert!(matches!(
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
-        );
+        ));
     }
 
     #[test]
@@ -595,9 +596,9 @@ mod tests {
         let mut graph = sample_io_graph();
         graph.operands[0].kind = OperandKind::Output;
         graph.output_operands.push(0);
-        std::assert_matches!(
+        assert!(matches!(
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
-        );
+        ));
     }
 }

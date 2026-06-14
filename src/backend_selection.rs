@@ -120,7 +120,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     let want_onnx = true;
 
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
-    let want_coreml = false;
+    let want_coreml = true;
 
     // TODO: also check whether WebNN is available
     //#[cfg(target_arch = "wasm32")]

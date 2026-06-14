@@ -425,7 +425,7 @@ fn run_step<'context>(
 }
 
 fn main() -> anyhow::Result<()> {
-    if !std::env::var("RUST_LOG").is_ok() {
+    if std::env::var("RUST_LOG").is_err() {
         unsafe { std::env::set_var("RUST_LOG", "info") };
     }
     pretty_env_logger::init();

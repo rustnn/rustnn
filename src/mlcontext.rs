@@ -76,6 +76,8 @@ pub(crate) enum MLBackendGraph<'context> {
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    CoremlModel(crate::backends::coreml::CoremlGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -94,6 +96,15 @@ impl<'context> MLBackendGraph<'context> {
         match self {
             Self::OnnxSession(g, _) => Some(g),
             _ => None,
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    pub(crate) fn as_coreml_model(&self) -> Option<&crate::backends::coreml::CoremlGraph> {
+        if let Self::CoremlModel(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 }
@@ -474,7 +485,19 @@ impl<'context> MLContext<'context> {
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::Coreml { device_type } => {
+                #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+                {
+                    Box::new(crate::backends::coreml::CoremlContext::new(device_type)?)
+                }
+                #[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
+                {
+                    let _ = device_type;
+                    // `select_backend` only yields `Coreml` when the feature and platform are
+                    // available, so this arm is unreachable in practice.
+                    unreachable!("CoreML backend selected without coreml-runtime support")
+                }
+            }
         };
         Ok(Self { backend })
     }
@@ -737,11 +760,11 @@ webnn_graph "sample_graph" v1 {
         outputs.insert("sum", &tensor);
 
         let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
-        std::assert_matches!(
+        assert!(matches!(
             err,
             crate::error::Error::GraphDispatchError { source }
                 if source.to_string() == "missing runtime input tensor `lhs`"
-        );
+        ));
     }
 
     #[test]
@@ -758,12 +781,12 @@ webnn_graph "sample_graph" v1 {
         outputs.insert("sum", &tensor);
 
         let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
-        std::assert_matches!(
+        assert!(matches!(
             err,
             crate::error::Error::GraphDispatchError { source }
                 if source.to_string()
                     == "runtime input tensor `lhs` dimension 1 mismatch (expected 2, got 3)"
-        );
+        ));
     }
 
     #[test]
@@ -782,11 +805,11 @@ webnn_graph "sample_graph" v1 {
         outputs.insert("sum", &output_tensor);
 
         let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
-        std::assert_matches!(
+        assert!(matches!(
             err,
             crate::error::Error::GraphDispatchError { source }
                 if source.to_string()
                     == "runtime output tensor `sum` dimension 1 mismatch (expected 2, got 3)"
-        );
+        ));
     }
 }

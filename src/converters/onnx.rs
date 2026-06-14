@@ -10158,13 +10158,10 @@ mod tests {
             ],
             input_operands: vec![0],
             output_operands: vec![1],
-            operations: vec![{
-                let operator = Operation::Identity {
-                    input: 0,
-                    options: None,
-                    outputs: vec![1],
-                };
-                operator
+            operations: vec![Operation::Identity {
+                input: 0,
+                options: None,
+                outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),

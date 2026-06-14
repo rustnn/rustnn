@@ -1086,11 +1086,11 @@ impl Operation {
                 ..
             } => {
                 let mut inputs = vec![*input, *filter];
-                match options {
-                    Some(MLConv2dOptions {
-                        bias: Some(bias), ..
-                    }) => inputs.push(*bias),
-                    _ => (),
+                if let Some(MLConv2dOptions {
+                    bias: Some(bias), ..
+                }) = options
+                {
+                    inputs.push(*bias);
                 }
 
                 inputs
