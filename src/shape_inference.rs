@@ -3282,7 +3282,10 @@ mod tests {
     #[test]
     fn test_slice_basic() {
         // 1D slice
-        assert_eq!(infer_slice_shape(&[24], &[12], &[12], None).unwrap(), vec![12]);
+        assert_eq!(
+            infer_slice_shape(&[24], &[12], &[12], None).unwrap(),
+            vec![12]
+        );
 
         // 2D slice
         assert_eq!(

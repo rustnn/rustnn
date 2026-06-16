@@ -13,11 +13,10 @@ use crate::operator_options::{
     MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions,
     MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions,
     MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
-    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, OperandIndex,
-    MLPadOptions,
+    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
     MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions, MLScatterOptions,
     MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions, MLTriangularOptions,
-    MLUnsqueezeOptions,
+    MLUnsqueezeOptions, OperandIndex,
 };
 use crate::shape_inference::{
     InputLayout, ReduceOptions, SplitSpec, infer_concat_shape_dimensions,
@@ -25,9 +24,9 @@ use crate::shape_inference::{
     infer_gather_shape_dimensions, infer_gemm_shape_dimensions, infer_global_pool_shape,
     infer_matmul_shape_dimensions, infer_pad_shape, infer_pool2d_shape_dimensions,
     infer_prelu_shape, infer_reduce_shape_dimensions, infer_resample2d_shape,
-    infer_scatter_elements_shape, infer_scatter_nd_shape, infer_slice_shape, infer_split_shapes, infer_squeeze_shape,
-    infer_tile_shape, infer_transpose_shape_dimensions, infer_triangular_shape,
-    infer_unsqueeze_shape_dimensions,
+    infer_scatter_elements_shape, infer_scatter_nd_shape, infer_slice_shape, infer_split_shapes,
+    infer_squeeze_shape, infer_tile_shape, infer_transpose_shape_dimensions,
+    infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
 use crate::webnn_json::to_graph_json;
 use crate::{DataType, Operand, OperandDescriptor, OperandKind, Operation};
@@ -1354,10 +1353,7 @@ fn gru_cell_shape(
     if input_shape.len() == 2 && hidden_size > 0 {
         return Ok(OperandDescriptor {
             data_type: graph.operands[input.id].descriptor.data_type,
-            shape: to_dimension_vector(&[
-                get_static_or_max_size(&input_shape[0]),
-                hidden_size,
-            ]),
+            shape: to_dimension_vector(&[get_static_or_max_size(&input_shape[0]), hidden_size]),
             pending_permutation: vec![],
         });
     }
