@@ -6295,22 +6295,20 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         });
                     }
                 } else {
-                    // WPT: lstmOutput1 = sequence (Y), lstmOutput2 = cell state (Y_c), lstmOutput3 = hidden state (Y_h).
+                    // WPT: lstmOutput1 = Y_h, lstmOutput2 = Y_c, lstmOutput3 = sequence (Y).
                     // Use out_id in node name so each Identity has a unique name.
                     for &out_id in output_ids.iter().take(3) {
                         let out_name = operand_name(graph, out_id);
                         let (src_name, label) = if out_name.contains("Output1") {
-                            // WebNN LSTM: outputs[0] is always the hidden state from the last time step (Y_h) [1, batch, hidden].
+                            // WPT lstmOutput1 = hidden state (Y_h).
                             (lstm_y_h_name.clone(), "y")
                         } else if out_name.contains("Output2") {
-                            // outputs[1] is always the cell state (Y_c).
+                            // WPT lstmOutput2 = cell state (Y_c).
                             (lstm_y_c_name.clone(), "y_c")
                         } else if out_name.contains("Output3")
                             || (output_ids.len() >= 3 && out_id == output_ids[2])
                         {
-                            // outputs[2] when returnSequence: sequence.
-                            // Unidirectional: seq_source is [steps, batch, hidden]; Unsqueeze(axis=1) → [steps, 1, batch, hidden].
-                            // Bidirectional: seq_source is already [steps, num_directions, batch, hidden]; use as-is (no Unsqueeze).
+                            // WPT lstmOutput3 = sequence (Y) when returnSequence is true.
                             if unidirectional {
                                 let seq_4d_name = format!("{}_y_seq_4d", op_name);
                                 nodes.push(NodeProto {
@@ -6374,13 +6372,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         reason: "lstmCell requires at least one output".to_string(),
                     });
                 }
+                let output_hidden_name = operand_name(graph, output_ids[0]);
+                let output_cell_name = output_ids.get(1).map(|&id| operand_name(graph, id));
                 let input_name = operand_name(graph, input_id);
                 let weight_name = operand_name(graph, weight_id);
                 let recurrent_weight_name = operand_name(graph, recurrent_weight_id);
                 let hidden_state_name = operand_name(graph, hidden_state_id);
                 let cell_state_name = operand_name(graph, cell_state_id);
-                let output_hidden_name = operand_name(graph, output_ids[0]);
-                let output_cell_name = output_ids.get(1).map(|&id| operand_name(graph, id));
                 let weight_operand = graph.operand(weight_id).ok_or_else(|| {
                     Self::invalid_operand("lstmCell weight lookup", weight_id, Some((op, idx)))
                 })?;
@@ -6786,19 +6784,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     });
 
-                    // new_hidden = output * tanh(new_cell)
-                    let tanh_cell = format!("{}_tanh_c", op_name);
-                    let new_hidden = format!("{}_new_h", op_name);
+                    // new_hidden = output * activation[2](new_cell) (default tanh)
+                    let hidden_cell_act = match &lstm_activations {
+                        Some(acts) if acts.len() > 2 => {
+                            Self::recurrent_activation_to_onnx(&acts[2])
+                        }
+                        _ => "Tanh".to_string(),
+                    };
+                    let filtered_cell = format!("{}_filt_c", op_name);
                     nodes.push(NodeProto {
                         input: vec![new_cell_name.clone()],
-                        output: vec![tanh_cell.clone()],
-                        name: tanh_cell.clone(),
-                        op_type: "Tanh".to_string(),
+                        output: vec![filtered_cell.clone()],
+                        name: filtered_cell.clone(),
+                        op_type: hidden_cell_act,
                         attribute: vec![],
                         ..Default::default()
                     });
+                    let new_hidden = format!("{}_new_h", op_name);
                     nodes.push(NodeProto {
-                        input: vec![gate_act_names[go as usize].clone(), tanh_cell],
+                        input: vec![gate_act_names[go as usize].clone(), filtered_cell],
                         output: vec![new_hidden.clone()],
                         name: format!("{}_h_mul", op_name),
                         op_type: "Mul".to_string(),
@@ -6806,26 +6810,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     });
 
-                    // Apply hidden activation (activations[2])
-                    let final_hidden = if let Some(acts) = &lstm_activations {
-                        if acts.len() > 2 {
-                            let act = Self::recurrent_activation_to_onnx(&acts[2]);
-                            let out = format!("{}_act_h", op_name);
-                            nodes.push(NodeProto {
-                                input: vec![new_hidden],
-                                output: vec![out.clone()],
-                                name: out.clone(),
-                                op_type: act,
-                                attribute: vec![],
-                                ..Default::default()
-                            });
-                            out
-                        } else {
-                            new_hidden
-                        }
-                    } else {
-                        new_hidden
-                    };
+                    let final_hidden = new_hidden;
 
                     // Route to outputs
                     nodes.push(NodeProto {

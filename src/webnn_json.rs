@@ -739,21 +739,20 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                         _ => None,
                     };
                     let (axes_raw, keep_dimensions) = opts
-                        .map(|o| {
-                            (
-                                o.axes.as_ref().cloned().unwrap_or_default(),
-                                o.keep_dimensions,
-                            )
-                        })
-                        .unwrap_or((Vec::new(), false));
+                        .map(|o| (o.axes.clone(), o.keep_dimensions))
+                        .unwrap_or((None, false));
 
                     if let Some(input_shape) = input_shapes.first() {
                         let rank = input_shape.len() as u32;
-                        if axes_raw.iter().any(|&axis| axis >= rank) {
+                        let axes = match &axes_raw {
+                            None => (0..rank).collect(),
+                            Some(v) => v.clone(),
+                        };
+                        if axes.iter().any(|&axis| axis >= rank) {
                             None
                         } else {
                             let options = ReduceOptions {
-                                axes: axes_raw,
+                                axes,
                                 keep_dimensions,
                             };
                             infer_reduce_shape_dimensions(input_shape, &options).ok()
@@ -844,20 +843,38 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                 "slice" => {
                     if let Some(input_shape) = input_shapes.first() {
                         match &op {
-                            Operation::Slice { starts, sizes, .. } => {
+                            Operation::Slice {
+                                starts,
+                                sizes,
+                                options,
+                                ..
+                            } => {
                                 if starts.is_empty()
                                     || sizes.is_empty()
                                     || starts.len() != sizes.len()
                                 {
                                     None
                                 } else {
-                                    let mut output = input_shape.clone();
-                                    for (i, sz) in sizes.iter().enumerate() {
-                                        if i < output.len() {
-                                            output[i] = Dimension::Static(sz.static_or_max());
-                                        }
-                                    }
-                                    Some(output)
+                                    let sizes_u32: Vec<u32> =
+                                        sizes.iter().map(|d| d.static_or_max()).collect();
+                                    let strides = options.as_ref().map(|o| o.strides.as_slice());
+                                    let input_dims: Vec<u32> = input_shape
+                                        .iter()
+                                        .map(crate::graph::get_static_or_max_size)
+                                        .collect();
+                                    infer_slice_shape(
+                                        &input_dims,
+                                        starts,
+                                        &sizes_u32,
+                                        strides,
+                                    )
+                                    .ok()
+                                    .map(|shape| {
+                                        shape
+                                            .into_iter()
+                                            .map(Dimension::Static)
+                                            .collect::<Vec<_>>()
+                                    })
                                 }
                             }
                             _ => None,
