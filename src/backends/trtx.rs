@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
 use trtx::Refitter;
-use trtx::Tensor;
 use trtx::host_memory::HostMemory;
 
 use crate::GraphInfo;
@@ -218,13 +217,12 @@ impl<'context> TrtxContext<'context> {
 
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
-    network: Option<trtx::NetworkDefinition<'builder>>,
+    network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
     builder: Arc<Mutex<trtx::Builder<'builder>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
     runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
     operands: HashMap<String, MLOperand>,
-    tensors: Vec<Tensor<'builder>>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
 }
@@ -271,6 +269,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         if engine_bytes.is_none() {
             let mut network = self
                 .network
+                .lock()
+                .unwrap()
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
@@ -395,7 +395,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 .map_err(|e| Error::BuilderCreationError {
                     source: Box::new(e),
                 })?,
-        );
+        )
+        .into();
         //self.networks.push(network);
         Ok(Box::new(TrtxBuilder {
             network,
@@ -404,7 +405,6 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             runtime: Arc::clone(&self.runtime),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
-            tensors: vec![],
             strings: vec![],
             // disabled for now, since feature experimental.
             // can be enabled with more test coverage, but will remain a double-sided sword
