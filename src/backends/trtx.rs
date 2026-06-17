@@ -177,12 +177,6 @@ pub(crate) struct TrtxContext<'context> {
     builder: Arc<Mutex<trtx::Builder<'context>>>,
 }
 
-// SAFETY: TensorRT objects are internally thread-safe. Access is serialized
-// via Arc<Mutex<>> wrappers, and CUDA operations on different streams are
-// independent per CUDA context.
-unsafe impl Send for TrtxContext<'_> {}
-unsafe impl Sync for TrtxContext<'_> {}
-
 impl std::fmt::Debug for TrtxContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrtxContext")
@@ -234,10 +228,6 @@ pub(crate) struct TrtxBuilder<'builder> {
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
 }
-
-// SAFETY: TensorRT builder access is serialized via Arc<Mutex<>> on shared
-// components. Network definition and tensor handles are owned and not shared.
-unsafe impl Send for TrtxBuilder<'_> {}
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
