@@ -12,7 +12,6 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
@@ -173,10 +172,16 @@ pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
-    runtime: Rc<Mutex<trtx::Runtime<'context>>>,
-    config: Rc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
-    builder: Rc<Mutex<trtx::Builder<'context>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'context>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
+    builder: Arc<Mutex<trtx::Builder<'context>>>,
 }
+
+// SAFETY: TensorRT objects are internally thread-safe. Access is serialized
+// via Arc<Mutex<>> wrappers, and CUDA operations on different streams are
+// independent per CUDA context.
+unsafe impl Send for TrtxContext<'_> {}
+unsafe impl Sync for TrtxContext<'_> {}
 
 impl std::fmt::Debug for TrtxContext<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -203,15 +208,15 @@ impl<'context> TrtxContext<'context> {
         // (mostly scalars)
         config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT_INDIVIDUAL);
         config.set_flag(trtx::trtx_sys::BuilderFlag::kSTRIP_PLAN);
-        let config = Rc::new(config.into());
-        let runtime = Rc::new(trtx::Runtime::new(&LOGGER)?.into());
+        let config = Arc::new(config.into());
+        let runtime = Arc::new(trtx::Runtime::new(&LOGGER)?.into());
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
             tensors: vec![],
             events: vec![],
             runtime,
-            builder: Rc::new(builder.into()),
+            builder: Arc::new(builder.into()),
             config,
         })
     }
@@ -220,15 +225,20 @@ impl<'context> TrtxContext<'context> {
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
     network: Option<trtx::NetworkDefinition<'builder>>,
-    builder: Rc<Mutex<trtx::Builder<'builder>>>,
-    config: Rc<Mutex<trtx::BuilderConfig<'builder>>>,
+    builder: Arc<Mutex<trtx::Builder<'builder>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
-    runtime: Rc<Mutex<trtx::Runtime<'builder>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
     operands: HashMap<String, MLOperand>,
     tensors: Vec<Tensor<'builder>>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
 }
+
+// SAFETY: TensorRT builder access is serialized via Arc<Mutex<>> on shared
+// components. Network definition and tensor handles are owned and not shared.
+unsafe impl Send for TrtxBuilder<'_> {}
+
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrtxBuilder").finish()
@@ -399,9 +409,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         //self.networks.push(network);
         Ok(Box::new(TrtxBuilder {
             network,
-            builder: Rc::clone(&self.builder),
-            config: Rc::clone(&self.config),
-            runtime: Rc::clone(&self.runtime),
+            builder: Arc::clone(&self.builder),
+            config: Arc::clone(&self.config),
+            runtime: Arc::clone(&self.runtime),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             tensors: vec![],
