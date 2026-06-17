@@ -340,15 +340,16 @@ impl TrtxConverter {
                     .collect();
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
-                // Validate that data size matches expected size
-                let expected_size: usize = operand
-                    .descriptor
-                    .shape
-                    .iter()
-                    .map(|d| get_static_or_max_size(d) as usize)
-                    .product();
-                let data_type_size = operand.descriptor.data_type.bytes_per_element();
-                let expected_bytes = expected_size * data_type_size;
+                // Validate that data size matches expected packed byte length
+                let expected_bytes = operand.descriptor.byte_length().ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!(
+                            "Constant operand {} has invalid shape for byte length",
+                            operand_id
+                        ),
+                    }
+                })?;
 
                 if data.len() != expected_bytes {
                     return Err(GraphError::ConversionFailed {
@@ -370,7 +371,7 @@ impl TrtxConverter {
                 }
 
                 // TensorRT Constant permits kINT8 (not kUINT8). Use kINT8 for Int8/Uint8/Int4/Uint4
-                // graph constants: rustnn stores one byte per logical int4/uint4 element (unpacked).
+                // graph constants with packed int4/uint4 host bytes.
                 //
                 // Do not pass `kINT4` / sub-byte dtypes to `add_constant` / `add_small_constant_copied`:
                 // trtx-rs validates weight size as `(element_count * size_bits) / 8` with truncating

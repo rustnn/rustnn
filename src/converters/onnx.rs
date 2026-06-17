@@ -19,7 +19,9 @@
 use crate::converters::{ConvertedGraph, ONNX_EXTERNAL_WEIGHTS_FILENAME, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
-use crate::graph::{DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size};
+use crate::graph::{
+    DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
+};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
@@ -1128,6 +1130,61 @@ impl OnnxConverter {
         TensorData::scalar(utils_dtype.clone(), value).to_tensor_proto(name, utils_dtype, vec![])
     }
 
+    /// Scalar min/max tensor for ONNX Clip (WebNN clamp). Integer bounds must not go through f32:
+    /// values like 2147483645 and 4294967290 are not exactly representable as f32.
+    fn clamp_bound_scalar_tensor(name: String, input_dtype: DataType, value: f64) -> TensorProto {
+        match input_dtype {
+            DataType::Float32 => TensorProto {
+                name,
+                data_type: ProtoDataType::Float as i32,
+                dims: vec![],
+                raw_data: (value as f32).to_le_bytes().to_vec(),
+                ..Default::default()
+            },
+            DataType::Float16 => {
+                let bits = half::f16::from_f32(value as f32).to_bits();
+                TensorProto {
+                    name,
+                    data_type: ProtoDataType::Float16 as i32,
+                    dims: vec![],
+                    raw_data: bits.to_le_bytes().to_vec(),
+                    ..Default::default()
+                }
+            }
+            DataType::Int32 => TensorProto {
+                name,
+                data_type: ProtoDataType::Int32 as i32,
+                dims: vec![],
+                int32_data: vec![value as i32],
+                ..Default::default()
+            },
+            DataType::Uint32 => TensorProto {
+                name,
+                data_type: ProtoDataType::Uint32 as i32,
+                dims: vec![],
+                raw_data: (value as u32).to_le_bytes().to_vec(),
+                ..Default::default()
+            },
+            DataType::Int64 => TensorProto {
+                name,
+                data_type: ProtoDataType::Int64 as i32,
+                dims: vec![],
+                int64_data: vec![value as i64],
+                ..Default::default()
+            },
+            DataType::Uint64 => TensorProto {
+                name,
+                data_type: ProtoDataType::Uint64 as i32,
+                dims: vec![],
+                uint64_data: vec![value as u64],
+                ..Default::default()
+            },
+            other => {
+                Self::create_scalar_initializer(name, Self::data_type_code(other), value as f32)
+            }
+        }
+    }
+
     /// Create a vector initializer with proper data type handling
     fn create_vector_initializer(
         name: String,
@@ -1891,6 +1948,8 @@ impl OnnxConverter {
                 MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
                 MLOperandDataType::Uint8 => ProtoDataType::Uint8 as i64,
                 MLOperandDataType::Int64 => ProtoDataType::Int64 as i64,
+                MLOperandDataType::Int4 => Self::data_type_code(DataType::Int4) as i64,
+                MLOperandDataType::Uint4 => Self::data_type_code(DataType::Uint4) as i64,
                 _ => ProtoDataType::Undefined as i64,
             };
             attributes.push(AttributeProto {
@@ -2793,15 +2852,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 Self::invalid_operand("initializer lookup", *id, None)
             })?;
 
+            let element_count: usize = operand
+                .descriptor
+                .static_or_max_shape()
+                .iter()
+                .map(|&d| d as usize)
+                .product();
+
             // Handle zero-length constants by creating zero-filled tensors
             // This is a defensive measure for malformed models where constants have no data
             let tensor_proto = if data.data.is_empty() {
-                let element_count: usize = operand
-                    .descriptor
-                    .static_or_max_shape()
-                    .iter()
-                    .map(|&d| d as usize)
-                    .product();
                 let dtype = Self::data_type_code(operand.descriptor.data_type);
 
                 // For Int64, use int64_data field; for other types, use raw_data with zeros
@@ -2869,15 +2929,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         ..Default::default()
                     },
                     _ => {
-                        // For other types, create zero-filled raw_data
-                        let bytes_per_element = match operand.descriptor.data_type {
-                            DataType::Float16 => 2,
-                            DataType::Int8 | DataType::Uint8 => 1,
-                            DataType::Uint32 => 4,
-                            DataType::Uint64 => 8,
-                            _ => 4, // Default to 4 bytes
-                        };
-                        let zero_data = vec![0u8; element_count * bytes_per_element];
+                        let zero_len = operand.descriptor.byte_length().unwrap_or(0);
+                        let zero_data = vec![0u8; zero_len];
                         TensorProto {
                             name: operand_name(graph, *id),
                             data_type: dtype as i32,
@@ -2894,20 +2947,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 }
             } else {
                 // Normal case: use provided data
-                // Int4: JS sends 1 byte per element. data_type_code maps to Int32 (4 bytes/element).
-                //    Expand to int32_data to match ORT byte expectations and avoid raw_data mismatch.
-                // Uint4: JS sends 1 byte per element. data_type_code maps to Uint8 (1 byte/element).
-                //    raw_data byte count matches directly.
+                // Packed int4/uint4 host constants are expanded for ORT (int32 / uint8 tensors).
                 match operand.descriptor.data_type {
                     DataType::Int4 => {
-                        let int32_data: Vec<i32> = data
-                            .data
-                            .iter()
-                            .map(|&b| {
-                                let nibble = (b & 0x0F) as i32;
-                                if nibble >= 8 { nibble - 16 } else { nibble }
-                            })
-                            .collect();
+                        let int32_data = unpack_int4(&data.data, element_count);
                         TensorProto {
                             name: operand_name(graph, *id),
                             data_type: ProtoDataType::Int32 as i32,
@@ -2930,7 +2973,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             .iter()
                             .map(|d| *d as i64)
                             .collect(),
-                        raw_data: data.data.clone(),
+                        raw_data: unpack_uint4(&data.data, element_count),
                         ..Default::default()
                     },
                     _ => TensorProto {
@@ -7488,7 +7531,6 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     )
                 })?;
                 let input_dtype = input_operand.descriptor.data_type;
-                let onnx_dtype = Self::data_type_code(input_dtype);
 
                 let (min_value_raw, max_value_raw) = match &op {
                     Operation::Clamp { options, .. } => options
@@ -7519,43 +7561,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if let Some(min_value) = min_value {
                     let min_name = format!("{}_min", op_name);
                     inputs.push(min_name.clone());
-                    let min_tensor = match input_dtype {
-                        DataType::Float32 => TensorProto {
-                            name: min_name,
-                            data_type: ProtoDataType::Float as i32,
-                            dims: vec![],
-                            raw_data: (min_value as f32).to_le_bytes().to_vec(),
-                            ..Default::default()
-                        },
-                        DataType::Float16 => {
-                            let bits = half::f16::from_f32(min_value as f32).to_bits();
-                            TensorProto {
-                                name: min_name,
-                                data_type: ProtoDataType::Float16 as i32,
-                                dims: vec![],
-                                raw_data: bits.to_le_bytes().to_vec(),
-                                ..Default::default()
-                            }
-                        }
-                        DataType::Int64 => TensorProto {
-                            name: min_name,
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![],
-                            int64_data: vec![min_value as i64],
-                            ..Default::default()
-                        },
-                        DataType::Uint64 => TensorProto {
-                            name: min_name,
-                            data_type: ProtoDataType::Uint64 as i32,
-                            dims: vec![],
-                            uint64_data: vec![min_value as u64],
-                            ..Default::default()
-                        },
-                        _ => {
-                            Self::create_scalar_initializer(min_name, onnx_dtype, min_value as f32)
-                        }
-                    };
-                    initializers.push(min_tensor);
+                    initializers.push(Self::clamp_bound_scalar_tensor(
+                        min_name,
+                        input_dtype,
+                        min_value,
+                    ));
                 }
 
                 if max_value.is_some() && min_value.is_none() {
@@ -7565,43 +7575,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 if let Some(max_value) = max_value {
                     let max_name = format!("{}_max", op_name);
                     inputs.push(max_name.clone());
-                    let max_tensor = match input_dtype {
-                        DataType::Float32 => TensorProto {
-                            name: max_name,
-                            data_type: ProtoDataType::Float as i32,
-                            dims: vec![],
-                            raw_data: (max_value as f32).to_le_bytes().to_vec(),
-                            ..Default::default()
-                        },
-                        DataType::Float16 => {
-                            let bits = half::f16::from_f32(max_value as f32).to_bits();
-                            TensorProto {
-                                name: max_name,
-                                data_type: ProtoDataType::Float16 as i32,
-                                dims: vec![],
-                                raw_data: bits.to_le_bytes().to_vec(),
-                                ..Default::default()
-                            }
-                        }
-                        DataType::Int64 => TensorProto {
-                            name: max_name,
-                            data_type: ProtoDataType::Int64 as i32,
-                            dims: vec![],
-                            int64_data: vec![max_value as i64],
-                            ..Default::default()
-                        },
-                        DataType::Uint64 => TensorProto {
-                            name: max_name,
-                            data_type: ProtoDataType::Uint64 as i32,
-                            dims: vec![],
-                            uint64_data: vec![max_value as u64],
-                            ..Default::default()
-                        },
-                        _ => {
-                            Self::create_scalar_initializer(max_name, onnx_dtype, max_value as f32)
-                        }
-                    };
-                    initializers.push(max_tensor);
+                    initializers.push(Self::clamp_bound_scalar_tensor(
+                        max_name,
+                        input_dtype,
+                        max_value,
+                    ));
                 }
 
                 nodes.push(NodeProto {
@@ -10102,6 +10080,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                                 MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
                                 MLOperandDataType::Uint8 => ProtoDataType::Uint8 as i64,
                                 MLOperandDataType::Int64 => ProtoDataType::Int64 as i64,
+                                MLOperandDataType::Int4 => {
+                                    Self::data_type_code(DataType::Int4) as i64
+                                }
+                                MLOperandDataType::Uint4 => {
+                                    Self::data_type_code(DataType::Uint4) as i64
+                                }
                                 MLOperandDataType::Uint64 => {
                                     let output_dtype = graph
                                         .operand(output_id)
@@ -10810,6 +10794,26 @@ mod tests {
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
         result.unwrap();
+    }
+
+    #[test]
+    fn test_clamp_bound_scalar_tensor_preserves_large_int32_uint32() {
+        let int32_max = OnnxConverter::clamp_bound_scalar_tensor(
+            "max".to_string(),
+            DataType::Int32,
+            2_147_483_645.0,
+        );
+        assert_eq!(int32_max.int32_data, vec![2_147_483_645]);
+
+        let uint32_max = OnnxConverter::clamp_bound_scalar_tensor(
+            "max".to_string(),
+            DataType::Uint32,
+            4_294_967_290.0,
+        );
+        assert_eq!(
+            uint32_max.raw_data,
+            (4_294_967_290u32).to_le_bytes().to_vec()
+        );
     }
 
     #[test]

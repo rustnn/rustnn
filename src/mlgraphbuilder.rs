@@ -246,6 +246,8 @@ fn constant_shape(
         "uint64" => DataType::Uint64,
         "int8" => DataType::Int8,
         "uint8" => DataType::Uint8,
+        "int4" => DataType::Int4,
+        "uint4" => DataType::Uint4,
         _ => DataType::Float32,
     };
     Ok(OperandDescriptor {

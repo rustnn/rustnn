@@ -466,6 +466,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             MLOperandDataType::Uint64 => DataType::Uint64,
             MLOperandDataType::Int8 => DataType::Int8,
             MLOperandDataType::Uint8 => DataType::Uint8,
+            MLOperandDataType::Int4 => DataType::Int4,
+            MLOperandDataType::Uint4 => DataType::Uint4,
         }
     }
 

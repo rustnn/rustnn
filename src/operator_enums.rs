@@ -13,6 +13,8 @@ pub enum MLOperandDataType {
     Uint64,
     Int8,
     Uint8,
+    Int4,
+    Uint4,
 }
 
 impl TryFrom<DataType> for MLOperandDataType {
@@ -27,10 +29,8 @@ impl TryFrom<DataType> for MLOperandDataType {
             DataType::Uint64 => Self::Uint64,
             DataType::Int8 => Self::Int8,
             DataType::Uint8 => Self::Uint8,
-            DataType::Int4 => return Err(GraphBuilderError::InternalDataType { data_type: value }),
-            DataType::Uint4 => {
-                return Err(GraphBuilderError::InternalDataType { data_type: value });
-            }
+            DataType::Int4 => Self::Int4,
+            DataType::Uint4 => Self::Uint4,
         })
     }
 }
@@ -46,6 +46,8 @@ impl From<MLOperandDataType> for DataType {
             MLOperandDataType::Uint64 => DataType::Uint64,
             MLOperandDataType::Int8 => DataType::Int8,
             MLOperandDataType::Uint8 => DataType::Uint8,
+            MLOperandDataType::Int4 => DataType::Int4,
+            MLOperandDataType::Uint4 => DataType::Uint4,
         }
     }
 }
@@ -57,7 +59,13 @@ impl MLOperandDataType {
             MLOperandDataType::Float16 => 16,
             MLOperandDataType::Int64 | MLOperandDataType::Uint64 => 64,
             MLOperandDataType::Int8 | MLOperandDataType::Uint8 => 8,
+            MLOperandDataType::Int4 | MLOperandDataType::Uint4 => 4,
         }
+    }
+
+    pub const fn rustnn_storage_byte_length(self, elements: usize) -> usize {
+        let bits = self.rustnn_element_size_bits();
+        (bits * elements + 7) / 8
     }
 }
 
@@ -162,6 +170,8 @@ impl MLOperandDataType {
             MLOperandDataType::Uint64 => "uint64",
             MLOperandDataType::Int8 => "int8",
             MLOperandDataType::Uint8 => "uint8",
+            MLOperandDataType::Int4 => "int4",
+            MLOperandDataType::Uint4 => "uint4",
         }
     }
 }

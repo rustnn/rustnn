@@ -256,7 +256,7 @@ fn run() -> Result<(), GraphError> {
                         .map(|dim| get_static_or_max_size(dim) as usize)
                         .product::<usize>()
                         .max(1);
-                    let byte_len = total * desc.data_type.bytes_per_element();
+                    let byte_len = desc.byte_length().unwrap_or(total).max(1);
                     v.push(rustnn::TrtxInput {
                         name: TrtxConverter::engine_io_tensor_name(&graph, op_id),
                         data: vec![0u8; byte_len],
@@ -274,7 +274,7 @@ fn run() -> Result<(), GraphError> {
                             .map(|dim| get_static_or_max_size(dim) as usize)
                             .product::<usize>()
                             .max(1);
-                        let byte_len = total * desc.data_type.bytes_per_element();
+                        let byte_len = desc.byte_length().unwrap_or(total).max(1);
                         rustnn::TrtxInput {
                             name: name.clone(),
                             data: vec![0u8; byte_len],

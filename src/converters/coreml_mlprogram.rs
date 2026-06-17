@@ -2251,6 +2251,13 @@ impl CoremlMlProgramConverter {
                     MLOperandDataType::Uint8 => "int8",
                     MLOperandDataType::Int64 => "int64",
                     MLOperandDataType::Uint64 => "uint64",
+                    MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: "int4/uint4 cast targets are not supported in CoreML conversion"
+                                .to_string(),
+                        });
+                    }
                 };
                 inputs.insert(
                     "dtype".to_string(),

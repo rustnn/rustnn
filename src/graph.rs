@@ -96,21 +96,105 @@ pub enum DataType {
 }
 
 impl DataType {
-    pub fn bytes_per_element(self) -> usize {
+    pub const fn bits_per_element(self) -> usize {
         match self {
-            // Int4/Uint4 are stored densely as one nibble; we currently treat them as one byte per element
-            // to keep tensor sizing simple. If packed storage is introduced later, this should be revisited.
-            DataType::Int4 | DataType::Uint4 => 1,
-            DataType::Float16 => 2,
-            DataType::Float32 => 4,
-            DataType::Int32 => 4,
-            DataType::Uint32 => 4,
-            DataType::Int8 => 1,
-            DataType::Uint8 => 1,
-            DataType::Int64 => 8,
-            DataType::Uint64 => 8,
+            DataType::Int4 | DataType::Uint4 => 4,
+            DataType::Int8 | DataType::Uint8 => 8,
+            DataType::Float16 => 16,
+            DataType::Float32 | DataType::Int32 | DataType::Uint32 => 32,
+            DataType::Int64 | DataType::Uint64 => 64,
         }
     }
+
+    /// Host storage bytes for `elements` values (always `ceil(elements * bits / 8)`).
+    pub fn storage_byte_length(self, elements: usize) -> Option<usize> {
+        let total_bits = elements.checked_mul(self.bits_per_element())?;
+        Some((total_bits + 7) / 8)
+    }
+
+    /// Byte size of one element when the type is whole-byte aligned (`bits % 8 == 0`).
+    pub fn bytes_per_element(self) -> usize {
+        let bits = self.bits_per_element();
+        debug_assert!(
+            bits % 8 == 0,
+            "bytes_per_element is only defined for byte-aligned types; use storage_byte_length for int4/uint4"
+        );
+        bits / 8
+    }
+}
+
+/// Packed int4/uint4 layout: even logical indices in the high nibble, odd in the low.
+pub fn unpack_int4(data: &[u8], element_count: usize) -> Vec<i32> {
+    let mut out = Vec::with_capacity(element_count);
+    for i in 0..element_count {
+        let byte = data[i / 2];
+        let nibble = if i % 2 == 0 {
+            (byte >> 4) & 0x0F
+        } else {
+            byte & 0x0F
+        };
+        out.push(if nibble >= 8 {
+            nibble as i32 - 16
+        } else {
+            nibble as i32
+        });
+    }
+    out
+}
+
+pub fn pack_int4(values: &[i32]) -> Vec<u8> {
+    let byte_len = DataType::Int4
+        .storage_byte_length(values.len())
+        .unwrap_or(0);
+    let mut out = vec![0u8; byte_len];
+    for (i, &v) in values.iter().enumerate() {
+        let nibble = ((v.clamp(-8, 7) as i8) as u8) & 0x0F;
+        if i % 2 == 0 {
+            out[i / 2] = nibble << 4;
+        } else {
+            out[i / 2] |= nibble;
+        }
+    }
+    out
+}
+
+pub fn unpack_uint4(data: &[u8], element_count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(element_count);
+    for i in 0..element_count {
+        let byte = data[i / 2];
+        let nibble = if i % 2 == 0 {
+            (byte >> 4) & 0x0F
+        } else {
+            byte & 0x0F
+        };
+        out.push(nibble);
+    }
+    out
+}
+
+pub fn pack_uint4(values: &[u8]) -> Vec<u8> {
+    let byte_len = DataType::Uint4
+        .storage_byte_length(values.len())
+        .unwrap_or(0);
+    let mut out = vec![0u8; byte_len];
+    for (i, &v) in values.iter().enumerate() {
+        let nibble = v & 0x0F;
+        if i % 2 == 0 {
+            out[i / 2] = nibble << 4;
+        } else {
+            out[i / 2] |= nibble;
+        }
+    }
+    out
+}
+
+pub fn pack_uint4_from_i32(values: &[i32]) -> Vec<u8> {
+    pack_uint4(
+        &values
+            .iter()
+            .map(|&v| v.clamp(0, 15) as u8)
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -158,7 +242,7 @@ impl OperandDescriptor {
 
     pub fn byte_length(&self) -> Option<usize> {
         let elements = self.element_count()?;
-        elements.checked_mul(self.data_type.bytes_per_element())
+        self.data_type.storage_byte_length(elements)
     }
 }
 
@@ -318,9 +402,21 @@ mod tests {
     use crate::error::GraphError;
 
     #[test]
+    fn test_data_type_bits_per_element() {
+        assert_eq!(DataType::Int4.bits_per_element(), 4);
+        assert_eq!(DataType::Uint4.bits_per_element(), 4);
+        assert_eq!(DataType::Float16.bits_per_element(), 16);
+        assert_eq!(DataType::Float32.bits_per_element(), 32);
+        assert_eq!(DataType::Int32.bits_per_element(), 32);
+        assert_eq!(DataType::Uint32.bits_per_element(), 32);
+        assert_eq!(DataType::Int8.bits_per_element(), 8);
+        assert_eq!(DataType::Uint8.bits_per_element(), 8);
+        assert_eq!(DataType::Int64.bits_per_element(), 64);
+        assert_eq!(DataType::Uint64.bits_per_element(), 64);
+    }
+
+    #[test]
     fn test_data_type_bytes_per_element() {
-        assert_eq!(DataType::Int4.bytes_per_element(), 1);
-        assert_eq!(DataType::Uint4.bytes_per_element(), 1);
         assert_eq!(DataType::Float16.bytes_per_element(), 2);
         assert_eq!(DataType::Float32.bytes_per_element(), 4);
         assert_eq!(DataType::Int32.bytes_per_element(), 4);
@@ -329,6 +425,31 @@ mod tests {
         assert_eq!(DataType::Uint8.bytes_per_element(), 1);
         assert_eq!(DataType::Int64.bytes_per_element(), 8);
         assert_eq!(DataType::Uint64.bytes_per_element(), 8);
+    }
+
+    #[test]
+    fn test_data_type_storage_byte_length_int4() {
+        assert_eq!(DataType::Int4.storage_byte_length(0), Some(0));
+        assert_eq!(DataType::Int4.storage_byte_length(1), Some(1));
+        assert_eq!(DataType::Int4.storage_byte_length(2), Some(1));
+        assert_eq!(DataType::Int4.storage_byte_length(3), Some(2));
+        assert_eq!(DataType::Int4.storage_byte_length(100), Some(50));
+    }
+
+    #[test]
+    fn test_pack_unpack_int4() {
+        let values = vec![-8_i32, 7, 0, -1];
+        let packed = pack_int4(&values);
+        assert_eq!(packed, vec![0x87, 0x0F]);
+        assert_eq!(unpack_int4(&packed, values.len()), values);
+    }
+
+    #[test]
+    fn test_pack_unpack_uint4() {
+        let values = vec![0_u8, 15, 7, 1];
+        let packed = pack_uint4(&values);
+        assert_eq!(packed, vec![0x0F, 0x71]);
+        assert_eq!(unpack_uint4(&packed, values.len()), values);
     }
 
     #[test]
@@ -377,7 +498,7 @@ mod tests {
             shape: to_dimension_vector(&[10, 10]),
             pending_permutation: vec![],
         };
-        assert_eq!(desc.byte_length(), Some(100));
+        assert_eq!(desc.byte_length(), Some(50));
     }
 
     #[test]
@@ -387,7 +508,7 @@ mod tests {
             shape: to_dimension_vector(&[8, 16]),
             pending_permutation: vec![],
         };
-        assert_eq!(desc.byte_length(), Some(128));
+        assert_eq!(desc.byte_length(), Some(64));
     }
 
     #[test]

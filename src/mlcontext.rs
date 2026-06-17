@@ -305,9 +305,8 @@ impl MLOperandDescriptor {
     }
 
     pub(crate) fn rustnn_required_bytes(&self) -> usize {
-        let bits = self.data_type().rustnn_element_size_bits();
         let elements = (self.shape().iter().copied().product::<u64>() as usize).max(1);
-        bits * elements / 8
+        self.data_type().rustnn_storage_byte_length(elements).max(1)
     }
 }
 
