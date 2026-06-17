@@ -107,3 +107,16 @@ pub mod trtx {
         }
     }
 }
+
+#[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
+pub mod coreml {
+    pub(crate) use crate::backends::DisabledContext as CoremlContext;
+
+    impl CoremlContext {
+        pub(crate) fn new_from_device_type(
+            _device_type: crate::backend_selection::DeviceType,
+        ) -> crate::error::Result<Self> {
+            panic!("Tried to create disabled CoreML backend");
+        }
+    }
+}

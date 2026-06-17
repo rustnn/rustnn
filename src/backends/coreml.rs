@@ -84,7 +84,7 @@ pub(crate) struct CoremlContext {
 }
 
 impl CoremlContext {
-    pub(crate) fn new(device_type: DeviceType) -> crate::error::Result<Self> {
+    pub(crate) fn new_from_device_type(device_type: DeviceType) -> crate::error::Result<Self> {
         Ok(Self {
             device_type,
             tensors: Vec::new(),
