@@ -246,17 +246,17 @@ impl GraphInfo {
 
         Ok(())
     }
+}
 
+/// Named input/output operands for `MLGraph` dispatch.
+pub type IoBindingMaps = (
+    HashMap<String, OperandDescriptor>,
+    HashMap<String, OperandDescriptor>,
+);
+
+impl GraphInfo {
     /// Named input/output operands for `MLGraph` dispatch, after list consistency checks.
-    pub fn io_binding_maps(
-        &self,
-    ) -> Result<
-        (
-            HashMap<String, OperandDescriptor>,
-            HashMap<String, OperandDescriptor>,
-        ),
-        GraphError,
-    > {
+    pub fn io_binding_maps(&self) -> Result<IoBindingMaps, GraphError> {
         self.validate_io_operand_lists()?;
 
         let mut inputs = HashMap::new();
