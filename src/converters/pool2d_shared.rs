@@ -114,3 +114,98 @@ pub(crate) fn infer_pool2d_ceil_mode_from_output_sizes(
         None
     }
 }
+
+/// Check whether ONNX `ceil_mode=1` would drop the last edge window for
+/// a single spatial dimension.
+///
+/// ## Background
+///
+/// **WebNN spec** (§8.9.37) defines ceil rounding as pure math:
+/// ```text
+/// output size = ceil(1 + (input_size - filter_size + pad_start + pad_end) / stride)
+/// ```
+/// WebNN has no constraint about edge windows — it always produces the pure
+/// mathematical ceiling result, even when the last window starts entirely in
+/// the padded region. Those extra positions are filled with the padding value
+/// (0 for maxPool2d, -INF for averagePool2d).
+///
+/// **ONNX** `ceil_mode=1` computes the same ceiling value but then applies an
+/// additional boundary constraint: if the last window starts at or beyond
+/// `input_size + pad_start`, it is dropped because it covers only padding.
+/// This is the PyTorch/ONNX Runtime convention.
+///
+/// ### Example where they diverge
+///
+/// Input=5, kernel=3, stride=3, pad=[1,1] (symmetric):
+/// - WebNN: ceil(1 + (5-3+1+1)/3) = ceil(2.333) = **3**
+/// - ONNX ceil_mode=1: same math = 3, but window 3 starts at index 6 (= 5+1),
+///   which is the right-padding-only region → **dropped** → result = **2**
+///
+/// Returns `true` when ONNX would drop the last window for this dimension,
+/// meaning we must use floor pooling + post-pool Pad to reach the WebNN output.
+///
+/// ## ONNX boundary condition
+///
+/// ONNX drops when: `(ceil_out - 1) * stride >= input_size + pad_start`
+///
+/// ## Parameters (ONNX pad convention)
+///
+/// - `input_size`, `kernel_size`, `stride`, `pad_start`, `pad_end`, `dilation`
+pub(crate) fn onnx_ceil_drops_edge_window(
+    input_size: i64,
+    kernel_size: i64,
+    stride: i64,
+    pad_start: i64,
+    pad_end: i64,
+    dilation: i64,
+) -> bool {
+    let eff_size = dilation * (kernel_size - 1) + 1;
+    let numer = input_size + pad_start + pad_end - eff_size;
+    if numer < 0 {
+        return false;
+    }
+    let ceil_out = (numer + stride - 1) / stride + 1;
+    let floor_out = numer / stride + 1;
+    // If ceil == floor, no window is dropped
+    if ceil_out == floor_out {
+        return false;
+    }
+    // ONNX boundary check: last window starts at (ceil_out - 1) * stride
+    // If that position >= input_size + pad_start, the window is in padding-only region
+    ceil_out.saturating_sub(1) * stride >= input_size + pad_start
+}
+
+/// Compute the WebNN ceil output size for a single pooling dimension.
+/// Pure math ceiling — no edge-window dropping.
+pub(crate) fn webnn_ceil_output_size(
+    input_size: i64,
+    kernel_size: i64,
+    stride: i64,
+    pad_start: i64,
+    pad_end: i64,
+    dilation: i64,
+) -> i64 {
+    let eff_size = dilation * (kernel_size - 1) + 1;
+    let numer = input_size + pad_start + pad_end - eff_size;
+    if numer < 0 {
+        return 1;
+    }
+    (numer + stride - 1) / stride + 1
+}
+
+/// Compute the floor output size for a single pooling dimension.
+pub(crate) fn webnn_floor_output_size(
+    input_size: i64,
+    kernel_size: i64,
+    stride: i64,
+    pad_start: i64,
+    pad_end: i64,
+    dilation: i64,
+) -> i64 {
+    let eff_size = dilation * (kernel_size - 1) + 1;
+    let numer = input_size + pad_start + pad_end - eff_size;
+    if numer < 0 {
+        return 1;
+    }
+    numer / stride + 1
+}

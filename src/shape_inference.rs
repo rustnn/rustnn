@@ -1008,12 +1008,8 @@ pub fn infer_reduce_shape(
     input_shape: &[u32],
     options: &ReduceOptions,
 ) -> Result<Vec<u32>, GraphError> {
-    // If axes is empty, reduce all dimensions
-    let axes_to_reduce: Vec<u32> = if options.axes.is_empty() {
-        (0..input_shape.len() as u32).collect()
-    } else {
-        options.axes.clone()
-    };
+    // `axes` lists dimensions to reduce; an empty list reduces over no dimensions.
+    let axes_to_reduce = options.axes.clone();
 
     // Validate that all axes are within bounds
     for &axis in &axes_to_reduce {
@@ -1062,11 +1058,7 @@ pub fn infer_reduce_shape_dimensions(
     input_shape: &[Dimension],
     options: &ReduceOptions,
 ) -> Result<Vec<Dimension>, GraphError> {
-    let axes_to_reduce: Vec<u32> = if options.axes.is_empty() {
-        (0..input_shape.len() as u32).collect()
-    } else {
-        options.axes.clone()
-    };
+    let axes_to_reduce = options.axes.clone();
 
     for &axis in &axes_to_reduce {
         if axis >= input_shape.len() as u32 {
@@ -1483,13 +1475,15 @@ pub fn infer_concat_shape_dimensions(
     Ok(output_shape)
 }
 
-/// Infer output shape for slice operation
+/// Infer output shape for slice operation.
 ///
-/// Extracts a contiguous sub-tensor from the input.
+/// WebNN `sizes` are window lengths in input index space along each axis; with `strides`
+/// greater than 1 the output extent is `ceil(sizes[i] / strides[i])`.
 pub fn infer_slice_shape(
     input_shape: &[u32],
     starts: &[u32],
     sizes: &[u32],
+    strides: Option<&[u32]>,
 ) -> Result<Vec<u32>, GraphError> {
     let rank = input_shape.len();
 
@@ -1516,9 +1510,34 @@ pub fn infer_slice_shape(
         });
     }
 
+    let strides: Vec<u32> = match strides {
+        None | Some([]) => vec![1; rank],
+        Some(s) => {
+            if s.len() != rank {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Slice strides length {} must match input rank {}, input shape: {:?}",
+                        s.len(),
+                        rank,
+                        input_shape
+                    ),
+                });
+            }
+            s.to_vec()
+        }
+    };
+
     // Validate starts and sizes are within bounds
+    let mut output_shape = Vec::with_capacity(rank);
     for (dim_idx, (&start, &size)) in starts.iter().zip(sizes.iter()).enumerate() {
         let input_dim = input_shape[dim_idx];
+        let stride = strides[dim_idx];
+
+        if stride == 0 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Slice stride for dimension {dim_idx} must be > 0"),
+            });
+        }
 
         if start >= input_dim {
             return Err(GraphError::ShapeInferenceFailed {
@@ -1541,10 +1560,16 @@ pub fn infer_slice_shape(
                 ),
             });
         }
+
+        let out_dim = if stride == 1 {
+            size
+        } else {
+            (size + stride - 1) / stride
+        };
+        output_shape.push(out_dim);
     }
 
-    // Output shape is simply the sizes
-    Ok(sizes.to_vec())
+    Ok(output_shape)
 }
 
 /// Infer output shape for expand operation
@@ -2101,6 +2126,67 @@ pub fn infer_scatter_elements_shape(
     Ok(input_shape.to_vec())
 }
 
+/// Infer output shape for resample2d.
+///
+/// Resizes the two spatial axes given by `axes` (default last two). `sizes` takes precedence
+/// over `scales` when both are set (WebNN semantics).
+pub fn infer_resample2d_shape(
+    input_shape: &[Dimension],
+    axes: [usize; 2],
+    sizes: Option<&[u32]>,
+    scales: &[f32],
+) -> Result<Vec<Dimension>, GraphError> {
+    let rank = input_shape.len();
+    if rank == 0 {
+        return Ok(input_shape.to_vec());
+    }
+    if axes[0] >= rank || axes[1] >= rank {
+        return Err(GraphError::ShapeInferenceFailed {
+            reason: format!("Resample2d axes {:?} out of bounds for rank {}", axes, rank),
+        });
+    }
+
+    let mut output = input_shape.to_vec();
+
+    if let Some(sizes) = sizes {
+        if sizes.len() != 2 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: format!("Resample2d sizes must have length 2, got {:?}", sizes),
+            });
+        }
+        output[axes[0]] = Dimension::Static(sizes[0]);
+        output[axes[1]] = Dimension::Static(sizes[1]);
+        return Ok(output);
+    }
+
+    let scale_pair: [f32; 2] = if scales.len() >= 2 {
+        [scales[0], scales[1]]
+    } else {
+        [1.0, 1.0]
+    };
+
+    for (axis_idx, scale) in scale_pair.iter().enumerate() {
+        let axis = axes[axis_idx];
+        output[axis] = match &input_shape[axis] {
+            Dimension::Static(in_dim) => {
+                Dimension::Static(((*in_dim).max(1) as f32 * scale).round().max(1.0) as u32)
+            }
+            Dimension::Dynamic(d) => {
+                if (*scale - 1.0).abs() < f32::EPSILON {
+                    Dimension::Dynamic(d.clone())
+                } else {
+                    Dimension::Dynamic(DynamicDimension {
+                        name: d.name.clone(),
+                        max_size: ((d.max_size.max(1) as f32) * scale).round().max(1.0) as u32,
+                    })
+                }
+            }
+        };
+    }
+
+    Ok(output)
+}
+
 /// Infer output shape for scatterND operation
 /// Output shape equals input shape
 pub fn infer_scatter_nd_shape(
@@ -2227,44 +2313,10 @@ pub fn infer_leakyrelu_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError
     Ok(input_shape.to_vec())
 }
 
-/// Infer output shape for prelu operation
-/// prelu has input and slope tensors; slope must be unidirectionally broadcastable to input
+/// Infer output shape for prelu operation.
+/// Output shape is the NumPy broadcast of `input` and `slope`.
 pub fn infer_prelu_shape(input_shape: &[u32], slope_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
-    // Validate that slope is unidirectionally broadcastable to input
-    // This means slope can be broadcast to input, but not vice versa
-
-    let input_rank = input_shape.len();
-    let slope_rank = slope_shape.len();
-
-    // Slope must have at most the same rank as input
-    if slope_rank > input_rank {
-        return Err(GraphError::ShapeInferenceFailed {
-            reason: format!(
-                "PReLU slope rank {} cannot exceed input rank {}",
-                slope_rank, input_rank
-            ),
-        });
-    }
-
-    // Check if slope can be broadcast to input
-    // Prepend 1s to slope to match input rank
-    let mut extended_slope = vec![1u32; input_rank - slope_rank];
-    extended_slope.extend_from_slice(slope_shape);
-
-    // Check each dimension
-    for (i, (&input_dim, &slope_dim)) in input_shape.iter().zip(extended_slope.iter()).enumerate() {
-        if slope_dim != 1 && slope_dim != input_dim {
-            return Err(GraphError::ShapeInferenceFailed {
-                reason: format!(
-                    "PReLU slope dimension {} (value {}) must be 1 or match input dimension {} (value {})",
-                    i, slope_dim, i, input_dim
-                ),
-            });
-        }
-    }
-
-    // Output shape equals input shape
-    Ok(input_shape.to_vec())
+    broadcast_shapes(input_shape, slope_shape)
 }
 
 /// Infer output shape for clamp operation
@@ -3025,7 +3077,7 @@ mod tests {
     #[test]
     fn test_reduce_all_axes() {
         let options = ReduceOptions {
-            axes: vec![],
+            axes: vec![0, 1, 2],
             keep_dimensions: false,
         };
         // [2, 3, 4] reduce all axes -> [] (scalar)
@@ -3036,12 +3088,23 @@ mod tests {
     #[test]
     fn test_reduce_all_axes_keep_dims() {
         let options = ReduceOptions {
-            axes: vec![],
+            axes: vec![0, 1, 2],
             keep_dimensions: true,
         };
         // [2, 3, 4] reduce all axes keep_dims -> [1, 1, 1]
         let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
         assert_eq!(output, vec![1, 1, 1]);
+    }
+
+    #[test]
+    fn test_reduce_empty_axes() {
+        let options = ReduceOptions {
+            axes: vec![],
+            keep_dimensions: false,
+        };
+        // Explicit empty axes: reduce over no dimensions -> same shape as input
+        let output = infer_reduce_shape(&[2, 3, 4], &options).unwrap();
+        assert_eq!(output, vec![2, 3, 4]);
     }
 
     #[test]
@@ -3219,34 +3282,43 @@ mod tests {
     #[test]
     fn test_slice_basic() {
         // 1D slice
-        assert_eq!(infer_slice_shape(&[24], &[12], &[12]).unwrap(), vec![12]);
+        assert_eq!(
+            infer_slice_shape(&[24], &[12], &[12], None).unwrap(),
+            vec![12]
+        );
 
         // 2D slice
         assert_eq!(
-            infer_slice_shape(&[4, 6], &[2, 2], &[2, 4]).unwrap(),
+            infer_slice_shape(&[4, 6], &[2, 2], &[2, 4], None).unwrap(),
             vec![2, 4]
         );
 
         // 3D slice
         assert_eq!(
-            infer_slice_shape(&[4, 3, 2], &[1, 1, 1], &[3, 2, 1]).unwrap(),
+            infer_slice_shape(&[4, 3, 2], &[1, 1, 1], &[3, 2, 1], None).unwrap(),
             vec![3, 2, 1]
+        );
+
+        // 2D slice with strides
+        assert_eq!(
+            infer_slice_shape(&[2, 12], &[0, 2], &[2, 10], Some(&[1, 4])).unwrap(),
+            vec![2, 3]
         );
     }
 
     #[test]
     fn test_slice_invalid() {
         // starts length mismatch
-        assert!(infer_slice_shape(&[4, 6], &[2], &[2, 4]).is_err());
+        assert!(infer_slice_shape(&[4, 6], &[2], &[2, 4], None).is_err());
 
         // sizes length mismatch
-        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[2]).is_err());
+        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[2], None).is_err());
 
         // start out of bounds
-        assert!(infer_slice_shape(&[4, 6], &[5, 2], &[1, 4]).is_err());
+        assert!(infer_slice_shape(&[4, 6], &[5, 2], &[1, 4], None).is_err());
 
         // end out of bounds
-        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[3, 4]).is_err());
+        assert!(infer_slice_shape(&[4, 6], &[2, 2], &[3, 4], None).is_err());
     }
 
     // Expand tests
@@ -3621,6 +3693,40 @@ mod tests {
         assert!(infer_scatter_elements_shape(&[3, 4], &[2, 4], &[2, 4], 2).is_err());
     }
 
+    #[test]
+    fn test_resample2d_shape() {
+        let input = vec![
+            Dimension::Static(1),
+            Dimension::Static(3),
+            Dimension::Static(224),
+            Dimension::Static(224),
+        ];
+        let out = infer_resample2d_shape(&input, [2, 3], Some(&[112, 112]), &[]).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(3),
+                Dimension::Static(112),
+                Dimension::Static(112),
+            ]
+        );
+
+        let out = infer_resample2d_shape(&input, [2, 3], None, &[0.5, 2.0]).unwrap();
+        assert_eq!(
+            out,
+            vec![
+                Dimension::Static(1),
+                Dimension::Static(3),
+                Dimension::Static(112),
+                Dimension::Static(448),
+            ]
+        );
+
+        let out = infer_resample2d_shape(&input, [2, 3], None, &[]).unwrap();
+        assert_eq!(out, input);
+    }
+
     // ScatterND tests
     #[test]
     fn test_scatter_nd_basic() {
@@ -3847,9 +3953,8 @@ mod tests {
 
     #[test]
     fn test_prelu_invalid_rank() {
-        // Slope rank exceeds input rank
         assert!(infer_prelu_shape(&[2, 3], &[1, 2, 3, 4]).is_err());
-        assert!(infer_prelu_shape(&[5], &[2, 5]).is_err());
+        assert_eq!(infer_prelu_shape(&[5], &[2, 5]).unwrap(), vec![2, 5]);
     }
 
     #[test]

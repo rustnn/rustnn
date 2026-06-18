@@ -11,18 +11,20 @@ use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
     MLConv2dOptions, MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions,
-    MLGatherOptions, MLGemmOptions, MLHardSigmoidOptions, MLInstanceNormalizationOptions,
-    MLLayerNormalizationOptions, MLLeakyReluOptions, MLLinearOptions, MLOperatorOptions,
-    MLPadOptions, MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions,
+    MLGatherOptions, MLGemmOptions, MLGruCellOptions, MLGruOptions, MLHardSigmoidOptions,
+    MLInstanceNormalizationOptions, MLLayerNormalizationOptions, MLLeakyReluOptions,
+    MLLinearOptions, MLLstmCellOptions, MLLstmOptions, MLOperatorOptions, MLPadOptions,
+    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions, MLScatterOptions,
     MLSliceOptions, MLSplitOptions, MLSqueezeOptions, MLTransposeOptions, MLTriangularOptions,
-    MLUnsqueezeOptions,
+    MLUnsqueezeOptions, OperandIndex,
 };
 use crate::shape_inference::{
     InputLayout, ReduceOptions, SplitSpec, infer_concat_shape_dimensions,
     infer_conv_transpose2d_shape, infer_conv2d_shape, infer_expand_shape_dimensions,
     infer_gather_shape_dimensions, infer_gemm_shape_dimensions, infer_global_pool_shape,
     infer_matmul_shape_dimensions, infer_pad_shape, infer_pool2d_shape_dimensions,
-    infer_prelu_shape, infer_reduce_shape_dimensions, infer_scatter_nd_shape, infer_split_shapes,
+    infer_prelu_shape, infer_reduce_shape_dimensions, infer_resample2d_shape,
+    infer_scatter_elements_shape, infer_scatter_nd_shape, infer_slice_shape, infer_split_shapes,
     infer_squeeze_shape, infer_tile_shape, infer_transpose_shape_dimensions,
     infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
@@ -93,7 +95,7 @@ fn slice_shape(
     operation: &Operation,
     starts: &[u32],
     sizes: &[MLDimension],
-    _options: &Option<MLSliceOptions>, // strides in options, doesn't affect shape
+    options: &Option<MLSliceOptions>,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operand = get_operand(input, graph)?;
@@ -107,11 +109,25 @@ fn slice_shape(
         .into());
     }
 
-    let mut desc = operand.descriptor.clone();
-    for (i, sz) in sizes.iter().enumerate() {
-        desc.shape[i] = sz.clone().into();
-    }
-    Ok(desc)
+    let sizes_u32: Vec<u32> = sizes.iter().map(|d| d.static_or_max()).collect();
+    let strides = options.as_ref().map(|o| o.strides.as_slice());
+    let shape = infer_shape_err(
+        "slice",
+        operation,
+        infer_slice_shape(
+            &shape_dims_u32(&operand.descriptor.shape),
+            starts,
+            &sizes_u32,
+            strides,
+        )
+        .map(|v| to_dimension_vector(&v)),
+    )?;
+
+    Ok(OperandDescriptor {
+        data_type: operand.descriptor.data_type,
+        shape,
+        pending_permutation: vec![],
+    })
 }
 
 fn concat_shape(
@@ -346,10 +362,18 @@ fn gather_shape(
 
 fn gather_elements_shape(
     input: MLOperand,
+    indices: MLOperand,
     operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
-    preserve_input_shape(input, operation, graph)
+    let input_op = get_operand(input, graph)?;
+    let indices_op = get_operand(indices, graph)?;
+    let _ = operation;
+    Ok(OperandDescriptor {
+        data_type: input_op.descriptor.data_type,
+        shape: indices_op.descriptor.shape.clone(),
+        pending_permutation: vec![],
+    })
 }
 
 fn gather_nd_shape(
@@ -441,6 +465,75 @@ fn scatter_nd_shape(
     Ok(input_op.descriptor.clone())
 }
 
+fn scatter_elements_shape(
+    input: MLOperand,
+    indices: MLOperand,
+    updates: MLOperand,
+    operation: &Operation,
+    options: Option<&MLScatterOptions>,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let input_op = get_operand(input, graph)?;
+    let indices_op = get_operand(indices, graph)?;
+    let updates_op = get_operand(updates, graph)?;
+
+    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
+
+    let fully_static =
+        |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
+    if fully_static(&input_op.descriptor.shape)
+        && fully_static(&indices_op.descriptor.shape)
+        && fully_static(&updates_op.descriptor.shape)
+    {
+        let axis = options.map(|o| o.axis).unwrap_or(0);
+        let _validated = infer_shape_err(
+            "scatterElements",
+            operation,
+            infer_scatter_elements_shape(
+                &shape_dims_u32(&input_op.descriptor.shape),
+                &shape_dims_u32(&indices_op.descriptor.shape),
+                &shape_dims_u32(&updates_op.descriptor.shape),
+                axis,
+            )
+            .map(|shape| to_dimension_vector(&shape)),
+        )?;
+    }
+
+    Ok(input_op.descriptor.clone())
+}
+
+fn resample2d_shape(
+    input: MLOperand,
+    operation: &Operation,
+    options: Option<&MLResample2dOptions>,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let input_op = get_operand(input, graph)?;
+    let default_opts = MLResample2dOptions::default();
+    let opts = options.unwrap_or(&default_opts);
+    let rank = input_op.descriptor.shape.len();
+    let axes: [usize; 2] = if opts.axes.len() == 2 {
+        [opts.axes[0] as usize, opts.axes[1] as usize]
+    } else {
+        [rank.saturating_sub(2), rank.saturating_sub(1)]
+    };
+    let shape = infer_shape_err(
+        "resample2d",
+        operation,
+        infer_resample2d_shape(
+            &input_op.descriptor.shape,
+            axes,
+            opts.sizes.as_deref(),
+            &opts.scales,
+        ),
+    )?;
+    Ok(OperandDescriptor {
+        data_type: input_op.descriptor.data_type,
+        shape,
+        pending_permutation: vec![],
+    })
+}
+
 fn argminmax_shape(
     input: MLOperand,
     operation: &Operation,
@@ -474,8 +567,13 @@ fn reduce_shape(
 ) -> Result<OperandDescriptor> {
     let operand = get_operand(input, graph)?;
     let opts = options.cloned().unwrap_or_default();
+    let rank = operand.descriptor.shape.len() as u32;
     let reduce_opts = ReduceOptions {
-        axes: opts.axes.unwrap_or_default(),
+        // WebNN: omitted `axes` reduces all dimensions; explicit `axes: []` reduces none.
+        axes: match &opts.axes {
+            None => (0..rank).collect(),
+            Some(axes) => axes.clone(),
+        },
         keep_dimensions: opts.keep_dimensions,
     };
     let shape = infer_shape_err(
@@ -739,13 +837,6 @@ fn split_shape(
     let spec = if let Some(n) = split_equal_parts {
         SplitSpec::Count(n)
     } else {
-        if splits.is_empty() || operand.descriptor.shape.len() % splits.len() != 0 {
-            return Err(Box::new(ShapeInferenceError::InvalidSplitSizes {
-                input: (input, operand.clone()),
-                operation: operation.clone(),
-            })
-            .into());
-        }
         SplitSpec::Sizes(splits.to_vec())
     };
     let mut output_shapes =
@@ -901,6 +992,43 @@ fn cast_shape(
     Ok(OperandDescriptor {
         data_type: data_type.into(),
         shape: operand.descriptor.shape.clone(),
+        pending_permutation: vec![],
+    })
+}
+
+/// WebNN: output descriptor uses zeroPoint's dataType and input's shape.
+fn quantize_linear_shape(
+    input: MLOperand,
+    zero_point: Option<u32>,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let input_op = get_operand(input, graph)?;
+    let data_type = match zero_point {
+        Some(zp) => {
+            get_operand(MLOperand { id: zp as usize }, graph)?
+                .descriptor
+                .data_type
+        }
+        None => DataType::Uint8,
+    };
+    Ok(OperandDescriptor {
+        data_type,
+        shape: input_op.descriptor.shape.clone(),
+        pending_permutation: vec![],
+    })
+}
+
+/// WebNN: output descriptor uses scale's dataType and input's shape.
+fn dequantize_linear_shape(
+    input: MLOperand,
+    scale: MLOperand,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let input_op = get_operand(input, graph)?;
+    let scale_op = get_operand(scale, graph)?;
+    Ok(OperandDescriptor {
+        data_type: scale_op.descriptor.data_type,
+        shape: input_op.descriptor.shape.clone(),
         pending_permutation: vec![],
     })
 }
@@ -1122,6 +1250,124 @@ macro_rules! impl_ternary_optional_op {
     };
 }
 
+fn recurrent_num_directions(direction: &str) -> u32 {
+    if direction == "both" { 2 } else { 1 }
+}
+
+fn recurrent_batch_size(input_shape: &[Dimension]) -> u32 {
+    match input_shape.len() {
+        2 => get_static_or_max_size(&input_shape[0]),
+        3 => get_static_or_max_size(&input_shape[1]),
+        _ => 1,
+    }
+}
+
+fn gru_output_shapes(
+    input: OperandIndex,
+    steps: u32,
+    hidden_size: u32,
+    options: Option<&MLGruOptions>,
+    graph: &GraphInfo,
+) -> Result<Vec<OperandDescriptor>> {
+    let input_operand = &graph.operands[input as usize];
+    let dtype = input_operand.descriptor.data_type;
+    let opts = options.cloned().unwrap_or_default();
+    let num_dir = recurrent_num_directions(&opts.direction);
+    let batch = recurrent_batch_size(&input_operand.descriptor.shape);
+    let h = hidden_size;
+
+    let mut shapes = vec![OperandDescriptor {
+        data_type: dtype,
+        shape: to_dimension_vector(&[num_dir, batch, h]),
+        pending_permutation: vec![],
+    }];
+    if opts.return_sequence {
+        shapes.push(OperandDescriptor {
+            data_type: dtype,
+            shape: to_dimension_vector(&[steps, num_dir, batch, h]),
+            pending_permutation: vec![],
+        });
+    }
+    Ok(shapes)
+}
+
+fn lstm_output_shapes(
+    input: OperandIndex,
+    steps: u32,
+    hidden_size: u32,
+    options: Option<&MLLstmOptions>,
+    graph: &GraphInfo,
+) -> Result<Vec<OperandDescriptor>> {
+    let input_operand = &graph.operands[input as usize];
+    let dtype = input_operand.descriptor.data_type;
+    let opts = options.cloned().unwrap_or_default();
+    let num_dir = recurrent_num_directions(&opts.direction);
+    let batch = recurrent_batch_size(&input_operand.descriptor.shape);
+    let h = hidden_size;
+
+    let mut shapes = Vec::new();
+    shapes.push(OperandDescriptor {
+        data_type: dtype,
+        shape: to_dimension_vector(&[num_dir, batch, h]),
+        pending_permutation: vec![],
+    });
+    shapes.push(OperandDescriptor {
+        data_type: dtype,
+        shape: to_dimension_vector(&[num_dir, batch, h]),
+        pending_permutation: vec![],
+    });
+    if opts.return_sequence {
+        shapes.push(OperandDescriptor {
+            data_type: dtype,
+            shape: to_dimension_vector(&[steps, num_dir, batch, h]),
+            pending_permutation: vec![],
+        });
+    }
+    Ok(shapes)
+}
+
+fn lstm_cell_output_shapes(
+    hidden_state: OperandIndex,
+    cell_state: OperandIndex,
+    graph: &GraphInfo,
+) -> Result<Vec<OperandDescriptor>> {
+    Ok(vec![
+        graph.operands[hidden_state as usize].descriptor.clone(),
+        graph.operands[cell_state as usize].descriptor.clone(),
+    ])
+}
+
+fn gru_cell_shape(
+    input: MLOperand,
+    hidden_state: MLOperand,
+    hidden_size: u32,
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> Result<OperandDescriptor> {
+    let hidden_state_desc = &graph.operands[hidden_state.id].descriptor;
+    if !hidden_state_desc.shape.is_empty() {
+        return Ok(hidden_state_desc.clone());
+    }
+
+    let input_shape = &graph.operands[input.id].descriptor.shape;
+    if input_shape.len() == 2 && hidden_size > 0 {
+        return Ok(OperandDescriptor {
+            data_type: graph.operands[input.id].descriptor.data_type,
+            shape: to_dimension_vector(&[get_static_or_max_size(&input_shape[0]), hidden_size]),
+            pending_permutation: vec![],
+        });
+    }
+
+    Err(Box::new(ShapeInferenceError::InferError {
+        op_name: "gruCell",
+        operation: operation.clone(),
+        source: GraphError::ShapeInferenceFailed {
+            reason: "unable to infer gruCell output shape".to_string(),
+        },
+    })
+    .into())
+}
+
 fn shape_inference_multi_output(
     operation: &Operation,
     graph: &GraphInfo,
@@ -1143,6 +1389,25 @@ fn shape_inference_multi_output(
             options.as_ref(),
             graph,
         ),
+        Operation::Gru {
+            input,
+            steps,
+            hidden_size,
+            options,
+            ..
+        } => gru_output_shapes(*input, *steps, *hidden_size, options.as_ref(), graph),
+        Operation::Lstm {
+            input,
+            steps,
+            hidden_size,
+            options,
+            ..
+        } => lstm_output_shapes(*input, *steps, *hidden_size, options.as_ref(), graph),
+        Operation::LstmCell {
+            hidden_state,
+            cell_state,
+            ..
+        } => lstm_cell_output_shapes(*hidden_state, *cell_state, graph),
         op => Ok(vec![shape_inference_single_output(op, graph)?]),
     }
 }
@@ -1409,9 +1674,12 @@ fn shape_inference_single_output(
             options.as_ref(),
             graph,
         ),
-        Operation::GatherElements { input, .. } => gather_elements_shape(
+        Operation::GatherElements { input, indices, .. } => gather_elements_shape(
             MLOperand {
                 id: *input as usize,
+            },
+            MLOperand {
+                id: *indices as usize,
             },
             operation,
             graph,
@@ -1424,10 +1692,22 @@ fn shape_inference_single_output(
             graph,
         ),
         // TODO: verify data type of non-input operands
-        Operation::Gru { .. }
-        | Operation::GruCell { .. }
-        | Operation::Lstm { .. }
-        | Operation::LstmCell { .. } => todo!(),
+        Operation::GruCell {
+            input,
+            hidden_state,
+            hidden_size,
+            ..
+        } => gru_cell_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *hidden_state as usize,
+            },
+            *hidden_size,
+            operation,
+            graph,
+        ),
         Operation::HardSigmoid { input, .. }
         | Operation::HardSwish { input, .. }
         | Operation::InstanceNormalization { input, .. }
@@ -1533,22 +1813,34 @@ fn shape_inference_single_output(
             new_shape,
             graph,
         ),
-        Operation::Resample2d { input, options, .. } => todo!(),
-        //resample2d_shape(
-        //MLOperand {
-        //id: *input as usize,
-        //},
-        //operation,
-        //options.as_ref(),
-        //graph,
-        //),
+        Operation::Resample2d { input, options, .. } => resample2d_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            operation,
+            options.as_ref(),
+            graph,
+        ),
         Operation::ScatterElements {
             input,
             indices,
             updates,
             options,
             ..
-        } => todo!(),
+        } => scatter_elements_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *indices as usize,
+            },
+            MLOperand {
+                id: *updates as usize,
+            },
+            operation,
+            options.as_ref(),
+            graph,
+        ),
         Operation::Slice {
             input,
             starts,
@@ -1631,15 +1923,24 @@ fn shape_inference_single_output(
             operation,
             graph,
         ),
-        Operation::QuantizeLinear { input, .. } | Operation::DequantizeLinear { input, .. } => {
-            preserve_input_shape(
-                MLOperand {
-                    id: *input as usize,
-                },
-                operation,
-                graph,
-            )
-        }
+        Operation::QuantizeLinear {
+            input, zero_point, ..
+        } => quantize_linear_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            *zero_point,
+            graph,
+        ),
+        Operation::DequantizeLinear { input, scale, .. } => dequantize_linear_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *scale as usize,
+            },
+            graph,
+        ),
         Operation::Shape { input, .. } => shape_op_shape(
             MLOperand {
                 id: *input as usize,
@@ -1680,6 +1981,9 @@ fn shape_inference_single_output(
             operation,
             graph,
         ),
+        Operation::Gru { .. } | Operation::Lstm { .. } | Operation::LstmCell { .. } => {
+            panic!("This method only supports single output ops. Use shape_inference_multi_output")
+        }
     }
 }
 
@@ -2111,6 +2415,15 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         indices,
         updates
     );
+    impl_ternary_op!(
+        scatter_elements,
+        scatter_elements_with_options,
+        ScatterElements,
+        MLScatterOptions,
+        input,
+        indices,
+        updates
+    );
     impl_ternary_optional_op!(
         quantize_linear,
         quantize_linear_with_zeropoint,
@@ -2514,8 +2827,115 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(output)
     }
 
-    // TODO:
-    // gru, gruCell, constant, lstm, lstmCell, scatter_nd, scatter_elements
+    pub fn gru_with_options(
+        &mut self,
+        input: MLOperand,
+        weight: MLOperand,
+        recurrent_weight: MLOperand,
+        steps: u32,
+        hidden_size: u32,
+        options: MLGruOptions,
+    ) -> Result<Vec<MLOperand>> {
+        let output_count = if options.return_sequence { 2 } else { 1 };
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let base = graph.operands.len() as u32;
+        let output_ids: Vec<u32> = (0..output_count as u32).map(|i| base + i).collect();
+        let operation = Operation::Gru {
+            input: input.id as u32,
+            weight: weight.id as u32,
+            recurrence: recurrent_weight.id as u32,
+            steps,
+            hidden_size,
+            options: Some(options),
+            outputs: output_ids,
+        };
+        self.add_multi_output_operation(operation)
+    }
+
+    pub fn gru_cell_with_options(
+        &mut self,
+        input: MLOperand,
+        weight: MLOperand,
+        recurrent_weight: MLOperand,
+        hidden_state: MLOperand,
+        hidden_size: u32,
+        options: MLGruCellOptions,
+    ) -> Result<MLOperand> {
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let output_id = graph.operands.len() as u32;
+        self.add_single_output_operation(Operation::GruCell {
+            input: input.id as u32,
+            weight: weight.id as u32,
+            recurrence: recurrent_weight.id as u32,
+            hidden_state: hidden_state.id as u32,
+            hidden_size,
+            options: Some(options),
+            outputs: vec![output_id],
+        })
+    }
+
+    pub fn lstm_with_options(
+        &mut self,
+        input: MLOperand,
+        weight: MLOperand,
+        recurrent_weight: MLOperand,
+        steps: u32,
+        hidden_size: u32,
+        options: MLLstmOptions,
+    ) -> Result<Vec<MLOperand>> {
+        let output_count = if options.return_sequence { 3 } else { 2 };
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let base = graph.operands.len() as u32;
+        let output_ids: Vec<u32> = (0..output_count as u32).map(|i| base + i).collect();
+        let operation = Operation::Lstm {
+            input: input.id as u32,
+            weight: weight.id as u32,
+            recurrence: recurrent_weight.id as u32,
+            steps,
+            hidden_size,
+            options: Some(options),
+            outputs: output_ids,
+        };
+        self.add_multi_output_operation(operation)
+    }
+
+    pub fn lstm_cell_with_options(
+        &mut self,
+        input: MLOperand,
+        weight: MLOperand,
+        recurrent_weight: MLOperand,
+        hidden_state: MLOperand,
+        cell_state: MLOperand,
+        hidden_size: u32,
+        options: MLLstmCellOptions,
+    ) -> Result<Vec<MLOperand>> {
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let base = graph.operands.len() as u32;
+        let output_ids = vec![base, base + 1];
+        let operation = Operation::LstmCell {
+            input: input.id as u32,
+            weight: weight.id as u32,
+            recurrence: recurrent_weight.id as u32,
+            hidden_state: hidden_state.id as u32,
+            cell_state: cell_state.id as u32,
+            hidden_size,
+            options: Some(options),
+            outputs: output_ids,
+        };
+        self.add_multi_output_operation(operation)
+    }
 }
 
 #[cfg(test)]
@@ -2710,5 +3130,56 @@ mod test {
         context.dispatch(&mut graph2, &inputs, &outputs).unwrap();
         context.read_tensor(&output, &mut output_cpu).unwrap();
         assert_eq!(output_cpu, &[4.0f32, 5., 6., 7.]);
+    }
+
+    #[test]
+    fn quantize_dequantize_linear_output_dtype() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+            return;
+        }
+
+        let mut context = context.unwrap();
+        let float_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 3].to_vec(),
+        );
+        let int_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Uint8,
+            [2, 3].to_vec(),
+        );
+        let scalar_f32 = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [].to_vec(),
+        );
+        let scalar_u8 =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Uint8, [].to_vec());
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let x = builder.input("x", &float_desc).unwrap();
+        let scale = builder.constant_from_slice(&scalar_f32, &[0.5f32]).unwrap();
+        let zero_point = builder.constant_from_slice(&scalar_u8, &[128u8]).unwrap();
+        let q = builder
+            .quantize_linear_with_zeropoint(x, scale, zero_point)
+            .unwrap();
+        assert_eq!(
+            builder.rustnn_operand_data_type(q).unwrap(),
+            crate::operator_enums::MLOperandDataType::Uint8
+        );
+        assert_eq!(builder.rustnn_operand_shape(q).unwrap(), float_desc.shape());
+
+        let dq = builder
+            .dequantize_linear_with_zeropoint(q, scale, zero_point)
+            .unwrap();
+        assert_eq!(
+            builder.rustnn_operand_data_type(dq).unwrap(),
+            crate::operator_enums::MLOperandDataType::Float32
+        );
+        assert_eq!(builder.rustnn_operand_shape(dq).unwrap(), int_desc.shape());
+
+        let mut outputs = HashMap::new();
+        outputs.insert("out", dq);
+        builder.build(&outputs).unwrap();
     }
 }

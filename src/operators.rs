@@ -512,6 +512,8 @@ pub enum Operation {
         input: OperandIndex,
         weight: OperandIndex,
         recurrence: OperandIndex,
+        steps: u32,
+        hidden_size: u32,
         options: Option<MLLstmOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -522,6 +524,7 @@ pub enum Operation {
         recurrence: OperandIndex,
         hidden_state: OperandIndex,
         cell_state: OperandIndex,
+        hidden_size: u32,
         options: Option<MLLstmCellOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -1527,6 +1530,15 @@ impl Operation {
                 obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
             }
             Operation::GruCell { hidden_size, .. } => {
+                obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
+            }
+            Operation::Lstm {
+                steps, hidden_size, ..
+            } => {
+                obj.insert("steps".to_string(), serde_json::json!(steps));
+                obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
+            }
+            Operation::LstmCell { hidden_size, .. } => {
                 obj.insert("hiddenSize".to_string(), serde_json::json!(hidden_size));
             }
             Operation::Pad {
@@ -2665,6 +2677,8 @@ impl Operation {
                 input: at(input_operands, 0)?,
                 weight: at(input_operands, 1)?,
                 recurrence: at(input_operands, 2)?,
+                steps: extras.steps.unwrap_or(0),
+                hidden_size: extras.hidden_size.unwrap_or(0),
                 options: attributes.as_lstm().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2674,6 +2688,7 @@ impl Operation {
                 recurrence: at(input_operands, 2)?,
                 hidden_state: at(input_operands, 3)?,
                 cell_state: at(input_operands, 4)?,
+                hidden_size: extras.hidden_size.unwrap_or(0),
                 options: attributes.as_lstm_cell().cloned(),
                 outputs: outputs.to_vec(),
             }),

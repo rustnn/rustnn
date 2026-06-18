@@ -234,15 +234,29 @@ pub struct MLOperatorOptions {
 /// MLArgMinMaxOptions. argMin / argMax (axis is a builder method parameter, not in this dictionary).
 ///
 /// WebNN: <https://www.w3.org/TR/webnn/#dictdef-mlargminmaxoptions>
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
     #[serde(default)]
     pub label: String,
     #[serde(default)]
     pub keep_dimensions: bool,
-    #[serde(default)]
+    #[serde(default = "default_arg_min_max_output_data_type")]
     pub output_data_type: MLOperandDataType,
+}
+
+fn default_arg_min_max_output_data_type() -> MLOperandDataType {
+    MLOperandDataType::Int32
+}
+
+impl Default for MLArgMinMaxOptions {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            keep_dimensions: false,
+            output_data_type: MLOperandDataType::Int32,
+        }
+    }
 }
 
 fn default_batch_norm_axis() -> u32 {
