@@ -11,6 +11,12 @@ pub mod trtx;
 #[derive(Debug)]
 pub(crate) struct DisabledContext {}
 
+impl DisabledContext {
+    pub(crate) fn new_from_device_idx(_device_idx: usize) -> crate::error::Result<Self> {
+        panic!("Tried to create disabled backend");
+    }
+}
+
 impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     fn accelerated(&self) -> bool {
         panic!("RustNN is expected to never use a disabled backend")
@@ -84,23 +90,10 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
 
 #[cfg(not(feature = "onnx-runtime"))]
 pub mod ort {
-
     pub(crate) use crate::backends::DisabledContext as OrtContext;
-
-    impl OrtContext {
-        pub(crate) fn new_from_ep_idx(_device_idx: usize) -> crate::error::Result<Self> {
-            panic!("Tried to create disabled ONNX backend");
-        }
-    }
 }
 
 #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
 pub mod trtx {
     pub(crate) use crate::backends::DisabledContext as TrtxContext;
-
-    impl TrtxContext {
-        pub(crate) fn new(_cuda_device_idx: u32) -> crate::error::Result<Self> {
-            panic!("Tried to create disabled Trtx backend");
-        }
-    }
 }

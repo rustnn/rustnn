@@ -192,9 +192,9 @@ static LOGGER: std::sync::LazyLock<trtx::Logger> =
     std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {
-    pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
+    pub(crate) fn new_from_device_idx(cuda_device_idx: usize) -> TrtxResult<Self> {
         // this retains the primary context
-        let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
+        let cuda_ctx = CudaContext::new(cuda_device_idx)?;
         let mut builder = trtx::Builder::new(&LOGGER)?;
         let mut config = builder.create_config()?;
         // Strip marked weights weights from engine and makes them refittable, keeps other weights

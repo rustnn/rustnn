@@ -488,7 +488,7 @@ pub(crate) struct OrtContext {
 }
 
 impl OrtContext {
-    pub(crate) fn new_from_ep_idx(device_idx: usize) -> crate::error::Result<Self> {
+    pub(crate) fn new_from_device_idx(device_idx: usize) -> crate::error::Result<Self> {
         ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
         let env =
             Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })?;

@@ -468,10 +468,10 @@ impl<'context> MLContext<'context> {
         info!("Backend selected: {desc:?}");
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match desc {
             crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => {
-                Box::new(OrtContext::new_from_ep_idx(ep_device_idx)?)
+                Box::new(OrtContext::new_from_device_idx(ep_device_idx)?)
             }
             crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => Box::new(
-                TrtxContext::new(cuda_device_idx)
+                TrtxContext::new_from_device_idx(cuda_device_idx as usize)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
             crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
