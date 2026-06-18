@@ -1565,7 +1565,7 @@ pub fn infer_slice_shape(
         let out_dim = if stride == 1 {
             size
         } else {
-            (size + stride - 1) / stride
+            size.div_ceil(stride)
         };
         output_shape.push(out_dim);
     }

@@ -4247,9 +4247,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     .map(|o| o.output_shape_rounding.eq_ignore_ascii_case("ceil"))
                     .unwrap_or(false);
                 let ceil_edge_dropped = if ceil_requested
-                    && kernel_shape.is_some()
                     && strides.len() == 2
                     && pads.len() == 4
+                    && let Some(k) = kernel_shape.as_ref()
                 {
                     let input_operand = graph.operand(input_id);
                     let input_shape = input_operand
@@ -4261,10 +4261,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         } else {
                             (input_shape[2] as i64, input_shape[3] as i64)
                         };
-                        let k = kernel_shape.as_ref().unwrap();
                         let kh = k[0];
                         let kw = k[1];
-                        let dh = dilations.get(0).copied().unwrap_or(1);
+                        let dh = dilations.first().copied().unwrap_or(1);
                         let dw = dilations.get(1).copied().unwrap_or(1);
                         let sh = strides[0];
                         let sw = strides[1];
@@ -6532,7 +6531,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         (0..4).map(|k| format!("{}_w_{}", op_name, k)).collect();
                     nodes.push(NodeProto {
                         input: vec![w_t_name, split_sizes_name.clone()],
-                        output: w_names.iter().cloned().collect(),
+                        output: w_names.to_vec(),
                         name: format!("{}_split_w", op_name),
                         op_type: "Split".to_string(),
                         attribute: vec![AttributeProto {
@@ -6549,7 +6548,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         (0..4).map(|k| format!("{}_r_{}", op_name, k)).collect();
                     nodes.push(NodeProto {
                         input: vec![r_t_name, split_sizes_name.clone()],
-                        output: r_names.iter().cloned().collect(),
+                        output: r_names.to_vec(),
                         name: format!("{}_split_r", op_name),
                         op_type: "Split".to_string(),
                         attribute: vec![AttributeProto {
@@ -6566,7 +6565,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         (0..4).map(|k| format!("{}_b_{}", op_name, k)).collect();
                     nodes.push(NodeProto {
                         input: vec![bias_name, split_sizes_name.clone()],
-                        output: b_names.iter().cloned().collect(),
+                        output: b_names.to_vec(),
                         name: format!("{}_split_b", op_name),
                         op_type: "Split".to_string(),
                         attribute: vec![],
@@ -6578,7 +6577,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         (0..4).map(|k| format!("{}_rb_{}", op_name, k)).collect();
                     nodes.push(NodeProto {
                         input: vec![recurrent_bias_name.clone(), split_sizes_name.clone()],
-                        output: rb_names.iter().cloned().collect(),
+                        output: rb_names.to_vec(),
                         name: format!("{}_split_rb", op_name),
                         op_type: "Split".to_string(),
                         attribute: vec![],
@@ -6649,14 +6648,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         int64_data: vec![h, h, h],
                         ..Default::default()
                     });
-                    let p_names = vec![
+                    let p_names = [
                         format!("{}_pi", op_name),
                         format!("{}_po", op_name),
                         format!("{}_pf", op_name),
                     ];
                     nodes.push(NodeProto {
                         input: vec![peephole_name, p_split_sizes],
-                        output: p_names.iter().cloned().collect(),
+                        output: p_names.to_vec(),
                         name: format!("{}_split_p", op_name),
                         op_type: "Split".to_string(),
                         attribute: vec![],

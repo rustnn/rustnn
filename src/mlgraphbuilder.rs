@@ -2908,6 +2908,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn lstm_cell_with_options(
         &mut self,
         input: MLOperand,
