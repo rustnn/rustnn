@@ -29,7 +29,7 @@ pub(crate) trait ListDevices {
 }
 
 // could make public later if interface stabilized
-pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
+pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
     fn accelerated(&self) -> bool;
     fn create_builder<'builder>(
         &mut self,
@@ -60,7 +60,7 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug {
     ) -> Result<()>;
 }
 
-pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug {
+pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
     /*async*/
     fn build(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>>;
 }
