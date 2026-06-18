@@ -246,7 +246,15 @@ impl GraphInfo {
 
         Ok(())
     }
+}
 
+/// Named input/output operands for `MLGraph` dispatch.
+pub type IoBindingMaps = (
+    HashMap<String, OperandDescriptor>,
+    HashMap<String, OperandDescriptor>,
+);
+
+impl GraphInfo {
     /// Named input/output operands for `MLGraph` dispatch, after list consistency checks.
     #[allow(clippy::type_complexity)]
     pub fn io_binding_maps(

@@ -12,12 +12,10 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
 use trtx::Refitter;
-use trtx::Tensor;
 use trtx::host_memory::HostMemory;
 
 use crate::GraphInfo;
@@ -173,9 +171,9 @@ pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
-    runtime: Rc<Mutex<trtx::Runtime<'context>>>,
-    config: Rc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
-    builder: Rc<Mutex<trtx::Builder<'context>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'context>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
+    builder: Arc<Mutex<trtx::Builder<'context>>>,
 }
 
 impl std::fmt::Debug for TrtxContext<'_> {
@@ -203,15 +201,15 @@ impl<'context> TrtxContext<'context> {
         // (mostly scalars)
         config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT_INDIVIDUAL);
         config.set_flag(trtx::trtx_sys::BuilderFlag::kSTRIP_PLAN);
-        let config = Rc::new(config.into());
-        let runtime = Rc::new(trtx::Runtime::new(&LOGGER)?.into());
+        let config = Arc::new(config.into());
+        let runtime = Arc::new(trtx::Runtime::new(&LOGGER)?.into());
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
             tensors: vec![],
             events: vec![],
             runtime,
-            builder: Rc::new(builder.into()),
+            builder: Arc::new(builder.into()),
             config,
         })
     }
@@ -219,16 +217,16 @@ impl<'context> TrtxContext<'context> {
 
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
-    network: Option<trtx::NetworkDefinition<'builder>>,
-    builder: Rc<Mutex<trtx::Builder<'builder>>>,
-    config: Rc<Mutex<trtx::BuilderConfig<'builder>>>,
+    network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
+    builder: Arc<Mutex<trtx::Builder<'builder>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
-    runtime: Rc<Mutex<trtx::Runtime<'builder>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
     operands: HashMap<String, MLOperand>,
-    tensors: Vec<Tensor<'builder>>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
 }
+
 impl std::fmt::Debug for TrtxBuilder<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrtxBuilder").finish()
@@ -271,6 +269,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         if engine_bytes.is_none() {
             let mut network = self
                 .network
+                .lock()
+                .unwrap()
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
@@ -395,16 +395,16 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 .map_err(|e| Error::BuilderCreationError {
                     source: Box::new(e),
                 })?,
-        );
+        )
+        .into();
         //self.networks.push(network);
         Ok(Box::new(TrtxBuilder {
             network,
-            builder: Rc::clone(&self.builder),
-            config: Rc::clone(&self.config),
-            runtime: Rc::clone(&self.runtime),
+            builder: Arc::clone(&self.builder),
+            config: Arc::clone(&self.config),
+            runtime: Arc::clone(&self.runtime),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
-            tensors: vec![],
             strings: vec![],
             // disabled for now, since feature experimental.
             // can be enabled with more test coverage, but will remain a double-sided sword
