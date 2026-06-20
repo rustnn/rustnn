@@ -1,49 +1,64 @@
 //! WPT (Web Platform Tests) conformance test runner for WebNN.
 //!
-//! Runs tests from tests/wpt_data/conformance/*.json using the ONNX backend
-//! or the TensorRT (trtx) backend when enabled.
+//! Loads tests from upstream WPT `.https.any.js` files via the Node.js bridge.
+//! All backends run through [`MLGraphBuilder`] and [`MLContext::dispatch`].
+//!
+//! Backend selection:
+//! - `WPT_BACKEND=onnx`, `onnx-gpu`, or `trtx` limits which backend trials are registered.
+//! - Filter trials by name prefix: `cargo test --test run_wpt_conformance -- onnx::relu`
 
 pub mod tolerance;
-pub mod wpt_to_graph;
+pub mod wpt_backend;
+pub mod wpt_execute_graph;
+pub mod wpt_js_loader;
+pub mod wpt_tensor;
 pub mod wpt_types;
 
-use std::fs;
-
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use insta::assert_debug_snapshot;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use log::{debug, warn};
-use tolerance::get_operation_tolerance;
-use wpt_to_graph::wpt_data_dir;
-use wpt_types::load_wpt_file;
-
-use rustnn::converters::GraphConverter;
-#[cfg(feature = "onnx-runtime")]
-use rustnn::converters::OnnxConverter;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::converters::TrtxConverter;
-#[cfg(feature = "onnx-runtime")]
-use rustnn::run_onnx_with_inputs;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::run_trtx_with_inputs;
-
-use tolerance::validate_result;
-#[cfg(feature = "onnx-runtime")]
-use wpt_to_graph::wpt_graph_to_onnx_inputs;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use wpt_to_graph::wpt_graph_to_trtx_inputs;
-use wpt_to_graph::{expected_output_to_f32, wpt_graph_to_graph_info};
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use wpt_to_graph::{
-    expected_output_to_i8, expected_output_to_i32, expected_output_to_i64, expected_output_to_u8,
-    expected_output_to_u32, expected_output_to_u64,
+use tolerance::{check_integer_tolerance, get_operation_tolerance, validate_result};
+use wpt_backend::WptBackend;
+use wpt_tensor::{
+    expected_output_to_f32, expected_output_to_i32, expected_output_to_i64, expected_output_to_u64,
 };
 use wpt_types::WptGraph;
 
 const FAILURE_DISPLAY_LEN: usize = 24;
 
+const SUPPORTED_DTYPES: &[&str] = &[
+    "float32", "float16", "int8", "uint8", "int32", "uint32", "int64", "uint64", "int4", "uint4",
+];
+
+/// Skip WPT cases whose inputs or expected outputs use unsupported tensor dtypes.
+pub fn should_skip_test(graph: &WptGraph) -> Option<String> {
+    for spec in graph.inputs.values().chain(graph.expected_outputs.values()) {
+        let dt = spec.data_type();
+        if !SUPPORTED_DTYPES
+            .iter()
+            .any(|supported| supported.eq_ignore_ascii_case(dt))
+        {
+            return Some(format!("unsupported dataType: {dt}"));
+        }
+    }
+    None
+}
+
+fn graph_operator_names(graph: &WptGraph) -> Vec<String> {
+    graph
+        .operators
+        .iter()
+        .map(|op| wpt_tensor::normalize_wpt_op_name(&op.name))
+        .collect()
+}
+
+fn runtime_input_names(graph: &WptGraph) -> Vec<String> {
+    graph
+        .inputs
+        .iter()
+        .filter(|(_, spec)| !spec.constant || !wpt_execute_graph::should_inline_constant(spec))
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
 /// Format a flat integer slice as n-dimensional for failure output (exact values, no f32 precision loss).
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
     if shape.is_empty() {
         return format!(
@@ -192,26 +207,6 @@ fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
     format!("(shape {:?})\n{}", shape, lines.join("\n"))
 }
 
-/// Decode TRTX output bytes to f32 for validation. Handles float32 and float16.
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn trtx_output_bytes_to_f32(data: &[u8], data_type: &str) -> Vec<f32> {
-    if data_type == "float16" {
-        assert!(data.len() % 2 == 0);
-        data.chunks_exact(2)
-            .map(|c| {
-                let bits = u16::from_le_bytes([c[0], c[1]]);
-                half::f16::from_bits(bits).to_f32()
-            })
-            .collect()
-    } else {
-        // float32 or other: interpret as little-endian f32
-        assert!(data.len() % 4 == 0);
-        data.chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect()
-    }
-}
-
 /// Format a slice of f32 for failure output (prefix + first N + suffix if truncated).
 fn format_f32_slice_for_failure(slice: &[f32], max_show: usize) -> String {
     if slice.is_empty() {
@@ -230,7 +225,6 @@ fn format_f32_slice_for_failure(slice: &[f32], max_show: usize) -> String {
     }
 }
 
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
@@ -248,80 +242,7 @@ fn format_int_slice_for_failure(slice: &[i64], max_show: usize) -> String {
     }
 }
 
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn format_u64_slice_for_failure(slice: &[u64], max_show: usize) -> String {
-    if slice.is_empty() {
-        return "[]".to_string();
-    }
-    let head: Vec<String> = slice
-        .iter()
-        .take(max_show)
-        .map(|v| format!("{}", v))
-        .collect();
-    let s = head.join(", ");
-    if slice.len() <= max_show {
-        format!("[{}]", s)
-    } else {
-        format!("[{} ...] (len={})", s, slice.len())
-    }
-}
-
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 fn format_i32_slice_for_failure(slice: &[i32], max_show: usize) -> String {
-    if slice.is_empty() {
-        return "[]".to_string();
-    }
-    let head: Vec<String> = slice
-        .iter()
-        .take(max_show)
-        .map(|v| format!("{}", v))
-        .collect();
-    let s = head.join(", ");
-    if slice.len() <= max_show {
-        format!("[{}]", s)
-    } else {
-        format!("[{} ...] (len={})", s, slice.len())
-    }
-}
-
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn format_i8_slice_for_failure(slice: &[i8], max_show: usize) -> String {
-    if slice.is_empty() {
-        return "[]".to_string();
-    }
-    let head: Vec<String> = slice
-        .iter()
-        .take(max_show)
-        .map(|v| format!("{}", v))
-        .collect();
-    let s = head.join(", ");
-    if slice.len() <= max_show {
-        format!("[{}]", s)
-    } else {
-        format!("[{} ...] (len={})", s, slice.len())
-    }
-}
-
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn format_u8_slice_for_failure(slice: &[u8], max_show: usize) -> String {
-    if slice.is_empty() {
-        return "[]".to_string();
-    }
-    let head: Vec<String> = slice
-        .iter()
-        .take(max_show)
-        .map(|v| format!("{}", v))
-        .collect();
-    let s = head.join(", ");
-    if slice.len() <= max_show {
-        format!("[{}]", s)
-    } else {
-        format!("[{} ...] (len={})", s, slice.len())
-    }
-}
-
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn format_u32_slice_for_failure(slice: &[u32], max_show: usize) -> String {
     if slice.is_empty() {
         return "[]".to_string();
     }
@@ -396,268 +317,129 @@ fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String
     parts.join("; ")
 }
 
-/// Discover all operation names that have WPT conformance data.
-pub fn discover_operations() -> Vec<String> {
-    let dir = wpt_data_dir();
-    if !dir.exists() {
-        return Vec::new();
-    }
-    let mut names = Vec::new();
-    if let Ok(entries) = fs::read_dir(&dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.extension().map_or(false, |e| e == "json") {
-                if let Some(stem) = p.file_stem() {
-                    names.push(stem.to_string_lossy().to_string());
-                }
-            }
-        }
-    }
-    names.sort();
-    names
-}
-
-/// Run a single WPT test case: build graph, run ONNX, validate outputs.
-#[cfg(feature = "onnx-runtime")]
+/// Run a single WPT test case: build graph via MLGraphBuilder, dispatch, validate outputs.
+#[cfg(any(
+    feature = "onnx-runtime",
+    feature = "trtx-runtime",
+    feature = "trtx-runtime-mock"
+))]
 pub fn run_one_test_case(
+    backend: WptBackend,
     operation: &str,
     test_case: &wpt_types::WptTestCase,
 ) -> Result<(), String> {
+    use rustnn::mlcontext::MLContext;
+
     let graph = &test_case.graph;
-    let (graph_info, input_names) = wpt_graph_to_graph_info(graph)?;
-    let inputs = wpt_graph_to_onnx_inputs(graph, &input_names)?;
-
-    let converter = OnnxConverter;
-    let converted = converter.convert(&graph_info).map_err(|e| e.to_string())?;
-
-    let outputs = run_onnx_with_inputs(&converted.data, converted.weights_data.as_deref(), inputs)
-        .map_err(|e| e.to_string())?;
-
+    let graph_op_names = graph_operator_names(graph);
+    let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
     let (tolerance_kind, tolerance_value) =
-        get_operation_tolerance(operation, test_case.tolerance.as_ref());
+        get_operation_tolerance(operation, test_case.tolerance.as_ref(), &graph_op_refs);
+    let wpt_ulp_only = test_case
+        .tolerance
+        .as_ref()
+        .is_some_and(|t| t.metric_type.eq_ignore_ascii_case("ulp"));
+
+    let mut context = MLContext::create(&backend.context_options()).map_err(|e| e.to_string())?;
+    let outputs = wpt_execute_graph::execute_wpt_graph(&mut context, graph)?;
+    let input_names = runtime_input_names(graph);
 
     for (out_name, expected_spec) in &graph.expected_outputs {
-        // Executor returns Vec<f32> only; skip validation for int64 expected output.
-        if expected_spec.data_type() == "int64" {
-            continue;
-        }
         let actual = outputs
-            .iter()
-            .find(|o| o.name == *out_name)
-            .ok_or_else(|| format!("output '{}' not found in results", out_name))?;
-        let expected = expected_output_to_f32(expected_spec);
-        let actual_f32: Vec<f32> = actual.data.iter().map(|&x| x as f32).collect();
-        let (pass, msg) = validate_result(&actual_f32, &expected, tolerance_kind, tolerance_value);
-        if !pass {
-            let inputs_str = format_inputs_for_failure(graph, &input_names);
-            let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-            let actual_str = format_f32_slice_for_failure(&actual_f32, FAILURE_DISPLAY_LEN);
-            let shape = expected_spec.shape();
-            let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
-                let expected_nd = format_f32_nd(&expected, shape);
-                let actual_nd = format_f32_nd(&actual_f32, shape);
-                format!(
-                    "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
-                    out_name, expected_nd, out_name, actual_nd
-                )
-            } else {
-                String::new()
-            };
-            return Err(format!(
-                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
-                operation,
-                test_case.name,
-                msg.unwrap_or_else(|| "validation failed".to_string()),
-                inputs_str,
-                out_name,
-                expected_str,
-                out_name,
-                actual_str,
-                nd_suffix
-            ));
-        }
-    }
-    Ok(())
-}
+            .get(out_name)
+            .ok_or_else(|| format!("output '{out_name}' not found in results"))?;
 
-/// No tests are skipped; all WPT conformance cases are run.
-#[cfg(feature = "onnx-runtime")]
-fn is_skipped_test(_operation: &str, _test_name: &str) -> bool {
-    false
-}
-
-/// Run a single WPT test case: build graph, run TensorRT, validate outputs.
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-pub fn run_one_test_case_trtx(
-    operation: &str,
-    test_case: &wpt_types::WptTestCase,
-) -> Result<(), String> {
-    let graph = &test_case.graph;
-    let (graph_info, input_names) = wpt_graph_to_graph_info(graph)?;
-    let inputs = wpt_graph_to_trtx_inputs(graph, &graph_info)?;
-
-    let converter = TrtxConverter;
-    let converted = converter
-        .convert(&graph_info)
-        .map_err(|e: rustnn::GraphError| e.to_string())?;
-
-    let outputs = run_trtx_with_inputs(&converted.data, inputs).map_err(|e| e.to_string())?;
-
-    let (tolerance_kind, tolerance_value) =
-        get_operation_tolerance(operation, test_case.tolerance.as_ref());
-
-    for (out_name, expected_spec) in &graph.expected_outputs {
-        let out_op_id = graph_info
-            .output_operands
-            .iter()
-            .copied()
-            .find(|&id| {
-                graph_info.operand(id).and_then(|o| o.name.as_deref()) == Some(out_name.as_str())
-            })
-            .ok_or_else(|| format!("output operand '{}' not in graph_info", out_name))?;
-        let trt_out_name = TrtxConverter::engine_io_tensor_name(&graph_info, out_op_id);
-        let actual = outputs
-            .iter()
-            .find(|o| o.name == trt_out_name)
-            .ok_or_else(|| {
-                format!(
-                    "output '{}' (TRT {}) not found in results",
-                    out_name, trt_out_name
-                )
-            })?;
-
-        let (pass, msg, expected_str, actual_str) = match expected_spec.data_type() {
+        let dtype = expected_spec.data_type();
+        let (pass, msg, expected_str, actual_str) = match dtype {
             "int64" => {
                 let expected = expected_output_to_i64(expected_spec);
-                let actual_i64: Vec<i64> = actual
-                    .data
-                    .chunks_exact(8)
-                    .map(|c| i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-                    .collect();
-                let pass =
-                    actual_i64.len() == expected.len() && actual_i64.iter().eq(expected.iter());
-                let msg = if pass {
-                    None
-                } else {
-                    Some("int64 output mismatch".to_string())
-                };
+                let actual_i64 = actual.i64_data().ok_or_else(|| {
+                    format!(
+                        "output '{out_name}' missing int64 data (type {})",
+                        actual.data_type()
+                    )
+                })?;
+                let int_tol = test_case
+                    .tolerance
+                    .as_ref()
+                    .and_then(|t| {
+                        t.value
+                            .as_u64()
+                            .or_else(|| t.value.as_f64().map(|f| f as u64))
+                    })
+                    .unwrap_or(0) as i64;
+                let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
                 let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_int_slice_for_failure(&actual_i64, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "int32" => {
-                let expected = expected_output_to_i32(expected_spec);
-                let actual_i32: Vec<i32> = actual
-                    .data
-                    .chunks_exact(4)
-                    .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
-                let pass =
-                    actual_i32.len() == expected.len() && actual_i32.iter().eq(expected.iter());
-                let msg = if pass {
-                    None
-                } else {
-                    Some("int32 output mismatch".to_string())
-                };
-                let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_i32_slice_for_failure(&actual_i32, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "int8" => {
-                let expected = expected_output_to_i8(expected_spec);
-                let actual_i8: Vec<i8> = actual.data.iter().map(|&b| b as i8).collect();
-                let pass =
-                    actual_i8.len() == expected.len() && actual_i8.iter().eq(expected.iter());
-                let msg = if pass {
-                    None
-                } else {
-                    Some("int8 output mismatch".to_string())
-                };
-                let expected_str = format_i8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_i8_slice_for_failure(&actual_i8, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "uint8" => {
-                let expected = expected_output_to_u8(expected_spec);
-                // TensorRT comparison ops (equal, greater, etc.) cast output to float32 for
-                // WebNN compatibility; convert float32 bytes to uint8 (0 or 1) when needed.
-                let actual_u8: Vec<u8> = if actual.data_type == "float32"
-                    && actual.data.len() % 4 == 0
-                    && actual.data.len() / 4 == expected.len()
-                {
-                    actual
-                        .data
-                        .chunks_exact(4)
-                        .map(|c| {
-                            let f = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
-                            if f > 0.5 { 1u8 } else { 0u8 }
-                        })
-                        .collect()
-                } else {
-                    actual.data.to_vec()
-                };
-                let pass =
-                    actual_u8.len() == expected.len() && actual_u8.iter().eq(expected.iter());
-                let msg = if pass {
-                    None
-                } else {
-                    Some("uint8 output mismatch".to_string())
-                };
-                let expected_str = format_u8_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_u8_slice_for_failure(&actual_u8, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "uint32" => {
-                let expected = expected_output_to_u32(expected_spec);
-                let actual_u32: Vec<u32> = actual
-                    .data
-                    .chunks_exact(4)
-                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
-                let pass =
-                    actual_u32.len() == expected.len() && actual_u32.iter().eq(expected.iter());
-                let msg = if pass {
-                    None
-                } else {
-                    Some("uint32 output mismatch".to_string())
-                };
-                let expected_str = format_u32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_u32_slice_for_failure(&actual_u32, FAILURE_DISPLAY_LEN);
+                let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
             }
             "uint64" => {
-                // TRTX maps Uint64 to kINT64; decode 8-byte chunks as u64 (same bit layout).
                 let expected = expected_output_to_u64(expected_spec);
-                let actual_u64: Vec<u64> = actual
-                    .data
-                    .chunks_exact(8)
-                    .map(|c| u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-                    .collect();
-                let pass =
-                    actual_u64.len() == expected.len() && actual_u64.iter().eq(expected.iter());
+                let actual_i64 = actual.i64_data().ok_or_else(|| {
+                    format!(
+                        "output '{out_name}' missing uint64 data (type {})",
+                        actual.data_type()
+                    )
+                })?;
+                let pass = actual_i64.len() == expected.len()
+                    && actual_i64
+                        .iter()
+                        .zip(expected.iter())
+                        .all(|(&a, &e)| a as u64 == e);
                 let msg = if pass {
                     None
                 } else {
                     Some("uint64 output mismatch".to_string())
                 };
-                let expected_str = format_u64_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_u64_slice_for_failure(&actual_u64, FAILURE_DISPLAY_LEN);
+                let expected_u64_str: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
+                let expected_str =
+                    format_int_slice_for_failure(&expected_u64_str, FAILURE_DISPLAY_LEN);
+                let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
+                (pass, msg, expected_str, actual_str)
+            }
+            "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32" => {
+                let expected = expected_output_to_i32(expected_spec);
+                let actual_i32 = actual.i32_data().ok_or_else(|| {
+                    format!(
+                        "output '{out_name}' missing integer data (type {})",
+                        actual.data_type()
+                    )
+                })?;
+                let int_tol = test_case
+                    .tolerance
+                    .as_ref()
+                    .and_then(|t| {
+                        t.value
+                            .as_u64()
+                            .or_else(|| t.value.as_f64().map(|f| f as u64))
+                    })
+                    .unwrap_or(0) as i64;
+                let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
+                let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
+                let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
+                let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                let actual_str = format_i32_slice_for_failure(actual_i32, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
             }
             _ => {
-                let actual_f32 = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
                 let expected = expected_output_to_f32(expected_spec);
-                // Float16 accumulation can differ in last bit; use relaxed ULP for float16 batch_norm
-                let (kind, value) = if expected_spec.data_type() == "float16"
-                    && operation == "batch_normalization"
-                {
-                    (tolerance::ToleranceKind::Ulp, 20_000u64)
-                } else {
-                    (tolerance_kind, tolerance_value)
-                };
-                let (pass, msg) = validate_result(&actual_f32, &expected, kind, value);
+                let actual_f32 = actual.f32_data().ok_or_else(|| {
+                    format!(
+                        "output '{out_name}' missing float data (type {})",
+                        actual.data_type()
+                    )
+                })?;
+                let float16 = dtype.eq_ignore_ascii_case("float16");
+                let (pass, msg) = validate_result(
+                    actual_f32,
+                    &expected,
+                    tolerance_kind,
+                    tolerance_value,
+                    float16,
+                    wpt_ulp_only,
+                );
                 let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_f32_slice_for_failure(&actual_f32, FAILURE_DISPLAY_LEN);
+                let actual_str = format_f32_slice_for_failure(actual_f32, FAILURE_DISPLAY_LEN);
                 (pass, msg, expected_str, actual_str)
             }
         };
@@ -666,74 +448,32 @@ pub fn run_one_test_case_trtx(
             let inputs_str = format_inputs_for_failure(graph, &input_names);
             let shape = expected_spec.shape();
             let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
-                let expected_nd = match expected_spec.data_type() {
-                    "int64" => {
-                        let exp = expected_output_to_i64(expected_spec);
-                        format_int_nd(&exp, shape)
-                    }
-                    "int32" => {
-                        let exp = expected_output_to_i32(expected_spec);
-                        format_int_nd(&exp, shape)
-                    }
-                    "uint32" => {
-                        let exp = expected_output_to_u32(expected_spec);
-                        format_int_nd(&exp, shape)
-                    }
-                    "uint64" => {
-                        let exp = expected_output_to_u64(expected_spec);
-                        format_int_nd(&exp, shape)
-                    }
-                    _ => {
-                        let exp = expected_output_to_f32(expected_spec);
-                        format_f32_nd(&exp, shape)
-                    }
-                };
-                let actual_nd = match expected_spec.data_type() {
-                    "int64" => {
-                        let act: Vec<i64> = actual
-                            .data
-                            .chunks_exact(8)
-                            .map(|c| {
-                                i64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
-                            })
-                            .collect();
-                        format_int_nd(&act, shape)
-                    }
-                    "int32" => {
-                        let act: Vec<i32> = actual
-                            .data
-                            .chunks_exact(4)
-                            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect();
-                        format_int_nd(&act, shape)
-                    }
-                    "uint32" => {
-                        let act: Vec<u32> = actual
-                            .data
-                            .chunks_exact(4)
-                            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect();
-                        format_int_nd(&act, shape)
-                    }
-                    "uint64" => {
-                        let act: Vec<u64> = actual
-                            .data
-                            .chunks_exact(8)
-                            .map(|c| {
-                                u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
-                            })
-                            .collect();
-                        format_int_nd(&act, shape)
-                    }
-                    _ => {
-                        let act_f = trtx_output_bytes_to_f32(&actual.data, &actual.data_type);
-                        format_f32_nd(&act_f, shape)
-                    }
-                };
-                format!(
-                    "\n  expected {} full nd:\n{}\n  actual {} full nd:\n{}",
-                    out_name, expected_nd, out_name, actual_nd
-                )
+                if matches!(
+                    dtype,
+                    "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32"
+                ) {
+                    let expected = expected_output_to_i32(expected_spec);
+                    let actual_i32 = actual.i32_data().unwrap_or(&[]);
+                    let expected_nd = format_int_nd(
+                        &expected.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+                        shape,
+                    );
+                    let actual_nd = format_int_nd(
+                        &actual_i32.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+                        shape,
+                    );
+                    format!(
+                        "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
+                    )
+                } else {
+                    let expected = expected_output_to_f32(expected_spec);
+                    let actual_f32 = actual.f32_data().unwrap_or(&[]);
+                    let expected_nd = format_f32_nd(&expected, shape);
+                    let actual_nd = format_f32_nd(actual_f32, shape);
+                    format!(
+                        "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
+                    )
+                }
             } else {
                 String::new()
             };
@@ -752,191 +492,4 @@ pub fn run_one_test_case_trtx(
         }
     }
     Ok(())
-}
-
-/// Run all WPT conformance tests using the TensorRT (trtx) backend.
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-pub fn run_all_trtx() -> Result<(), String> {
-    // Reduce TensorRT log noise: only warning and more severe.
-    let _ = pretty_env_logger::try_init();
-
-    let dir = wpt_data_dir();
-    if !dir.exists() {
-        return Err(format!("WPT data dir not found: {}", dir.display()));
-    }
-
-    let operations = discover_operations();
-    if operations.is_empty() {
-        return Err("No WPT conformance JSON files found".to_string());
-    }
-
-    println!("[WPT-TRTX] data dir: {}", dir.display());
-    println!(
-        "[WPT-TRTX] found {} operation(s): {}",
-        operations.len(),
-        operations.join(", ")
-    );
-
-    let mut passed = 0usize;
-    let skipped = 0usize;
-    let mut failed = Vec::new();
-    let mut total_cases = 0usize;
-
-    let mut test_results = Vec::new();
-    for op in &operations {
-        let path = dir.join(format!("{}.json", op));
-        let json =
-            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
-
-        let num_tests = file.tests.len();
-        total_cases += num_tests;
-        println!("[WPT-TRTX] operation '{}': {} test case(s)", op, num_tests);
-
-        for test_case in &file.tests {
-            println!("  running: {} :: {}", op, test_case.name);
-            match run_one_test_case_trtx(&file.operation, test_case) {
-                Ok(()) => {
-                    passed += 1;
-                    println!("    [OK]");
-                    debug!("{}    [OK]", test_case.name);
-                    test_results.push(format!("{}    [OK]", test_case.name));
-                }
-                Err(e) => {
-                    failed.push((format!("{}::{}", op, test_case.name), e.clone()));
-                    println!("    [FAIL]\n{}", e);
-                    test_results.push(format!("{}    [FAIL]\n{}", test_case.name, e));
-                    warn!("{}    [FAIL]\n{}", test_case.name, e);
-                }
-            }
-        }
-    }
-
-    println!(
-        "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
-        passed,
-        skipped,
-        failed.len(),
-        total_cases
-    );
-    test_results.push(format!(
-        "[WPT-TRTX] total: {} passed, {} skipped, {} failed (of {} cases)",
-        passed,
-        skipped,
-        failed.len(),
-        total_cases
-    ));
-    assert_debug_snapshot!(test_results);
-
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        let msg = failed
-            .iter()
-            .take(10)
-            .map(|(name, e)| format!("  {}: {}", name, e))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let more = if failed.len() > 10 {
-            format!("\n  ... and {} more failures", failed.len() - 10)
-        } else {
-            String::new()
-        };
-        Err(format!(
-            "WPT conformance (TRTX): {} passed, {} skipped, {} failed\n{}{}",
-            passed,
-            skipped,
-            failed.len(),
-            msg,
-            more
-        ))
-    }
-}
-
-/// Run all WPT conformance tests (discover from wpt_data/conformance).
-#[cfg(feature = "onnx-runtime")]
-pub fn run_all() -> Result<(), String> {
-    let dir = wpt_data_dir();
-    if !dir.exists() {
-        return Err(format!("WPT data dir not found: {}", dir.display()));
-    }
-
-    let operations = discover_operations();
-    if operations.is_empty() {
-        return Err("No WPT conformance JSON files found".to_string());
-    }
-
-    println!("[WPT] data dir: {}", dir.display());
-    println!(
-        "[WPT] found {} operation(s): {}",
-        operations.len(),
-        operations.join(", ")
-    );
-
-    let mut passed = 0usize;
-    let mut skipped = 0usize;
-    let mut failed = Vec::new();
-    let mut total_cases = 0usize;
-
-    for op in &operations {
-        let path = dir.join(format!("{}.json", op));
-        let json =
-            fs::read_to_string(&path).map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let file = load_wpt_file(&json).map_err(|e| format!("parse {}: {}", path.display(), e))?;
-
-        let num_tests = file.tests.len();
-        total_cases += num_tests;
-        println!("[WPT] operation '{}': {} test case(s)", op, num_tests);
-
-        for test_case in &file.tests {
-            println!("  running: {} :: {}", op, test_case.name);
-            if is_skipped_test(&file.operation, &test_case.name) {
-                skipped += 1;
-                println!("    [SKIP]");
-                continue;
-            }
-            match run_one_test_case(&file.operation, test_case) {
-                Ok(()) => {
-                    passed += 1;
-                    println!("    [OK]");
-                }
-                Err(e) => {
-                    failed.push((format!("{}::{}", op, test_case.name), e.clone()));
-                    println!("    [FAIL]\n{}", e);
-                }
-            }
-        }
-    }
-
-    println!(
-        "[WPT] total: {} passed, {} skipped, {} failed (of {} cases)",
-        passed,
-        skipped,
-        failed.len(),
-        total_cases
-    );
-
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        let msg = failed
-            .iter()
-            .take(10)
-            .map(|(name, e)| format!("  {}: {}", name, e))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let more = if failed.len() > 10 {
-            format!("\n  ... and {} more failures", failed.len() - 10)
-        } else {
-            String::new()
-        };
-        Err(format!(
-            "WPT conformance: {} passed, {} skipped, {} failed\n{}{}",
-            passed,
-            skipped,
-            failed.len(),
-            msg,
-            more
-        ))
-    }
 }

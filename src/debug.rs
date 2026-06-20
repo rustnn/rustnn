@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 static DEBUG_ENABLED: OnceLock<bool> = OnceLock::new();
 
 /// Check if debug mode is enabled via RUSTNN_DEBUG environment variable.
-/// Accepts: 1, true (case-insensitive), or 2 (used by rustnnpt --debug).
+/// Accepts: 1, true (case-insensitive), or 2 (verbose).
 #[inline]
 pub fn debug_enabled() -> bool {
     *DEBUG_ENABLED.get_or_init(|| {

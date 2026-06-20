@@ -12213,7 +12213,7 @@ impl GraphConverter for TrtxConverter {
         // Set workspace size (1 GB)
         config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 30);
 
-        // WPT / rustnnpt often compare TRT to strict IEEE fp32 (ulpTol=0). TF32 matmul/conv rounds to
+        // WPT conformance often compares TRT to strict IEEE fp32 (ulpTol=0). TF32 matmul/conv rounds to
         // 10-bit mantissa on supported GPUs and can differ by many ULP from CPU reference.
         config.clear_flag(trtx::builder::BuilderFlag::kTF32);
 

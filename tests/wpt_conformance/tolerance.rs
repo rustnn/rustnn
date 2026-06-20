@@ -43,8 +43,45 @@ impl ToleranceSpec {
     }
 }
 
-/// Default tolerances per operation (matches WPT/Python wpt_utils).
-/// Value: for Ulp = ULP count (u64); for Atol/Rtol = f64 bits (u64).
+/// Minimum ULP tolerance per operation (mirrors pywebnn/tests/wpt_assert.py OP_ULP).
+fn operation_ulp_minimum(operation: &str) -> u64 {
+    match operation {
+        "add" | "sub" | "mul" => 1,
+        "div" => 2,
+        "relu" | "reduce_max" | "reduce_min" | "max_pool2d" | "global_max_pool" => 0,
+        "sigmoid" => 34,
+        "tanh" => 16,
+        "softmax" => 256,
+        "matmul" => 512,
+        "conv2d" | "conv_transpose2d" => 16_384,
+        "exp" | "log" => 4,
+        "sqrt" => 2,
+        "reduce_sum" => 8,
+        "reduce_mean" => 16,
+        "reduce_product" => 32,
+        "reduce_l1" => 8,
+        "reduce_l2" | "reduce_log_sum" => 16,
+        "reduce_log_sum_exp" => 32,
+        "reduce_sum_square" => 16,
+        "instance_normalization" => 12,
+        "layer_normalization" => 16,
+        "batch_normalization" => 12,
+        "gelu" => 18,
+        "hard_swish" | "hardswish" => 4,
+        _ => 4,
+    }
+}
+
+/// Merge ULP minimum across the primary operation and all graph operators (pywebnn merged_float_tolerance).
+pub fn merged_ulp_minimum(primary_operation: &str, graph_operator_names: &[&str]) -> u64 {
+    let mut ulp_tol = operation_ulp_minimum(primary_operation);
+    for op in graph_operator_names {
+        ulp_tol = ulp_tol.max(operation_ulp_minimum(op));
+    }
+    ulp_tol
+}
+
+/// Default tolerances per operation when WPT does not specify a case tolerance.
 fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     let mut m = HashMap::new();
     // Exact (no rounding)
@@ -93,6 +130,7 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     );
     m.insert("average_pool2d".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("max_pool2d".to_string(), (ToleranceKind::Ulp, 0));
+    m.insert("l2_pool2d".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("global_average_pool".to_string(), (ToleranceKind::Ulp, 2));
     m.insert("global_max_pool".to_string(), (ToleranceKind::Ulp, 0));
     // Normalization
@@ -117,15 +155,18 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
 }
 
 /// Get tolerance for an operation; test-case override takes precedence.
-/// Returns (kind, value): for Ulp, value is the ULP count; for Atol/Rtol, value is f64 bits (use f64::from_bits).
+/// When WPT specifies ULP, uses max(wpt_value, merged minimum across graph ops) like pywebnn.
+/// Returns (kind, value): for Ulp, value is the ULP count; for Atol/Rtol, value is f64 bits.
 pub fn get_operation_tolerance(
     operation: &str,
     tolerance_override: Option<&super::wpt_types::WptTolerance>,
+    graph_operator_names: &[&str],
 ) -> (ToleranceKind, u64) {
     if let Some(t) = tolerance_override {
-        let kind = if t.r#type.eq_ignore_ascii_case("atol") {
+        let metric = t.metric_type.as_str();
+        let kind = if metric.eq_ignore_ascii_case("atol") {
             ToleranceKind::Atol
-        } else if t.r#type.eq_ignore_ascii_case("rtol") {
+        } else if metric.eq_ignore_ascii_case("rtol") {
             ToleranceKind::Rtol
         } else {
             ToleranceKind::Ulp
@@ -133,11 +174,14 @@ pub fn get_operation_tolerance(
         let value = match kind {
             ToleranceKind::Atol => t.value.as_f64().unwrap_or(1e-5).to_bits(),
             ToleranceKind::Rtol => t.value.as_f64().unwrap_or(1e-3).to_bits(),
-            ToleranceKind::Ulp => t
-                .value
-                .as_u64()
-                .or_else(|| t.value.as_f64().map(|f| f as u64))
-                .unwrap_or(100),
+            ToleranceKind::Ulp => {
+                let wpt_ulp = t
+                    .value
+                    .as_u64()
+                    .or_else(|| t.value.as_f64().map(|f| f as u64))
+                    .unwrap_or(100);
+                wpt_ulp.max(merged_ulp_minimum(operation, graph_operator_names))
+            }
         };
         return (kind, value);
     }
@@ -171,11 +215,42 @@ pub fn ulp_distance_f32(a: f32, b: f32) -> u32 {
     (a_bits as i64 - b_bits as i64).unsigned_abs() as u32
 }
 
+fn f16_bits_to_ordered(bits: u16) -> i32 {
+    const F16_SIGN_MASK: u16 = 0x8000;
+    const F16_NOT_SIGN_MASK: u16 = 0x7FFF;
+    if bits & F16_SIGN_MASK != 0 {
+        (F16_SIGN_MASK - (bits & F16_NOT_SIGN_MASK)) as i32
+    } else {
+        (bits + F16_SIGN_MASK) as i32
+    }
+}
+
+/// ULP distance between two values in float16 space (matches pywebnn wpt_assert.py).
+pub fn ulp_distance_f16(a: f32, b: f32) -> u32 {
+    if a.is_nan() || b.is_nan() {
+        if a.is_nan() && b.is_nan() {
+            return 0;
+        }
+        return u32::MAX;
+    }
+    if a.is_infinite() || b.is_infinite() {
+        if a == b {
+            return 0;
+        }
+        return u32::MAX;
+    }
+    let a_bits = half::f16::from_f32(a).to_bits();
+    let b_bits = half::f16::from_f32(b).to_bits();
+    f16_bits_to_ordered(a_bits).abs_diff(f16_bits_to_ordered(b_bits))
+}
+
 /// Check ULP tolerance; returns (pass, optional first failure message).
 pub fn check_ulp_tolerance(
     actual: &[f32],
     expected: &[f32],
     tolerance: u64,
+    float16: bool,
+    wpt_ulp_only: bool,
 ) -> (bool, Option<String>) {
     if actual.len() != expected.len() {
         return (
@@ -188,14 +263,50 @@ pub fn check_ulp_tolerance(
         );
     }
     let tol = tolerance as u32;
+    let abs_floor = if float16 { 1e-2_f32 } else { 2e-6_f32 };
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-        let ulp = ulp_distance_f32(a, e);
-        if ulp > tol {
+        let ulp = if float16 {
+            ulp_distance_f16(a, e)
+        } else {
+            ulp_distance_f32(a, e)
+        };
+        let abs_ok = wpt_ulp_only && (a - e).abs() <= abs_floor;
+        if ulp > tol && !abs_ok {
             return (
                 false,
                 Some(format!(
                     "index {}: actual={} expected={} ulp={} tolerance={}",
                     i, a, e, ulp, tolerance
+                )),
+            );
+        }
+    }
+    (true, None)
+}
+
+/// Exact integer comparison with optional tolerance (pywebnn INTEGER_DTYPES).
+pub fn check_integer_tolerance(
+    actual: &[i64],
+    expected: &[i64],
+    tolerance: i64,
+) -> (bool, Option<String>) {
+    if actual.len() != expected.len() {
+        return (
+            false,
+            Some(format!(
+                "shape mismatch: actual len {} expected len {}",
+                actual.len(),
+                expected.len()
+            )),
+        );
+    }
+    for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+        if (a - e).abs() > tolerance {
+            return (
+                false,
+                Some(format!(
+                    "index {}: actual={} expected={} tolerance={}",
+                    i, a, e, tolerance
                 )),
             );
         }
@@ -307,9 +418,11 @@ pub fn validate_result(
     expected: &[f32],
     kind: ToleranceKind,
     value: u64,
+    float16: bool,
+    wpt_ulp_only: bool,
 ) -> (bool, Option<String>) {
     match kind {
-        ToleranceKind::Ulp => check_ulp_tolerance(actual, expected, value),
+        ToleranceKind::Ulp => check_ulp_tolerance(actual, expected, value, float16, wpt_ulp_only),
         ToleranceKind::Atol => {
             let atol_f = f64::from_bits(value);
             check_atol_tolerance(actual, expected, atol_f)

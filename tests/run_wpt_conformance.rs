@@ -1,64 +1,97 @@
-//! WPT WebNN conformance tests (ONNX and/or TensorRT backend).
-//!
-//! ONNX: cargo test --test run_wpt_conformance --features onnx-runtime [-- run_wpt_conformance_tests]
-//! TensorRT: cargo test --test run_wpt_conformance --features trtx-runtime-mock [-- run_wpt_conformance_tests_trtx]
-//!
-//! Add -- --nocapture to see which tests are found and run.
-//! ONNX requires native library >= 1.23 on PATH; wrong version is skipped with a message.
-
-#![cfg(any(
-    feature = "onnx-runtime",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
-))]
 mod wpt_conformance;
 
-#[test]
-#[cfg(feature = "onnx-runtime")]
-fn run_wpt_conformance_tests() {
-    let result = std::panic::catch_unwind(|| wpt_conformance::run_all());
-    match result {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => panic!("WPT conformance tests failed: {}", e),
-        Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            };
-            if msg.contains("ONNX Runtime")
-                && (msg.contains("not compatible") || msg.contains("Failed to load"))
-            {
-                println!(
-                    "[SKIP] WPT conformance: ONNX Runtime load/version issue. {}",
-                    msg.lines().next().unwrap_or(&msg)
-                );
-                return;
-            }
-            panic!("WPT conformance test panicked: {}", msg);
-        }
+use libtest_mimic::{Arguments, Failed, Trial};
+use wpt_conformance::wpt_backend::WptBackend;
+use wpt_conformance::wpt_js_loader::{default_wpt_dir, load_wpt_corpus, trial_name};
+use wpt_conformance::wpt_types::WptLoadedCase;
+use wpt_conformance::{should_skip_test, wpt_types::WptTestCase};
+
+#[cfg(any(
+    feature = "onnx-runtime",
+    feature = "trtx-runtime",
+    feature = "trtx-runtime-mock"
+))]
+use wpt_conformance::run_one_test_case;
+
+fn run_trial(
+    backend: WptBackend,
+    operation: &str,
+    test_case: &WptTestCase,
+) -> Result<(), Failed> {
+    let backend_label = backend.trial_prefix();
+    if let Some(reason) = should_skip_test(&test_case.graph) {
+        eprintln!(
+            "[SKIP] {backend_label}::{operation}::{}: {reason}",
+            test_case.name
+        );
+        return Ok(());
+    }
+
+    run_one_test_case(backend, operation, test_case).map_err(Failed::from)
+}
+
+fn push_backend_trials(
+    trials: &mut Vec<Trial>,
+    backend: WptBackend,
+    cases: &[WptLoadedCase],
+) {
+    let prefix = backend.trial_prefix();
+    for case in cases {
+        let operation = case.operation.clone();
+        let test_case = case.as_test_case();
+        let name = trial_name(prefix, case);
+        trials.push(Trial::test(name, move || run_trial(backend, &operation, &test_case)));
     }
 }
 
-#[test]
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-fn run_wpt_conformance_tests_trtx() {
-    let result = std::panic::catch_unwind(wpt_conformance::run_all_trtx);
-    match result {
-        Ok(Ok(())) => {}
-        // failure expected for now. Tracked with snapshots (failure on regressions)
-        Ok(Err(e)) => println!("WPT conformance tests (TRTX) failed: {}", e),
-        Err(panic_payload) => {
-            let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                (*s).to_string()
-            } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic".to_string()
-            };
-            panic!("WPT conformance test (TRTX) panicked: {}", msg);
+fn main() {
+    let args = Arguments::from_args();
+    let wpt_dir = default_wpt_dir();
+
+    let corpus = match load_wpt_corpus(&wpt_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("{e}");
+            eprintln!();
+            eprintln!("Ensure Node.js is on PATH and fetch WPT:");
+            eprintln!("  node scripts/fetch_wpt.mjs");
+            eprintln!("Or set WPT_DIR to an existing WPT checkout.");
+            std::process::exit(2);
         }
+    };
+
+    eprintln!(
+        "[WPT] loaded {} case(s) from {} via Node bridge",
+        corpus.cases.len(),
+        if corpus.wpt_dir.is_empty() {
+            wpt_dir.display().to_string()
+        } else {
+            corpus.wpt_dir.clone()
+        }
+    );
+
+    let backends = WptBackend::selected();
+    if backends.is_empty() {
+        eprintln!(
+            "No WPT backends available (enable onnx-runtime and/or trtx-runtime-mock feature)."
+        );
+        eprintln!("Set WPT_BACKEND=onnx, onnx-gpu, or trtx to limit registered trials.");
+        std::process::exit(2);
     }
+
+    eprintln!(
+        "[WPT] backends: {}",
+        backends
+            .iter()
+            .map(|b| b.trial_prefix())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let mut trials = Vec::new();
+    for backend in backends {
+        push_backend_trials(&mut trials, backend, &corpus.cases);
+    }
+
+    libtest_mimic::run(&args, trials).exit();
 }

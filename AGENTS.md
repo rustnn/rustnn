@@ -385,18 +385,11 @@ tests/
      - Edge cases and validation
    - Run: `python -m pytest tests/test_python_api.py -v`
 
-6. **WPT Conformance Tests** (`tests/wpt_data/conformance/<operation>.json`):
-   - **IMPORTANT**: Add WPT test data for spec compliance validation
-   - Reference: [WPT WebNN Tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests)
-   - Find the operation's test file in WPT repo (e.g., `relu.https.any.js`)
-   - Extract 3-5 test cases covering:
-     - Different tensor shapes (1D, 2D, 3D, 4D)
-     - Different data types (float32 primarily)
-     - Edge cases and boundary conditions
-   - Create JSON file following format in existing test files
-   - Include proper tolerance specifications (ULP or ATOL)
-   - Verify tests: `pytest tests/test_wpt_conformance.py -k "<operation>" -v`
-   - See: `docs/wpt-test-guide.md` for detailed instructions
+6. **WPT Conformance Tests** (live upstream WPT via Rust harness):
+   - Tests are loaded from upstream WPT `.https.any.js` files (not checked-in JSON)
+   - Fetch corpus: `node scripts/fetch_wpt.mjs`
+   - Run: `make test-wpt` or `make test-wpt-op OP=<operation>`
+   - See: `docs/testing/wpt-test-guide.md` and `docs/testing/wpt-harness-todos.md`
 
 7. **Documentation** (`docs/api-reference.md`):
    - Add operation to appropriate section
@@ -444,11 +437,7 @@ tests/
 
 The Makefile provides consistent build targets with proper feature flags, environment setup, and dependency management. Using Make ensures builds are reproducible and properly configured.
 
-**IMPORTANT: Run WebNN conformance tests via `rustnnpt` (separate project) instead of in-repo conformance harnesses.**
-
-- Conformance test execution should use [rustnnpt](https://github.com/rustnn/rustnnpt).
-- `rustnnpt` lives in its own repository.
-- In-repo conformance paths under this repository are being deprecated and will be removed soon.
+**WebNN conformance tests** run in-repo via `tests/run_wpt_conformance.rs` (live WPT corpus → `MLGraphBuilder` → `MLContext`). CI runs `make test-wpt` on every push and PR.
 
 For detailed development instructions, build commands, and troubleshooting, see **[docs/development.md](docs/development.md)**.
 
@@ -456,9 +445,10 @@ Common Make targets:
 ```bash
 make build              # Build Rust library with proper features
 make python-dev         # Install Python package in development mode
-make test               # Run Rust tests
-make python-test        # Run all Python tests (API + WPT conformance)
-make python-test-wpt    # Run WPT conformance tests only
+make test               # Run Rust library tests
+make test-wpt           # WPT conformance (~2482 cases, requires Node.js + fetch_wpt)
+make test-wpt-op OP=relu # Filter WPT trials by operation name
+make python-test        # Run all Python tests (pywebnn)
 make fmt                # Format Rust code
 make help               # Show all available targets
 ```

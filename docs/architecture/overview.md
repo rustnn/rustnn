@@ -195,9 +195,10 @@ python/webnn/           # Python package
 └── __init__.pyi        # Type stubs
 
 tests/
-├── test_python_api.py  # Python API tests (320+ tests)
-├── test_wpt_conformance.py # WPT spec compliance tests
-└── test_integration.py # Integration tests
+├── run_wpt_conformance.rs  # WPT conformance (libtest_mimic + MLGraphBuilder)
+├── wpt_conformance/        # WPT harness modules
+├── test_python_api.py      # Python API tests (pywebnn)
+└── test_integration.py     # Integration tests
 
 examples/
 ├── python_simple.py          # Basic Python example

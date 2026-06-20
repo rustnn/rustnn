@@ -2392,6 +2392,30 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    pub fn split_equal_with_options(
+        &mut self,
+        input: MLOperand,
+        num_splits: u32,
+        options: MLSplitOptions,
+    ) -> Result<Vec<MLOperand>> {
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let output_ids: Vec<u32> = (0u32..num_splits)
+            .map(|i| graph.operands.len() as u32 + i)
+            .collect();
+
+        let operation = Operation::Split {
+            input: input.id as u32,
+            splits: Vec::new(),
+            split_equal_parts: Some(num_splits),
+            options: Some(options),
+            outputs: output_ids,
+        };
+        self.add_multi_output_operation(operation)
+    }
+
     impl_ternary_op!(
         batch_normalization,
         batch_normalization_with_options,

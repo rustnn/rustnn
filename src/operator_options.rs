@@ -148,6 +148,15 @@ impl OperationExtras {
                 out.hidden_size =
                     remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
             }
+            "lstm" => {
+                out.steps = remove_u32(obj, "steps");
+                out.hidden_size =
+                    remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
+            }
+            "lstmCell" => {
+                out.hidden_size =
+                    remove_u32(obj, "hiddenSize").or_else(|| remove_u32(obj, "hidden_size"));
+            }
             "instanceNormalization" => {
                 // Legacy interchange; not part of MLInstanceNormalizationOptions.
                 let _ = obj.remove("hasScale");

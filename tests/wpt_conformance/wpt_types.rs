@@ -1,17 +1,52 @@
 //! WPT (Web Platform Tests) JSON types for WebNN conformance test data.
 //!
-//! Matches the structure produced by the WPT-to-JSON conversion used in
-//! tests/wpt_data/conformance/*.json.
+//! Matches JSON produced by `scripts/wpt_bridge/dump_corpus.mjs`.
 
 use serde::Deserialize;
 use std::collections::HashMap;
 
-/// Top-level WPT test file (e.g. relu.json, reduce_sum.json).
+/// Full corpus dumped by the Node bridge in one invocation.
 #[derive(Debug, Clone, Deserialize)]
-pub struct WptTestFile {
-    pub operation: String,
+pub struct WptCorpus {
     #[serde(default)]
-    pub tests: Vec<WptTestCase>,
+    pub wpt_dir: String,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub case_count: usize,
+    #[serde(default)]
+    pub cases: Vec<WptLoadedCase>,
+    #[serde(default, rename = "fileErrors")]
+    pub file_errors: Vec<WptFileError>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WptFileError {
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    pub error: String,
+}
+
+/// One conformance case with file/operation metadata from live WPT JS.
+#[derive(Debug, Clone, Deserialize)]
+pub struct WptLoadedCase {
+    #[allow(dead_code)]
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+    pub operation: String,
+    pub name: String,
+    pub graph: WptGraph,
+    #[serde(default)]
+    pub tolerance: Option<WptTolerance>,
+}
+
+impl WptLoadedCase {
+    pub fn as_test_case(&self) -> WptTestCase {
+        WptTestCase {
+            name: self.name.clone(),
+            graph: self.graph.clone(),
+            tolerance: self.tolerance.clone(),
+        }
+    }
 }
 
 /// A single test case within a WPT file.
@@ -26,23 +61,19 @@ pub struct WptTestCase {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct WptTolerance {
-    #[serde(default)]
-    pub r#type: String,
+    #[serde(default, rename = "metricType", alias = "type")]
+    pub metric_type: String,
     #[serde(default)]
     pub value: serde_json::Value,
 }
 
-/// Graph description: inputs, operators, expected outputs (and optional constants).
+/// Graph description: inputs, operators, and expected outputs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WptGraph {
     pub inputs: HashMap<String, WptTensorSpec>,
     pub operators: Vec<WptOperator>,
     #[serde(rename = "expectedOutputs")]
     pub expected_outputs: HashMap<String, WptTensorSpec>,
-    /// Optional named constants (same shape as inputs).
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub constants: HashMap<String, WptTensorSpec>,
 }
 
 /// Descriptor for shape and data type (used in inputs and expectedOutputs).
@@ -98,9 +129,4 @@ pub struct WptOperator {
     /// Output name(s): string or array of strings.
     #[serde(default)]
     pub outputs: serde_json::Value,
-}
-
-/// Load a WPT test file from JSON.
-pub fn load_wpt_file(json: &str) -> Result<WptTestFile, serde_json::Error> {
-    serde_json::from_str(json)
 }

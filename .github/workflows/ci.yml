@@ -83,22 +83,11 @@ jobs:
         run: |
           python3 -m unittest scripts/test_generate_backend_operator_report.py
 
-  rustnnpt-gate:
-    name: RustNNPT Conformance Gate
+  wpt-conformance:
+    name: WPT Conformance
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
-      - name: Checkout rustnn
-        uses: actions/checkout@v4
-        with:
-          path: rustnn
-
-      - name: Checkout rustnnpt
-        uses: actions/checkout@v4
-        with:
-          repository: rustnn/rustnnpt
-          ref: main
-          path: rustnnpt
+      - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -113,57 +102,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
-      - name: Refresh WPT cache
-        working-directory: rustnnpt
-        run: npm run test:wpt:fetch
-
-      - name: Pin rustnnpt to this PR rustnn SHA
-        working-directory: rustnnpt
-        run: |
-          cargo update -p rustnn --precise "${{ github.event.pull_request.head.sha }}"
-
-      - name: Download ONNX Runtime shared libraries
-        working-directory: rustnn
-        run: |
-          make onnxruntime-download
-          ORT_LIB="$(find target/onnxruntime -type f \( -name 'libonnxruntime.so' -o -name 'libonnxruntime.so.*' -o -name 'libonnxruntime.dylib' -o -name 'onnxruntime.dll' \) | head -n 1)"
-          if [ -z "$ORT_LIB" ]; then
-            echo "Failed to locate ONNX Runtime dynamic library under rustnn/target/onnxruntime."
-            exit 1
-          fi
-          ORT_LIB="$(realpath "$ORT_LIB")"
-          ORT_DIR="$(dirname "$ORT_LIB")"
-          echo "ORT_DYLIB_PATH=$ORT_LIB" >> "$GITHUB_ENV"
-          echo "LD_LIBRARY_PATH=$ORT_DIR:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          echo "DYLD_LIBRARY_PATH=$ORT_DIR:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
-          echo "PATH=$ORT_DIR:$PATH" >> "$GITHUB_ENV"
-
-      - name: Run rustnnpt conformance (cpu)
-        continue-on-error: true
-        working-directory: rustnnpt
-        run: npm run test:wpt:report -- --variants cpu
-
-      - name: Enforce minimum pass rate
-        working-directory: rustnnpt
-        run: |
-          if [ ! -f reports/conformance.json ]; then
-            echo "reports/conformance.json missing after conformance run; rerunning with explicit report paths"
-            npm run test:wpt:report -- --variants cpu --report-json reports/conformance.json --report-html reports/conformance.html || true
-          fi
-          if [ ! -f reports/conformance.json ]; then
-            echo "Conformance report is still missing after rerun."
-            exit 1
-          fi
-          PASS_RATE="$(jq -r '.summary.passRatePct // (if .summary.total > 0 then (.summary.passed * 100 / .summary.total) else 0 end)' reports/conformance.json)"
-          echo "rustnnpt pass rate: ${PASS_RATE}%"
-          awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 90) { exit 1 } }'
-
-      - name: Upload rustnnpt conformance report
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
         with:
-          name: rustnnpt-conformance-report
-          path: rustnnpt/reports/conformance.json
+          path: .cache/wpt
+          key: wpt-${{ runner.os }}-${{ hashFiles('scripts/fetch_wpt.mjs') }}
+          restore-keys: |
+            wpt-${{ runner.os }}-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-wpt-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Fetch WPT corpus
+        run: node scripts/fetch_wpt.mjs
+
+      - name: Run WPT conformance tests
+        run: make test-wpt
 
   # Documentation build test
   docs-test:

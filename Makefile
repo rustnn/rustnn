@@ -89,6 +89,20 @@ test:
 	@echo "Checking backend operator support report drift..."
 	$(MAKE) docs-backend-ops-check
 
+fetch-wpt:
+	node scripts/fetch_wpt.mjs
+
+# WPT conformance (requires Node.js, WPT cache; set WPT_BACKEND=onnx|onnx-gpu|trtx to pick backend)
+test-wpt: onnxruntime-download
+	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
+
+test-wpt-trtx:
+	$(CARGO) test --test run_wpt_conformance --features trtx-runtime-mock -- --test-threads 1
+
+test-wpt-op: onnxruntime-download
+	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
+	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- $(OP) --test-threads 1
+
 fmt:
 	$(CARGO) fmt
 
@@ -238,6 +252,12 @@ help:
 	@echo "  onnxruntime-download - Download ONNX Runtime"
 	@echo "  onnx               - Convert graph to ONNX format"
 	@echo "  onnx-validate      - Convert and validate ONNX graph"
+	@echo ""
+	@echo "WPT Conformance:"
+	@echo "  fetch-wpt          - Download/update WPT corpus (.cache/wpt)"
+	@echo "  test-wpt           - Run full WPT suite (ONNX CPU, ~2482 cases)"
+	@echo "  test-wpt-op OP=... - Run filtered WPT trials"
+	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT mock backend"
 	@echo ""
 	@echo "CoreML Conversion:"
 	@echo "  coreml             - Convert graph to CoreML format"

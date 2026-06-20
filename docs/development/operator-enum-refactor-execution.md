@@ -103,7 +103,7 @@ Outputs stay on `Operation` (single- and multi-output ops unchanged).
 
 | Step | Action | Status |
 |------|--------|--------|
-| 2.1 | **WPT to Graph** (`tests/wpt_conformance/wpt_to_graph.rs`): Instead of building `Operation { op_type, input_operands, attributes }`, build `Operation { operator: Operator::X { ... }, output_operand(s), label }`. Use the same name-to-id map and attribute parsing you have now, but assign into the correct variant fields (e.g. conv2d: input, filter from args; bias from attributes into `MLConv2dOptions`). | [ ] |
+| 2.1 | **WPT harness** (`tests/wpt_conformance/wpt_execute_graph.rs`): Build graphs via `MLGraphBuilder` / `OperatorOptions` instead of legacy `Operation { op_type, attributes }`. Operand wiring stays in `build_method_args` + `invoke_builder_method`. | [ ] |
 | 2.2 | **JSON loader / build-from-JSON** (e.g. `webnn_json.rs`, any code that builds `GraphInfo` from JSON): Parse existing JSON (type + inputOperands + attributes) and convert into `Operator` (using the helper from phase 1), then into `Operation`. | [ ] |
 | 2.3 | **Python / external builders** (if in this repo): Wherever they currently push `Operation` with `op_type` and `input_operands`, switch to constructing the appropriate `Operator` variant and `Operation { operator, ... }`. If they only produce JSON, phase 1 conversion (JSON -> Operator) is enough. | [ ] |
 
@@ -131,7 +131,7 @@ Outputs stay on `Operation` (single- and multi-output ops unchanged).
 |------|--------|--------|
 | 5.1 | **OperatorOptions**: Still used inside each `Operator` variant and for "get options by op type" helpers. No need to remove; document that it is the "options only" union and that `Operator` is the full "op + operands + options" representation. | [ ] |
 | 5.2 | **OperandIndex**: Document that it is an index into `GraphInfo.operands`; semantics of each index are given by the `Operator` variant field name (input, filter, etc.). | [ ] |
-| 5.3 | **Tests**: Update all tests that build or match on `Operation` (e.g. in `onnx.rs`, `coreml_mlprogram.rs`, `wpt_to_graph`) to use `Operator` and the new `Operation` shape. Add tests that deserialize legacy JSON and that serialize to the chosen JSON format. | [ ] |
+| 5.3 | **Tests**: Update all tests that build or match on `Operation` (e.g. in `onnx.rs`, `coreml_mlprogram.rs`, WPT harness) to use `Operator` and the new `Operation` shape. Add tests that deserialize legacy JSON and that serialize to the chosen JSON format. | [ ] |
 
 ---
 
@@ -164,7 +164,7 @@ Outputs stay on `Operation` (single- and multi-output ops unchanged).
 | `converters/coreml_mlprogram.rs` | Same (~68). |
 | `converters/trtx.rs` | Same. |
 | `shape_inference.rs` | Callers get operand IDs and options from `op.operator`; keep function signatures shape/options-based where possible. |
-| `wpt_to_graph.rs` | Build `Operator` variants and `Operation { operator, ... }`. |
+| `wpt_execute_graph.rs` / `wpt_tensor.rs` | WPT graph replay via `MLGraphBuilder` and tensor helpers. |
 | Validator / loader | Use `op.operator` everywhere. |
 | Tests | Update to construct and match on `Operator`; add (de)serialization tests. |
 

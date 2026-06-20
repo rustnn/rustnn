@@ -281,87 +281,42 @@ To re-enable CoreML testing:
 
 ### What Exists
 
-✓ **Infrastructure:**
-- `tests/wpt_data/` directory with conformance/ and validation/ subdirectories
-- `tests/test_wpt_conformance.py` - Test runner framework
-- `tests/wpt_utils.py` - ULP distance calculation, tolerance checking
-- `scripts/convert_wpt_tests.py` - Python converter
-- `scripts/extract_wpt_tests.js` - Node.js extraction script (NEW)
-- `scripts/update_wpt_tests.sh` - Update automation script
+✓ **Rust harness (in-repo):**
+- `tests/run_wpt_conformance.rs` — libtest_mimic runner (~2482 conformance cases)
+- `tests/wpt_conformance/` — corpus load, `MLGraphBuilder` replay, tolerance checking
+- `scripts/fetch_wpt.mjs` — download WPT checkout into `.cache/wpt`
+- `scripts/wpt_bridge/dump_corpus.mjs` — evaluate upstream `.https.any.js` → JSON corpus
 
-✓ **Test Data Files:**
-- 54 conformance test JSON files created
-- 17 validation test JSON files created
-- Files include metadata: operation name, WPT version, commit SHA, source file
+✓ **Backends:** ONNX CPU (default trials), `WPT_BACKEND=onnx-gpu`, `WPT_BACKEND=trtx` (feature-gated)
 
-✓ **Test Data Converter:**
-- Node.js-based JavaScript parser working
-- Successfully extracts test arrays from WPT files
-- Validated with relu operation (17 test cases)
+✓ **Docs:** [wpt-test-guide.md](../testing/wpt-test-guide.md), [wpt-harness-todos.md](../testing/wpt-harness-todos.md)
 
-⚠ **Current Gap:**
-- 1/54 conformance files populated (relu)
-- 0/17 validation files populated
-- Remaining files have empty "tests": [] arrays
-- Need to download/clone full WPT repository for bulk conversion
+⚠ **Gaps:** CI wiring, TRTX smoke validation, `MLContext` reuse for performance
 
-### Test Status
+**Baseline (2026-06-19):** 2482 trials, 2482 passed, 0 failed, 15.19 s (`onnx` CPU, `--test-threads 1`). See [wpt-harness-todos.md](../testing/wpt-harness-todos.md#baseline-onnx-cpu-2026-06-19).
 
-**Before Converter Fix:**
-- pytest shows: `54 skipped` with "no_tests" reason
-- All test data files had empty "tests": [] arrays
+### Running tests
 
-**After Converter Fix (2025-12-13):**
-- pytest shows: `18 collected` for relu (17 test cases + 1 leaky_relu still empty)
-- relu.json now has 17 valid test cases covering float32, float16, int8, int32, int64
-- Tests properly parameterized but skipped due to missing ONNX Runtime (expected)
+```bash
+node scripts/fetch_wpt.mjs          # once per machine / when updating WPT
+make test-wpt                       # full ONNX CPU suite
+make test-wpt-op OP=relu            # filter by operation
+make test-wpt-trtx                  # TensorRT path (mock or real)
+```
+
+Python WPT conformance lives in [pywebnn](https://github.com/rustnn/pywebnn). CI runs the in-repo Rust harness (`make test-wpt`).
 
 ---
 
 ## Next Steps (Prioritized)
 
-### Priority 1: Complete WPT Test Data Conversion (IN PROGRESS)
+### Priority 1: WPT harness merge readiness (IN PROGRESS)
 
-**Goal:** Populate remaining WPT test data files with actual test cases from upstream WPT repository
+**Goal:** Stable in-repo Rust WPT suite in CI with recorded pass/fail baseline.
 
-**Status:** ✓ Converter working, 1/54 files converted
+**Remaining tasks:** See [wpt-harness-todos.md](../testing/wpt-harness-todos.md) (CI Node.js + fetch, full 2482-case run, TRTX smoke, performance).
 
-**Remaining Tasks:**
-
-1. **Clone WPT repository**
-   ```bash
-   git clone https://github.com/web-platform-tests/wpt.git ~/wpt
-   ```
-
-2. **Convert Tier 1 operations** (28 remaining)
-   ```bash
-   python scripts/convert_wpt_tests.py \
-     --wpt-repo ~/wpt \
-     --operations add,sub,mul,div,matmul,pow,sigmoid,tanh,softmax,reduce_sum,reduce_mean \
-     --output tests/wpt_data
-   ```
-
-   Priority operations:
-   - Binary: add, sub, mul, div, matmul, pow (6)
-   - Activations: sigmoid, tanh, softmax (3)
-   - Reductions: reduce_sum, reduce_mean, reduce_max, reduce_min, reduce_product, reduce_l1, reduce_l2, reduce_log_sum, reduce_log_sum_exp, reduce_sum_square (10)
-   - Pooling: average_pool2d, max_pool2d (2)
-   - Convolution: conv2d, conv_transpose2d (2)
-   - Normalization: batch_normalization, instance_normalization, layer_normalization (3)
-   - Shape: reshape (1)
-
-3. **Verify converted test data**
-   ```bash
-   pytest tests/test_wpt_conformance.py --collect-only
-   ```
-   - Should show 100+ test cases collected
-
-**Expected Outcome:**
-- 29/54 conformance files populated with test data
-- 100-200 test cases ready for execution
-- Tests skipped only due to runtime dependencies (ONNX Runtime, CoreML)
-
-**Estimated Effort:** 2-3 hours (mostly download/conversion time)
+**Estimated Effort:** 4-8 hours
 
 ---
 
@@ -424,12 +379,12 @@ To re-enable CoreML testing:
 
 **Goal:** Automate WPT tests in continuous integration pipeline
 
-**Prerequisites:** Priority 1 must be complete (WPT test data populated)
+**Prerequisites:** WPT harness stable (Priority 1)
 
 **Action Items:**
 1. **Add WPT tests to CI workflow** (`.github/workflows/`)
-   - Run on every PR
-   - Generate coverage report
+   - Node.js on PATH, `node scripts/fetch_wpt.mjs`
+   - `cargo test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1`
    - Fail build on test failures
 2. **Create test matrix**
    - Test on multiple platforms (Linux, macOS, Windows)
@@ -447,52 +402,27 @@ To re-enable CoreML testing:
 
 ## Testing Strategy Details
 
-### WPT Test Structure
+### WPT harness
 
-**Conformance Tests** (`tests/wpt_data/conformance/`)
-- Validate numerical correctness of operations
-- Use ULP (Units in Last Place) or ATOL (absolute tolerance) based checking
-- Test multiple input shapes, data types, and parameter combinations
-
-**Validation Tests** (`tests/wpt_data/validation/`)
-- Validate parameter constraints and error handling
-- Test invalid inputs produce correct error messages
-- Test boundary conditions
+Live upstream WPT conformance tests are evaluated via the Node bridge and executed through `MLGraphBuilder` + `MLContext`. See [wpt-test-guide.md](../testing/wpt-test-guide.md).
 
 ### Tolerance Checking
 
-The `wpt_utils.py` module implements WPT-compatible precision validation:
-
-```python
-def ulp_distance(a: float, b: float, dtype: str) -> int:
-    """Calculate ULP distance between two floating-point values"""
-    # Handles float32 and float16
-    # Returns number of representable values between a and b
-```
-
-**Per-Operation Tolerances:**
-- `relu`: 0 ULP (exact)
-- `sigmoid`: 34 ULP (float32), 3 ULP (float16)
-- `tanh`: 44 ULP (float32), 4 ULP (float16)
-- `reduce_*`: Varies based on input size (accumulation error)
+`tests/wpt_conformance/tolerance.rs` implements WPT-compatible ULP and ATOL validation. Per-test overrides come from each WPT case; operation defaults are in `tolerance.rs`.
 
 ### Running Tests
 
 ```bash
-# Run all WPT conformance tests (when data populated)
-pytest tests/test_wpt_conformance.py -v
+# WPT conformance (Rust harness)
+make test-wpt
+make test-wpt-op OP=reduce_sum
 
-# Run tests for specific operation
-pytest tests/test_wpt_conformance.py -k "reduce_sum" -v
-
-# Run with coverage report
-pytest tests/test_wpt_conformance.py --cov=webnn --cov-report=html
-
-# Run Python API tests (when runtime available)
+# Python API tests (pywebnn / when runtime available)
 pytest tests/test_python_api.py -v
 
-# Run all tests
-make python-test
+# Rust library tests
+cargo test --lib
+make test
 ```
 
 ---
