@@ -12,6 +12,7 @@ use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
 use crate::backends::coreml::CoremlContext;
+use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
@@ -79,6 +80,11 @@ pub(crate) enum MLBackendGraph<'context> {
     ),
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     CoremlModel(crate::backends::coreml::CoremlGraph),
+    #[cfg(feature = "litert-runtime")]
+    LiteRtGraph {
+        graph: crate::backends::litert::LiteRtGraph,
+        _phantom: std::marker::PhantomData<&'context ()>,
+    },
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -488,6 +494,9 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Coreml { device_type } => {
                 Box::new(CoremlContext::new_from_device_type(device_type)?)
             }
+            crate::backend_selection::BackendDevice::LiteRt { device_type } => {
+                Box::new(LiteRtContext::new_from_device_type(device_type)?)
+            }
         };
         Ok(Self { backend })
     }
@@ -499,6 +508,7 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Onnx { .. } => todo!(),
             crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::LiteRt { .. } => todo!(),
         };
         Ok(Self { backend })
     }

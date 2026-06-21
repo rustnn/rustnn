@@ -5,6 +5,8 @@ use crate::{
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
 };
 
+#[cfg(feature = "litert-runtime")]
+use crate::backends::litert::LiteRtContext;
 #[cfg(feature = "onnx-runtime")]
 use crate::backends::ort::OrtContext;
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
@@ -49,6 +51,9 @@ pub(crate) enum BackendDevice {
         //device_idx: u64,
         device_type: DeviceType,
     },
+    LiteRt {
+        device_type: DeviceType,
+    },
     //WebNN {
     //options: MLContextOptions,
     //},
@@ -59,18 +64,18 @@ pub(crate) enum BackendDevice {
 impl BackendDevice {
     fn is_npu(&self) -> bool {
         match self {
-            BackendDevice::Onnx { device_type, .. } | BackendDevice::Coreml { device_type } => {
-                *device_type == DeviceType::Npu
-            }
+            BackendDevice::Onnx { device_type, .. }
+            | BackendDevice::Coreml { device_type }
+            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Npu,
             BackendDevice::Trtx { .. } => false,
         }
     }
 
     fn is_gpu(&self) -> bool {
         match self {
-            BackendDevice::Onnx { device_type, .. } | BackendDevice::Coreml { device_type } => {
-                *device_type == DeviceType::Gpu
-            }
+            BackendDevice::Onnx { device_type, .. }
+            | BackendDevice::Coreml { device_type }
+            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Gpu,
             BackendDevice::Trtx { .. } => true,
         }
     }
@@ -78,9 +83,9 @@ impl BackendDevice {
     #[allow(dead_code)]
     fn is_cpu(&self) -> bool {
         match self {
-            BackendDevice::Onnx { device_type, .. } | BackendDevice::Coreml { device_type } => {
-                *device_type == DeviceType::Cpu
-            }
+            BackendDevice::Onnx { device_type, .. }
+            | BackendDevice::Coreml { device_type }
+            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Cpu,
             BackendDevice::Trtx { .. } => false,
         }
     }
@@ -122,6 +127,13 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
     let want_coreml = true;
 
+    #[cfg(feature = "litert-runtime")]
+    let have_litert = cfg!(feature = "litert-runtime");
+    #[cfg(feature = "litert-runtime")]
+    let want_litert = false;
+    #[cfg(feature = "litert-runtime")]
+    let litert_devices = LiteRtContext::list_devices();
+
     // TODO: also check whether WebNN is available
     //#[cfg(target_arch = "wasm32")]
     //{
@@ -158,6 +170,31 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (_, false) if have_coreml && want_coreml => BackendDevice::Coreml {
             device_type: DeviceType::Cpu,
         },
+        // LiteRT
+        #[cfg(feature = "litert-runtime")]
+        (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
+            if have_litert
+                && want_litert
+                && let Some(first) = litert_devices.iter().find(|device| device.is_gpu()) =>
+        {
+            *first
+        }
+        #[cfg(feature = "litert-runtime")]
+        (MLPowerPreference::LowPower, true)
+            if have_litert
+                && want_litert
+                && let Some(first) = litert_devices.iter().find(|device| device.is_npu()) =>
+        {
+            *first
+        }
+        #[cfg(feature = "litert-runtime")]
+        (_, false)
+            if have_litert
+                && want_litert
+                && let Some(first) = litert_devices.iter().find(|device| device.is_cpu()) =>
+        {
+            *first
+        }
         // ORT
         #[cfg(feature = "onnx-runtime")]
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)

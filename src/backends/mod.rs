@@ -11,6 +11,9 @@ pub mod ort;
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 pub mod trtx;
 
+#[cfg(feature = "litert-runtime")]
+pub mod litert;
+
 #[derive(Debug)]
 pub(crate) struct DisabledContext {}
 
@@ -119,4 +122,8 @@ pub mod coreml {
             panic!("Tried to create disabled CoreML backend");
         }
     }
+}
+#[cfg(not(feature = "litert-runtime"))]
+pub mod litert {
+    pub(crate) use crate::backends::DisabledContext as LiteRtContext;
 }
