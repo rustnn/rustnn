@@ -483,6 +483,18 @@ impl MLTensorDescriptor {
     pub fn set_operand_descriptor(&mut self, operand_descriptor: MLOperandDescriptor) {
         self.operand_descriptor = operand_descriptor;
     }
+
+    pub fn to_writable(&self) -> Self {
+        let mut copy = self.clone();
+        copy.writable = true;
+        copy
+    }
+
+    pub fn to_readable(&self) -> Self {
+        let mut copy = self.clone();
+        copy.readable = true;
+        copy
+    }
 }
 
 // TODO: this is wrong. must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
@@ -695,11 +707,9 @@ webnn_graph "sample_graph" v1 {
     }
 
     fn rw_tensor_desc(shape: Vec<u64>) -> MLTensorDescriptor {
-        let mut desc =
-            MLTensorDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape);
-        desc.set_readable(true);
-        desc.set_writable(true);
-        desc
+        MLTensorDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape)
+            .to_writable()
+            .to_readable()
     }
 
     #[test]
