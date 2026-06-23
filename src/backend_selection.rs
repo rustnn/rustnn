@@ -17,7 +17,7 @@ use crate::mlcontext::ListDevices;
 
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub(crate) enum DeviceType {
+pub enum DeviceType {
     Cpu,
     Gpu,
     Npu,
@@ -34,12 +34,19 @@ impl From<ort::memory::DeviceType> for DeviceType {
     }
 }
 
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum Backend {
+    Onnx,
+    Trtx,
+    Coreml,
+    Litert,
+}
+
 /// we currently only consider internal backends,
 /// might allow to register external backends in future
 /// like with converter registry
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
-#[allow(dead_code)]
-pub(crate) enum BackendDevice {
+pub enum BackendDevice {
     Onnx {
         ep_device_idx: usize,
         device_type: DeviceType,
@@ -60,34 +67,35 @@ pub(crate) enum BackendDevice {
     //ExternalBackend,
 }
 
-#[allow(dead_code)]
 impl BackendDevice {
-    fn is_npu(&self) -> bool {
+    pub fn backend(&self) -> Backend {
         match self {
-            BackendDevice::Onnx { device_type, .. }
-            | BackendDevice::Coreml { device_type }
-            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Npu,
-            BackendDevice::Trtx { .. } => false,
+            BackendDevice::Onnx { .. } => Backend::Onnx,
+            BackendDevice::Trtx { .. } => Backend::Trtx,
+            BackendDevice::Coreml { .. } => Backend::Coreml,
+            BackendDevice::LiteRt { .. } => Backend::Litert,
         }
     }
 
-    fn is_gpu(&self) -> bool {
+    pub fn device_type(&self) -> DeviceType {
         match self {
+            BackendDevice::Trtx { .. } => DeviceType::Gpu,
             BackendDevice::Onnx { device_type, .. }
             | BackendDevice::Coreml { device_type }
-            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Gpu,
-            BackendDevice::Trtx { .. } => true,
+            | BackendDevice::LiteRt { device_type } => *device_type,
         }
     }
 
-    #[allow(dead_code)]
-    fn is_cpu(&self) -> bool {
-        match self {
-            BackendDevice::Onnx { device_type, .. }
-            | BackendDevice::Coreml { device_type }
-            | BackendDevice::LiteRt { device_type } => *device_type == DeviceType::Cpu,
-            BackendDevice::Trtx { .. } => false,
-        }
+    pub fn is_npu(&self) -> bool {
+        self.device_type() == DeviceType::Npu
+    }
+
+    pub fn is_gpu(&self) -> bool {
+        self.device_type() == DeviceType::Gpu
+    }
+
+    pub fn is_cpu(&self) -> bool {
+        self.device_type() == DeviceType::Cpu
     }
 
     #[cfg(feature = "trtx-runtime")]
@@ -101,31 +109,22 @@ impl BackendDevice {
     }
 }
 
-//#[cfg(feature = "web")]
-//pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
-//BackendDevice::WebNN {
-//options: options.clone(),
-//}
-//}
-
-// TODO: pywebnn has device_type, and we could have backend preference for user to overwrite
-// autoselection
-//#[cfg(not(feature = "web"))]
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-    let want_trtx = true;
+    let want_trtx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Trtx);
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let trtx_devices = TrtxContext::list_devices();
 
     #[cfg(feature = "onnx-runtime")]
     let have_onnx = cfg!(feature = "onnx-runtime");
     #[cfg(feature = "onnx-runtime")]
-    let want_onnx = true;
+    let want_onnx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Onnx);
 
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
-    let want_coreml = true;
+    let want_coreml =
+        options.backend_hint.is_none() || options.backend_hint == Some(Backend::Coreml);
 
     #[cfg(feature = "litert-runtime")]
     let have_litert = cfg!(feature = "litert-runtime");
@@ -134,13 +133,10 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     #[cfg(feature = "litert-runtime")]
     let litert_devices = LiteRtContext::list_devices();
 
-    // TODO: also check whether WebNN is available
-    //#[cfg(target_arch = "wasm32")]
-    //{
-    //let window = window().expect("no global `window` exists");
-    //let navigator = window.navigator();
-    //let ml = navigator.ml();
-    //}
+    if let Some(device_hint) = options.device_hint {
+        // No fallbacks for now. We could check if device is available
+        return Ok(device_hint);
+    }
 
     Ok(match (options.power_preference, options.accelerated) {
         // Trtx

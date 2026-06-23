@@ -2,14 +2,16 @@
 
 use log::{debug, info};
 
+use crate::GraphInfo;
 use crate::OperandDescriptor;
+pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
+use crate::error::Result;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
-use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
 use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
@@ -348,7 +350,8 @@ pub struct MLContextOptions {
     // ideas for possible rustnn specific options
     // - backend preference
     // - device_type (CPU, NPU, GPU) like pywebnn
-    pub(crate) backend_hint: Option<BackendDevice>,
+    pub(crate) device_hint: Option<BackendDevice>,
+    pub(crate) backend_hint: Option<Backend>,
 }
 
 impl MLContextOptions {
@@ -356,6 +359,7 @@ impl MLContextOptions {
         Self {
             power_preference,
             accelerated,
+            device_hint: None,
             backend_hint: None,
         }
     }
@@ -374,6 +378,16 @@ impl MLContextOptions {
 
     pub fn set_accelerated(&mut self, accelerated: bool) {
         self.accelerated = accelerated;
+    }
+
+    pub fn with_rustnn_backend_hint(mut self, backend: Backend) -> Self {
+        self.backend_hint = Some(backend);
+        self
+    }
+
+    pub fn with_rustnn_device_hint(mut self, device: BackendDevice) -> Self {
+        self.device_hint = Some(device);
+        self
     }
 }
 
@@ -475,15 +489,16 @@ impl MLTensorDescriptor {
 #[derive(Debug)]
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
+    pub(crate) device: BackendDevice,
 }
 
 impl<'context> MLContext<'context> {
     // those are methods on `create_context`
     //pub async
     pub fn create(options: &MLContextOptions) -> Result<Self> {
-        let desc = select_backend(options)?;
-        info!("Backend selected: {desc:?}");
-        let backend: Box<dyn MLBackendContext<'context> + 'context> = match desc {
+        let device = select_backend(options)?;
+        info!("Backend selected: {device:?}");
+        let backend: Box<dyn MLBackendContext<'context> + 'context> = match device {
             crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => {
                 Box::new(OrtContext::new_from_ep_idx(ep_device_idx)?)
             }
@@ -498,19 +513,19 @@ impl<'context> MLContext<'context> {
                 Box::new(LiteRtContext::new_from_device_type(device_type)?)
             }
         };
-        Ok(Self { backend })
+        Ok(Self { backend, device })
     }
 
     #[expect(unreachable_code)]
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
-        let desc = select_backend_by_gpu(gpu_device)?;
-        let backend = match desc {
+        let device = select_backend_by_gpu(gpu_device)?;
+        let backend = match device {
             crate::backend_selection::BackendDevice::Onnx { .. } => todo!(),
             crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
             crate::backend_selection::BackendDevice::LiteRt { .. } => todo!(),
         };
-        Ok(Self { backend })
+        Ok(Self { backend, device })
     }
     pub fn accelerated(&self) -> bool {
         self.backend.accelerated()
@@ -536,6 +551,18 @@ impl<'context> MLContext<'context> {
     // omit destroy()? We're not JS, objects can be destroyed via drop, we could do destroy stuff in Drop
     pub fn destroy(self) {
         todo!()
+    }
+
+    pub fn rustnn_backend(&self) -> Backend {
+        self.device.backend()
+    }
+
+    pub fn rustnn_device(&self) -> BackendDevice {
+        self.device
+    }
+
+    pub fn rustnn_device_type(&self) -> DeviceType {
+        self.device.device_type()
     }
 
     pub fn dispatch(
@@ -697,6 +724,18 @@ webnn_graph "sample_graph" v1 {
         assert_eq!(*desc.operand_descriptor(), op_desc);
     }
 
+    #[test]
+    fn test_backend_hint() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(
+            &MLContextOptions::new(MLPowerPreference::Default, true)
+                .with_rustnn_backend_hint(Backend::Onnx),
+        );
+        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+            return;
+        };
+        assert_eq!(context.unwrap().rustnn_backend(), Backend::Onnx);
+    }
     #[test]
     fn test_create_context() {
         let _ = pretty_env_logger::try_init();
