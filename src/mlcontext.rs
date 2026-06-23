@@ -11,6 +11,7 @@ use crate::mlgraphbuilder::get_operand;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 use crate::{GraphInfo, backend_selection::BackendDevice, error::Result};
 
+use crate::backends::coreml::CoremlContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
@@ -76,6 +77,8 @@ pub(crate) enum MLBackendGraph<'context> {
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    CoremlModel(crate::backends::coreml::CoremlGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -94,6 +97,15 @@ impl<'context> MLBackendGraph<'context> {
         match self {
             Self::OnnxSession(g, _) => Some(g),
             _ => None,
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    pub(crate) fn as_coreml_model(&self) -> Option<&crate::backends::coreml::CoremlGraph> {
+        if let Self::CoremlModel(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 }
@@ -473,7 +485,9 @@ impl<'context> MLContext<'context> {
                 TrtxContext::new(cuda_device_idx)
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
+            crate::backend_selection::BackendDevice::Coreml { device_type } => {
+                Box::new(CoremlContext::new_from_device_type(device_type)?)
+            }
         };
         Ok(Self { backend })
     }

@@ -340,7 +340,16 @@ pub type IoBindingMaps = (
 
 impl GraphInfo {
     /// Named input/output operands for `MLGraph` dispatch, after list consistency checks.
-    pub fn io_binding_maps(&self) -> Result<IoBindingMaps, GraphError> {
+    #[allow(clippy::type_complexity)]
+    pub fn io_binding_maps(
+        &self,
+    ) -> Result<
+        (
+            HashMap<String, OperandDescriptor>,
+            HashMap<String, OperandDescriptor>,
+        ),
+        GraphError,
+    > {
         self.validate_io_operand_lists()?;
 
         let mut inputs = HashMap::new();

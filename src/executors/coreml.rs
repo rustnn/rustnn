@@ -123,6 +123,311 @@ pub fn run_coreml_with_inputs_checked(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Byte-oriented execution path for the unified WebNN IDL API (src/backends/coreml.rs).
+//
+// Unlike the f32-centric `CoremlInput`/`CoremlOutput` helpers above, this path
+// works in raw bytes keyed by feature name plus an `OperandDescriptor`, mirroring
+// the ONNX Runtime backend (`src/backends/ort.rs`). The model is compiled and
+// loaded once (`compile_model`) and reused across dispatches (`run_coreml_bytes`).
+// ---------------------------------------------------------------------------
+
+/// A CoreML model that has been compiled and loaded once, ready for repeated dispatch.
+///
+/// Owns a retained `MLModel` plus the on-disk artifacts backing it; both are
+/// released when the value is dropped. This type is intentionally not `Send`/`Sync`:
+/// `MLGraph`/`MLContext` are single-threaded, matching CoreML's usage model.
+pub(crate) struct CompiledCoremlModel {
+    /// Retained `MLModel` Objective-C object.
+    model: *mut Object,
+    /// Compute unit the model was successfully loaded with (diagnostic only).
+    compute_unit: &'static str,
+    /// Compiled `.mlmodelc` directory to clean up on drop.
+    compiled_dir: PathBuf,
+    /// Temporary `.mlmodel`/`.mlpackage` source to clean up on drop.
+    temp_model: Option<PathBuf>,
+}
+
+impl std::fmt::Debug for CompiledCoremlModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompiledCoremlModel")
+            .field("compute_unit", &self.compute_unit)
+            .field("compiled_dir", &self.compiled_dir)
+            .finish()
+    }
+}
+
+impl Drop for CompiledCoremlModel {
+    fn drop(&mut self) {
+        if !self.model.is_null() {
+            unsafe {
+                let _: () = msg_send![self.model, release];
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.compiled_dir);
+        if let Some(path) = &self.temp_model {
+            // .mlmodel is a file, .mlpackage is a directory; try both.
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir_all(path);
+        }
+    }
+}
+
+/// Raw-byte input for [`run_coreml_bytes`]: a tensor's bytes plus its descriptor.
+pub(crate) struct CoremlByteInput<'a> {
+    pub(crate) data: &'a [u8],
+    pub(crate) descriptor: &'a OperandDescriptor,
+}
+
+/// Map a [`DeviceType`] to an `MLComputeUnits` raw value.
+///
+/// Apple's `MLComputeUnits`: `cpuOnly = 0`, `cpuAndGPU = 1`, `all = 2`, `cpuAndNeuralEngine = 3`.
+fn compute_unit_for_device(
+    device_type: crate::backend_selection::DeviceType,
+) -> (i64, &'static str) {
+    match device_type {
+        crate::backend_selection::DeviceType::Npu => (3, "CPU_AND_NE"),
+        crate::backend_selection::DeviceType::Gpu => (1, "CPU_AND_GPU"),
+        crate::backend_selection::DeviceType::Cpu => (0, "CPU_ONLY"),
+    }
+}
+
+/// Compile a CoreML model from protobuf bytes and load it once with the preferred
+/// compute units, falling back to CPU-only if the preferred load fails.
+pub(crate) fn compile_model(
+    model_bytes: &[u8],
+    weights_data: Option<&[u8]>,
+    device_type: crate::backend_selection::DeviceType,
+) -> Result<CompiledCoremlModel, GraphError> {
+    autoreleasepool(|| unsafe {
+        let (compiled_url, compiled_dir, temp_model) =
+            prepare_compiled_model_with_weights(model_bytes, weights_data, None)?;
+
+        let (preferred_code, preferred_name) = compute_unit_for_device(device_type);
+        let mut candidates: Vec<(i64, &'static str)> = vec![(preferred_code, preferred_name)];
+        if preferred_code != 0 {
+            candidates.push((0, "CPU_ONLY"));
+        }
+
+        let mut last_error = String::from("MLModel load failed");
+        for (code, name) in candidates {
+            let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let () = msg_send![config, setComputeUnits: code];
+            let mut error: *mut Object = ptr::null_mut();
+            let model: *mut Object = msg_send![class!(MLModel), modelWithContentsOfURL: compiled_url configuration: config error: &mut error];
+            if model.is_null() {
+                last_error = ns_error_to_string(error, "MLModel load failed");
+                continue;
+            }
+            // Retain the model so it outlives this autoreleasepool.
+            let _: *mut Object = msg_send![model, retain];
+            return Ok(CompiledCoremlModel {
+                model,
+                compute_unit: name,
+                compiled_dir,
+                temp_model,
+            });
+        }
+
+        // No compute unit could load the model: clean up the on-disk artifacts.
+        let _ = std::fs::remove_dir_all(&compiled_dir);
+        if let Some(path) = &temp_model {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir_all(path);
+        }
+        Err(GraphError::CoremlRuntimeFailed { reason: last_error })
+    })
+}
+
+/// Run a compiled CoreML model with raw-byte inputs, returning raw-byte outputs by name.
+pub(crate) fn run_coreml_bytes(
+    model: &CompiledCoremlModel,
+    inputs: &HashMap<String, CoremlByteInput<'_>>,
+    output_descriptors: &HashMap<String, OperandDescriptor>,
+) -> Result<HashMap<String, Vec<u8>>, GraphError> {
+    autoreleasepool(|| unsafe {
+        let dict: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
+
+        for (name, input) in inputs {
+            let key = nsstring_from_str(name)?;
+            let mut shape_i64: Vec<i64> = input
+                .descriptor
+                .static_or_max_shape()
+                .iter()
+                .map(|&d| i64::from(d))
+                .collect();
+            if shape_i64.is_empty() {
+                // Scalars are represented as a single-element 1-D array.
+                shape_i64.push(1);
+            }
+            let code = map_dtype(input.descriptor.data_type)?;
+            let array = create_multi_array(&shape_i64, code)?;
+            fill_multiarray_from_bytes(array, input.data, input.descriptor.data_type)?;
+            let feature_value: *mut Object =
+                msg_send![class!(MLFeatureValue), featureValueWithMultiArray: array];
+            let () = msg_send![dict, setObject: feature_value forKey: key];
+        }
+
+        let mut create_error: *mut Object = ptr::null_mut();
+        let provider_alloc: *mut Object = msg_send![class!(MLDictionaryFeatureProvider), alloc];
+        let provider: *mut Object =
+            msg_send![provider_alloc, initWithDictionary: dict error: &mut create_error];
+        if provider.is_null() {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: ns_error_to_string(create_error, "MLDictionaryFeatureProvider init failed"),
+            });
+        }
+
+        let mut predict_error: *mut Object = ptr::null_mut();
+        let output_provider: *mut Object =
+            msg_send![model.model, predictionFromFeatures: provider error: &mut predict_error];
+        if output_provider.is_null() {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: ns_error_to_string(predict_error, "prediction failed"),
+            });
+        }
+
+        let mut result = HashMap::with_capacity(output_descriptors.len());
+        for (name, descriptor) in output_descriptors {
+            let key = nsstring_from_str(name)?;
+            let value: *mut Object = msg_send![output_provider, featureValueForName: key];
+            if value.is_null() {
+                return Err(GraphError::CoremlRuntimeFailed {
+                    reason: format!("model did not produce output `{name}`"),
+                });
+            }
+            let array: *mut Object = msg_send![value, multiArrayValue];
+            if array.is_null() {
+                return Err(GraphError::CoremlRuntimeFailed {
+                    reason: format!("output `{name}` is not a MLMultiArray"),
+                });
+            }
+            let bytes = extract_multiarray_bytes(array, descriptor)?;
+            result.insert(name.clone(), bytes);
+        }
+        Ok(result)
+    })
+}
+
+/// Copy raw bytes into a freshly created `MLMultiArray`. The array must have been
+/// created with the data type matching `dtype`, so the byte layout is identical.
+unsafe fn fill_multiarray_from_bytes(
+    array: *mut Object,
+    src: &[u8],
+    dtype: DataType,
+) -> Result<(), GraphError> {
+    let count_obj: isize = msg_send![array, count];
+    let count = usize::try_from(count_obj).map_err(|_| GraphError::CoremlRuntimeFailed {
+        reason: format!("invalid element count: {count_obj}"),
+    })?;
+    let elem = dtype.bytes_per_element();
+    let expected = count.saturating_mul(elem);
+    if src.len() != expected {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: format!(
+                "input byte length mismatch: expected {expected} bytes ({count} elements), got {}",
+                src.len()
+            ),
+        });
+    }
+    if expected == 0 {
+        return Ok(());
+    }
+    let ptr: *mut c_void = msg_send![array, dataPointer];
+    if ptr.is_null() {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: format!("MLMultiArray has no backing buffer for data type {dtype:?}"),
+        });
+    }
+    unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), ptr as *mut u8, expected) };
+    Ok(())
+}
+
+/// Extract a `MLMultiArray` into raw bytes laid out per the output descriptor's dtype.
+///
+/// Handles non-contiguous layouts (e.g. 64-byte aligned outputs from the Apple
+/// Neural Engine) by gathering elements according to the array's strides.
+unsafe fn extract_multiarray_bytes(
+    array: *mut Object,
+    descriptor: &OperandDescriptor,
+) -> Result<Vec<u8>, GraphError> {
+    let count_obj: isize = msg_send![array, count];
+    let count = usize::try_from(count_obj).map_err(|_| GraphError::CoremlRuntimeFailed {
+        reason: format!("invalid element count: {count_obj}"),
+    })?;
+    let elem = descriptor.data_type.bytes_per_element();
+    let ptr: *const u8 = {
+        let p: *mut c_void = msg_send![array, dataPointer];
+        if p.is_null() {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: format!(
+                    "output MLMultiArray has no backing buffer for data type {:?}",
+                    descriptor.data_type
+                ),
+            });
+        }
+        p as *const u8
+    };
+
+    let shape_nsarray: *mut Object = msg_send![array, shape];
+    let shape = unsafe { nsarray_to_i64_vec(shape_nsarray)? };
+    let strides_nsarray: *mut Object = msg_send![array, strides];
+    let strides = unsafe { nsarray_to_i64_vec(strides_nsarray)? };
+
+    if is_contiguous(&shape, &strides) {
+        let total = count.saturating_mul(elem);
+        let slice = unsafe { std::slice::from_raw_parts(ptr, total) };
+        return Ok(slice.to_vec());
+    }
+
+    Ok(unsafe { gather_strided_bytes(ptr, &shape, &strides, elem) })
+}
+
+/// Whether `strides` (in elements) describe a C-contiguous layout for `shape`.
+fn is_contiguous(shape: &[i64], strides: &[i64]) -> bool {
+    if shape.len() != strides.len() {
+        return false;
+    }
+    let mut expected = 1i64;
+    for i in (0..shape.len()).rev() {
+        if strides[i] != expected {
+            return false;
+        }
+        expected *= shape[i].max(1);
+    }
+    true
+}
+
+/// Gather a strided `MLMultiArray` into a contiguous C-order byte buffer.
+unsafe fn gather_strided_bytes(
+    ptr: *const u8,
+    shape: &[i64],
+    strides: &[i64],
+    elem: usize,
+) -> Vec<u8> {
+    let count: i64 = shape.iter().copied().map(|d| d.max(1)).product();
+    let count = count.max(0) as usize;
+    let mut out = Vec::with_capacity(count * elem);
+    let mut idx = vec![0i64; shape.len()];
+    for _ in 0..count {
+        let mut offset_elems = 0i64;
+        for d in 0..shape.len() {
+            offset_elems += idx[d] * strides[d];
+        }
+        let byte_off = offset_elems as usize * elem;
+        let slice = unsafe { std::slice::from_raw_parts(ptr.add(byte_off), elem) };
+        out.extend_from_slice(slice);
+        for d in (0..shape.len()).rev() {
+            idx[d] += 1;
+            if idx[d] < shape[d] {
+                break;
+            }
+            idx[d] = 0;
+        }
+    }
+    out
+}
+
 #[allow(dead_code)]
 fn run_impl_zeroed(
     model_bytes: &[u8],
@@ -625,6 +930,11 @@ fn write_temp_model_with_weights(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
+    // A process-wide counter keeps temp paths unique even when two models are
+    // compiled within the same millisecond (the timestamp alone collides).
+    static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let ts = format!("{ts}_{seq}");
 
     if let Some(weights) = weights_data {
         // Create .mlpackage directory structure with weights

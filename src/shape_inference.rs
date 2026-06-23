@@ -847,6 +847,7 @@ pub fn infer_pool2d_shape(
 ///
 /// When `output_sizes` has at least two entries, spatial dimensions are taken from it and
 /// `outputShapeRounding` is ignored (WebNN).
+#[allow(clippy::too_many_arguments)]
 pub fn infer_pool2d_shape_dimensions(
     input_shape: &[Dimension],
     layout: &str,
@@ -1564,7 +1565,7 @@ pub fn infer_slice_shape(
         let out_dim = if stride == 1 {
             size
         } else {
-            (size + stride - 1) / stride
+            size.div_ceil(stride)
         };
         output_shape.push(out_dim);
     }
