@@ -5,6 +5,8 @@ use crate::{
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
 };
 
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+use crate::backends::cann::CannContext;
 #[cfg(feature = "litert-runtime")]
 use crate::backends::litert::LiteRtContext;
 #[cfg(feature = "onnx-runtime")]
@@ -40,6 +42,7 @@ pub enum Backend {
     Trtx,
     Coreml,
     Litert,
+    Cann,
 }
 
 /// we currently only consider internal backends,
@@ -61,6 +64,9 @@ pub enum BackendDevice {
     LiteRt {
         device_type: DeviceType,
     },
+    Cann {
+        device_type: DeviceType,
+    },
     //WebNN {
     //options: MLContextOptions,
     //},
@@ -74,6 +80,7 @@ impl BackendDevice {
             BackendDevice::Trtx { .. } => Backend::Trtx,
             BackendDevice::Coreml { .. } => Backend::Coreml,
             BackendDevice::LiteRt { .. } => Backend::Litert,
+            BackendDevice::Cann { .. } => Backend::Cann,
         }
     }
 
@@ -82,7 +89,8 @@ impl BackendDevice {
             BackendDevice::Trtx { .. } => DeviceType::Gpu,
             BackendDevice::Onnx { device_type, .. }
             | BackendDevice::Coreml { device_type }
-            | BackendDevice::LiteRt { device_type } => *device_type,
+            | BackendDevice::LiteRt { device_type }
+            | BackendDevice::Cann { device_type } => *device_type,
         }
     }
 
@@ -115,6 +123,14 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let trtx_devices = TrtxContext::list_devices();
 
+    #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+    let have_cann = cfg!(any(feature = "cann-runtime", feature = "cann-runtime-mock"));
+    #[cfg(not(any(feature = "cann-runtime", feature = "cann-runtime-mock")))]
+    let have_cann = false;
+    let want_cann = options.backend_hint == Some(Backend::Cann);
+    #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+    let cann_devices = CannContext::list_devices();
+
     let have_onnx = cfg!(feature = "onnx-runtime");
     let want_onnx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Onnx);
 
@@ -141,6 +157,16 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
                 && want_trtx
                 && let [first, ..] = trtx_devices.as_slice()
                 && trtx::dynamically_load_tensorrt(None::<String>).is_ok() =>
+        {
+            *first
+        }
+
+        // CANN (Huawei Ascend NPU)
+        #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+        (_, _)
+            if have_cann
+                && want_cann
+                && let [first, ..] = cann_devices.as_slice() =>
         {
             *first
         }
@@ -227,6 +253,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
                 have_coreml,
                 want_litert,
                 have_litert,
+                want_cann,
+                have_cann,
             });
         }
         _ => {
@@ -239,6 +267,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
                 have_coreml,
                 want_litert,
                 have_litert,
+                want_cann,
+                have_cann,
             });
         }
     })

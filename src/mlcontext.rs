@@ -13,6 +13,7 @@ use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
+use crate::backends::cann::CannContext;
 use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
@@ -88,6 +89,11 @@ pub(crate) enum MLBackendGraph<'context> {
     CoremlModel(crate::backends::coreml::CoremlGraph),
     #[cfg(feature = "litert-runtime")]
     LiteRtGraph(crate::backends::litert::LiteRtGraph),
+    #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+    CannGraph {
+        graph: crate::backends::cann::CannGraph,
+        _phantom: std::marker::PhantomData<&'context ()>,
+    },
     PhantomData(PhantomData<&'context u8>),
 }
 
@@ -465,6 +471,9 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::LiteRt { device_type } => Box::new(
                 LiteRtContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
+            crate::backend_selection::BackendDevice::Cann { device_type } => Box::new(
+                CannContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
+            ),
         };
         Ok(Self { backend, device })
     }
@@ -477,6 +486,7 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => todo!(),
             crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
             crate::backend_selection::BackendDevice::LiteRt { .. } => todo!(),
+            crate::backend_selection::BackendDevice::Cann { .. } => todo!(),
         };
         Ok(Self { backend, device })
     }

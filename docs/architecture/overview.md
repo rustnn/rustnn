@@ -178,17 +178,21 @@ src/
 │   ├── mod.rs          # Registry and trait
 │   ├── onnx.rs         # ONNX converter
 │   ├── coreml_mlprogram.rs  # CoreML converter (MIL)
+│   ├── cann.rs         # CANN converter (HiAI IR, placeholder)
 │   └── litert.rs       # LiteRT converter (TFLite flatbuffer)
 ├── backends/
 │   ├── mod.rs          # DisabledContext + module registry
 │   ├── ort.rs          # ONNX Runtime backend
 │   ├── trtx.rs         # TensorRT backend (CUDA)
 │   ├── coreml.rs       # CoreML backend (macOS)
+│   ├── cann.rs         # CANN backend (Ascend NPU, OHOS)
 │   └── litert.rs       # LiteRT backend (TFLite)
 ├── executors/
 │   ├── mod.rs          # Conditional compilation
 │   ├── onnx.rs         # ONNX runtime
-│   └── coreml.rs       # CoreML runtime
+│   ├── coreml.rs       # CoreML runtime
+│   ├── cann_shim.rs    # CANN shim (libloading wrapper)
+│   └── coreml_shim.mm  # CoreML shim (ObjC++)
 └── python/             # Python bindings (PyO3)
     ├── mod.rs          # Python module definition
     ├── context.rs      # ML and MLContext classes (backend selection)
@@ -254,6 +258,7 @@ examples/
 - **LiteRT Execution**: Cross-platform with `litert-runtime` feature (CPU/GPU/NPU)
 - **ONNX Execution**: Cross-platform with `onnx-runtime` feature (CPU/GPU)
 - **CoreML Execution**: macOS only with `coreml-runtime` feature (GPU/Neural Engine)
+- **CANN Execution**: OHOS only with `cann-runtime` feature (Huawei Ascend NPU, Kirin)
 - **Neural Engine**: macOS with Apple Silicon (via CoreML)
 - **Python Bindings**: Cross-platform with `python` feature (Python 3.11+)
 

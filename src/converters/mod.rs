@@ -26,6 +26,11 @@ pub use onnx::OnnxConverter;
 pub use trtx::TrtxConverter;
 pub(crate) use weight_file_builder::WeightFileBuilder;
 
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub mod cann;
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub use cann::CannConverter;
+
 /// Filename (relative to the `.onnx` file directory) for ONNX external initializer data produced by the ONNX converter.
 ///
 /// When [`ConvertedGraph::weights_data`] is `Some`, write those bytes next to the model using this exact name so
@@ -72,6 +77,8 @@ impl ConverterRegistry {
         registry.register(Box::new(TrtxConverter::new()));
         #[cfg(feature = "litert-runtime")]
         registry.register(Box::new(LiteRtConverter::new()));
+        #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+        registry.register(Box::new(CannConverter));
         registry
     }
 

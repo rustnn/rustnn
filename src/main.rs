@@ -1,5 +1,6 @@
 #[cfg(any(
     feature = "onnx-runtime",
+    feature = "cann-runtime",
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
@@ -18,6 +19,7 @@ use rustnn::converters::TrtxConverter;
 use rustnn::graph::get_static_or_max_size;
 #[cfg(any(
     feature = "onnx-runtime",
+    feature = "cann-runtime",
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
@@ -60,6 +62,7 @@ struct Cli {
 
 #[cfg(any(
     feature = "onnx-runtime",
+    feature = "cann-runtime",
     feature = "trtx-runtime-mock",
     feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
@@ -305,6 +308,7 @@ fn run() -> Result<(), GraphError> {
 fn main() {
     #[cfg(any(
         feature = "onnx-runtime",
+        feature = "cann-runtime",
         feature = "trtx-runtime-mock",
         feature = "trtx-runtime",
         all(target_os = "macos", feature = "coreml-runtime")
@@ -317,14 +321,16 @@ fn main() {
     }
     #[cfg(not(any(
         feature = "onnx-runtime",
+        feature = "cann-runtime",
         feature = "trtx-runtime-mock",
         feature = "trtx-runtime",
         all(target_os = "macos", feature = "coreml-runtime")
     )))]
     {
         eprintln!(
-            "rustnn CLI requires a runtime feature. Build with --features onnx-runtime or \
-             --features trtx-runtime-mock (or trtx-runtime), or --features coreml-runtime on macOS."
+            "rustnn CLI requires a runtime feature. Build with --features cann-runtime or \
+             --features onnx-runtime or --features trtx-runtime-mock (or trtx-runtime), \
+             or --features coreml-runtime on macOS."
         );
         std::process::exit(1);
     }

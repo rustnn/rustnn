@@ -7,6 +7,7 @@ ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
 LITERT_PATH ?= target/graph.tflite
+CANN_PATH ?= target/graph.cann
 ORT_VERSION ?= 1.24.3
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
@@ -65,7 +66,7 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 endif
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert validate-all-env \
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -207,6 +208,9 @@ coreml-validate: coreml
 litert:
 	$(CARGO) run --features litert-runtime -- $(GRAPH_FILE) --convert litert --convert-output $(LITERT_PATH)
 
+cann:
+	$(CARGO) run --features cann-runtime -- $(GRAPH_FILE) --convert cann --convert-output $(CANN_PATH)
+
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
 
@@ -295,6 +299,9 @@ help:
 	@echo ""
 	@echo "LiteRT Conversion:"
 	@echo "  litert             - Convert graph to LiteRT/TFLite format"
+	@echo ""
+	@echo "CANN Conversion:"
+	@echo "  cann               - Convert graph to CANN/HiAI format"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"

@@ -91,6 +91,9 @@ jobs:
       - name: Run cargo check (LiteRT)
         run: cargo +1.95.0 check --features litert-runtime
 
+      - name: Run cargo check (CANN runtime)
+        run: cargo +1.95.0 check --features cann-runtime
+
       - name: Run cargo check (CoreML)
         if: runner.os == 'macOS'
         run: cargo +1.95.0 check --features coreml-runtime
@@ -101,6 +104,9 @@ jobs:
       - name: Run cargo test (library only, CoreML)
         if: runner.os == 'macOS'
         run: cargo +1.96.0 test --lib --features coreml-runtime
+
+      - name: Run cargo test (library only, CANN mock)
+        run: cargo +1.96.0 test --lib --features cann-runtime-mock
 
       - name: Check backend operator report is up to date
         if: runner.os == 'Linux'

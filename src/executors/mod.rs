@@ -1,3 +1,5 @@
+#[cfg(feature = "cann-runtime")]
+pub mod cann_shim;
 #[cfg(feature = "coreml-runtime")]
 pub mod coreml;
 #[cfg(feature = "onnx-runtime")]

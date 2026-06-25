@@ -14,6 +14,9 @@ pub mod trtx;
 #[cfg(feature = "litert-runtime")]
 pub mod litert;
 
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub mod cann;
+
 #[derive(Debug)]
 pub(crate) struct DisabledContext {}
 
@@ -130,6 +133,11 @@ pub mod trtx {
             panic!("Tried to create disabled Trtx backend");
         }
     }
+}
+
+#[cfg(not(any(feature = "cann-runtime", feature = "cann-runtime-mock")))]
+pub mod cann {
+    pub(crate) use crate::backends::DisabledContext as CannContext;
 }
 
 #[cfg(not(feature = "coreml-runtime"))]

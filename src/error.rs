@@ -184,6 +184,8 @@ pub enum Error {
         have_coreml: bool,
         want_litert: bool,
         have_litert: bool,
+        want_cann: bool,
+        have_cann: bool,
     },
     #[error("No backend is available for backend hint: {backend_hint:?}.")]
     NoBackendAvailableForBackendHint {
@@ -196,6 +198,8 @@ pub enum Error {
         have_coreml: bool,
         want_litert: bool,
         have_litert: bool,
+        want_cann: bool,
+        have_cann: bool,
     },
 
     #[error("No device of selected type available")]

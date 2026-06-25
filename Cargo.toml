@@ -34,6 +34,8 @@ onnx-runtime = ["ort", "ndarray"]
 trtx-runtime = ["trtx", "cudarc", "zstd-cache-compression"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
+cann-runtime = ["dep:libloading"]
+cann-runtime-mock = []
 zstd-cache-compression = ["dep:zstd"]
 # test feature for validation of RTX runtime
 trtx-enterprise = ["trtx-runtime", "trtx/enterprise"]
@@ -51,6 +53,7 @@ bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
 tempfile = "3.27"
+libloading = { version = "0.9", optional = true }
 ort = { version = "=2.0.0-rc.12", optional = true, features = [
     "ndarray",
     "half",
