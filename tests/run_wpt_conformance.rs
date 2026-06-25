@@ -1,6 +1,6 @@
 mod wpt_conformance;
 
-use libtest_mimic::{Arguments, Failed, Trial};
+use libtest_mimic::{Arguments, Completion, Failed, Trial};
 use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{default_wpt_dir, load_wpt_corpus, trial_name};
 use wpt_conformance::wpt_types::WptLoadedCase;
@@ -17,17 +17,14 @@ fn run_trial(
     backend: WptBackend,
     operation: &str,
     test_case: &WptTestCase,
-) -> Result<(), Failed> {
-    let backend_label = backend.trial_prefix();
+) -> Result<Completion, Failed> {
     if let Some(reason) = should_skip_test(&test_case.graph) {
-        eprintln!(
-            "[SKIP] {backend_label}::{operation}::{}: {reason}",
-            test_case.name
-        );
-        return Ok(());
+        return Ok(Completion::ignored_with(reason));
     }
 
-    run_one_test_case(backend, operation, test_case).map_err(Failed::from)
+    run_one_test_case(backend, operation, test_case)
+        .map(|()| Completion::Completed)
+        .map_err(Failed::from)
 }
 
 fn push_backend_trials(
@@ -40,7 +37,9 @@ fn push_backend_trials(
         let operation = case.operation.clone();
         let test_case = case.as_test_case();
         let name = trial_name(prefix, case);
-        trials.push(Trial::test(name, move || run_trial(backend, &operation, &test_case)));
+        trials.push(Trial::ignorable_test(name, move || {
+            run_trial(backend, &operation, &test_case)
+        }));
     }
 }
 
@@ -88,10 +87,33 @@ fn main() {
             .join(", ")
     );
 
+    let skip_eligible = corpus
+        .cases
+        .iter()
+        .filter(|c| should_skip_test(&c.graph).is_some())
+        .count()
+        * backends.len();
+    let trial_count = corpus.cases.len() * backends.len();
+    eprintln!(
+        "[WPT] registering {trial_count} trial(s) ({skip_eligible} dtype-skipped, {} executed)",
+        trial_count.saturating_sub(skip_eligible)
+    );
+    if wpt_conformance::wpt_config::REUSE_ML_CONTEXT {
+        eprintln!("[WPT] MLContext reuse: enabled (one context per backend per thread)");
+    }
+
     let mut trials = Vec::new();
     for backend in backends {
         push_backend_trials(&mut trials, backend, &corpus.cases);
     }
 
-    libtest_mimic::run(&args, trials).exit();
+    let conclusion = libtest_mimic::run(&args, trials);
+    eprintln!(
+        "[WPT] result: {} passed, {} skipped, {} failed; {} filtered out",
+        conclusion.num_passed,
+        conclusion.num_ignored,
+        conclusion.num_failed,
+        conclusion.num_filtered_out
+    );
+    conclusion.exit();
 }

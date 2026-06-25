@@ -3,7 +3,7 @@
 use rustnn::mlcontext::{MLContextOptions, MLPowerPreference};
 
 /// Execution backend for WPT conformance trials.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WptBackend {
     #[cfg(feature = "onnx-runtime")]
     /// ONNX Runtime CPU (`accelerated = false`).

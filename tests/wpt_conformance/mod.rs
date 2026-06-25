@@ -9,6 +9,8 @@
 
 pub mod tolerance;
 pub mod wpt_backend;
+pub mod wpt_config;
+pub mod wpt_context_pool;
 pub mod wpt_execute_graph;
 pub mod wpt_js_loader;
 pub mod wpt_tensor;
@@ -328,8 +330,6 @@ pub fn run_one_test_case(
     operation: &str,
     test_case: &wpt_types::WptTestCase,
 ) -> Result<(), String> {
-    use rustnn::mlcontext::MLContext;
-
     let graph = &test_case.graph;
     let graph_op_names = graph_operator_names(graph);
     let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
@@ -340,11 +340,11 @@ pub fn run_one_test_case(
         .as_ref()
         .is_some_and(|t| t.metric_type.eq_ignore_ascii_case("ulp"));
 
-    let mut context = MLContext::create(&backend.context_options()).map_err(|e| e.to_string())?;
-    let outputs = wpt_execute_graph::execute_wpt_graph(&mut context, graph)?;
-    let input_names = runtime_input_names(graph);
+    wpt_context_pool::with_context(backend, |context| {
+        let outputs = wpt_execute_graph::execute_wpt_graph(context, graph)?;
+        let input_names = runtime_input_names(graph);
 
-    for (out_name, expected_spec) in &graph.expected_outputs {
+        for (out_name, expected_spec) in &graph.expected_outputs {
         let actual = outputs
             .get(out_name)
             .ok_or_else(|| format!("output '{out_name}' not found in results"))?;
@@ -491,5 +491,6 @@ pub fn run_one_test_case(
             ));
         }
     }
-    Ok(())
+        Ok(())
+    })
 }

@@ -4,7 +4,7 @@ This guide explains how to run the W3C Web Platform Tests (WPT) for WebNN agains
 
 ## Overview
 
-The in-repo harness loads live WPT conformance tests from upstream `.https.any.js` files via a Node.js bridge, builds each graph through [`MLGraphBuilder`](../../src/mlgraphbuilder.rs), executes via [`MLContext`](../../src/mlcontext.rs), and validates outputs with ULP/ATOL tolerances.
+The in-repo harness loads live WPT conformance tests from upstream `.https.any.js` files via a Node.js bridge, builds each graph through [`MLGraphBuilder`](https://github.com/rustnn/rustnn/blob/main/src/mlgraphbuilder.rs), executes via [`MLContext`](https://github.com/rustnn/rustnn/blob/main/src/mlcontext.rs), and validates outputs with ULP/ATOL tolerances.
 
 See also: [wpt-harness-todos.md](wpt-harness-todos.md) for migration status.
 
@@ -38,6 +38,22 @@ Trial names: `{backend}::{operation}::{test_name}` (e.g. `onnx::relu::relu_float
 
 Backends: `onnx` (ORT CPU), `onnx-gpu` (ORT GPU when available, via `WPT_BACKEND`), `trtx` (TensorRT via TRTX).
 
+### Run summary
+
+At the end of a full run you will see:
+
+```
+test result: ok. 2482 passed; 0 failed; 0 ignored; ...
+[WPT] result: 2482 passed, 0 skipped, 0 failed; 0 filtered out
+```
+
+Unsupported dtypes (e.g. `bool`) are reported as **ignored** (skipped), not as passes. Before trial registration, `[WPT] registering …` shows how many trials are dtype-skipped vs executed.
+
+`MLContext` reuse is **off** by default (`wpt_config::REUSE_ML_CONTEXT = false`): each trial creates a fresh context. Set to `true` in `tests/wpt_conformance/wpt_config.rs` to enable thread-local reuse (one context per backend per libtest thread).
+
+Reuse is not recommended for the full suite today: no ONNX CPU speedup in benchmarks, `OrtContext` accumulates tensors across trials, and backends are not validated for parallel libtest threads (use `--test-threads 1` if experimenting with reuse).
+
+WPT conformance JS parse failures (`corpus.file_errors`) are logged as warnings only; they do not fail CI.
 ## Architecture
 
 ```
