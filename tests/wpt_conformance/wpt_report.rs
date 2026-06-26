@@ -252,7 +252,10 @@ impl WptReportCollector {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent).map_err(|e| {
-                    format!("failed to create report directory {}: {e}", parent.display())
+                    format!(
+                        "failed to create report directory {}: {e}",
+                        parent.display()
+                    )
                 })?;
             }
         }
@@ -313,9 +316,10 @@ impl WptReportCollector {
                 options: ReportOptions {
                     wpt_dir: state.wpt_dir.clone(),
                     backends: state.backends.clone(),
-                    report_json: state.report_path.clone().or_else(|| {
-                        report_output_path().map(|p| p.display().to_string())
-                    }),
+                    report_json: state
+                        .report_path
+                        .clone()
+                        .or_else(|| report_output_path().map(|p| p.display().to_string())),
                     filter: state.filter.clone(),
                 },
                 cwd: std::env::current_dir()
@@ -404,7 +408,10 @@ fn render_html_report(json_path: &Path) -> Result<(), String> {
     }
     let script = render_html_script();
     if !script.is_file() {
-        return Err(format!("HTML render script not found: {}", script.display()));
+        return Err(format!(
+            "HTML render script not found: {}",
+            script.display()
+        ));
     }
     let html_path = report_html_output_path(json_path);
     let status = Command::new("node")
@@ -444,9 +451,7 @@ mod time_format {
         let seconds = rem % 60;
 
         let (year, month, day) = civil_from_days(days as i64);
-        format!(
-            "{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z"
-        )
+        format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
     }
 
     fn civil_from_days(days: i64) -> (i64, i64, i64) {
@@ -468,7 +473,10 @@ mod time_format {
 mod tests {
     #[test]
     fn backend_mapping() {
-        assert_eq!(super::backend_and_variant("onnx"), ("onnx".into(), "cpu".into()));
+        assert_eq!(
+            super::backend_and_variant("onnx"),
+            ("onnx".into(), "cpu".into())
+        );
         assert_eq!(
             super::backend_and_variant("onnx-gpu"),
             ("onnx".into(), "gpu".into())
