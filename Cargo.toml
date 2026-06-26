@@ -65,7 +65,7 @@ dirs = "6.0.0"
 prost-build = "0.12"
 
 [dev-dependencies]
-tokenizers = { version = "0.22" }
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 tempfile = "3.8"
 half = "2.4"
 safetensors = "0.7"

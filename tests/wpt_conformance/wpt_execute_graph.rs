@@ -31,9 +31,9 @@ use rustnn::operator_options::{
 use std::collections::{HashMap, HashSet};
 
 use super::wpt_tensor::{
-    is_operand_option, normalize_option_key, normalize_wpt_op_name, output_names,
-    tensor_f16_bits, tensor_f32_values, tensor_i32_values, tensor_i8_values, tensor_i64_values,
-    tensor_spec_to_bytes, tensor_u32_values, tensor_u64_values, tensor_u8_values,
+    is_operand_option, normalize_option_key, normalize_wpt_op_name, output_names, tensor_f16_bits,
+    tensor_f32_values, tensor_i8_values, tensor_i32_values, tensor_i64_values,
+    tensor_spec_to_bytes, tensor_u8_values, tensor_u32_values, tensor_u64_values,
 };
 use super::wpt_types::{WptGraph, WptOperator, WptTensorSpec};
 
@@ -1073,76 +1073,44 @@ fn invoke_builder_method(
                     .map_err(|e| e.to_string())?,
             ))
         }
-        "reduceSum" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_sum_with_options(i, o),
-        ),
-        "reduceMean" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_mean_with_options(i, o),
-        ),
-        "reduceMax" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_max_with_options(i, o),
-        ),
-        "reduceMin" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_min_with_options(i, o),
-        ),
-        "reduceProduct" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_product_with_options(i, o),
-        ),
-        "reduceL1" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_l1_with_options(i, o),
-        ),
-        "reduceL2" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_l2_with_options(i, o),
-        ),
-        "reduceLogSum" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_log_sum_with_options(i, o),
-        ),
-        "reduceLogSumExp" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_log_sum_exp_with_options(i, o),
-        ),
-        "reduceSumSquare" => invoke_unary_reduce(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.reduce_sum_square_with_options(i, o),
-        ),
+        "reduceSum" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_sum_with_options(i, o)
+        }),
+        "reduceMean" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_mean_with_options(i, o)
+        }),
+        "reduceMax" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_max_with_options(i, o)
+        }),
+        "reduceMin" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_min_with_options(i, o)
+        }),
+        "reduceProduct" => {
+            invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+                b.reduce_product_with_options(i, o)
+            })
+        }
+        "reduceL1" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_l1_with_options(i, o)
+        }),
+        "reduceL2" => invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+            b.reduce_l2_with_options(i, o)
+        }),
+        "reduceLogSum" => {
+            invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+                b.reduce_log_sum_with_options(i, o)
+            })
+        }
+        "reduceLogSumExp" => {
+            invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+                b.reduce_log_sum_exp_with_options(i, o)
+            })
+        }
+        "reduceSumSquare" => {
+            invoke_unary_reduce(builder, op_name, args, operator_options, |b, i, o| {
+                b.reduce_sum_square_with_options(i, o)
+            })
+        }
         "abs" => invoke_unary_simple(builder, op_name, args, |b, i| b.abs(i)),
         "ceil" => invoke_unary_simple(builder, op_name, args, |b, i| b.ceil(i)),
         "cos" => invoke_unary_simple(builder, op_name, args, |b, i| b.cos(i)),
@@ -1292,41 +1260,23 @@ fn invoke_builder_method(
                     .map_err(|e| e.to_string())?,
             ))
         }
-        "averagePool2d" => invoke_pool2d(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.average_pool2d_with_options(i, o),
-        ),
-        "maxPool2d" => invoke_pool2d(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.max_pool2d_with_options(i, o),
-        ),
-        "l2Pool2d" => invoke_pool2d(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.l2_pool2d_with_options(i, o),
-        ),
-        "globalAveragePool" => invoke_pool2d(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.global_average_pool_with_options(i, o),
-        ),
-        "globalMaxPool" => invoke_pool2d(
-            builder,
-            op_name,
-            args,
-            operator_options,
-            |b, i, o| b.global_max_pool_with_options(i, o),
-        ),
+        "averagePool2d" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
+            b.average_pool2d_with_options(i, o)
+        }),
+        "maxPool2d" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
+            b.max_pool2d_with_options(i, o)
+        }),
+        "l2Pool2d" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
+            b.l2_pool2d_with_options(i, o)
+        }),
+        "globalAveragePool" => {
+            invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
+                b.global_average_pool_with_options(i, o)
+            })
+        }
+        "globalMaxPool" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
+            b.global_max_pool_with_options(i, o)
+        }),
         other => {
             let method = normalize_wpt_op_name(other);
             Err(format!(

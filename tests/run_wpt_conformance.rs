@@ -27,11 +27,7 @@ fn run_trial(
         .map_err(Failed::from)
 }
 
-fn push_backend_trials(
-    trials: &mut Vec<Trial>,
-    backend: WptBackend,
-    cases: &[WptLoadedCase],
-) {
+fn push_backend_trials(trials: &mut Vec<Trial>, backend: WptBackend, cases: &[WptLoadedCase]) {
     let prefix = backend.trial_prefix();
     for case in cases {
         let operation = case.operation.clone();

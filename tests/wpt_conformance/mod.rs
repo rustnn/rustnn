@@ -345,152 +345,152 @@ pub fn run_one_test_case(
         let input_names = runtime_input_names(graph);
 
         for (out_name, expected_spec) in &graph.expected_outputs {
-        let actual = outputs
-            .get(out_name)
-            .ok_or_else(|| format!("output '{out_name}' not found in results"))?;
+            let actual = outputs
+                .get(out_name)
+                .ok_or_else(|| format!("output '{out_name}' not found in results"))?;
 
-        let dtype = expected_spec.data_type();
-        let (pass, msg, expected_str, actual_str) = match dtype {
-            "int64" => {
-                let expected = expected_output_to_i64(expected_spec);
-                let actual_i64 = actual.i64_data().ok_or_else(|| {
-                    format!(
-                        "output '{out_name}' missing int64 data (type {})",
-                        actual.data_type()
-                    )
-                })?;
-                let int_tol = test_case
-                    .tolerance
-                    .as_ref()
-                    .and_then(|t| {
-                        t.value
-                            .as_u64()
-                            .or_else(|| t.value.as_f64().map(|f| f as u64))
-                    })
-                    .unwrap_or(0) as i64;
-                let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
-                let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "uint64" => {
-                let expected = expected_output_to_u64(expected_spec);
-                let actual_i64 = actual.i64_data().ok_or_else(|| {
-                    format!(
-                        "output '{out_name}' missing uint64 data (type {})",
-                        actual.data_type()
-                    )
-                })?;
-                let pass = actual_i64.len() == expected.len()
-                    && actual_i64
-                        .iter()
-                        .zip(expected.iter())
-                        .all(|(&a, &e)| a as u64 == e);
-                let msg = if pass {
-                    None
-                } else {
-                    Some("uint64 output mismatch".to_string())
-                };
-                let expected_u64_str: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
-                let expected_str =
-                    format_int_slice_for_failure(&expected_u64_str, FAILURE_DISPLAY_LEN);
-                let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32" => {
-                let expected = expected_output_to_i32(expected_spec);
-                let actual_i32 = actual.i32_data().ok_or_else(|| {
-                    format!(
-                        "output '{out_name}' missing integer data (type {})",
-                        actual.data_type()
-                    )
-                })?;
-                let int_tol = test_case
-                    .tolerance
-                    .as_ref()
-                    .and_then(|t| {
-                        t.value
-                            .as_u64()
-                            .or_else(|| t.value.as_f64().map(|f| f as u64))
-                    })
-                    .unwrap_or(0) as i64;
-                let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
-                let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
-                let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
-                let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_i32_slice_for_failure(actual_i32, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-            _ => {
-                let expected = expected_output_to_f32(expected_spec);
-                let actual_f32 = actual.f32_data().ok_or_else(|| {
-                    format!(
-                        "output '{out_name}' missing float data (type {})",
-                        actual.data_type()
-                    )
-                })?;
-                let float16 = dtype.eq_ignore_ascii_case("float16");
-                let (pass, msg) = validate_result(
-                    actual_f32,
-                    &expected,
-                    tolerance_kind,
-                    tolerance_value,
-                    float16,
-                    wpt_ulp_only,
-                );
-                let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                let actual_str = format_f32_slice_for_failure(actual_f32, FAILURE_DISPLAY_LEN);
-                (pass, msg, expected_str, actual_str)
-            }
-        };
-
-        if !pass {
-            let inputs_str = format_inputs_for_failure(graph, &input_names);
-            let shape = expected_spec.shape();
-            let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
-                if matches!(
-                    dtype,
-                    "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32"
-                ) {
-                    let expected = expected_output_to_i32(expected_spec);
-                    let actual_i32 = actual.i32_data().unwrap_or(&[]);
-                    let expected_nd = format_int_nd(
-                        &expected.iter().map(|&x| x as i64).collect::<Vec<_>>(),
-                        shape,
-                    );
-                    let actual_nd = format_int_nd(
-                        &actual_i32.iter().map(|&x| x as i64).collect::<Vec<_>>(),
-                        shape,
-                    );
-                    format!(
-                        "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
-                    )
-                } else {
-                    let expected = expected_output_to_f32(expected_spec);
-                    let actual_f32 = actual.f32_data().unwrap_or(&[]);
-                    let expected_nd = format_f32_nd(&expected, shape);
-                    let actual_nd = format_f32_nd(actual_f32, shape);
-                    format!(
-                        "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
-                    )
+            let dtype = expected_spec.data_type();
+            let (pass, msg, expected_str, actual_str) = match dtype {
+                "int64" => {
+                    let expected = expected_output_to_i64(expected_spec);
+                    let actual_i64 = actual.i64_data().ok_or_else(|| {
+                        format!(
+                            "output '{out_name}' missing int64 data (type {})",
+                            actual.data_type()
+                        )
+                    })?;
+                    let int_tol = test_case
+                        .tolerance
+                        .as_ref()
+                        .and_then(|t| {
+                            t.value
+                                .as_u64()
+                                .or_else(|| t.value.as_f64().map(|f| f as u64))
+                        })
+                        .unwrap_or(0) as i64;
+                    let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
+                    let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                    let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
+                    (pass, msg, expected_str, actual_str)
                 }
-            } else {
-                String::new()
+                "uint64" => {
+                    let expected = expected_output_to_u64(expected_spec);
+                    let actual_i64 = actual.i64_data().ok_or_else(|| {
+                        format!(
+                            "output '{out_name}' missing uint64 data (type {})",
+                            actual.data_type()
+                        )
+                    })?;
+                    let pass = actual_i64.len() == expected.len()
+                        && actual_i64
+                            .iter()
+                            .zip(expected.iter())
+                            .all(|(&a, &e)| a as u64 == e);
+                    let msg = if pass {
+                        None
+                    } else {
+                        Some("uint64 output mismatch".to_string())
+                    };
+                    let expected_u64_str: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
+                    let expected_str =
+                        format_int_slice_for_failure(&expected_u64_str, FAILURE_DISPLAY_LEN);
+                    let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
+                    (pass, msg, expected_str, actual_str)
+                }
+                "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32" => {
+                    let expected = expected_output_to_i32(expected_spec);
+                    let actual_i32 = actual.i32_data().ok_or_else(|| {
+                        format!(
+                            "output '{out_name}' missing integer data (type {})",
+                            actual.data_type()
+                        )
+                    })?;
+                    let int_tol = test_case
+                        .tolerance
+                        .as_ref()
+                        .and_then(|t| {
+                            t.value
+                                .as_u64()
+                                .or_else(|| t.value.as_f64().map(|f| f as u64))
+                        })
+                        .unwrap_or(0) as i64;
+                    let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
+                    let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
+                    let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
+                    let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                    let actual_str = format_i32_slice_for_failure(actual_i32, FAILURE_DISPLAY_LEN);
+                    (pass, msg, expected_str, actual_str)
+                }
+                _ => {
+                    let expected = expected_output_to_f32(expected_spec);
+                    let actual_f32 = actual.f32_data().ok_or_else(|| {
+                        format!(
+                            "output '{out_name}' missing float data (type {})",
+                            actual.data_type()
+                        )
+                    })?;
+                    let float16 = dtype.eq_ignore_ascii_case("float16");
+                    let (pass, msg) = validate_result(
+                        actual_f32,
+                        &expected,
+                        tolerance_kind,
+                        tolerance_value,
+                        float16,
+                        wpt_ulp_only,
+                    );
+                    let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
+                    let actual_str = format_f32_slice_for_failure(actual_f32, FAILURE_DISPLAY_LEN);
+                    (pass, msg, expected_str, actual_str)
+                }
             };
-            return Err(format!(
-                "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
-                operation,
-                test_case.name,
-                msg.unwrap_or_else(|| "validation failed".to_string()),
-                inputs_str,
-                out_name,
-                expected_str,
-                out_name,
-                actual_str,
-                nd_suffix
-            ));
+
+            if !pass {
+                let inputs_str = format_inputs_for_failure(graph, &input_names);
+                let shape = expected_spec.shape();
+                let nd_suffix = if !shape.is_empty() && shape.iter().all(|&d| d > 0) {
+                    if matches!(
+                        dtype,
+                        "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32"
+                    ) {
+                        let expected = expected_output_to_i32(expected_spec);
+                        let actual_i32 = actual.i32_data().unwrap_or(&[]);
+                        let expected_nd = format_int_nd(
+                            &expected.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+                            shape,
+                        );
+                        let actual_nd = format_int_nd(
+                            &actual_i32.iter().map(|&x| x as i64).collect::<Vec<_>>(),
+                            shape,
+                        );
+                        format!(
+                            "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
+                        )
+                    } else {
+                        let expected = expected_output_to_f32(expected_spec);
+                        let actual_f32 = actual.f32_data().unwrap_or(&[]);
+                        let expected_nd = format_f32_nd(&expected, shape);
+                        let actual_nd = format_f32_nd(actual_f32, shape);
+                        format!(
+                            "\n  expected {out_name} full nd:\n{expected_nd}\n  actual {out_name} full nd:\n{actual_nd}"
+                        )
+                    }
+                } else {
+                    String::new()
+                };
+                return Err(format!(
+                    "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
+                    operation,
+                    test_case.name,
+                    msg.unwrap_or_else(|| "validation failed".to_string()),
+                    inputs_str,
+                    out_name,
+                    expected_str,
+                    out_name,
+                    actual_str,
+                    nd_suffix
+                ));
+            }
         }
-    }
         Ok(())
     })
 }

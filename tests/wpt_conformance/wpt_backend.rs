@@ -60,19 +60,20 @@ impl WptBackend {
         }
     }
 
+    /// Backends that may be selected via `WPT_BACKEND` (includes opt-in backends not in [`Self::available`]).
+    fn selectable_backends(available: &[Self]) -> Vec<Self> {
+        let mut selectable = available.to_vec();
+        #[cfg(feature = "onnx-runtime")]
+        if !selectable.contains(&Self::OnnxGpu) {
+            selectable.push(Self::OnnxGpu);
+        }
+        selectable
+    }
+
     /// Backends to register as trials. Honors `WPT_BACKEND` when set.
     pub fn selected() -> Vec<Self> {
         let available = Self::available();
-        #[cfg(feature = "onnx-runtime")]
-        let selectable: Vec<Self> = {
-            let mut v = available.clone();
-            if !v.contains(&Self::OnnxGpu) {
-                v.push(Self::OnnxGpu);
-            }
-            v
-        };
-        #[cfg(not(feature = "onnx-runtime"))]
-        let selectable = available;
+        let selectable = Self::selectable_backends(&available);
 
         if let Ok(raw) = std::env::var("WPT_BACKEND") {
             if let Some(backend) = Self::parse_name(&raw) {
