@@ -89,6 +89,8 @@ struct Args {
     model: StyleModel,
     #[arg(long, default_value = DEFAULT_WEIGHTS_BASE_URL)]
     weights_base_url: String,
+    #[arg(long)]
+    sequential_weights: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -854,12 +856,21 @@ async fn load_weights(
     client: &reqwest::Client,
     builder: &Mutex<MLGraphBuilder<'_, '_>>,
     base_url: &str,
+    sequential_loading: bool,
 ) -> Result<Vec<LoadedWeight>> {
     let futures = WEIGHTS
         .iter()
         .copied()
         .map(|spec| download_weight(client, builder, base_url, spec));
-    let results = join_all(futures).await;
+    let results = if sequential_loading {
+        let mut results = Vec::new();
+        for fut in futures {
+            results.push(fut.await);
+        }
+        results
+    } else {
+        join_all(futures).await
+    };
 
     let mut loaded = Vec::with_capacity(WEIGHTS.len());
     let mut errors = Vec::new();
@@ -914,7 +925,7 @@ async fn main() -> Result<()> {
         args.model.id()
     );
 
-    let loaded = load_weights(&client, &builder, &model_base_url).await?;
+    let loaded = load_weights(&client, &builder, &model_base_url, args.sequential_weights).await?;
     let total_bytes: usize = loaded.iter().map(|weight| weight.byte_len).sum();
 
     println!(
