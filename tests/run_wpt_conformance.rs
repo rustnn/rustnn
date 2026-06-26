@@ -1,8 +1,11 @@
 mod wpt_conformance;
 
+use std::time::Instant;
+
 use libtest_mimic::{Arguments, Completion, Failed, Trial};
 use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{default_wpt_dir, load_wpt_corpus, trial_name};
+use wpt_conformance::wpt_report::{report_output_path, WptReportCollector};
 use wpt_conformance::wpt_types::WptLoadedCase;
 use wpt_conformance::{should_skip_test, wpt_types::WptTestCase};
 
@@ -27,14 +30,42 @@ fn run_trial(
         .map_err(Failed::from)
 }
 
-fn push_backend_trials(trials: &mut Vec<Trial>, backend: WptBackend, cases: &[WptLoadedCase]) {
+fn push_backend_trials(
+    trials: &mut Vec<Trial>,
+    backend: WptBackend,
+    cases: &[WptLoadedCase],
+    report: &WptReportCollector,
+) {
     let prefix = backend.trial_prefix();
     for case in cases {
         let operation = case.operation.clone();
         let test_case = case.as_test_case();
         let name = trial_name(prefix, case);
+        let file_name = case.file_name.clone();
+        let test_name = case.name.clone();
+        let backend_prefix = prefix.to_string();
+        let report = report.clone();
         trials.push(Trial::ignorable_test(name, move || {
-            run_trial(backend, &operation, &test_case)
+            let started = Instant::now();
+            let result = run_trial(backend, &operation, &test_case);
+            let duration = started.elapsed();
+            match &result {
+                Ok(Completion::Completed) => {
+                    report.record_pass(&file_name, &test_name, &backend_prefix, duration);
+                }
+                Ok(Completion::Ignored { reason }) => {
+                    let reason = reason
+                        .as_deref()
+                        .unwrap_or("ignored")
+                        .to_string();
+                    report.record_skip(&file_name, &test_name, &backend_prefix, reason, duration);
+                }
+                Err(err) => {
+                    let msg = err.message().unwrap_or("test failed").to_string();
+                    report.record_fail(&file_name, &test_name, &backend_prefix, msg, duration);
+                }
+            }
+            result
         }));
     }
 }
@@ -74,14 +105,8 @@ fn main() {
         std::process::exit(2);
     }
 
-    eprintln!(
-        "[WPT] backends: {}",
-        backends
-            .iter()
-            .map(|b| b.trial_prefix())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    let backend_prefixes: Vec<&str> = backends.iter().map(|b| b.trial_prefix()).collect();
+    eprintln!("[WPT] backends: {}", backend_prefixes.join(", "));
 
     let skip_eligible = corpus
         .cases
@@ -98,9 +123,22 @@ fn main() {
         eprintln!("[WPT] MLContext reuse: enabled (one context per backend per thread)");
     }
 
+    let wpt_dir_label = if corpus.wpt_dir.is_empty() {
+        wpt_dir.display().to_string()
+    } else {
+        corpus.wpt_dir.clone()
+    };
+    let report = WptReportCollector::new(
+        wpt_dir_label,
+        &backend_prefixes,
+        &corpus,
+        args.filter.clone(),
+        report_output_path(),
+    );
+
     let mut trials = Vec::new();
     for backend in backends {
-        push_backend_trials(&mut trials, backend, &corpus.cases);
+        push_backend_trials(&mut trials, backend, &corpus.cases, &report);
     }
 
     let conclusion = libtest_mimic::run(&args, trials);
@@ -111,5 +149,10 @@ fn main() {
         conclusion.num_failed,
         conclusion.num_filtered_out
     );
+
+    if let Err(e) = report.write_json() {
+        eprintln!("[WPT] warning: failed to write JSON report: {e}");
+    }
+
     conclusion.exit();
 }

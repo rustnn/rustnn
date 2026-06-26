@@ -120,7 +120,20 @@ jobs:
         run: node scripts/fetch_wpt.mjs
 
       - name: Run WPT conformance tests
+        env:
+          WPT_REPORT_JSON: reports/wpt-conformance.json
+          RUSTNN_GIT_SHA: ${{ github.sha }}
+          RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: make test-wpt
+
+      - name: Upload WPT conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpt-conformance-report
+          path: |
+            reports/wpt-conformance.json
+            reports/wpt-conformance.html
 
   # Legacy rustnnpt gate: keeps branch protection happy until "RustNNPT Conformance Gate"
   # is replaced with "WPT Conformance" in repo settings. Remove once admins update checks.

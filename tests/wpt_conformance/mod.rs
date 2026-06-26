@@ -13,6 +13,7 @@ pub mod wpt_config;
 pub mod wpt_context_pool;
 pub mod wpt_execute_graph;
 pub mod wpt_js_loader;
+pub mod wpt_report;
 pub mod wpt_tensor;
 pub mod wpt_types;
 

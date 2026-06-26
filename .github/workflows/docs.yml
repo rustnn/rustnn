@@ -8,11 +8,13 @@ on:
       - "docs/**"
       - "mkdocs.yml"
       - ".github/workflows/docs.yml"
+      - "scripts/embed_wpt_conformance_pages.sh"
       - "python/**"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "scripts/embed_wpt_conformance_pages.sh"
       - "python/**"
   workflow_dispatch:
 
@@ -47,6 +49,15 @@ jobs:
 
       - name: Build documentation
         run: mkdocs build --strict --verbose
+
+      - name: Restore published WPT conformance report
+        uses: actions/cache/restore@v4
+        with:
+          path: reports
+          key: wpt-conformance-pages-${{ runner.os }}-latest
+
+      - name: Embed WPT conformance report
+        run: bash scripts/embed_wpt_conformance_pages.sh site
 
       - name: Create .nojekyll file
         run: touch site/.nojekyll

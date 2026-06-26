@@ -1,0 +1,97 @@
+name: Nightly WPT Conformance Pages
+
+on:
+  schedule:
+    # 06:00 UTC daily
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: Build WPT report and deploy docs
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Install MkDocs dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/wpt
+          key: wpt-${{ runner.os }}-${{ hashFiles('scripts/fetch_wpt.mjs') }}
+          restore-keys: |
+            wpt-${{ runner.os }}-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-wpt-nightly-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run WPT conformance and generate reports
+        env:
+          WPT_REPORT_JSON: reports/wpt-conformance.json
+          RUSTNN_GIT_SHA: ${{ github.sha }}
+          RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: make test-wpt-report
+
+      - name: Save WPT conformance report for doc deploys
+        uses: actions/cache/save@v4
+        with:
+          path: reports
+          key: wpt-conformance-pages-${{ runner.os }}-latest
+
+      - name: Build documentation site
+        run: mkdocs build --strict --verbose
+
+      - name: Embed WPT conformance report
+        run: bash scripts/embed_wpt_conformance_pages.sh site
+
+      - name: Create .nojekyll file
+        run: touch site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

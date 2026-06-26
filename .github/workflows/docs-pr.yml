@@ -6,6 +6,7 @@ on:
       - 'docs/**'
       - 'mkdocs.yml'
       - 'python/**'
+      - 'scripts/embed_wpt_conformance_pages.sh'
       - '.github/workflows/docs*.yml'
 
 permissions:
@@ -31,17 +32,21 @@ jobs:
           pip install -r docs/requirements.txt
 
       - name: Check documentation build
-        run: |
-          mkdocs build --strict --verbose
+        run: mkdocs build --strict --verbose
+
+      - name: Restore published WPT conformance report
+        uses: actions/cache/restore@v4
+        with:
+          path: reports
+          key: wpt-conformance-pages-${{ runner.os }}-latest
+
+      - name: Embed WPT conformance report
+        run: bash scripts/embed_wpt_conformance_pages.sh site
 
       - name: Check for broken links
         run: |
-          # Build the docs
-          mkdocs build --strict
-
-          # Simple check for broken internal links
           echo "Checking for broken internal links..."
-          ! grep -r "404.html" site/ && echo "✓ No broken links found" || (echo "✗ Broken links detected" && exit 1)
+          ! grep -r "404.html" site/ && echo "[OK] No broken links found" || (echo "[FAIL] Broken links detected" && exit 1)
 
       - name: Comment on PR
         if: always() && github.event.pull_request.head.repo.full_name == github.repository
