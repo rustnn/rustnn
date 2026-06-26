@@ -289,11 +289,9 @@ To re-enable CoreML testing:
 
 ✓ **Backends:** ONNX CPU (default trials), `WPT_BACKEND=onnx-gpu`, `WPT_BACKEND=trtx` (feature-gated)
 
-✓ **Docs:** [wpt-test-guide.md](../testing/wpt-test-guide.md), [wpt-harness-todos.md](../testing/wpt-harness-todos.md)
-
 ⚠ **Gaps:** CI wiring, TRTX smoke validation, `MLContext` reuse for performance
 
-**Baseline (2026-06-19):** 2482 trials, 2482 passed, 0 failed, 15.19 s (`onnx` CPU, `--test-threads 1`). See [wpt-harness-todos.md](../testing/wpt-harness-todos.md#baseline-onnx-cpu-2026-06-19).
+**Baseline (2026-06-19):** 2482 trials, 2482 passed, 0 failed, 15.19 s (`onnx` CPU, `--test-threads 1`).
 
 ### Running tests
 
@@ -314,7 +312,7 @@ Python WPT conformance lives in [pywebnn](https://github.com/rustnn/pywebnn). CI
 
 **Goal:** Stable in-repo Rust WPT suite in CI with recorded pass/fail baseline.
 
-**Remaining tasks:** See [wpt-harness-todos.md](../testing/wpt-harness-todos.md) (CI Node.js + fetch, full 2482-case run, TRTX smoke, performance).
+**Remaining tasks:** CI Node.js + fetch, full 2482-case run, TRTX smoke, performance.
 
 **Estimated Effort:** 4-8 hours
 
@@ -404,7 +402,7 @@ Python WPT conformance lives in [pywebnn](https://github.com/rustnn/pywebnn). CI
 
 ### WPT harness
 
-Live upstream WPT conformance tests are evaluated via the Node bridge and executed through `MLGraphBuilder` + `MLContext`. See [wpt-test-guide.md](../testing/wpt-test-guide.md).
+Live upstream WPT conformance tests are evaluated via the Node bridge and executed through `MLGraphBuilder` + `MLContext`. See **Running tests** above and `tests/run_wpt_conformance.rs`.
 
 ### Tolerance Checking
 
