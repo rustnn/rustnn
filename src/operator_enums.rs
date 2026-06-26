@@ -65,7 +65,7 @@ impl MLOperandDataType {
 
     pub const fn rustnn_storage_byte_length(self, elements: usize) -> usize {
         let bits = self.rustnn_element_size_bits();
-        (bits * elements + 7) / 8
+        (bits * elements).div_ceil(8)
     }
 }
 

@@ -109,14 +109,14 @@ impl DataType {
     /// Host storage bytes for `elements` values (always `ceil(elements * bits / 8)`).
     pub fn storage_byte_length(self, elements: usize) -> Option<usize> {
         let total_bits = elements.checked_mul(self.bits_per_element())?;
-        Some((total_bits + 7) / 8)
+        Some(total_bits.div_ceil(8))
     }
 
     /// Byte size of one element when the type is whole-byte aligned (`bits % 8 == 0`).
     pub fn bytes_per_element(self) -> usize {
         let bits = self.bits_per_element();
         debug_assert!(
-            bits % 8 == 0,
+            bits.is_multiple_of(8),
             "bytes_per_element is only defined for byte-aligned types; use storage_byte_length for int4/uint4"
         );
         bits / 8
