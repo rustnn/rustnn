@@ -29,6 +29,7 @@ const WIDTH: usize = 540;
 const INPUT_SHAPE: [u64; 4] = [BATCH as u64, CHANNELS as u64, HEIGHT as u64, WIDTH as u64];
 const OUTPUT_SHAPE: [u64; 4] = INPUT_SHAPE;
 const IMAGE_ELEMENT_COUNT: usize = BATCH * CHANNELS * HEIGHT * WIDTH;
+const PIPELINE_DEPTH: usize = 3;
 
 const WEIGHTS: &[WeightSpec] = &[
     WeightSpec::new("weightConv0", "Variable_read__0__cf__0_0.npy"),
@@ -92,28 +93,16 @@ struct Args {
     num_inferences: usize,
     #[arg(
         long,
-        visible_alias = "disable-pipelining",
-        help = "Disable ping-pong tensor buffering and read each result before dispatching the next inference"
+        visible_alias = "disable-ping-pong",
+        help = "Disable pipelined tensor buffering and read each result before dispatching the next inference"
     )]
-    disable_ping_pong: bool,
+    disable_pipelining: bool,
     #[arg(long, value_enum, default_value_t = StyleModel::StarryNight, visible_alias = "model-id")]
     model: StyleModel,
     #[arg(long, default_value = DEFAULT_WEIGHTS_BASE_URL)]
     weights_base_url: String,
     #[arg(long)]
     sequential_weights: bool,
-    #[arg(
-        long,
-        help = "Capture one frame from the default webcam instead of using --input"
-    )]
-    webcam: bool,
-    #[arg(
-        long,
-        default_value_t = 0,
-        requires = "webcam",
-        help = "Webcam index to capture"
-    )]
-    webcam_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -817,7 +806,7 @@ fn run_inferences(
     graph: &mut rustnn::mlcontext::MLGraph<'_>,
     input_data: &[f32],
     num_inferences: usize,
-    ping_pong: bool,
+    pipelined: bool,
 ) -> Result<Vec<f32>> {
     let mut input_descriptor =
         MLTensorDescriptor::new(MLOperandDataType::Float32, INPUT_SHAPE.to_vec());
@@ -826,7 +815,7 @@ fn run_inferences(
         MLTensorDescriptor::new(MLOperandDataType::Float32, OUTPUT_SHAPE.to_vec());
     output_descriptor.set_readable(true);
 
-    let tensor_count = if ping_pong { 2 } else { 1 };
+    let tensor_count = if pipelined { PIPELINE_DEPTH } else { 1 };
     let mut input_tensors = Vec::with_capacity(tensor_count);
     let mut output_tensors = Vec::with_capacity(tensor_count);
     for _ in 0..tensor_count {
@@ -842,6 +831,7 @@ fn run_inferences(
 
     let mut output_data = vec![0.0f32; IMAGE_ELEMENT_COUNT];
     let mut starts = vec![None; tensor_count];
+    let mut next_to_read = 0;
 
     for i in 0..num_inferences {
         let slot = i % tensor_count;
@@ -855,37 +845,30 @@ fn run_inferences(
         rustnn(context.dispatch(graph, &inputs, &outputs), "dispatch graph")?;
 
         if i + 1 >= tensor_count {
-            let completed_inference = i + 2 - tensor_count;
-            let completed_slot = (completed_inference - 1) % tensor_count;
+            let completed_slot = next_to_read % tensor_count;
             rustnn(
                 context.read_tensor(&output_tensors[completed_slot], &mut output_data),
                 "read output tensor",
             )?;
-            println!(
-                "inference {} took {:?}",
-                completed_inference,
-                starts[completed_slot]
-                    .take()
-                    .expect("inference start time must be recorded")
-                    .elapsed()
-            );
+            next_to_read += 1;
         }
     }
 
-    if ping_pong {
-        let final_slot = (num_inferences - 1) % tensor_count;
+    while next_to_read < num_inferences {
+        let completed_slot = next_to_read % tensor_count;
         rustnn(
-            context.read_tensor(&output_tensors[final_slot], &mut output_data),
-            "read final output tensor",
+            context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+            "drain output tensor",
         )?;
         println!(
             "inference {} took {:?}",
-            num_inferences,
-            starts[final_slot]
+            next_to_read + 1,
+            starts[completed_slot]
                 .take()
-                .expect("final inference start time must be recorded")
+                .expect("inference start time must be recorded")
                 .elapsed()
         );
+        next_to_read += 1;
     }
 
     Ok(output_data)
@@ -973,10 +956,10 @@ async fn main() -> Result<()> {
     println!("Requested inferences: {}", args.num_inferences);
     println!(
         "Inference tensor buffering: {}",
-        if args.disable_ping_pong {
-            "single"
+        if args.disable_pipelining {
+            "disabled"
         } else {
-            "ping-pong"
+            "pipeline depth 3"
         }
     );
     println!("Model: {} ({})", args.model.id(), args.model.title());
@@ -1030,7 +1013,7 @@ async fn main() -> Result<()> {
         &mut graph,
         &input_data,
         args.num_inferences,
-        !args.disable_ping_pong,
+        !args.disable_pipelining,
     )?;
     save_output_image(&args.output, &output_data)?;
     println!("Wrote output image: {}", args.output.display());
