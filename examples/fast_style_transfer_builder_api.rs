@@ -1,6 +1,11 @@
 // Port of https://d3i5xkfad89fac.cloudfront.net/test-data/models/fast_style_transfer_nchw/weights
 // (Apache 2.0)
-use std::{collections::HashMap, fmt, path::PathBuf, time::Instant};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Path, PathBuf},
+    time::Instant,
+};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::{Parser, ValueEnum};
@@ -79,18 +84,36 @@ const WEIGHTS: &[WeightSpec] = &[
 #[derive(Parser, Debug)]
 #[command(about = "Load Fast Style Transfer weights into RustNN")]
 struct Args {
-    #[arg(long, help = "Input image path; parsed for the future inference port")]
+    #[arg(short, long, help = "Input image path")]
     input: PathBuf,
-    #[arg(long, help = "Output image path; parsed for the future inference port")]
+    #[arg(short, long, help = "Output image path")]
     output: PathBuf,
-    #[arg(long, default_value_t = 1, help = "Number of inferences to run later")]
+    #[arg(long, default_value_t = 1, help = "Number of inferences to run")]
     num_inferences: usize,
+    #[arg(
+        long,
+        visible_alias = "disable-pipelining",
+        help = "Disable ping-pong tensor buffering and read each result before dispatching the next inference"
+    )]
+    disable_ping_pong: bool,
     #[arg(long, value_enum, default_value_t = StyleModel::StarryNight, visible_alias = "model-id")]
     model: StyleModel,
     #[arg(long, default_value = DEFAULT_WEIGHTS_BASE_URL)]
     weights_base_url: String,
     #[arg(long)]
     sequential_weights: bool,
+    #[arg(
+        long,
+        help = "Capture one frame from the default webcam instead of using --input"
+    )]
+    webcam: bool,
+    #[arg(
+        long,
+        default_value_t = 0,
+        requires = "webcam",
+        help = "Webcam index to capture"
+    )]
+    webcam_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -736,12 +759,9 @@ fn build_fast_style_transfer_graph(
     rustnn(builder.add(scaled, output_offset), "offset_output")
 }
 
-fn load_input_image(path: &PathBuf) -> Result<Vec<f32>> {
-    let image = image::open(path)
-        .with_context(|| format!("decode input image {}", path.display()))?
-        .to_rgb8();
+fn image_to_tensor(image: &image::RgbImage) -> Vec<f32> {
     let resized = image::imageops::resize(
-        &image,
+        image,
         WIDTH as u32,
         HEIGHT as u32,
         image::imageops::FilterType::Triangle,
@@ -757,7 +777,14 @@ fn load_input_image(path: &PathBuf) -> Result<Vec<f32>> {
             }
         }
     }
-    Ok(tensor)
+    tensor
+}
+
+fn load_input_image(path: &Path) -> Result<Vec<f32>> {
+    let image = image::open(path)
+        .with_context(|| format!("decode input image {}", path.display()))?
+        .to_rgb8();
+    Ok(image_to_tensor(&image))
 }
 
 fn save_output_image(path: &PathBuf, output: &[f32]) -> Result<()> {
@@ -790,39 +817,75 @@ fn run_inferences(
     graph: &mut rustnn::mlcontext::MLGraph<'_>,
     input_data: &[f32],
     num_inferences: usize,
+    ping_pong: bool,
 ) -> Result<Vec<f32>> {
     let mut input_descriptor =
         MLTensorDescriptor::new(MLOperandDataType::Float32, INPUT_SHAPE.to_vec());
     input_descriptor.set_writable(true);
-    let input_tensor = rustnn(
-        context.create_tensor(&input_descriptor),
-        "create input tensor",
-    )?;
-
     let mut output_descriptor =
         MLTensorDescriptor::new(MLOperandDataType::Float32, OUTPUT_SHAPE.to_vec());
     output_descriptor.set_readable(true);
-    let output_tensor = rustnn(
-        context.create_tensor(&output_descriptor),
-        "create output tensor",
-    )?;
 
-    let inputs = HashMap::from([("input", &input_tensor)]);
-    let outputs = HashMap::from([("output", &output_tensor)]);
+    let tensor_count = if ping_pong { 2 } else { 1 };
+    let mut input_tensors = Vec::with_capacity(tensor_count);
+    let mut output_tensors = Vec::with_capacity(tensor_count);
+    for _ in 0..tensor_count {
+        input_tensors.push(rustnn(
+            context.create_tensor(&input_descriptor),
+            "create input tensor",
+        )?);
+        output_tensors.push(rustnn(
+            context.create_tensor(&output_descriptor),
+            "create output tensor",
+        )?);
+    }
+
     let mut output_data = vec![0.0f32; IMAGE_ELEMENT_COUNT];
+    let mut starts = vec![None; tensor_count];
 
     for i in 0..num_inferences {
+        let slot = i % tensor_count;
         rustnn(
-            context.write_tensor(&input_tensor, input_data),
+            context.write_tensor(&input_tensors[slot], input_data),
             "write input tensor",
         )?;
-        let start = Instant::now();
+        starts[slot] = Some(Instant::now());
+        let inputs = HashMap::from([("input", &input_tensors[slot])]);
+        let outputs = HashMap::from([("output", &output_tensors[slot])]);
         rustnn(context.dispatch(graph, &inputs, &outputs), "dispatch graph")?;
+
+        if i + 1 >= tensor_count {
+            let completed_inference = i + 2 - tensor_count;
+            let completed_slot = (completed_inference - 1) % tensor_count;
+            rustnn(
+                context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+                "read output tensor",
+            )?;
+            println!(
+                "inference {} took {:?}",
+                completed_inference,
+                starts[completed_slot]
+                    .take()
+                    .expect("inference start time must be recorded")
+                    .elapsed()
+            );
+        }
+    }
+
+    if ping_pong {
+        let final_slot = (num_inferences - 1) % tensor_count;
         rustnn(
-            context.read_tensor(&output_tensor, &mut output_data),
-            "read output tensor",
+            context.read_tensor(&output_tensors[final_slot], &mut output_data),
+            "read final output tensor",
         )?;
-        println!("inference {} took {:?}", i + 1, start.elapsed());
+        println!(
+            "inference {} took {:?}",
+            num_inferences,
+            starts[final_slot]
+                .take()
+                .expect("final inference start time must be recorded")
+                .elapsed()
+        );
     }
 
     Ok(output_data)
@@ -904,9 +967,18 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     ensure!(args.num_inferences >= 1, "--num-inferences must be >= 1");
 
-    println!("Input image: {}", args.input.display());
+    let input = &args.input;
+    println!("Input image: {}", input.display());
     println!("Output image: {}", args.output.display());
     println!("Requested inferences: {}", args.num_inferences);
+    println!(
+        "Inference tensor buffering: {}",
+        if args.disable_ping_pong {
+            "single"
+        } else {
+            "ping-pong"
+        }
+    );
     println!("Model: {} ({})", args.model.id(), args.model.title());
     println!("Input shape: {:?}", INPUT_SHAPE);
     println!("Output shape: {:?}", OUTPUT_SHAPE);
@@ -952,8 +1024,14 @@ async fn main() -> Result<()> {
         rustnn(builder.build(&outputs), "build MLGraph")?
     };
 
-    let input_data = load_input_image(&args.input)?;
-    let output_data = run_inferences(&mut context, &mut graph, &input_data, args.num_inferences)?;
+    let input_data = load_input_image(input)?;
+    let output_data = run_inferences(
+        &mut context,
+        &mut graph,
+        &input_data,
+        args.num_inferences,
+        !args.disable_ping_pong,
+    )?;
     save_output_image(&args.output, &output_data)?;
     println!("Wrote output image: {}", args.output.display());
 
