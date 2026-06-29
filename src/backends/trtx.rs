@@ -1,7 +1,8 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::ops::Deref;
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use cudarc::driver::CudaSlice;
@@ -171,6 +172,8 @@ pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
+    attempted_host_registrations: HashSet<usize>,
+    registered_host_pointers: HashSet<usize, usize>,
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
     builder: Arc<Mutex<trtx::Builder<'context>>>,
@@ -208,10 +211,33 @@ impl<'context> TrtxContext<'context> {
             cuda_ctx,
             tensors: vec![],
             events: vec![],
+            attempted_host_registrations: HashSet::new(),
+            registered_host_pointers: HashMap::new(),
             runtime,
             builder: Arc::new(builder.into()),
             config,
         })
+    }
+
+    fn try_register_host_memory(&mut self, pointer: *const u8, size: usize) {
+        let pointer_address = pointer as usize;
+        if !self.attempted_host_registrations.insert(pointer_address) {
+            return;
+        }
+
+        let registration_result = self.cuda_ctx.bind_to_thread().and_then(|()| unsafe {
+            sys::cuMemHostRegister_v2(pointer.cast_mut().cast(), size, 0).result()
+        });
+        match registration_result {
+            Ok(()) => {
+                self.registered_host_pointers.insert(pointer_address, size);
+            }
+            Err(error) => {
+                warn!(
+                    "Failed to register CPU tensor pointer {pointer:p} (size={size}) with CUDA: {error}"
+                );
+            }
+        }
     }
 }
 
@@ -355,8 +381,14 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         }
         refitter.refit_cuda_engine()?;
 
+        let mut runtime_config = engine
+            .create_runtime_config()
+            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+        runtime_config
+            .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE)
+            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         let exec = engine
-            .create_execution_context()
+            .create_execution_context_with_config(Rc::new(runtime_config))
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
         MLGraph::new(
@@ -455,6 +487,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         array: &mut [u8],
     ) -> crate::error::Result<()> {
+        self.try_register_host_memory(array.as_ptr(), array.len());
         let cuda_tensor = &self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         debug!(
@@ -476,6 +509,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         array: &[u8],
     ) -> crate::error::Result<()> {
+        self.try_register_host_memory(array.as_ptr(), array.len());
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         debug!(

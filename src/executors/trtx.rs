@@ -1,6 +1,7 @@
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::error::GraphError;
 use crate::graph::{OperandDescriptor, get_static_or_max_size};
@@ -185,7 +186,9 @@ fn execute_trtx_engine(
 
     // Deserialize engine
     let mut engine = runtime.deserialize_cuda_engine(engine_bytes)?;
-    let mut context = engine.create_execution_context()?;
+    let mut runtime_config = engine.create_runtime_config()?;
+    runtime_config.set_cuda_graph_strategy(trtx::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE)?;
+    let mut context = engine.create_execution_context_with_config(Rc::new(runtime_config))?;
 
     // Get tensor information
     let num_tensors = engine.nb_io_tensors()?;
