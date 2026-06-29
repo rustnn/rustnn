@@ -29,7 +29,7 @@ const WIDTH: usize = 540;
 const INPUT_SHAPE: [u64; 4] = [BATCH as u64, CHANNELS as u64, HEIGHT as u64, WIDTH as u64];
 const OUTPUT_SHAPE: [u64; 4] = INPUT_SHAPE;
 const IMAGE_ELEMENT_COUNT: usize = BATCH * CHANNELS * HEIGHT * WIDTH;
-const PIPELINE_DEPTH: usize = 3;
+const PIPELINE_DEPTH: usize = 2;
 
 const WEIGHTS: &[WeightSpec] = &[
     WeightSpec::new("weightConv0", "Variable_read__0__cf__0_0.npy"),
@@ -93,7 +93,6 @@ struct Args {
     num_inferences: usize,
     #[arg(
         long,
-        visible_alias = "disable-ping-pong",
         help = "Disable pipelined tensor buffering and read each result before dispatching the next inference"
     )]
     disable_pipelining: bool,

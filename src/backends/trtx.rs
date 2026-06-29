@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -140,6 +141,57 @@ pub(crate) struct TrtxGraph<'context> {
     exec: ExecutionContext<'context>,
     _engine: CudaEngine<'context>,
     cuda_stream: Arc<CudaStream>,
+    cuda_graphs: HashMap<Vec<(bool, String, usize)>, CapturedCudaGraph>,
+}
+
+struct CapturedCudaGraph {
+    graph: sys::CUgraph,
+    executable: sys::CUgraphExec,
+    stream: Arc<CudaStream>,
+}
+
+impl CapturedCudaGraph {
+    fn finish_capture(stream: &Arc<CudaStream>) -> std::result::Result<Self, DriverError> {
+        stream.context().bind_to_thread()?;
+        let graph = unsafe { result::stream::end_capture(stream.cu_stream()) }?;
+        if graph.is_null() {
+            return Err(DriverError(sys::CUresult::CUDA_ERROR_INVALID_VALUE));
+        }
+
+        let mut executable = MaybeUninit::uninit();
+        if let Err(error) =
+            unsafe { sys::cuGraphInstantiateWithFlags(executable.as_mut_ptr(), graph, 0).result() }
+        {
+            let _ = unsafe { result::graph::destroy(graph) };
+            return Err(error);
+        }
+
+        Ok(Self {
+            graph,
+            executable: unsafe { executable.assume_init() },
+            stream: Arc::clone(stream),
+        })
+    }
+
+    fn launch(&self) -> std::result::Result<(), DriverError> {
+        self.stream.context().bind_to_thread()?;
+        unsafe { result::graph::launch(self.executable, self.stream.cu_stream()) }
+    }
+}
+
+impl Drop for CapturedCudaGraph {
+    fn drop(&mut self) {
+        if let Err(error) = self.stream.context().bind_to_thread() {
+            warn!("Failed to destroy captured CUDA graph: {error}");
+            return;
+        }
+        if let Err(error) = unsafe { result::graph::exec_destroy(self.executable) } {
+            warn!("Failed to destroy captured CUDA graph executable: {error}");
+        }
+        if let Err(error) = unsafe { result::graph::destroy(self.graph) } {
+            warn!("Failed to destroy captured CUDA graph: {error}");
+        }
+    }
 }
 
 impl std::fmt::Debug for TrtxGraph<'_> {
@@ -148,6 +200,7 @@ impl std::fmt::Debug for TrtxGraph<'_> {
             .field("engine", &"")
             .field("exec", &self.exec.name())
             .field("cuda_stream", &self.cuda_stream)
+            .field("cuda_graph_count", &self.cuda_graphs.len())
             .finish()
     }
 }
@@ -173,7 +226,7 @@ pub(crate) struct TrtxContext<'context> {
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
     attempted_host_registrations: HashSet<usize>,
-    registered_host_pointers: HashSet<usize, usize>,
+    registered_host_pointers: HashMap<usize, usize>,
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
     builder: Arc<Mutex<trtx::Builder<'context>>>,
@@ -385,7 +438,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             .create_runtime_config()
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         runtime_config
-            .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kWHOLE_GRAPH_CAPTURE)
+            .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kDISABLED)
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         let exec = engine
             .create_execution_context_with_config(Rc::new(runtime_config))
@@ -399,6 +452,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                     .cuda_context
                     .new_stream()
                     .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
+                cuda_graphs: HashMap::new(),
             }),
             &graph,
         )
@@ -538,10 +592,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
         // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
+        let mut io_pointers = Vec::with_capacity(inputs.len() + outputs.len());
         for (input, tensor) in inputs.iter() {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            io_pointers.push((false, (*input).to_owned(), ptr as usize));
             unsafe {
                 graph
                     .exec
@@ -556,6 +612,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            io_pointers.push((true, (*output).to_owned(), ptr as usize));
             unsafe {
                 graph
                     .exec
@@ -563,13 +620,34 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                     .to_dispatch_result()?
             };
         }
+        io_pointers.sort_unstable();
 
-        unsafe {
-            graph
-                .exec
-                .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
-                .to_dispatch_result()?
-        };
+        if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
+            cuda_graph.launch().to_dispatch_result()?;
+        } else {
+            inference_stream
+                .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+                .to_dispatch_result()?;
+            if let Err(source) = unsafe {
+                graph
+                    .exec
+                    .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
+            } {
+                if let Ok(captured_graph) =
+                    unsafe { result::stream::end_capture(inference_stream.cu_stream()) }
+                    && !captured_graph.is_null()
+                {
+                    let _ = unsafe { result::graph::destroy(captured_graph) };
+                }
+                return Err(crate::error::Error::GraphDispatchError {
+                    source: source.into(),
+                });
+            }
+            let cuda_graph =
+                CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
+            cuda_graph.launch().to_dispatch_result()?;
+            graph.cuda_graphs.insert(io_pointers, cuda_graph);
+        }
         let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
         for tensor in outputs.values() {
             let cuda_tensor = &mut self.tensors[tensor.id];
