@@ -19,6 +19,7 @@ use crate::executors::onnx::ensure_ort_initialized;
 use crate::graph::{pack_int4, pack_uint4_from_i32, unpack_int4, unpack_uint4};
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
+    SyncHandle,
 };
 use crate::{GraphError, GraphInfo, ONNX_EXTERNAL_WEIGHTS_FILENAME};
 
@@ -695,7 +696,11 @@ impl<'context> MLBackendContext<'context> for OrtContext {
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
+    fn read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        array: &mut [u8],
+    ) -> crate::error::Result<SyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor())?;
         if host.len() > logical {
@@ -724,10 +729,14 @@ impl<'context> MLBackendContext<'context> for OrtContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
+    fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        array: &[u8],
+    ) -> crate::error::Result<SyncHandle> {
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -742,7 +751,7 @@ impl<'context> MLBackendContext<'context> for OrtContext {
         }
         let n = array.len();
         host[..n].copy_from_slice(array);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
     fn dispatch(

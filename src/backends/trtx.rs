@@ -31,7 +31,7 @@ use crate::error::GraphBuilderError;
 use crate::mlcontext::MLTensor;
 use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
-use crate::mlcontext::{MLBackendContext, MLBackendGraph};
+use crate::mlcontext::{MLBackendContext, MLBackendGraph, SyncHandle, SynchronizationHandle};
 
 // TODO: also used in trtexec-rs. Should be part of trtx API?
 enum HostMemoryOrVec<'memory> {
@@ -527,12 +527,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<crate::mlcontext::MLTensor> {
         let mut tensor = self.create_tensor(descriptor)?;
         tensor.constant = true;
-        self.write_tensor(&tensor, input_data).map_err(|e| {
-            crate::error::Error::TensorCreationError {
+        self.write_tensor(&tensor, input_data)
+            .and_then(SynchronizationHandle::wait)
+            .map_err(|e| crate::error::Error::TensorCreationError {
                 source: e.into(),
                 descriptor: descriptor.clone(),
-            }
-        })?; // need to free tensor in case of error
+            })?; // need to free tensor in case of error
         Ok(tensor)
     }
 
@@ -540,7 +540,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         &mut self,
         tensor: &crate::mlcontext::MLTensor,
         array: &mut [u8],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<SyncHandle> {
         self.try_register_host_memory(array.as_ptr(), array.len());
         let cuda_tensor = &self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
@@ -552,19 +552,30 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         stream
             .memcpy_dtoh(&cuda_tensor.memory, array)
             .to_read_tensor_result(|| tensor.clone())?;
-        stream
-            .synchronize()
+        let event = stream
+            .record_event(None)
             .to_read_tensor_result(|| tensor.clone())?;
-        Ok(())
+        Ok(SyncHandle::CudaEvent(event))
     }
 
     fn write_tensor(
         &mut self,
         tensor: &crate::mlcontext::MLTensor,
         array: &[u8],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<SyncHandle> {
         self.try_register_host_memory(array.as_ptr(), array.len());
         let cuda_tensor = &mut self.tensors[tensor.id];
+        if array.len() > cuda_tensor.memory.len() {
+            return Err(crate::error::Error::TensorWriteError {
+                source: format!(
+                    "write exceeds tensor storage: {} bytes > {}",
+                    array.len(),
+                    cuda_tensor.memory.len()
+                )
+                .into(),
+                tensor: tensor.clone(),
+            });
+        }
         let stream = &cuda_tensor.stream;
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
@@ -574,7 +585,10 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         stream
             .memcpy_htod(array, &mut cuda_tensor.memory)
             .to_write_tensor_result(|| tensor.clone())?;
-        Ok(())
+        let event = stream
+            .record_event(None)
+            .to_write_tensor_result(|| tensor.clone())?;
+        Ok(SyncHandle::CudaEvent(event))
     }
 
     fn dispatch(
@@ -762,7 +776,7 @@ impl ListDevices for TrtxContext<'_> {
 #[cfg(test)]
 #[cfg(feature = "trtx-runtime")]
 mod tests {
-    use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
+    use crate::mlcontext::{MLBackendContext, MLTensorDescriptor, SynchronizationHandle};
     use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
 
     #[test]
@@ -814,15 +828,18 @@ mod tests {
         let mut download = vec![0.0f32; 4];
         context
             .write_tensor(&tensor, bytemuck::cast_slice(&upload))
+            .unwrap()
+            .wait()
             .unwrap();
         context
             .read_tensor(&tensor, bytemuck::cast_slice_mut(&mut download))
+            .unwrap()
+            .wait()
             .unwrap();
         assert_eq!(&upload, &download);
     }
 
     #[test]
-    #[should_panic = "assertion failed: dst.len() >= src.len()"]
     fn test_write_too_large_tensor() {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
@@ -839,8 +856,12 @@ mod tests {
         desc.set_readable(true);
         desc.set_writable(true);
         let tensor = context.create_tensor(&desc).unwrap();
-        context
+        let error = context
             .write_tensor(&tensor, bytemuck::cast_slice(&too_big))
             .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Failed to write tensor: write exceeds tensor storage: 32 bytes > 16"
+        );
     }
 }

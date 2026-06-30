@@ -6,6 +6,7 @@ use crate::backend_selection::DeviceType;
 use crate::error::{Error, Result};
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
+    SyncHandle,
 };
 
 pub(crate) struct LiteRtTensor {
@@ -113,7 +114,7 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()> {
+    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<SyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor())?;
         if array.len() < logical {
@@ -132,10 +133,10 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()> {
+    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<SyncHandle> {
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -149,7 +150,7 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             });
         }
         host[..array.len()].copy_from_slice(array);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
     fn dispatch(

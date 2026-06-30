@@ -21,6 +21,7 @@ use crate::executors::coreml::{
 };
 use crate::mlcontext::{
     MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLTensor, MLTensorDescriptor,
+    SyncHandle,
 };
 
 /// Number of bytes required to store a tensor described by `descriptor`.
@@ -135,7 +136,11 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
+    fn read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        array: &mut [u8],
+    ) -> crate::error::Result<SyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor());
         if array.len() < logical {
@@ -154,10 +159,14 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
+    fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        array: &[u8],
+    ) -> crate::error::Result<SyncHandle> {
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -172,7 +181,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         }
         let n = array.len();
         host[..n].copy_from_slice(array);
-        Ok(())
+        Ok(SyncHandle::Ready)
     }
 
     fn dispatch(

@@ -221,6 +221,9 @@ pub enum Error {
         tensor: MLTensor,
     },
 
+    #[error("Failed to wait for backend work: {source}")]
+    SynchronizationError { source: Box<dyn std::error::Error> },
+
     #[error(
         "Set capacity error: requested to set capacity to max shape {requested_shape:?} with {required_bytes} bytes but current shape is {current_shape:?} which needs {required_bytes} bytes"
     )]
