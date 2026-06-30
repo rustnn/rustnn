@@ -1584,11 +1584,25 @@ fn read_output_tensor(
     }
 }
 
+pub fn append_webnn_graph_text(msg: String, webnn_text: Option<&str>) -> String {
+    match webnn_text.filter(|text| !text.is_empty()) {
+        Some(text) => format!("{msg}\n\n--- built graph ---\n{text}"),
+        None => msg,
+    }
+}
+
+/// Outputs from a successful WPT graph execution plus optional `.webnn` text captured at build time.
+#[derive(Debug)]
+pub struct WptExecuteArtifacts {
+    pub outputs: HashMap<String, WptActualOutput>,
+    pub webnn_text: Option<String>,
+}
+
 /// Execute a WPT graph through [`MLGraphBuilder`] and [`MLContext::dispatch`].
 pub fn execute_wpt_graph(
     context: &mut MLContext,
     graph: &WptGraph,
-) -> Result<HashMap<String, WptActualOutput>, String> {
+) -> Result<WptExecuteArtifacts, String> {
     let mut builder = MLGraphBuilder::new(context).map_err(|e| e.to_string())?;
     let mut operand_map: HashMap<String, MLOperand> = HashMap::new();
     let mut name_to_id: HashMap<String, u32> = HashMap::new();
@@ -1678,7 +1692,11 @@ pub fn execute_wpt_graph(
         build_outputs.insert(name.as_str(), *operand);
     }
 
-    let mut ml_graph = builder.build(&build_outputs).map_err(|e| e.to_string())?;
+    let webnn_text = builder.rustnn_webnn_text_for_outputs(&build_outputs);
+
+    let mut ml_graph = builder
+        .build(&build_outputs)
+        .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
 
     let mut input_tensors: HashMap<&str, &MLTensor> = HashMap::new();
     let mut output_tensors_owned: HashMap<String, MLTensor> = HashMap::new();
@@ -1691,7 +1709,7 @@ pub fn execute_wpt_graph(
             .ok_or_else(|| format!("runtime input '{name}' not found"))?;
         let tensor = context
             .create_tensor(&rw_tensor_descriptor(spec))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
         write_runtime_input(context, &tensor, spec)?;
         input_owned.insert(name.clone(), tensor);
     }
@@ -1699,7 +1717,7 @@ pub fn execute_wpt_graph(
     for (name, expected) in &graph.expected_outputs {
         let tensor = context
             .create_tensor(&rw_tensor_descriptor(expected))
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
         output_tensors_owned.insert(name.clone(), tensor);
     }
 
@@ -1713,14 +1731,21 @@ pub fn execute_wpt_graph(
 
     context
         .dispatch(&mut ml_graph, &input_tensors, &output_bindings)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
 
     let mut outputs = HashMap::new();
     for (name, expected) in &graph.expected_outputs {
         let tensor = output_tensors_owned
             .get(name)
             .ok_or_else(|| format!("output tensor '{name}' missing"))?;
-        outputs.insert(name.clone(), read_output_tensor(context, tensor, expected)?);
+        outputs.insert(
+            name.clone(),
+            read_output_tensor(context, tensor, expected)
+                .map_err(|e| append_webnn_graph_text(e, webnn_text.as_deref()))?,
+        );
     }
-    Ok(outputs)
+    Ok(WptExecuteArtifacts {
+        outputs,
+        webnn_text,
+    })
 }

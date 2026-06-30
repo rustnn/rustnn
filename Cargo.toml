@@ -77,6 +77,7 @@ futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 libtest-mimic = "0.8.2"
+pretty_env_logger = "0.5.0"
 
 [[test]]
 name = "run_wpt_conformance"

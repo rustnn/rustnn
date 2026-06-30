@@ -92,12 +92,12 @@ test:
 fetch-wpt:
 	node scripts/fetch_wpt.mjs
 
-# WPT conformance (requires Node.js, WPT cache; set WPT_BACKEND=onnx|onnx-gpu|trtx to pick backend)
+# WPT conformance (requires Node.js, WPT cache; set WPT_BACKEND=onnx|trtx to pick backend)
 test-wpt: onnxruntime-download
 	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
 
 test-wpt-trtx:
-	$(CARGO) test --test run_wpt_conformance --features trtx-runtime-mock -- --test-threads 1
+	$(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
 
 test-wpt-op: onnxruntime-download
 	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
@@ -263,7 +263,7 @@ help:
 	@echo "  test-wpt           - Run full WPT suite (ONNX CPU, ~2482 cases)"
 	@echo "  test-wpt-op OP=... - Run filtered WPT trials"
 	@echo "  test-wpt-report    - Run full WPT suite and write JSON/HTML reports (ignores trial failures)"
-	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT mock backend"
+	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
 	@echo ""
 	@echo "CoreML Conversion:"
 	@echo "  coreml             - Convert graph to CoreML format"

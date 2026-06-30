@@ -221,7 +221,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
-        _ => return Err(crate::error::Error::NoBackendAvialable),
+        _ => return Err(crate::error::Error::NoBackendAvailable),
     })
 }
 

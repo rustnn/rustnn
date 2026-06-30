@@ -694,7 +694,7 @@ webnn_graph "sample_graph" v1 {
         let graph_info = from_graph_json(&graph_json).unwrap();
 
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
             return None;
         };
 
@@ -741,7 +741,7 @@ webnn_graph "sample_graph" v1 {
             &MLContextOptions::new(MLPowerPreference::Default, true)
                 .with_rustnn_backend_hint(Backend::Onnx),
         );
-        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
             return;
         };
         assert_eq!(context.unwrap().rustnn_backend(), Backend::Onnx);
@@ -750,7 +750,7 @@ webnn_graph "sample_graph" v1 {
     fn test_create_context() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvialable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
             return;
         };
 

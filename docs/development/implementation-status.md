@@ -287,7 +287,7 @@ To re-enable CoreML testing:
 - `scripts/fetch_wpt.mjs` — download WPT checkout into `.cache/wpt`
 - `scripts/wpt_bridge/dump_corpus.mjs` — evaluate upstream `.https.any.js` → JSON corpus
 
-✓ **Backends:** ONNX CPU (default trials), `WPT_BACKEND=onnx-gpu`, `WPT_BACKEND=trtx` (feature-gated)
+✓ **Backends:** ONNX CPU (default trials), `WPT_BACKEND=trtx` (when TensorRT is available)
 
 ⚠ **Gaps:** CI wiring, TRTX smoke validation, `MLContext` reuse for performance
 

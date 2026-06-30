@@ -7,17 +7,10 @@ use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{default_wpt_dir, load_wpt_corpus, trial_name};
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_types::WptLoadedCase;
-use wpt_conformance::{should_skip_test, wpt_types::WptTestCase};
-
-#[cfg(any(
-    feature = "onnx-runtime",
-    feature = "trtx-runtime",
-    feature = "trtx-runtime-mock"
-))]
-use wpt_conformance::run_one_test_case;
+use wpt_conformance::{run_one_test_case, should_skip_test, wpt_types::WptTestCase};
 
 fn run_trial(
-    backend: WptBackend,
+    backend: &WptBackend,
     operation: &str,
     test_case: &WptTestCase,
 ) -> Result<Completion, Failed> {
@@ -45,9 +38,10 @@ fn push_backend_trials(
         let test_name = case.name.clone();
         let backend_prefix = prefix.to_string();
         let report = report.clone();
+        let backend = backend.clone();
         trials.push(Trial::ignorable_test(name, move || {
             let started = Instant::now();
-            let result = run_trial(backend, &operation, &test_case);
+            let result = run_trial(&backend, &operation, &test_case);
             let duration = started.elapsed();
             match &result {
                 Ok(Completion::Completed) => {
@@ -68,6 +62,7 @@ fn push_backend_trials(
 }
 
 fn main() {
+    let _ = pretty_env_logger::try_init();
     let args = Arguments::from_args();
     let wpt_dir = default_wpt_dir();
 
@@ -95,13 +90,10 @@ fn main() {
 
     let backends = WptBackend::selected();
     if backends.is_empty() {
-        eprintln!(
-            "No WPT backends available (enable onnx-runtime and/or trtx-runtime-mock feature)."
-        );
-        eprintln!("Set WPT_BACKEND=onnx, onnx-gpu, or trtx to limit registered trials.");
+        eprintln!("No WPT backends available (enable onnx-runtime and/or trtx-runtime).");
+        eprintln!("Set WPT_BACKEND=onnx or trtx to limit registered trials.");
         std::process::exit(2);
     }
-
     let backend_prefixes: Vec<&str> = backends.iter().map(|b| b.trial_prefix()).collect();
     eprintln!("[WPT] backends: {}", backend_prefixes.join(", "));
 

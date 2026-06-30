@@ -323,7 +323,7 @@ mod test {
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         match context {
             Ok(ctx) => Some(ctx),
-            Err(crate::error::Error::NoBackendAvialable) => None,
+            Err(crate::error::Error::NoBackendAvailable) => None,
             Err(e) => panic!("unexpected context creation error: {e:?}"),
         }
     }

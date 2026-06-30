@@ -1,93 +1,93 @@
 //! Backend selection for the WPT harness ([`MLContext`] trial runners).
 
-use rustnn::mlcontext::{MLContextOptions, MLPowerPreference};
+use std::hash::{Hash, Hasher};
 
-/// Execution backend for WPT conformance trials.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum WptBackend {
-    #[cfg(feature = "onnx-runtime")]
-    /// ONNX Runtime CPU (`accelerated = false`).
-    OnnxCpu,
-    #[cfg(feature = "onnx-runtime")]
-    /// ONNX Runtime GPU when available (`accelerated = true`, high performance).
-    OnnxGpu,
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-    /// TensorRT via TRTX (`accelerated = true`).
-    Trtx,
+use rustnn::backend_selection::Backend;
+use rustnn::mlcontext::{MLContext, MLContextOptions, MLPowerPreference};
+
+/// One WPT trial backend: a stable name prefix plus [`MLContextOptions`] with backend hints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WptBackend {
+    prefix: &'static str,
+    options: MLContextOptions,
+}
+
+impl Hash for WptBackend {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.prefix.hash(state);
+    }
 }
 
 impl WptBackend {
-    pub fn trial_prefix(self) -> &'static str {
-        match self {
-            #[cfg(feature = "onnx-runtime")]
-            Self::OnnxCpu => "onnx",
-            #[cfg(feature = "onnx-runtime")]
-            Self::OnnxGpu => "onnx-gpu",
-            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-            Self::Trtx => "trtx",
-        }
+    fn new(prefix: &'static str, options: MLContextOptions) -> Self {
+        Self { prefix, options }
     }
 
-    pub fn context_options(self) -> MLContextOptions {
-        match self {
-            #[cfg(feature = "onnx-runtime")]
-            Self::OnnxCpu => MLContextOptions::new(MLPowerPreference::Default, false),
-            #[cfg(feature = "onnx-runtime")]
-            Self::OnnxGpu => MLContextOptions::new(MLPowerPreference::HighPerformance, true),
-            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-            Self::Trtx => MLContextOptions::new(MLPowerPreference::HighPerformance, true),
-        }
+    pub fn trial_prefix(&self) -> &'static str {
+        self.prefix
     }
 
-    pub fn available() -> Vec<Self> {
-        let mut backends = Vec::new();
-        #[cfg(feature = "onnx-runtime")]
-        backends.push(Self::OnnxCpu);
-        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-        backends.push(Self::Trtx);
-        backends
+    pub fn context_options(&self) -> &MLContextOptions {
+        &self.options
+    }
+
+    /// Candidate backends for WPT trials (before availability probing).
+    pub fn all() -> Vec<Self> {
+        vec![
+            Self::new(
+                "onnx",
+                MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::Onnx),
+            ),
+            Self::new(
+                "trtx",
+                MLContextOptions::new(MLPowerPreference::HighPerformance, true)
+                    .with_rustnn_backend_hint(Backend::Trtx),
+            ),
+        ]
+    }
+
+    /// Whether [`MLContext::create`] succeeds for this backend's options.
+    pub fn is_available(&self) -> bool {
+        matches!(MLContext::create(self.context_options()), Ok(_))
     }
 
     pub fn parse_name(s: &str) -> Option<Self> {
-        match s.trim().to_ascii_lowercase().as_str() {
-            #[cfg(feature = "onnx-runtime")]
-            "onnx" | "ort" | "cpu" | "onnx-cpu" | "ort-cpu" => Some(Self::OnnxCpu),
-            #[cfg(feature = "onnx-runtime")]
-            "onnx-gpu" | "ort-gpu" | "gpu" => Some(Self::OnnxGpu),
-            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-            "trtx" | "tensorrt" | "trt" => Some(Self::Trtx),
-            _ => None,
-        }
+        Self::all()
+            .into_iter()
+            .find(|backend| backend.prefix.eq_ignore_ascii_case(s.trim()))
+            .or_else(|| match s.trim().to_ascii_lowercase().as_str() {
+                "ort" | "cpu" | "onnx-cpu" | "ort-cpu" => Self::all().into_iter().next(),
+                "tensorrt" | "trt" => Self::all().into_iter().find(|b| b.prefix == "trtx"),
+                _ => None,
+            })
     }
 
-    /// Backends that may be selected via `WPT_BACKEND` (includes opt-in backends not in [`Self::available`]).
-    fn selectable_backends(available: &[Self]) -> Vec<Self> {
-        let mut selectable = available.to_vec();
-        #[cfg(feature = "onnx-runtime")]
-        if !selectable.contains(&Self::OnnxGpu) {
-            selectable.push(Self::OnnxGpu);
-        }
-        selectable
-    }
-
-    /// Backends to register as trials. Honors `WPT_BACKEND` when set.
+    /// Backends to register as trials. Honors `WPT_BACKEND` when set; only returns backends
+    /// that pass [`Self::is_available`].
     pub fn selected() -> Vec<Self> {
-        let available = Self::available();
-        let selectable = Self::selectable_backends(&available);
-
-        if let Ok(raw) = std::env::var("WPT_BACKEND") {
-            if let Some(backend) = Self::parse_name(&raw) {
-                if selectable.contains(&backend) {
-                    return vec![backend];
+        let candidates = if let Ok(raw) = std::env::var("WPT_BACKEND") {
+            match Self::parse_name(&raw) {
+                Some(backend) => vec![backend],
+                None => {
+                    eprintln!(
+                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx or trtx); using all backends"
+                    );
+                    Self::all()
                 }
-                eprintln!(
-                    "[WPT] warning: WPT_BACKEND={} is not available with current features; using all enabled backends",
-                    raw
-                );
+            }
+        } else {
+            Self::all()
+        };
+
+        let mut available = Vec::new();
+        for backend in candidates {
+            if backend.is_available() {
+                available.push(backend);
             } else {
                 eprintln!(
-                    "[WPT] warning: invalid WPT_BACKEND={} (expected onnx, onnx-gpu, or trtx); using all enabled backends",
-                    raw
+                    "[WPT] skipping unavailable backend: {}",
+                    backend.trial_prefix()
                 );
             }
         }

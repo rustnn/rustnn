@@ -4,7 +4,8 @@
 //! All backends run through [`MLGraphBuilder`] and [`MLContext::dispatch`].
 //!
 //! Backend selection:
-//! - `WPT_BACKEND=onnx`, `onnx-gpu`, or `trtx` limits which backend trials are registered.
+//! - `WPT_BACKEND=onnx` or `trtx` limits which backend trials are registered.
+//! - Backends without a working [`MLContext`] are omitted at startup (not registered as trials).
 //! - Filter trials by name prefix: `cargo test --test run_wpt_conformance -- onnx::relu`
 
 pub mod tolerance;
@@ -321,13 +322,8 @@ fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String
 }
 
 /// Run a single WPT test case: build graph via MLGraphBuilder, dispatch, validate outputs.
-#[cfg(any(
-    feature = "onnx-runtime",
-    feature = "trtx-runtime",
-    feature = "trtx-runtime-mock"
-))]
 pub fn run_one_test_case(
-    backend: WptBackend,
+    backend: &WptBackend,
     operation: &str,
     test_case: &wpt_types::WptTestCase,
 ) -> Result<(), String> {
@@ -342,7 +338,9 @@ pub fn run_one_test_case(
         .is_some_and(|t| t.metric_type.eq_ignore_ascii_case("ulp"));
 
     wpt_context_pool::with_context(backend, |context| {
-        let outputs = wpt_execute_graph::execute_wpt_graph(context, graph)?;
+        let artifacts = wpt_execute_graph::execute_wpt_graph(context, graph)?;
+        let webnn_text = artifacts.webnn_text.as_deref();
+        let outputs = artifacts.outputs;
         let input_names = runtime_input_names(graph);
 
         for (out_name, expected_spec) in &graph.expected_outputs {
@@ -478,17 +476,20 @@ pub fn run_one_test_case(
                 } else {
                     String::new()
                 };
-                return Err(format!(
-                    "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
-                    operation,
-                    test_case.name,
-                    msg.unwrap_or_else(|| "validation failed".to_string()),
-                    inputs_str,
-                    out_name,
-                    expected_str,
-                    out_name,
-                    actual_str,
-                    nd_suffix
+                return Err(wpt_execute_graph::append_webnn_graph_text(
+                    format!(
+                        "{} :: {}: {}\n  inputs: {}\n  expected {}: {}\n  actual {}: {}{}",
+                        operation,
+                        test_case.name,
+                        msg.unwrap_or_else(|| "validation failed".to_string()),
+                        inputs_str,
+                        out_name,
+                        expected_str,
+                        out_name,
+                        actual_str,
+                        nd_suffix
+                    ),
+                    webnn_text,
                 ));
             }
         }
