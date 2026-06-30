@@ -46,6 +46,8 @@ pub(crate) enum SyncHandle {
 pub(crate) trait SynchronizationHandle {
     fn wait(self) -> Result<()>;
 
+    fn is_finished(&self) -> Result<bool>;
+
     fn try_cancel(&mut self) {}
 }
 
@@ -61,6 +63,32 @@ impl SynchronizationHandle for SyncHandle {
                     })
             }
             Self::Ready => Ok(()),
+        }
+    }
+
+    fn is_finished(&self) -> Result<bool> {
+        match self {
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            Self::CudaEvent(event) => {
+                event
+                    .context()
+                    .bind_to_thread()
+                    .map_err(|source| Error::SynchronizationError {
+                        source: Box::new(source),
+                    })?;
+                match unsafe { cudarc::driver::result::event::query(event.cu_event()) } {
+                    Ok(()) => Ok(true),
+                    Err(source)
+                        if source.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_NOT_READY =>
+                    {
+                        Ok(false)
+                    }
+                    Err(source) => Err(Error::SynchronizationError {
+                        source: Box::new(source),
+                    }),
+                }
+            }
+            Self::Ready => Ok(true),
         }
     }
 }

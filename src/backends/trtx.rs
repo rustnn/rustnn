@@ -826,16 +826,16 @@ mod tests {
 
         let upload = vec![1.0f32, 2., 3., 4.];
         let mut download = vec![0.0f32; 4];
-        context
+        let upload_handle = context
             .write_tensor(&tensor, bytemuck::cast_slice(&upload))
-            .unwrap()
-            .wait()
             .unwrap();
-        context
+        upload_handle.is_finished().unwrap();
+        upload_handle.wait().unwrap();
+        let download_handle = context
             .read_tensor(&tensor, bytemuck::cast_slice_mut(&mut download))
-            .unwrap()
-            .wait()
             .unwrap();
+        download_handle.is_finished().unwrap();
+        download_handle.wait().unwrap();
         assert_eq!(&upload, &download);
     }
 
