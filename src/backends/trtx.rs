@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::CStr;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
@@ -242,6 +243,7 @@ impl TrtxTensor {
 
 pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
+    pci_device_id: String,
     tensors: Vec<TrtxTensor>,
     events: Vec<CudaEvent>,
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
@@ -269,6 +271,7 @@ impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32, options: Option<&RustNNOptions>) -> TrtxResult<Self> {
         // this retains the primary context
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
+        let pci_device_id = cuda_pci_device_id(&cuda_ctx)?;
         let mut builder = trtx::Builder::new(&LOGGER)?;
         let mut config = builder.create_config()?;
         // Strip marked weights weights from engine and makes them refittable, keeps other weights
@@ -283,6 +286,7 @@ impl<'context> TrtxContext<'context> {
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
+            pci_device_id,
             tensors: vec![],
             events: vec![],
             runtime,
@@ -293,6 +297,68 @@ impl<'context> TrtxContext<'context> {
     }
 }
 
+fn cuda_pci_device_id(cuda_ctx: &CudaContext) -> std::result::Result<String, DriverError> {
+    // CUDA documents 13 bytes as sufficient for "domain:bus:device.function". Leave some
+    // extra room so this remains robust if the representation grows in a future driver.
+    let mut buffer = [0_i8; 32];
+    unsafe {
+        sys::cuDeviceGetPCIBusId(
+            buffer.as_mut_ptr(),
+            buffer.len() as i32,
+            cuda_ctx.cu_device(),
+        )
+        .result()?;
+    }
+    Ok(unsafe { CStr::from_ptr(buffer.as_ptr()) }
+        .to_string_lossy()
+        .into_owned())
+    //// the cache would be shared among all identical CUDA GPUs with same device ID, why does this
+    //// return 0?
+    //let device_id =
+    //cuda_ctx.attribute(sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_PCI_DEVICE_ID)?;
+    //Ok(format!("{device_id:4x}"))
+}
+
+impl Drop for TrtxContext<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.cuda_ctx.bind_to_thread() {
+            warn!(
+                "Failed to bind CUDA device {} before saving its TensorRT JIT cache: {error}",
+                self.pci_device_id
+            );
+            return;
+        }
+
+        let runtime_cache = TRTX_RUNTIME_CACHE
+            .lock()
+            .unwrap()
+            .get(&self.pci_device_id)
+            .cloned();
+        let Some(runtime_cache) = runtime_cache else {
+            return;
+        };
+
+        let serialized = match runtime_cache.lock().unwrap().serialize() {
+            Ok(serialized) => serialized,
+            Err(error) => {
+                warn!(
+                    "Failed to serialize TensorRT JIT cache for CUDA device {}: {error}",
+                    self.pci_device_id
+                );
+                return;
+            }
+        };
+        if let Ok(cache) = JIT_CACHE.as_ref()
+            && let Err(error) = cache.set(&jit_cache_disk_key(&self.pci_device_id), &serialized)
+        {
+            warn!(
+                "Failed to save TensorRT JIT cache for CUDA device {}: {error}",
+                self.pci_device_id
+            );
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
     network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
@@ -300,9 +366,11 @@ pub(crate) struct TrtxBuilder<'builder> {
     config: Arc<Mutex<trtx::BuilderConfig<'builder>>>,
     cuda_context: Arc<CudaContext>,
     runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
+    pci_device_id: String,
     operands: HashMap<String, MLOperand>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
+    runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
 }
 
@@ -315,6 +383,11 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
 const SOURCE_HASH: &str = include_str!(concat!(env!("OUT_DIR"), "/source_hash.txt"));
 
 static ENGINE_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCache::new("trtx"));
+static JIT_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCache::new("trtx-jit"));
+
+static TRTX_RUNTIME_CACHE: LazyLock<
+    Mutex<HashMap<String, Arc<Mutex<trtx::RuntimeCache<'static>>>>>,
+> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
     format!(
         "trtx_{}.{}.{}_{}",
@@ -324,6 +397,26 @@ static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
         SOURCE_HASH
     )
 });
+
+fn jit_cache_disk_key(pci_device_id: &str) -> String {
+    let filesystem_safe_device_id = pci_device_id.replace([':', '.'], "_");
+    format!("{filesystem_safe_device_id}_{}.cache", *TRTX_SUFFIX)
+}
+
+// RuntimeCache owns its TensorRT IRuntimeCache and does not borrow the engine. The lifetime in
+// trtx::RuntimeCache is represented only by PhantomData, so erase it while the cache is held in
+// the process-global map and restore the current engine lifetime when cloning it out.
+fn into_global_runtime_cache<'engine>(
+    cache: Arc<Mutex<trtx::RuntimeCache<'engine>>>,
+) -> Arc<Mutex<trtx::RuntimeCache<'static>>> {
+    unsafe { std::mem::transmute(cache) }
+}
+
+fn from_global_runtime_cache<'engine>(
+    cache: Arc<Mutex<trtx::RuntimeCache<'static>>>,
+) -> Arc<Mutex<trtx::RuntimeCache<'engine>>> {
+    unsafe { std::mem::transmute(cache) }
+}
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'context> {
     /*async */
@@ -479,9 +572,46 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         }
         refitter.refit_cuda_engine()?;
 
-        let runtime_config = engine
+        let mut runtime_config = engine
             .create_runtime_config()
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+        if self.runtime_cache_enabled {
+            let runtime_cache = {
+                let mut caches = TRTX_RUNTIME_CACHE.lock().unwrap();
+                if let Some(cache) = caches.get(&self.pci_device_id) {
+                    from_global_runtime_cache(Arc::clone(cache))
+                } else {
+                    let mut cache = runtime_config
+                        .create_runtime_cache()
+                        .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+                    if let Ok(disk_cache) = JIT_CACHE.as_ref()
+                        && let Ok(serialized) =
+                            disk_cache.get(&jit_cache_disk_key(&self.pci_device_id))
+                    {
+                        match cache.deserialize(&serialized) {
+                            Ok(()) => debug!(
+                                "Loaded TensorRT JIT cache for CUDA device {} ({} bytes)",
+                                self.pci_device_id,
+                                serialized.len()
+                            ),
+                            Err(error) => warn!(
+                                "Failed to deserialize TensorRT JIT cache for CUDA device {}: {error}",
+                                self.pci_device_id
+                            ),
+                        }
+                    }
+                    let cache = Arc::new(Mutex::new(cache));
+                    caches.insert(
+                        self.pci_device_id.clone(),
+                        into_global_runtime_cache(Arc::clone(&cache)),
+                    );
+                    cache
+                }
+            };
+            runtime_config
+                .set_runtime_cache(runtime_cache)
+                .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+        }
         let exec = engine
             .create_execution_context_with_config(Rc::new(runtime_config))
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
@@ -531,14 +661,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             builder: Arc::clone(&self.builder),
             config: Arc::clone(&self.config),
             runtime: Arc::clone(&self.runtime),
+            pci_device_id: self.pci_device_id.clone(),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             strings: vec![],
-            // disabled for now, since feature experimental.
-            // can be enabled with more test coverage, but will remain a double-sided sword
-            // e.g. if you change trtx converter, changes might not be visible, since cache skips conversion
-            // maybe the build hash of certain trtx related files could be included in hash
             caching_enabled: self.options.engine_caching,
+            runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
         }))
     }

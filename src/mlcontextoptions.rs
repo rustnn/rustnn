@@ -87,6 +87,8 @@ pub struct RustNNOptions {
 pub struct TrtxOptions {
     /// Caches built engines from GraphInfos to skip compilation for already built engines
     pub engine_caching: bool,
+    /// Uses a global runtime cache to speed up engine loading
+    pub runtime_cache: bool,
     /// Create a MLContext that does not build TRT engines and only uses already pre-built
     /// AOT engines from cache or user provided. Useful for debugging cache or for AOT only
     /// workflows
@@ -100,6 +102,7 @@ impl Default for TrtxOptions {
     fn default() -> Self {
         Self {
             engine_caching: true,
+            runtime_cache: true,
             cuda_graphs: true,
             fail_on_cache_miss: false,
         }
