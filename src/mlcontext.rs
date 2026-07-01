@@ -32,6 +32,67 @@ pub(crate) trait ListDevices {
     fn list_devices() -> Vec<BackendDevice>;
 }
 
+#[derive(Debug)]
+pub(crate) enum SyncHandle {
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    CudaEvent(cudarc::driver::CudaEvent),
+    Ready,
+}
+
+/// A completion handle for work submitted by a backend.
+///
+/// Unlike [`std::future::Future`], this interface waits synchronously. Backends
+/// may override `try_cancel` when they support cancellation.
+pub(crate) trait SynchronizationHandle {
+    fn wait(self) -> Result<()>;
+
+    fn is_finished(&self) -> Result<bool>;
+
+    fn try_cancel(&mut self) {}
+}
+
+impl SynchronizationHandle for SyncHandle {
+    fn wait(self) -> Result<()> {
+        match self {
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            Self::CudaEvent(event) => {
+                event
+                    .synchronize()
+                    .map_err(|source| Error::SynchronizationError {
+                        source: Box::new(source),
+                    })
+            }
+            Self::Ready => Ok(()),
+        }
+    }
+
+    fn is_finished(&self) -> Result<bool> {
+        match self {
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            Self::CudaEvent(event) => {
+                event
+                    .context()
+                    .bind_to_thread()
+                    .map_err(|source| Error::SynchronizationError {
+                        source: Box::new(source),
+                    })?;
+                match unsafe { cudarc::driver::result::event::query(event.cu_event()) } {
+                    Ok(()) => Ok(true),
+                    Err(source)
+                        if source.0 == cudarc::driver::sys::CUresult::CUDA_ERROR_NOT_READY =>
+                    {
+                        Ok(false)
+                    }
+                    Err(source) => Err(Error::SynchronizationError {
+                        source: Box::new(source),
+                    }),
+                }
+            }
+            Self::Ready => Ok(true),
+        }
+    }
+}
+
 // could make public later if interface stabilized
 pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
     fn accelerated(&self) -> bool;
@@ -53,9 +114,9 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         input_data: &[u8],
     ) -> Result<MLTensor>;
     /*async*/
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()>;
+    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<SyncHandle>;
     /*async*/
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()>;
+    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<SyncHandle>;
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
@@ -628,7 +689,8 @@ impl<'context> MLContext<'context> {
             });
         }
         self.backend
-            .read_tensor(tensor, bytemuck::cast_slice_mut(array))
+            .read_tensor(tensor, bytemuck::cast_slice_mut(array))?
+            .wait()
     }
 
     //async
@@ -650,7 +712,8 @@ impl<'context> MLContext<'context> {
             });
         }
         self.backend
-            .write_tensor(tensor, bytemuck::cast_slice(array))
+            .write_tensor(tensor, bytemuck::cast_slice(array))?
+            .wait()
     }
 
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {

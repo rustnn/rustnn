@@ -50,7 +50,7 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
         &mut self,
         _tensor: &mlcontext::MLTensor,
         _array: &mut [u8],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<mlcontext::SyncHandle> {
         panic!("RustNN is expected to never use a disabled backend")
     }
 
@@ -58,7 +58,7 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
         &mut self,
         _tensor: &mlcontext::MLTensor,
         _array: &[u8],
-    ) -> crate::error::Result<()> {
+    ) -> crate::error::Result<mlcontext::SyncHandle> {
         panic!("RustNN is expected to never use a disabled backend")
     }
 
