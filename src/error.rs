@@ -166,7 +166,7 @@ pub enum GraphBuilderError {
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("No backend is available for context creation")]
-    NoBackendAvialable,
+    NoBackendAvailable,
 
     #[error("No device of selected type available")]
     NoDeviceAvailable,
