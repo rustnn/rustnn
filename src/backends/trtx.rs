@@ -14,7 +14,7 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
 use trtx::Refitter;
@@ -192,6 +192,25 @@ impl Drop for CapturedCudaGraph {
             warn!("Failed to destroy captured CUDA graph: {error}");
         }
     }
+}
+
+/// CUDA graph capture/replay around `enqueue_v3`. Disabled by default.
+/// Set `RUSTNN_TRTX_CUDA_GRAPHS=1` or `true` to enable.
+static TRTX_CUDA_GRAPHS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+fn trtx_cuda_graphs_enabled() -> bool {
+    *TRTX_CUDA_GRAPHS_ENABLED.get_or_init(|| {
+        std::env::var("RUSTNN_TRTX_CUDA_GRAPHS")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+fn enqueue_inference_v3(
+    exec: &mut ExecutionContext<'_>,
+    inference_stream: &CudaStream,
+) -> crate::error::Result<()> {
+    unsafe { exec.enqueue_v3(inference_stream.cu_stream() as *mut c_void) }.to_dispatch_result()
 }
 
 impl std::fmt::Debug for TrtxGraph<'_> {
@@ -595,12 +614,19 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
         // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
-        let mut io_pointers = Vec::with_capacity(inputs.len() + outputs.len());
+        let cuda_graphs_enabled = trtx_cuda_graphs_enabled();
+        let mut io_pointers = if cuda_graphs_enabled {
+            Vec::with_capacity(inputs.len() + outputs.len())
+        } else {
+            Vec::new()
+        };
         for (input, tensor) in inputs.iter() {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
-            io_pointers.push((false, (*input).to_owned(), ptr as usize));
+            if cuda_graphs_enabled {
+                io_pointers.push((false, (*input).to_owned(), ptr as usize));
+            }
             unsafe {
                 graph
                     .exec
@@ -615,7 +641,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
-            io_pointers.push((true, (*output).to_owned(), ptr as usize));
+            if cuda_graphs_enabled {
+                io_pointers.push((true, (*output).to_owned(), ptr as usize));
+            }
             unsafe {
                 graph
                     .exec
@@ -623,33 +651,37 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                     .to_dispatch_result()?
             };
         }
-        io_pointers.sort_unstable();
 
-        if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
-            cuda_graph.launch().to_dispatch_result()?;
-        } else {
-            inference_stream
-                .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
-                .to_dispatch_result()?;
-            if let Err(source) = unsafe {
-                graph
-                    .exec
-                    .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
-            } {
-                if let Ok(captured_graph) =
-                    unsafe { result::stream::end_capture(inference_stream.cu_stream()) }
-                    && !captured_graph.is_null()
-                {
-                    let _ = unsafe { result::graph::destroy(captured_graph) };
+        if cuda_graphs_enabled {
+            io_pointers.sort_unstable();
+            if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
+                cuda_graph.launch().to_dispatch_result()?;
+            } else {
+                inference_stream
+                    .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
+                    .to_dispatch_result()?;
+                if let Err(source) = unsafe {
+                    graph
+                        .exec
+                        .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
+                } {
+                    if let Ok(captured_graph) =
+                        unsafe { result::stream::end_capture(inference_stream.cu_stream()) }
+                        && !captured_graph.is_null()
+                    {
+                        let _ = unsafe { result::graph::destroy(captured_graph) };
+                    }
+                    return Err(crate::error::Error::GraphDispatchError {
+                        source: source.into(),
+                    });
                 }
-                return Err(crate::error::Error::GraphDispatchError {
-                    source: source.into(),
-                });
+                let cuda_graph =
+                    CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
+                // enqueue_v3 already ran during capture; only replay on later cache hits.
+                graph.cuda_graphs.insert(io_pointers, cuda_graph);
             }
-            let cuda_graph =
-                CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
-            cuda_graph.launch().to_dispatch_result()?;
-            graph.cuda_graphs.insert(io_pointers, cuda_graph);
+        } else {
+            enqueue_inference_v3(&mut graph.exec, inference_stream)?;
         }
         let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
         for tensor in outputs.values() {
