@@ -33,7 +33,9 @@ use crate::executors::trtx::create_trtx_logger;
 use crate::graph::{DataType, GraphInfo, OperandKind, get_static_or_max_size};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
-use crate::shape_inference::{infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape};
+use crate::shape_inference::{
+    broadcast_shapes, infer_arg_reduce_shape, infer_pool2d_shape, infer_where_shape,
+};
 use trtx::network::PoolingLayer;
 use trtx::{
     ActivationType, Axes, DataType as TrtDataType, ElementWiseOperation, MatrixOperation,
@@ -230,7 +232,26 @@ impl TrtxConverter {
             })
     }
 
-    /// Cast BOOL tensor to Float32 (false → 0.0, true → 1.0)
+    /// Cast BOOL tensor to Uint8 (false → 0, true → 1) per WebNN logical/comparison output type.
+    fn cast_bool_to_uint8<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let layer = network.add_cast(input, TrtDataType::kUINT8).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to cast BOOL to Uint8: {}", e),
+            }
+        })?;
+        layer
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to get Uint8 cast output: {}", e),
+            })
+    }
+
+    /// Cast tensor to Float32 (elementwise math, integer promotion before broadcast, etc.).
     fn cast_to_float32<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         input: &trtx::Tensor<'a>,
@@ -247,6 +268,24 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get cast output: {}", e),
             })
+    }
+
+    /// Promote uint8/int8 mask operands to float32 before TRT shuffle/resize/identity.
+    ///
+    /// TensorRT 3.16+ allows UINT8 only at network I/O, not on internal broadcast ops.
+    /// Returns a promoted tensor when needed; callers use `promoted.as_ref().unwrap_or(input)`.
+    fn promote_mask_for_trt_broadcast<'a>(
+        graph: &GraphInfo,
+        operand_id: u32,
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+    ) -> Result<Option<trtx::Tensor<'a>>, GraphError> {
+        match graph.operand(operand_id).map(|o| o.descriptor.data_type) {
+            Some(DataType::Uint8) | Some(DataType::Int8) => {
+                Ok(Some(Self::cast_to_float32(network, tensor)?))
+            }
+            _ => Ok(None),
+        }
     }
 
     /// Cast tensor to Float16 (e.g. after float32 reduction to avoid float16 overflow).
@@ -650,7 +689,7 @@ impl TrtxConverter {
             "expand" => Self::add_expand_op(graph, network, tensor_map, operation)?,
             "tile" => Self::add_tile_op(network, tensor_map, operation)?,
 
-            // Comparison operations (return Float32 with 0.0/1.0 values)
+            // Comparison operations (return Uint8 with 0/1 values per WebNN spec)
             "equal" => Self::add_comparison_op(
                 graph,
                 network,
@@ -742,15 +781,28 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Helper to ensure two tensors have compatible shapes for elementwise operations
-    /// Returns potentially reshaped tensors that are guaranteed to be broadcast-compatible
+    /// Convert TRT static dimensions to `u32` for NumPy-style broadcast shape inference.
+    fn trtx_dims_to_u32(dims: &[i64], op_name: &str) -> Result<Vec<u32>, GraphError> {
+        dims.iter()
+            .map(|&d| {
+                u32::try_from(d).map_err(|_| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "{op_name}: dimension {d} is not a valid static size for TRTX broadcast"
+                    ),
+                })
+            })
+            .collect()
+    }
+
+    /// Helper to ensure two tensors have compatible shapes for elementwise operations.
+    /// Expands both tensors to the NumPy broadcast union shape (rank pad + resize).
     fn ensure_broadcast_compatible<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         tensor0: &trtx::Tensor<'a>,
         tensor1: &trtx::Tensor<'a>,
         op_name: &str,
     ) -> Result<(trtx::Tensor<'a>, trtx::Tensor<'a>), GraphError> {
-        // Get dimensions of both tensors
         let dims0 = tensor0
             .dimensions(&*network)
             .map_err(|e| GraphError::ConversionFailed {
@@ -771,241 +823,24 @@ impl TrtxConverter {
                 ),
             })?;
 
-        // If dimensions match exactly, no reshape needed
-        if dims0 == dims1 {
-            // Clone by creating identity layers
-            let id0 = network
-                .add_identity(tensor0)
-                .map_err(|e| GraphError::ConversionFailed {
+        let shape0 = Self::trtx_dims_to_u32(&dims0, op_name)?;
+        let shape1 = Self::trtx_dims_to_u32(&dims1, op_name)?;
+
+        let broadcast_u32 =
+            broadcast_shapes(&shape0, &shape1).map_err(|e| match e {
+                GraphError::ShapeInferenceFailed { reason } => GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("Failed to clone tensor0: {}", e),
-                })?;
-            let t0 = id0
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get identity output: {}", e),
-                })?;
-
-            let id1 = network
-                .add_identity(tensor1)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to clone tensor1: {}", e),
-                })?;
-            let t1 = id1
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get identity output: {}", e),
-                })?;
-
-            return Ok((t0, t1));
-        }
-
-        // If ranks match, check if broadcasting is needed
-        if dims0.len() == dims1.len() {
-            // Check if dimensions are compatible for broadcasting
-            let mut needs_broadcast = false;
-            for (i, (&d0, &d1)) in dims0.iter().zip(dims1.iter()).enumerate() {
-                if d0 != d1 {
-                    if d0 != 1 && d1 != 1 {
-                        return Err(GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!(
-                                "Incompatible dimensions for broadcasting in {}: dimension {} has {} vs {} (neither equal nor 1). \
-                                Full shapes: {:?} vs {:?}.",
-                                op_name, i, d0, d1, dims0, dims1
-                            ),
-                        });
-                    }
-                    needs_broadcast = true;
-                }
-            }
-
-            // If no broadcasting needed, just clone both tensors
-            if !needs_broadcast {
-                let id0 =
-                    network
-                        .add_identity(tensor0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to clone tensor0: {}", e),
-                        })?;
-                let t0 = id0
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get identity output: {}", e),
-                    })?;
-
-                let id1 =
-                    network
-                        .add_identity(tensor1)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to clone tensor1: {}", e),
-                        })?;
-                let t1 = id1
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get identity output: {}", e),
-                    })?;
-
-                return Ok((t0, t1));
-            }
-
-            // Broadcasting needed - expand dimensions that are 1 to match target size
-            // Use IResizeLayer with NEAREST mode to expand
-            let t0 = if dims0
-                .iter()
-                .zip(dims1.iter())
-                .any(|(&d0, &d1)| d0 == 1 && d1 != 1)
-            {
-                // tensor0 needs expansion
-                let mut resize_layer =
-                    network
-                        .add_resize(tensor0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to add resize layer for tensor0: {}", e),
-                        })?;
-
-                resize_layer.set_output_dimensions(network, &dims1);
-
-                resize_layer
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get resize output: {}", e),
-                    })?
-            } else {
-                let id =
-                    network
-                        .add_identity(tensor0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to clone tensor0: {}", e),
-                        })?;
-                id.output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get identity output: {}", e),
-                    })?
-            };
-
-            let t1 = if dims1
-                .iter()
-                .zip(dims0.iter())
-                .any(|(&d1, &d0)| d1 == 1 && d0 != 1)
-            {
-                // tensor1 needs expansion
-                let mut resize_layer =
-                    network
-                        .add_resize(tensor1)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to add resize layer for tensor1: {}", e),
-                        })?;
-
-                resize_layer.set_output_dimensions(network, &dims0);
-
-                resize_layer
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get resize output: {}", e),
-                    })?
-            } else {
-                let id =
-                    network
-                        .add_identity(tensor1)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Failed to clone tensor1: {}", e),
-                        })?;
-                id.output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Failed to get identity output: {}", e),
-                    })?
-            };
-
-            return Ok((t0, t1));
-        }
-
-        // Ranks don't match - need explicit broadcasting
-        // Determine which tensor needs reshaping (broadcast smaller rank to larger)
-        let (to_reshape, to_keep, reshape_is_first) = if dims0.len() < dims1.len() {
-            (tensor0, tensor1, true)
-        } else {
-            (tensor1, tensor0, false)
-        };
-
-        let reshape_dims =
-            to_reshape
-                .dimensions(&*network)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get reshape dims: {}", e),
-                })?;
-        let target_dims =
-            to_keep
-                .dimensions(&*network)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get target dims: {}", e),
-                })?;
-
-        // Pad smaller tensor with leading 1s
-        let rank_diff = target_dims.len() - reshape_dims.len();
-        let mut new_shape: Vec<i64> = vec![1i64; rank_diff];
-        new_shape.extend_from_slice(&reshape_dims);
-
-        let mut shuffle_layer =
-            network
-                .add_shuffle(to_reshape)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to add shuffle layer for broadcasting: {}", e),
-                })?;
-
-        shuffle_layer
-            .set_reshape_dimensions(network, &new_shape)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to set reshape dimensions: {}", e),
+                    reason: format!("{op_name}: {reason}"),
+                },
+                other => other,
             })?;
 
-        let reshaped =
-            shuffle_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get reshape output: {}", e),
-                })?;
+        let target_dims: Vec<i64> = broadcast_u32.iter().map(|&d| i64::from(d)).collect();
 
-        // Clone the other tensor with identity
-        let id_keep = network
-            .add_identity(to_keep)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to clone kept tensor: {}", e),
-            })?;
-        let kept = id_keep
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get identity output: {}", e),
-            })?;
+        let t0 = Self::broadcast_trtx_tensor_to_dims(network, tensor0, &dims0, &target_dims, op_name)?;
+        let t1 = Self::broadcast_trtx_tensor_to_dims(network, tensor1, &dims1, &target_dims, op_name)?;
 
-        // Return in original order
-        if reshape_is_first {
-            Ok((reshaped, kept))
-        } else {
-            Ok((kept, reshaped))
-        }
+        Ok((t0, t1))
     }
 
     /// Static shape dimensions for TRTX broadcast (all dims must be known).
@@ -1114,14 +949,21 @@ impl TrtxConverter {
         }
 
         if dims == target_dims {
-            return if let Some(t) = staged {
-                Ok(t)
-            } else {
-                Err(GraphError::ConversionFailed {
+            if let Some(t) = staged {
+                return Ok(t);
+            }
+            let layer = network
+                .add_identity(cur)
+                .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("{op_label} broadcast: missing tensor after rank pad"),
-                })
-            };
+                    reason: format!("{op_label} broadcast identity: {e}"),
+                })?;
+            return layer
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_label} broadcast identity output: {e}"),
+                });
         }
 
         let mut resize_layer =
@@ -1187,7 +1029,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add comparison operation (outputs BOOL, cast to Float32)
+    /// Add comparison operation (BOOL elementwise, cast to Uint8 per WebNN spec).
     fn add_comparison_op<'a>(
         _graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -1228,8 +1070,8 @@ impl TrtxConverter {
                 reason: format!("Failed to get layer output: {}", e),
             })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -1237,12 +1079,11 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add logical operation: broadcast on float/half tensors, cast to BOOL, elementwise kAND/kOR/kXOR, Float32 output.
+    /// Add logical operation: broadcast inputs, cast to BOOL, elementwise kAND/kOR/kXOR, Uint8 output.
     ///
-    /// TensorRT elementwise `kAND` / `kOR` / `kXOR` require BOOL inputs, so we cast after broadcast.
-    /// [`ensure_broadcast_compatible`] may use `IResizeLayer`, which does not accept BOOL—so broadcast must
-    /// run on Float/Half (original path). UInt8/Int8 are **`Cast` to Float32 first** so they never pass
-    /// through `Identity` as internal UINT8/INT8 (strongly-typed TRT rejects that).
+    /// TensorRT elementwise `kAND` / `kOR` / `kXOR` require BOOL inputs. [`ensure_broadcast_compatible`]
+    /// uses shuffle/resize, which reject internal UINT8/INT8 (TRT 3.16+), so mask operands are
+    /// promoted to Float32 before broadcast, then cast to BOOL.
     fn add_logical_binary_op<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -1266,21 +1107,10 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", id1),
             })?;
 
-        let promoted0 = match graph.operand(id0).map(|o| o.descriptor.data_type) {
-            Some(DataType::Uint8) | Some(DataType::Int8) => {
-                Some(Self::cast_to_float32(network, input0)?)
-            }
-            _ => None,
-        };
-        let promoted1 = match graph.operand(id1).map(|o| o.descriptor.data_type) {
-            Some(DataType::Uint8) | Some(DataType::Int8) => {
-                Some(Self::cast_to_float32(network, input1)?)
-            }
-            _ => None,
-        };
-
-        let t0: &trtx::Tensor<'a> = promoted0.as_ref().unwrap_or(input0);
-        let t1: &trtx::Tensor<'a> = promoted1.as_ref().unwrap_or(input1);
+        let promoted0 = Self::promote_mask_for_trt_broadcast(graph, id0, network, input0)?;
+        let promoted1 = Self::promote_mask_for_trt_broadcast(graph, id1, network, input1)?;
+        let t0 = promoted0.as_ref().unwrap_or(input0);
+        let t1 = promoted1.as_ref().unwrap_or(input1);
 
         let (bc_input0, bc_input1) =
             Self::ensure_broadcast_compatible(network, t0, t1, operation.op_type())?;
@@ -1302,8 +1132,8 @@ impl TrtxConverter {
                 reason: format!("Failed to get layer output: {}", e),
             })?;
 
-        // Cast BOOL output back to Float32
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL output to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -1391,7 +1221,7 @@ impl TrtxConverter {
                 reason: format!("Failed to get layer output: {}", e),
             })?;
 
-        let output = Self::cast_to_float32(network, &not_output)?;
+        let output = Self::cast_bool_to_uint8(network, &not_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -6364,8 +6194,8 @@ impl TrtxConverter {
                     reason: format!("Failed to get OR output: {}", e),
                 })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -6442,8 +6272,8 @@ impl TrtxConverter {
                     reason: format!("Failed to get OR output: {}", e),
                 })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -6505,8 +6335,8 @@ impl TrtxConverter {
                     reason: format!("Failed to get NOT output: {}", e),
                 })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -7495,7 +7325,7 @@ impl TrtxConverter {
     /// Add where operation (select elements based on condition).
     /// WebNN broadcasts **condition**, **true**, and **false** to one common shape ([`infer_where_shape`]);
     /// pairwise [`ensure_broadcast_compatible`] is not enough. `ISelectLayer` needs BOOL condition:
-    /// broadcast condition as Float32 (promote UInt8/Int8), then `cast_to_bool` after resize.
+    /// promote uint8/int8 masks to Float32 for broadcast (TRT internal UINT8 restriction), then cast to BOOL.
     fn add_where_op<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -7538,17 +7368,13 @@ impl TrtxConverter {
         let true_in: Vec<i64> = shape_t.iter().map(|&x| x as i64).collect();
         let false_in: Vec<i64> = shape_f.iter().map(|&x| x as i64).collect();
 
-        let cond_float_promoted = match graph.operand(cond_id).map(|o| o.descriptor.data_type) {
-            Some(DataType::Uint8) | Some(DataType::Int8) => {
-                Some(Self::cast_to_float32(network, condition)?)
-            }
-            _ => None,
-        };
-        let cond_f: &trtx::Tensor<'a> = cond_float_promoted.as_ref().unwrap_or(condition);
+        let cond_promoted =
+            Self::promote_mask_for_trt_broadcast(graph, cond_id, network, condition)?;
+        let cond_for_broadcast = cond_promoted.as_ref().unwrap_or(condition);
 
         let cond_bc = Self::broadcast_trtx_tensor_to_dims(
             network,
-            cond_f,
+            cond_for_broadcast,
             &cond_in,
             &target_i64,
             "where_cond",
@@ -11296,8 +11122,8 @@ impl TrtxConverter {
                     reason: format!("Failed to get isNaN output: {}", e),
                 })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -11396,8 +11222,8 @@ impl TrtxConverter {
                     reason: format!("Failed to get isInfinite output: {}", e),
                 })?;
 
-        // Cast BOOL to Float32 for WebNN compatibility
-        let output = Self::cast_to_float32(network, &bool_output)?;
+        // Cast BOOL to Uint8 for WebNN compatibility
+        let output = Self::cast_bool_to_uint8(network, &bool_output)?;
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
