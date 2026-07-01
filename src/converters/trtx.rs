@@ -307,22 +307,22 @@ impl TrtxConverter {
             })
     }
 
-    /// Cast INT32 tensor to Float32
-    fn cast_int32_to_float32<'a>(
+    /// Cast INT32 tensor to INT64 (WebNN argMin/argMax `outputDataType: int64`).
+    fn cast_int32_to_int64<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         input: &trtx::Tensor<'a>,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
-        let layer = network.add_cast(input, TrtDataType::kFLOAT).map_err(|e| {
+        let layer = network.add_cast(input, TrtDataType::kINT64).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to cast INT32 to Float32: {}", e),
+                reason: format!("Failed to cast INT32 to INT64: {}", e),
             }
         })?;
         layer
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get cast output: {}", e),
+                reason: format!("Failed to get INT64 cast output: {}", e),
             })
     }
 
@@ -826,19 +826,20 @@ impl TrtxConverter {
         let shape0 = Self::trtx_dims_to_u32(&dims0, op_name)?;
         let shape1 = Self::trtx_dims_to_u32(&dims1, op_name)?;
 
-        let broadcast_u32 =
-            broadcast_shapes(&shape0, &shape1).map_err(|e| match e {
-                GraphError::ShapeInferenceFailed { reason } => GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{op_name}: {reason}"),
-                },
-                other => other,
-            })?;
+        let broadcast_u32 = broadcast_shapes(&shape0, &shape1).map_err(|e| match e {
+            GraphError::ShapeInferenceFailed { reason } => GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: {reason}"),
+            },
+            other => other,
+        })?;
 
         let target_dims: Vec<i64> = broadcast_u32.iter().map(|&d| i64::from(d)).collect();
 
-        let t0 = Self::broadcast_trtx_tensor_to_dims(network, tensor0, &dims0, &target_dims, op_name)?;
-        let t1 = Self::broadcast_trtx_tensor_to_dims(network, tensor1, &dims1, &target_dims, op_name)?;
+        let t0 =
+            Self::broadcast_trtx_tensor_to_dims(network, tensor0, &dims0, &target_dims, op_name)?;
+        let t1 =
+            Self::broadcast_trtx_tensor_to_dims(network, tensor1, &dims1, &target_dims, op_name)?;
 
         Ok((t0, t1))
     }
@@ -6816,7 +6817,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Shared argMin/argMax via TopK: indices tensor reshaped to WebNN output, still INT32 (caller casts).
+    /// Shared argMin/argMax via TopK: indices tensor reshaped to WebNN output shape (INT32).
     ///
     /// TensorRT `ITopKLayer` for rank &gt;= 5 only allows reduction on one of the **last four**
     /// dimensions. When WebNN `axis` lies outside that set, swap that axis with the last axis,
@@ -6831,6 +6832,15 @@ impl TrtxConverter {
         topk_op: TopKOperation,
         label: &'static str,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
+        // UINT8/INT8 are network I/O types in TensorRT; TopK needs float32 internally.
+        let promoted_input = match graph.operand(input_id).map(|o| o.descriptor.data_type) {
+            Some(DataType::Uint8) | Some(DataType::Int8) => {
+                Some(Self::cast_to_float32(network, input)?)
+            }
+            _ => None,
+        };
+        let input = promoted_input.as_ref().unwrap_or(input);
+
         let input_shape = graph
             .operand(input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -7032,10 +7042,12 @@ impl TrtxConverter {
             "ArgMax",
         )?;
 
-        let final_output = Self::cast_int32_to_float32(network, &shaped_output)?;
-
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
+        let final_output = match graph.operand(output_id).map(|o| o.descriptor.data_type) {
+            Some(DataType::Int64) => Self::cast_int32_to_int64(network, &shaped_output)?,
+            _ => shaped_output,
+        };
         tensor_map.insert(output_id, final_output);
         Ok(())
     }
@@ -7079,10 +7091,12 @@ impl TrtxConverter {
             "ArgMin",
         )?;
 
-        let final_output = Self::cast_int32_to_float32(network, &shaped_output)?;
-
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
+        let final_output = match graph.operand(output_id).map(|o| o.descriptor.data_type) {
+            Some(DataType::Int64) => Self::cast_int32_to_int64(network, &shaped_output)?,
+            _ => shaped_output,
+        };
         tensor_map.insert(output_id, final_output);
         Ok(())
     }

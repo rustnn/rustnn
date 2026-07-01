@@ -480,6 +480,86 @@ mod tests {
         Ok(output_data)
     }
 
+    /// Helper to verify int32 output (e.g. argMax/argMin indices).
+    fn verify_i32_output(actual: &[i32], expected: &[i32]) {
+        assert_eq!(
+            actual.len(),
+            expected.len(),
+            "Output length mismatch: {} vs {}",
+            actual.len(),
+            expected.len()
+        );
+
+        for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_eq!(
+                a, e,
+                "Value mismatch at index {}: actual={}, expected={}",
+                i, a, e
+            );
+        }
+    }
+
+    /// Execute a graph whose sole output is int32 (argMax/argMin indices).
+    fn execute_graph_int32_output(
+        graph: &GraphInfo,
+        input_data: &[f32],
+    ) -> Result<Vec<i32>, Box<dyn std::error::Error>> {
+        let converter = TrtxConverter::new();
+        let converted = converter.convert(graph)?;
+
+        let logger = Logger::stderr()?;
+        let mut runtime = Runtime::new(&logger)?;
+        let mut engine = runtime.deserialize_cuda_engine(&converted.data)?;
+        let mut context = engine.create_execution_context()?;
+
+        let input_name = engine.io_tensor_name(0)?;
+        let output_name = engine.io_tensor_name(1)?;
+
+        let output_operand_id = graph.output_operands[0];
+        let output_operand = &graph.operands[output_operand_id as usize];
+        let output_element_count: usize = output_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|d| get_static_or_max_size(d) as usize)
+            .product();
+
+        let input_size = input_data.len() * std::mem::size_of::<f32>();
+        let output_size = output_element_count * std::mem::size_of::<i32>();
+
+        let mut input_buffer = DeviceBuffer::new(input_size)?;
+        let output_buffer = DeviceBuffer::new(output_size)?;
+
+        let input_bytes = unsafe {
+            std::slice::from_raw_parts(
+                input_data.as_ptr() as *const u8,
+                input_data.len() * std::mem::size_of::<f32>(),
+            )
+        };
+        input_buffer.copy_from_host(input_bytes)?;
+
+        unsafe {
+            context.set_tensor_address(&input_name, input_buffer.as_ptr())?;
+            context.set_tensor_address(&output_name, output_buffer.as_ptr())?;
+        }
+
+        unsafe {
+            context.enqueue_v3(trtx::cuda::default_stream())?;
+        }
+        trtx::cuda::synchronize()?;
+
+        let mut output_data = vec![0i32; output_element_count];
+        let output_bytes = unsafe {
+            std::slice::from_raw_parts_mut(
+                output_data.as_mut_ptr() as *mut u8,
+                output_data.len() * std::mem::size_of::<i32>(),
+            )
+        };
+        output_buffer.copy_to_host(output_bytes)?;
+
+        Ok(output_data)
+    }
+
     /// Helper to verify output within tolerance
     fn verify_output(actual: &[f32], expected: &[f32], tolerance: f32) {
         assert_eq!(
@@ -2989,10 +3069,10 @@ mod tests {
         let input = vec![1.0, 3.0, 2.0, 4.0, 2.0, 5.0];
 
         // Expected: [1, 2] (index of max in each row)
-        let expected = vec![1.0, 2.0]; // Will be int32 indices
+        let expected = vec![1i32, 2i32];
 
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-4);
+        let output = execute_graph_int32_output(&graph, &input).expect("Execution failed");
+        verify_i32_output(&output, &expected);
     }
 
     #[test]
@@ -3006,10 +3086,10 @@ mod tests {
         let input = vec![3.0, 1.0, 2.0, 4.0, 5.0, 2.0];
 
         // Expected: [1, 2] (index of min in each row)
-        let expected = vec![1.0, 2.0]; // Will be int32 indices
+        let expected = vec![1i32, 2i32];
 
-        let output = execute_graph(&graph, &input).expect("Execution failed");
-        verify_output(&output, &expected, 1e-4);
+        let output = execute_graph_int32_output(&graph, &input).expect("Execution failed");
+        verify_i32_output(&output, &expected);
     }
 
     // ============================================================================
