@@ -49,7 +49,7 @@ impl WptBackend {
 
     /// Whether [`MLContext::create`] succeeds for this backend's options.
     pub fn is_available(&self) -> bool {
-        matches!(MLContext::create(self.context_options()), Ok(_))
+        MLContext::create(self.context_options()).is_ok()
     }
 
     pub fn parse_name(s: &str) -> Option<Self> {
