@@ -347,8 +347,12 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
+            let non_refittable_constants =
+                crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
             for constant_id in graph.constant_operand_ids_to_handles.keys() {
-                network.mark_weights_refittable(&format!("{constant_id}"))?;
+                if !non_refittable_constants.contains(constant_id) {
+                    network.mark_weights_refittable(&format!("{constant_id}"))?;
+                }
             }
 
             let host_mem = self
@@ -369,6 +373,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let engine_bytes =
             engine_bytes.expect("already got cached engine or tried building engine");
 
+        let non_refittable_constants =
+            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
+
         self.cuda_context.bind_to_thread()?;
         let mut engine = self
             .runtime
@@ -381,6 +388,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let mut refitter = Refitter::new(&engine, &LOGGER)?;
 
         for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
+            if non_refittable_constants.contains(id) {
+                continue;
+            }
             let operand = graph.operands.get(*id as usize);
             if let Some(operand) = operand.as_ref() {
                 let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
