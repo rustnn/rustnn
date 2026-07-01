@@ -1,14 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
 (
     "where.https.any.js",
     "where float16 4D tensors",
     "trtx",
-    Failed {
-        msg: Some(
-            "Failed to write tensor: DriverError(CUDA_ERROR_INVALID_VALUE, \"invalid argument\")",
-        ),
-    },
+    "PASS",
 )

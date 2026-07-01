@@ -1,14 +1,29 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "lstm_cell.https.any.js",
-    "lstmCell float32 tensors with options.peepholeWeight and options.layout='ifgo'",
-    "trtx",
-    Failed {
-        msg: Some(
-            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstmCell\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    lstmCellCellState: f32[2, 2];\n    lstmCellHiddenState: f32[2, 2];\n    lstmCellInput: f32[2, 2];\n  }\n\n  consts {\n    operand_0: f32[6] @bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 128, 63]);\n    operand_2: f32[8, 2] @bytes([205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61]);\n    operand_4: f32[8, 2] @bytes([0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192]);\n    operand_5: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n    operand_6: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n  }\n\n  nodes {\n    [lstmCellOutput1, lstmCellOutput2] = lstmCell(lstmCellInput, operand_4, operand_2, lstmCellHiddenState, lstmCellCellState, activations=[\"relu\", \"relu\", \"relu\"], bias=5, label=\"\", layout=\"ifgo\", peepholeWeight=0, recurrentBias=6);\n  }\n\n  outputs { lstmCellOutput1; lstmCellOutput2; }\n}\n",
-        ),
-    },
-)
+lstm_cell.https.any.js lstmCell float32 tensors with options.peepholeWeight and options.layout='ifgo', trtx
+ Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstmCell
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    lstmCellCellState: f32[2, 2];
+    lstmCellHiddenState: f32[2, 2];
+    lstmCellInput: f32[2, 2];
+  }
+
+  consts {
+    operand_0: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);
+    operand_4: f32[6] @bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63, 0, 0, 128, 63]);
+    operand_5: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);
+    operand_6: f32[8, 2] @bytes([205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61]);
+    operand_7: f32[8, 2] @bytes([0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192]);
+  }
+
+  nodes {
+    [lstmCellOutput1, lstmCellOutput2] = lstmCell(lstmCellInput, operand_7, operand_6, lstmCellHiddenState, lstmCellCellState, activations=["relu", "relu", "relu"], bias=0, label="", layout="ifgo", peepholeWeight=4, recurrentBias=5);
+  }
+
+  outputs { lstmCellOutput1; lstmCellOutput2; }
+}

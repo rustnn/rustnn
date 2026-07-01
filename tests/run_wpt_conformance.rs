@@ -60,11 +60,11 @@ fn push_backend_trials(
                     report.record_skip(&file_name, &test_name, &backend_prefix, reason, duration);
                 }
                 Err(err) => {
-                    insta::assert_debug_snapshot!(
-                        snapshot_name,
-                        (&file_name, &test_name, &backend_prefix, err)
-                    );
                     let msg = err.message().unwrap_or("test failed").to_string();
+                    insta::assert_snapshot!(
+                        snapshot_name,
+                        format!("{file_name} {test_name}, {backend_prefix}\n {msg}")
+                    );
                     report.record_fail(&file_name, &test_name, &backend_prefix, msg, duration);
                 }
             }

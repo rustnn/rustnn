@@ -1,14 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
 (
     "add.https.any.js",
     "add float32 large inputs",
     "trtx",
-    Failed {
-        msg: Some(
-            "add :: add float32 large inputs: index 0: actual=0 expected=166.5772 ulp=1126601667 tolerance=1\n  inputs: inputA: 89.32998657226563; inputB: 77.24720764160156\n  expected output: [166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772 ...] (len=36000000)\n  actual output: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ...] (len=36000000)\n  expected output full nd:\n[166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, 166.5772, ...] (len=36000000, shape=[6000, 6000])\n  actual output full nd:\n[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...] (len=36000000, shape=[6000, 6000])\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: f32[6000, 6000];\n    inputB: f32[6000, 6000];\n  }\n\n  nodes {\n    [output] = add(inputA, inputB, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
-        ),
-    },
+    "PASS",
 )

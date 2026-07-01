@@ -1,14 +1,23 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherElements.https.any.js",
-    "gatherElements float32 1D input and int32 out-of-bounds indices",
-    "trtx",
-    Failed {
-        msg: Some(
-            "An error in the Trtx: Runtime error: setNamedWeights (with location) rejected\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    gatherElementsInput: f32[6];\n  }\n\n  consts {\n    operand_1: i32[1] @bytes([7, 0, 0, 0]);\n  }\n\n  nodes {\n    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_1, axis=0, label=\"\");\n  }\n\n  outputs { gatherElementsOutput; }\n}\n",
-        ),
-    },
-)
+gatherElements.https.any.js gatherElements float32 1D input and int32 out-of-bounds indices, trtx
+ An error in the Trtx: Runtime error: setNamedWeights (with location) rejected
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f32[6];
+  }
+
+  consts {
+    operand_0: i32[1] @bytes([7, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_0, axis=0, label="");
+  }
+
+  outputs { gatherElementsOutput; }
+}

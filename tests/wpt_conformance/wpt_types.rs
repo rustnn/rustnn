@@ -3,7 +3,7 @@
 //! Matches JSON produced by `scripts/wpt_bridge/dump_corpus.mjs`.
 
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Full corpus dumped by the Node bridge in one invocation.
 #[derive(Debug, Clone, Deserialize)]
@@ -70,10 +70,12 @@ pub struct WptTolerance {
 /// Graph description: inputs, operators, and expected outputs.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WptGraph {
-    pub inputs: HashMap<String, WptTensorSpec>,
+    /// Canonically ordered so operand creation and diagnostics are reproducible. (not HashMap)
+    pub inputs: BTreeMap<String, WptTensorSpec>,
     pub operators: Vec<WptOperator>,
     #[serde(rename = "expectedOutputs")]
-    pub expected_outputs: HashMap<String, WptTensorSpec>,
+    /// Canonically ordered so graph outputs and diagnostics are reproducible.
+    pub expected_outputs: BTreeMap<String, WptTensorSpec>,
 }
 
 /// Descriptor for shape and data type (used in inputs and expectedOutputs).

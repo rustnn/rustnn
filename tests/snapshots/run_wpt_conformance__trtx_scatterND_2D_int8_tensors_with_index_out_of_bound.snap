@@ -1,14 +1,32 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "scatterND.https.any.js",
-    "scatterND 2D int8 tensors with index out of bound",
-    "trtx",
-    Failed {
-        msg: Some(
-            "scatterND :: scatterND 2D int8 tensors with index out of bound: index 1: actual=0 expected=1 tolerance=0\n  inputs: input: [0, 0]; indices: [2147483647]; updates: [1]\n  expected output: [0, 1]\n  actual output: [0, 0]\n  expected output full nd:\n(shape [2, 1])\n  [0]\n  [1]\n  actual output full nd:\n(shape [2, 1])\n  [0]\n  [0]\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    indices: i32[1, 1];\n    input: i8[2, 1];\n    updates: i8[1, 1];\n  }\n\n  nodes {\n    [output] = scatterND(input, indices, updates, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
-        ),
-    },
-)
+scatterND.https.any.js scatterND 2D int8 tensors with index out of bound, trtx
+ scatterND :: scatterND 2D int8 tensors with index out of bound: index 1: actual=0 expected=1 tolerance=0
+  inputs: indices: [2147483647]; input: [0, 0]; updates: [1]
+  expected output: [0, 1]
+  actual output: [0, 0]
+  expected output full nd:
+(shape [2, 1])
+  [0]
+  [1]
+  actual output full nd:
+(shape [2, 1])
+  [0]
+  [0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    indices: i32[1, 1];
+    input: i8[2, 1];
+    updates: i8[1, 1];
+  }
+
+  nodes {
+    [output] = scatterND(input, indices, updates, label="");
+  }
+
+  outputs { output; }
+}

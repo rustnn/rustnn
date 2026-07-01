@@ -1,14 +1,38 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized convTranspose2d",
-    "trtx",
-    Failed {
-        msg: Some(
-            "Failed to convert graph: graph conversion failed for trtx: tensor dimensions: Could not get dimensions from Tensor \"(Unnamed Layer* 56) [Shuffle]_output\"\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    input: f32[1, 2, 2, 1];\n  }\n\n  consts {\n    operand_0: i32[1] @bytes([0, 0, 0, 0]);\n    operand_1: i8[1, 1, 1, 1] @bytes([0]);\n    operand_10: i8[1, 2, 2, 1] @bytes([2, 3, 4, 5]);\n    operand_2: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);\n    operand_3: i8[1, 1, 1, 1] @bytes([0]);\n    operand_4: i32[1] @bytes([2, 0, 0, 0]);\n    operand_5: f32[1] @bytes([128, 237, 192, 56]);\n    operand_7: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);\n    operand_8: i8[1, 1, 1, 1] @bytes([128]);\n    operand_9: f32[1, 1, 1, 1] @bytes([146, 44, 192, 60]);\n  }\n\n  nodes {\n    [operand_11] = quantizeLinear(input, operand_2, operand_8, label=\"\");\n    [operand_12] = dequantizeLinear(operand_11, operand_2, operand_8, label=\"\");\n    [operand_13] = dequantizeLinear(operand_10, operand_9, operand_1, label=\"\");\n    [operand_14] = dequantizeLinear(operand_4, operand_5, operand_0, label=\"\");\n    [operand_15] = convTranspose2d(operand_12, operand_13, bias=14, dilations=[], filterLayout=\"ohwi\", groups=1, inputLayout=\"nhwc\", label=\"\", outputPadding=[], outputSizes=null, padding=[], strides=[]);\n    [operand_16] = quantizeLinear(operand_15, operand_7, operand_3, label=\"\");\n    [output] = dequantizeLinear(operand_16, operand_7, operand_3, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
-        ),
-    },
-)
+qdq_subgraph.https.any.js quantized convTranspose2d, trtx
+ Failed to convert graph: graph conversion failed for trtx: tensor dimensions: Could not get dimensions from Tensor "(Unnamed Layer* 56) [Shuffle]_output"
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[1, 2, 2, 1];
+  }
+
+  consts {
+    operand_0: i32[1] @bytes([2, 0, 0, 0]);
+    operand_1: f32[1] @bytes([128, 237, 192, 56]);
+    operand_10: i8[1, 1, 1, 1] @bytes([0]);
+    operand_2: i32[1] @bytes([0, 0, 0, 0]);
+    operand_3: i8[1, 2, 2, 1] @bytes([2, 3, 4, 5]);
+    operand_4: f32[1, 1, 1, 1] @bytes([146, 44, 192, 60]);
+    operand_5: i8[1, 1, 1, 1] @bytes([0]);
+    operand_7: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);
+    operand_8: i8[1, 1, 1, 1] @bytes([128]);
+    operand_9: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);
+  }
+
+  nodes {
+    [operand_11] = quantizeLinear(input, operand_7, operand_8, label="");
+    [operand_12] = dequantizeLinear(operand_11, operand_7, operand_8, label="");
+    [operand_13] = dequantizeLinear(operand_3, operand_4, operand_5, label="");
+    [operand_14] = dequantizeLinear(operand_0, operand_1, operand_2, label="");
+    [operand_15] = convTranspose2d(operand_12, operand_13, bias=14, dilations=[], filterLayout="ohwi", groups=1, inputLayout="nhwc", label="", outputPadding=[], outputSizes=null, padding=[], strides=[]);
+    [operand_16] = quantizeLinear(operand_15, operand_9, operand_10, label="");
+    [output] = dequantizeLinear(operand_16, operand_9, operand_10, label="");
+  }
+
+  outputs { output; }
+}

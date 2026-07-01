@@ -1,14 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, err)"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
 (
     "tile.https.any.js",
     "tile float32 1D constant tensor",
     "trtx",
-    Failed {
-        msg: Some(
-            "Failed to build graph: Runtime error: Failed to build serialized network\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  consts {\n    operand_0: f32[4] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 128, 64]);\n  }\n\n  nodes {\n    [tileOutput] = tile(operand_0, label=\"\");\n  }\n\n  outputs { tileOutput; }\n}\n",
-        ),
-    },
+    "PASS",
 )
