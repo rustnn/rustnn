@@ -209,7 +209,7 @@ pub enum Error {
         source: Box<dyn std::error::Error + Sync + Send>,
     },
 
-    #[error("Failed to tensor: {source}")]
+    #[error("Failed to create tensor: {source}")]
     TensorCreationError {
         source: Box<dyn std::error::Error + Sync + Send>,
         descriptor: MLTensorDescriptor,
