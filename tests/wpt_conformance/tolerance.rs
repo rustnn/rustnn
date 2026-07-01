@@ -210,7 +210,7 @@ pub fn ulp_distance_f32(a: f32, b: f32) -> u32 {
     if (a_bits ^ b_bits) & 0x8000_0000 != 0 {
         let a_dist = a_bits & 0x7FFF_FFFF;
         let b_dist = b_bits & 0x7FFF_FFFF;
-        return (a_dist + b_dist) as u32;
+        return a_dist + b_dist;
     }
     (a_bits as i64 - b_bits as i64).unsigned_abs() as u32
 }
