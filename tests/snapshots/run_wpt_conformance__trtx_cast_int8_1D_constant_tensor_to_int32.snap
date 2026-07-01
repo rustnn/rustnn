@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "cast.https.any.js",
+    "cast int8 1D constant tensor to int32",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to build graph: Runtime error: Failed to build serialized network\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  consts {\n    operand_0: i8[24] @bytes([123, 17, 31, 77, 88, 44, 84, 40, 14, 64, 109, 4, 2, 0, 45, 47, 72, 88, 82, 4, 73, 36, 65, 117]);\n  }\n\n  nodes {\n    [castOutput] = cast(operand_0, label=\"\");\n  }\n\n  outputs { castOutput; }\n}\n",
+        ),
+    },
+)

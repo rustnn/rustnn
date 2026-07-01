@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "quantizeLinear.https.any.js",
+    "quantizeLinear float32 tensor with int4 zeroPoint which has odd size",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to build graph: Runtime error: Failed to build serialized network\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    quantizeLinearInput: f32[];\n  }\n\n  consts {\n    operand_1: f32[] @bytes([42, 101, 143, 63]);\n    operand_2: i4[] @bytes([192]);\n  }\n\n  nodes {\n    [quantizeLinearOutput] = quantizeLinear(quantizeLinearInput, operand_1, operand_2, label=\"\");\n  }\n\n  outputs { quantizeLinearOutput; }\n}\n",
+        ),
+    },
+)

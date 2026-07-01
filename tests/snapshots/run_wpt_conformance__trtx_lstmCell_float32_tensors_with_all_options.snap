@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "lstm_cell.https.any.js",
+    "lstmCell float32 tensors with all options",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstmCell\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    lstmCellCellState: f32[2, 2];\n    lstmCellHiddenState: f32[2, 2];\n    lstmCellInput: f32[2, 2];\n  }\n\n  consts {\n    operand_1: f32[8, 2] @bytes([0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192]);\n    operand_3: f32[6] @bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);\n    operand_4: f32[8, 2] @bytes([205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61]);\n    operand_6: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n    operand_7: f32[8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n  }\n\n  nodes {\n    [lstmCellOutput1, lstmCellOutput2] = lstmCell(lstmCellInput, operand_1, operand_4, lstmCellHiddenState, lstmCellCellState, activations=[\"relu\", \"relu\", \"relu\"], bias=6, label=\"\", layout=\"iofg\", peepholeWeight=3, recurrentBias=7);\n  }\n\n  outputs { lstmCellOutput1; lstmCellOutput2; }\n}\n",
+        ),
+    },
+)

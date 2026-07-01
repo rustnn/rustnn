@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "clamp.https.any.js",
+    "clamp float16 2D tensor specified options.minValue=0.0 and positive options.maxValue",
+    "onnx",
+    "PASS",
+)

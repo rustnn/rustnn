@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "reshape.https.any.js",
+    "reshape float32 tensor to a new shape (extend dimensions)",
+    "trtx",
+    "PASS",
+)

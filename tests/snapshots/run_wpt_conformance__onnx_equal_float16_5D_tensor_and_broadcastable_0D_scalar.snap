@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "equal.https.any.js",
+    "equal float16 5D tensor and broadcastable 0D scalar",
+    "onnx",
+    "PASS",
+)

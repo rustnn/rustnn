@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "gru_cell.https.any.js",
+    "gruCell float32 tensors with all options",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: gruCell\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    gruCellBias: f32[12];\n    gruCellHiddenState: f32[3, 4];\n    gruCellInput: f32[3, 2];\n    gruCellRecurrentBias: f32[12];\n    gruCellRecurrentWeight: f32[12, 4];\n    gruCellWeight: f32[12, 2];\n  }\n\n  nodes {\n    [gruCellOutput] = gruCell(gruCellInput, gruCellWeight, gruCellRecurrentWeight, gruCellHiddenState, gruCellBias, gruCellRecurrentBias, activations=[\"relu\", \"relu\"], bias=2, label=\"\", layout=\"zrn\", recurrentBias=3, resetAfter=false);\n  }\n\n  outputs { gruCellOutput; }\n}\n",
+        ),
+    },
+)

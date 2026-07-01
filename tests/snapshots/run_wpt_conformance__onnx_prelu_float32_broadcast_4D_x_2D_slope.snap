@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "prelu.https.any.js",
+    "prelu float32 broadcast 4D x 2D slope",
+    "onnx",
+    "PASS",
+)

@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "logical_and.https.any.js",
+    "logicalAnd uint8 5D and broadcastable 4D",
+    "onnx",
+    "PASS",
+)

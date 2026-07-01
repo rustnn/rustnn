@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "lstm.https.any.js",
+    "lstm float32 tensors steps=1 with options.bias, options.recurrentBias, options.activations=['relu', 'relu', 'relu'] and options.peepholeWeight",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstm\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    lstmInput: f32[1, 2, 2];\n  }\n\n  consts {\n    operand_0: f32[1, 6] @bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);\n    operand_1: f32[1, 8, 2] @bytes([0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192]);\n    operand_3: f32[1, 8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n    operand_4: f32[1, 8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);\n    operand_5: f32[1, 8, 2] @bytes([205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61]);\n  }\n\n  nodes {\n    [lstmOutput1, lstmOutput2] = lstm(lstmInput, operand_1, operand_5, activations=[\"relu\", \"relu\", \"relu\"], bias=3, direction=\"\", initialCellState=null, initialHiddenState=null, label=\"\", layout=\"\", peepholeWeight=0, recurrentBias=4, returnSequence=false);\n  }\n\n  outputs { lstmOutput1; lstmOutput2; }\n}\n",
+        ),
+    },
+)

@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "lstm.https.any.js",
+    "lstm float16 tensors steps=1 with options.bias, options.recurrentBias and options.activations=['relu', 'relu', 'relu']",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstm\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    lstmInput: f16[1, 2, 2];\n  }\n\n  consts {\n    operand_0: f16[1, 8, 2] @bytes([0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192]);\n    operand_1: f16[1, 8, 2] @bytes([102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46]);\n    operand_3: f16[1, 8] @bytes([0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64]);\n    operand_4: f16[1, 8] @bytes([0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64]);\n  }\n\n  nodes {\n    [lstmOutput1, lstmOutput2] = lstm(lstmInput, operand_0, operand_1, activations=[\"relu\", \"relu\", \"relu\"], bias=3, direction=\"\", initialCellState=null, initialHiddenState=null, label=\"\", layout=\"\", peepholeWeight=null, recurrentBias=4, returnSequence=false);\n  }\n\n  outputs { lstmOutput1; lstmOutput2; }\n}\n",
+        ),
+    },
+)

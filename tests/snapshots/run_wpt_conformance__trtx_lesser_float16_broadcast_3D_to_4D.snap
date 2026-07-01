@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "lesser.https.any.js",
+    "lesser float16 broadcast 3D to 4D",
+    "trtx",
+    Failed {
+        msg: Some(
+            "lesser :: lesser float16 broadcast 3D to 4D: index 1: actual=0 expected=1 tolerance=0\n  inputs: inputB: [-4.44140625, 2.751953125, 3.63671875, -2.80859375]; inputA: [-1.1474609375, -8.40625, -2.275390625, -0.5771484375, 8.171875, -0.9072265625, 5.2890625, -3.9140625, 9.828125, -8.9296875, -3.45703125, -7.33203125, 1.232421875, 4.3125, 1.271484375, 4.18359375, -6.7109375, 3.076171875, 1.0029296875, -9.078125, 8.90625, 4.234375, 2.1015625, -6.203125]\n  expected output: [0, 1, 0, 1, 0, 1, 0, 1, 0, 1 ...] (len=24)\n  actual output: [0, 0, 0, 0, 0, 0, 128, 63, 0, 0 ...] (len=24)\n  expected output full nd:\n[0, 1, 0, 1, 0, 1, 0, 1, 0, 1, ...] (len=24, shape=[2, 2, 2, 3])\n  actual output full nd:\n[0, 0, 0, 0, 0, 0, 128, 63, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: f16[2, 2, 2, 3];\n    inputB: f16[2, 2, 1];\n  }\n\n  nodes {\n    [output] = lesser(inputA, inputB, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
+        ),
+    },
+)

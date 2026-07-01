@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "concat.https.any.js",
+    "concat two float32 5D tensors of same others dimensions except different 5th dimension along axis 4",
+    "trtx",
+    "PASS",
+)

@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "gather.https.any.js",
+    "gather float16 3D tensor and 1D indices options.axis=1",
+    "trtx",
+    Failed {
+        msg: Some(
+            "An error in the Trtx: Runtime error: setNamedWeights (with location) rejected\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    gatherInput: f16[3, 4, 2];\n  }\n\n  consts {\n    operand_0: i32[3] @bytes([1, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0]);\n  }\n\n  nodes {\n    [gatherOutput] = gather(gatherInput, operand_0, axis=1, label=\"\");\n  }\n\n  outputs { gatherOutput; }\n}\n",
+        ),
+    },
+)

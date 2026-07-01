@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "pow.https.any.js",
+    "pow float32 two 5D inputs with identical shapes",
+    "onnx",
+    "PASS",
+)

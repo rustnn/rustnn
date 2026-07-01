@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "clamp.https.any.js",
+    "maxValue as Infinity",
+    "onnx",
+    "PASS",
+)

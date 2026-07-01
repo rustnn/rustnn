@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "sigmoid.https.any.js",
+    "sigmoid float32 0D tensor",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to read tensor: DriverError(CUDA_ERROR_INVALID_VALUE, \"invalid argument\")\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    sigmoidInput: f32[];\n  }\n\n  nodes {\n    [sigmoidOutput] = sigmoid(sigmoidInput, label=\"\");\n  }\n\n  outputs { sigmoidOutput; }\n}\n",
+        ),
+    },
+)

@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "is_nan.https.any.js",
+    "isNaN float32 all NaN values",
+    "trtx",
+    Failed {
+        msg: Some(
+            "is_nan :: isNaN float32 all NaN values: index 0: actual=0 expected=1 tolerance=0\n  inputs: isNaNInput: [String(\"NaN\"), String(\"NaN\"), String(\"NaN\"), String(\"NaN\")]\n  expected isNaNOutput: [1, 1, 1, 1]\n  actual isNaNOutput: [0, 0, 128, 63]\n  expected isNaNOutput full nd:\n(shape [4])\n[1, 1, 1, 1]\n  actual isNaNOutput full nd:\n(shape [4])\n[0, 0, 128, 63]\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    isNaNInput: f32[4];\n  }\n\n  nodes {\n    [isNaNOutput] = isNaN(isNaNInput, label=\"\");\n  }\n\n  outputs { isNaNOutput; }\n}\n",
+        ),
+    },
+)

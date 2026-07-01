@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "qdq_subgraph.https.any.js",
+    "quantized element-wise binary add",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Failed to get dimensions for tensor 0 in add: Could not get dimensions from Tensor \"(Unnamed Layer* 32) [ElementWise]_output\"\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: f32[1, 1, 2, 3];\n  }\n\n  consts {\n    operand_0: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);\n    operand_1: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);\n    operand_2: f32[1, 1, 1, 1] @bytes([129, 128, 128, 59]);\n    operand_3: i8[1, 1, 1, 1] @bytes([128]);\n    operand_4: i8[1, 1, 2, 3] @bytes([2, 7, 8, 11, 5, 23]);\n    operand_5: i8[1, 1, 1, 1] @bytes([128]);\n    operand_7: i8[1, 1, 1, 1] @bytes([128]);\n  }\n\n  nodes {\n    [operand_8] = quantizeLinear(inputA, operand_0, operand_7, label=\"\");\n    [operand_9] = dequantizeLinear(operand_8, operand_0, operand_7, label=\"\");\n    [operand_10] = dequantizeLinear(operand_4, operand_2, operand_3, label=\"\");\n    [operand_11] = add(operand_9, operand_10, label=\"\");\n    [operand_12] = quantizeLinear(operand_11, operand_1, operand_5, label=\"\");\n    [output] = dequantizeLinear(operand_12, operand_1, operand_5, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
+        ),
+    },
+)

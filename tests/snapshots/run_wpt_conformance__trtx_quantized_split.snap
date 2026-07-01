@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "qdq_subgraph.https.any.js",
+    "quantized split",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Failed to get input shape: Could not get dimensions from Tensor \"(Unnamed Layer* 29) [ElementWise]_output\"\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    input: f32[2, 3];\n  }\n\n  consts {\n    operand_1: i8[1, 1] @bytes([16]);\n    operand_2: f32[1, 1] @bytes([129, 128, 128, 59]);\n    operand_3: i8[1, 1] @bytes([16]);\n    operand_4: f32[1, 1] @bytes([129, 128, 128, 59]);\n  }\n\n  nodes {\n    [operand_5] = quantizeLinear(input, operand_2, operand_3, label=\"\");\n    [operand_6] = dequantizeLinear(operand_5, operand_2, operand_3, label=\"\");\n    [_0, _1, _2] = split(operand_6, axis=1, label=\"\");\n    [operand_10] = quantizeLinear(_0, operand_4, operand_1, label=\"\");\n    [output 1] = dequantizeLinear(operand_10, operand_4, operand_1, label=\"\");\n    [operand_12] = quantizeLinear(_1, operand_4, operand_1, label=\"\");\n    [output 2] = dequantizeLinear(operand_12, operand_4, operand_1, label=\"\");\n    [operand_14] = quantizeLinear(_2, operand_4, operand_1, label=\"\");\n    [output 3] = dequantizeLinear(operand_14, operand_4, operand_1, label=\"\");\n  }\n\n  outputs { output 1; output 2; output 3; }\n}\n",
+        ),
+    },
+)

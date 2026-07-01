@@ -4,7 +4,9 @@ use std::time::Instant;
 
 use libtest_mimic::{Arguments, Completion, Failed, Trial};
 use wpt_conformance::wpt_backend::WptBackend;
-use wpt_conformance::wpt_js_loader::{default_wpt_dir, load_wpt_corpus, trial_name};
+use wpt_conformance::wpt_js_loader::{
+    default_wpt_dir, load_wpt_corpus, sanitize_test_id, trial_name,
+};
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_types::WptLoadedCase;
 use wpt_conformance::{run_one_test_case, should_skip_test, wpt_types::WptTestCase};
@@ -37,14 +39,20 @@ fn push_backend_trials(
         let file_name = case.file_name.clone();
         let test_name = case.name.clone();
         let backend_prefix = prefix.to_string();
+        let snapshot_name = format!("{backend_prefix}_{}", sanitize_test_id(&test_name));
         let report = report.clone();
         let backend = backend.clone();
         trials.push(Trial::ignorable_test(name, move || {
             let started = Instant::now();
             let result = run_trial(&backend, &operation, &test_case);
             let duration = started.elapsed();
+
             match &result {
                 Ok(Completion::Completed) => {
+                    insta::assert_debug_snapshot!(
+                        snapshot_name,
+                        (&file_name, &test_name, &backend_prefix, "PASS")
+                    );
                     report.record_pass(&file_name, &test_name, &backend_prefix, duration);
                 }
                 Ok(Completion::Ignored { reason }) => {
@@ -52,6 +60,10 @@ fn push_backend_trials(
                     report.record_skip(&file_name, &test_name, &backend_prefix, reason, duration);
                 }
                 Err(err) => {
+                    insta::assert_debug_snapshot!(
+                        snapshot_name,
+                        (&file_name, &test_name, &backend_prefix, err)
+                    );
                     let msg = err.message().unwrap_or("test failed").to_string();
                     report.record_fail(&file_name, &test_name, &backend_prefix, msg, duration);
                 }

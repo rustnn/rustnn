@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "logical_xor.https.any.js",
+    "logicalXor uint8 3D tensors",
+    "trtx",
+    Failed {
+        msg: Some(
+            "logical_xor :: logicalXor uint8 3D tensors: index 1: actual=0 expected=1 tolerance=0\n  inputs: inputB: [0, 1, 0, 1, 0, 2, 0, 2, 0, 8, 0, 8, 0, 2, 0, 2, 0, 255, 0, 255, 0, 8, 0, 8]; inputA: [0, 0, 1, 1, 0, 0, 2, 2, 0, 0, 8, 8, 0, 0, 8, 8, 0, 0, 255, 255, 0, 0, 255, 255]\n  expected output: [0, 1, 1, 0, 0, 1, 1, 0, 0, 1 ...] (len=24)\n  actual output: [0, 0, 0, 0, 0, 0, 128, 63, 0, 0 ...] (len=24)\n  expected output full nd:\n[0, 1, 1, 0, 0, 1, 1, 0, 0, 1, ...] (len=24, shape=[2, 3, 4])\n  actual output full nd:\n[0, 0, 0, 0, 0, 0, 128, 63, 0, 0, ...] (len=24, shape=[2, 3, 4])\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: u8[2, 3, 4];\n    inputB: u8[2, 3, 4];\n  }\n\n  nodes {\n    [output] = logicalXor(inputA, inputB, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
+        ),
+    },
+)

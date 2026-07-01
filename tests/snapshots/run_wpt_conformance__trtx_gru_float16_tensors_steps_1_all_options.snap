@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "gru.https.any.js",
+    "gru float16 tensors steps=1 all options",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Unsupported operation: gru\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    gruBias: f16[1, 12];\n    gruInitialHiddenState: f16[1, 3, 4];\n    gruInput: f16[1, 3, 2];\n    gruRecurrentBias: f16[1, 12];\n    gruRecurrentWeight: f16[1, 12, 4];\n    gruWeight: f16[1, 12, 2];\n  }\n\n  nodes {\n    [gruOutput1, gruOutput2] = gru(gruInput, gruWeight, gruRecurrentWeight, activations=[\"relu\", \"relu\"], bias=4, direction=\"forward\", initialHiddenState=1, label=\"\", layout=\"zrn\", recurrentBias=2, resetAfter=false, returnSequence=true);\n  }\n\n  outputs { gruOutput1; gruOutput2; }\n}\n",
+        ),
+    },
+)

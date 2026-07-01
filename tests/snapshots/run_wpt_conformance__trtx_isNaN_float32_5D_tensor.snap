@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "is_nan.https.any.js",
+    "isNaN float32 5D tensor",
+    "trtx",
+    Failed {
+        msg: Some(
+            "is_nan :: isNaN float32 5D tensor: index 1: actual=0 expected=1 tolerance=0\n  inputs: isNaNInput: [1, String(\"NaN\"), -2.5, 0, String(\"Infinity\"), String(\"-Infinity\"), 3.14, String(\"NaN\"), 0, 42, String(\"NaN\"), -999.99, 10000000000, -0.0000000001, String(\"NaN\"), 100.5, 0.5, String(\"NaN\"), -1, 2, String(\"NaN\"), 7.7, -8.8, 9.9 ...] (len=32)\n  expected isNaNOutput: [0, 1, 0, 0, 0, 0, 0, 1, 0, 0 ...] (len=32)\n  actual isNaNOutput: [0, 0, 0, 0, 0, 0, 128, 63, 0, 0 ...] (len=32)\n  expected isNaNOutput full nd:\n[0, 1, 0, 0, 0, 0, 0, 1, 0, 0, ...] (len=32, shape=[2, 2, 2, 2, 2])\n  actual isNaNOutput full nd:\n[0, 0, 0, 0, 0, 0, 128, 63, 0, 0, ...] (len=32, shape=[2, 2, 2, 2, 2])\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    isNaNInput: f32[2, 2, 2, 2, 2];\n  }\n\n  nodes {\n    [isNaNOutput] = isNaN(isNaNInput, label=\"\");\n  }\n\n  outputs { isNaNOutput; }\n}\n",
+        ),
+    },
+)

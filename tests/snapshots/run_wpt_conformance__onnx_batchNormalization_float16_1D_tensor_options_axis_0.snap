@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "batch_normalization.https.any.js",
+    "batchNormalization float16 1D tensor options.axis=0",
+    "onnx",
+    "PASS",
+)

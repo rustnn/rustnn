@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "cumulative_sum.https.any.js",
+    "cumulativeSum with float32 input and set exclusive to true.",
+    "trtx",
+    "PASS",
+)

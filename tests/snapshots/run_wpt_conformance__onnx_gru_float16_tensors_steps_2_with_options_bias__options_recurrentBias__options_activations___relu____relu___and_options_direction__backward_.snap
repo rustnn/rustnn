@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "gru.https.any.js",
+    "gru float16 tensors steps=2 with options.bias, options.recurrentBias, options.activations=['relu', 'relu'] and options.direction='backward'",
+    "onnx",
+    "PASS",
+)

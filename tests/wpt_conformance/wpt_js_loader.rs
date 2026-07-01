@@ -152,10 +152,10 @@ pub fn trial_name(backend: &str, case: &WptLoadedCase) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn sanitize_replaces_spaces() {
+    fn sanitize_replaces_filename_unsafe_characters() {
         assert_eq!(
-            super::sanitize_test_id("relu float32 2D tensor"),
-            "relu_float32_2D_tensor"
+            super::sanitize_test_id("relu float32: 2D <tensor> / \\ | ? *"),
+            "relu_float32__2D__tensor___________"
         );
     }
 }

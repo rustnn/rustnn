@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "qdq_subgraph.https.any.js",
+    "quantized concat",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to convert graph: graph conversion failed for trtx: Concat: failed to get input dimensions: Could not get dimensions from Tensor \"(Unnamed Layer* 32) [ElementWise]_output\"\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: f32[3, 2];\n  }\n\n  consts {\n    operand_0: f32[1, 1] @bytes([129, 128, 128, 59]);\n    operand_1: i8[1, 1] @bytes([127]);\n    operand_3: i8[1, 1] @bytes([127]);\n    operand_4: i8[1, 1] @bytes([127]);\n    operand_5: f32[1, 1] @bytes([129, 128, 128, 59]);\n    operand_6: i8[3, 1] @bytes([2, 27, 38]);\n    operand_7: f32[1, 1] @bytes([129, 128, 128, 59]);\n  }\n\n  nodes {\n    [operand_8] = quantizeLinear(inputA, operand_5, operand_4, label=\"\");\n    [operand_9] = dequantizeLinear(operand_8, operand_5, operand_4, label=\"\");\n    [operand_10] = dequantizeLinear(operand_6, operand_0, operand_3, label=\"\");\n    [operand_11] = concat(operand_9, operand_10, label=\"\");\n    [operand_12] = quantizeLinear(operand_11, operand_7, operand_1, label=\"\");\n    [output] = dequantizeLinear(operand_12, operand_7, operand_1, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
+        ),
+    },
+)

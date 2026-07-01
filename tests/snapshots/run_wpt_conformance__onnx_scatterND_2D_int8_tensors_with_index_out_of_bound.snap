@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "scatterND.https.any.js",
+    "scatterND 2D int8 tensors with index out of bound",
+    "onnx",
+    "PASS",
+)

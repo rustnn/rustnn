@@ -1,0 +1,14 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, err)"
+---
+(
+    "max.https.any.js",
+    "max uint8 4D tensors",
+    "trtx",
+    Failed {
+        msg: Some(
+            "Failed to build graph: Runtime error: Failed to build serialized network\n\n--- built graph ---\nwebnn_graph \"graph\" v2 {\n  inputs {\n    inputA: u8[1, 2, 2, 3];\n    inputB: u8[1, 2, 2, 3];\n  }\n\n  nodes {\n    [output] = max(inputA, inputB, label=\"\");\n  }\n\n  outputs { output; }\n}\n",
+        ),
+    },
+)
