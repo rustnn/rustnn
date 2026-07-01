@@ -9,8 +9,12 @@ on:
 jobs:
   # Rust tests
   rust-test:
-    name: Rust Tests
-    runs-on: ubuntu-latest
+    name: Rust Tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -27,13 +31,21 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Install protobuf compiler
+      - name: Install protobuf compiler (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
           protoc --version
 
+      - name: Install protobuf/flatbuffer compiler (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install protobuf flatbuffers
+          protoc --version
+
       - name: Install flatc
+        if: runner.os == 'Linux'
         run: |
           curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
           sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
@@ -79,14 +91,24 @@ jobs:
       - name: Run cargo check (LiteRT)
         run: cargo +1.95.0 check --features litert-runtime
 
+      - name: Run cargo check (CoreML)
+        if: runner.os == 'macOS'
+        run: cargo +1.95.0 check --features coreml-runtime
+
       - name: Run cargo test (library only)
         run: cargo +1.96.0 test --lib
 
+      - name: Run cargo test (library only, CoreML)
+        if: runner.os == 'macOS'
+        run: cargo +1.96.0 test --lib --features coreml-runtime
+
       - name: Check backend operator report is up to date
+        if: runner.os == 'Linux'
         run: |
           python3 scripts/generate_backend_operator_report.py --check
 
       - name: Run backend operator report parser tests
+        if: runner.os == 'Linux'
         run: |
           python3 -m unittest scripts/test_generate_backend_operator_report.py
 

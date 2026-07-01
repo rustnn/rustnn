@@ -1,0 +1,31 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+conv_transpose2d.https.any.js convTranspose2d float32 4D input and filter tensors options.bias, coreml
+ conv_transpose2d :: convTranspose2d float32 4D input and filter tensors options.bias: index 0: actual=0.06836533 expected=0.520039 ulp=24714792 tolerance=16384
+  inputs: convTranspose2dInput: [0.1109575480222702, 0.8681362271308899, 0.7342095971107483, 0.43077003955841064, 0.5981627106666565, 0.12321650236845016, 0.1610974818468094, 0.0884026437997818, 0.29100972414016724]; convTranspose2dBias: [0.451673686504364] (constant); convTranspose2dFilter: [0.6161394715309143, 0.26224616169929504, 0.7951397895812988, 0.8730561137199402, 0.8309102058410645, 0.854960560798645, 0.5552039742469788, 0.840092122554779, 0.85308438539505] (constant)
+  expected convTranspose2dOutput: [0.520039, 1.0156648, 1.2199414, 1.334507, 1.035473, 0.81396025, 1.7833205, 2.4841943, 2.3118942, 1.1773683 ...] (len=25)
+  actual convTranspose2dOutput: [0.06836533, 0.5639912, 0.7682677, 0.8828333, 0.58379924, 0.3622866, 1.3316468, 2.0325205, 1.8602207, 0.7256946 ...] (len=25)
+  expected convTranspose2dOutput full nd:
+[0.520039, 1.0156648, 1.2199414, 1.334507, 1.035473, 0.81396025, 1.7833205, 2.4841943, 2.3118942, 1.1773683, ...] (len=25, shape=[1, 1, 5, 5])
+  actual convTranspose2dOutput full nd:
+[0.06836533, 0.5639912, 0.7682677, 0.8828333, 0.58379924, 0.3622866, 1.3316468, 2.0325205, 1.8602207, 0.7256946, ...] (len=25, shape=[1, 1, 5, 5])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    convTranspose2dInput: f32[1, 1, 3, 3];
+  }
+
+  consts {
+    operand_0: f32[1] @bytes([198, 65, 231, 62]);
+    operand_1: f32[1, 1, 3, 3] @bytes([81, 187, 29, 63, 33, 69, 134, 62, 72, 142, 75, 63, 155, 128, 95, 63, 136, 182, 84, 63, 178, 222, 90, 63, 217, 33, 14, 63, 71, 16, 87, 63, 189, 99, 90, 63]);
+  }
+
+  nodes {
+    [convTranspose2dOutput] = convTranspose2d(convTranspose2dInput, operand_1, bias=0, dilations=[], filterLayout="", groups=1, inputLayout="", label="", outputPadding=[], outputSizes=null, padding=[], strides=[]);
+  }
+
+  outputs { convTranspose2dOutput; }
+}

@@ -2,7 +2,7 @@ use crate::mlcontext;
 
 pub mod caching;
 
-#[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+#[cfg(feature = "coreml-runtime")]
 pub mod coreml;
 
 #[cfg(feature = "onnx-runtime")]
@@ -16,6 +16,18 @@ pub mod litert;
 
 #[derive(Debug)]
 pub(crate) struct DisabledContext {}
+
+impl DisabledContext {
+    // Shared constructor for the device-typed disabled backends (CoreML, LiteRT).
+    // Both alias `DisabledContext`, so this must be defined exactly once to avoid
+    // duplicate-definition errors when more than one such backend is disabled.
+    #[allow(dead_code)]
+    pub(crate) fn new_from_device_type(
+        _device_type: crate::backend_selection::DeviceType,
+    ) -> crate::error::Result<Self> {
+        panic!("Tried to create a disabled device-typed backend");
+    }
+}
 
 impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     fn accelerated(&self) -> bool {
@@ -111,17 +123,9 @@ pub mod trtx {
     }
 }
 
-#[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
+#[cfg(not(feature = "coreml-runtime"))]
 pub mod coreml {
     pub(crate) use crate::backends::DisabledContext as CoremlContext;
-
-    impl CoremlContext {
-        pub(crate) fn new_from_device_type(
-            _device_type: crate::backend_selection::DeviceType,
-        ) -> crate::error::Result<Self> {
-            panic!("Tried to create disabled CoreML backend");
-        }
-    }
 }
 #[cfg(not(feature = "litert-runtime"))]
 pub mod litert {

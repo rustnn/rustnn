@@ -2,8 +2,7 @@
 //! Loads a `.mlmodel`, compiles it if needed, and runs a zeroed inference
 //! using CoreML's Objective-C API.
 
-#![cfg(all(target_os = "macos", feature = "coreml-runtime"))]
-#![allow(unexpected_cfgs)]
+#![cfg(feature = "coreml-runtime")]
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -21,8 +20,10 @@ use crate::graph::{DataType, Dimension, OperandDescriptor, get_static_or_max_siz
 use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
 // Link against the system frameworks we use.
+#[cfg(target_os = "macos")]
 #[link(name = "Foundation", kind = "framework")]
 unsafe extern "C" {}
+#[cfg(target_os = "macos")]
 #[link(name = "CoreML", kind = "framework")]
 unsafe extern "C" {}
 
@@ -219,7 +220,7 @@ pub(crate) fn compile_model(
                 last_error = ns_error_to_string(error, "MLModel load failed");
                 continue;
             }
-            // Retain the model so it outlives this autoreleasepool.
+            // outlives this autoreleasepool.
             let _: *mut Object = msg_send![model, retain];
             return Ok(CompiledCoremlModel {
                 model,
@@ -248,6 +249,14 @@ pub(crate) fn run_coreml_bytes(
     autoreleasepool(|| unsafe {
         let dict: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
 
+        // Query the model's declared input types so the MLMultiArray we build matches
+        // exactly what CoreML expects. Using our own dtype codes here is unsafe: an
+        // array created with a code CoreML does not recognize (e.g. a bare `16` for
+        // Float16) is treated as Float32, so CoreML reads past our 2-bytes-per-element
+        // buffer -- garbage for small tensors, an out-of-bounds crash for large ones.
+        let model_description: *mut Object = msg_send![model.model, modelDescription];
+        let input_descs: *mut Object = msg_send![model_description, inputDescriptionsByName];
+
         for (name, input) in inputs {
             let key = nsstring_from_str(name)?;
             let mut shape_i64: Vec<i64> = input
@@ -260,9 +269,13 @@ pub(crate) fn run_coreml_bytes(
                 // Scalars are represented as a single-element 1-D array.
                 shape_i64.push(1);
             }
-            let code = map_dtype(input.descriptor.data_type)?;
+
+            // Prefer the model's own data type code; fall back to our mapping only when
+            // the model exposes no constraint for this input.
+            let code = model_input_dtype_code(input_descs, key)
+                .map_or_else(|| map_dtype(input.descriptor.data_type), Ok)?;
             let array = create_multi_array(&shape_i64, code)?;
-            fill_multiarray_from_bytes(array, input.data, input.descriptor.data_type)?;
+            fill_multiarray_from_bytes(array, input.data, input.descriptor.data_type, code)?;
             let feature_value: *mut Object =
                 msg_send![class!(MLFeatureValue), featureValueWithMultiArray: array];
             let () = msg_send![dict, setObject: feature_value forKey: key];
@@ -315,6 +328,7 @@ unsafe fn fill_multiarray_from_bytes(
     array: *mut Object,
     src: &[u8],
     dtype: DataType,
+    array_code: i32,
 ) -> Result<(), GraphError> {
     let count_obj: isize = msg_send![array, count];
     let count = usize::try_from(count_obj).map_err(|_| GraphError::CoremlRuntimeFailed {
@@ -327,6 +341,20 @@ unsafe fn fill_multiarray_from_bytes(
             reason: format!(
                 "input byte length mismatch: expected {expected} bytes ({count} elements), got {}",
                 src.len()
+            ),
+        });
+    }
+    // A raw byte copy is only valid when our source layout matches the array CoreML
+    // allocated. When the model boundary promotes the type (e.g. a WebNN int64 input
+    // exposed as Float32), the element sizes differ and copying `src` verbatim would
+    // overrun the array buffer -- fail cleanly instead of corrupting memory.
+    if let Some(array_elem) = ml_dtype_code_element_size(array_code)
+        && array_elem != elem
+    {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: format!(
+                "input dtype mismatch: model expects {array_elem}-byte elements (code {array_code}), \
+                 but input is {dtype:?} ({elem}-byte); type conversion is not supported for this input"
             ),
         });
     }
@@ -467,7 +495,6 @@ fn run_impl_zeroed_with_weights(
                 });
                 continue;
             }
-
             let model_description: *mut Object = msg_send![model, modelDescription];
             let input_descs: *mut Object = msg_send![model_description, inputDescriptionsByName];
 
@@ -956,6 +983,36 @@ fn write_temp_model_with_weights(
         std::fs::write(&weights_path, weights)
             .map_err(|err| GraphError::export(&weights_path, err))?;
 
+        // Write the package Manifest.json. CoreML refuses to load an .mlpackage
+        // ("A valid manifest does not exist") without this root-level file
+        // pointing at the model spec inside Data/.
+        let manifest_path = package_path.join("Manifest.json");
+        let model_id = "00000000-0000-0000-0000-0000000000AA";
+        let weights_id = "00000000-0000-0000-0000-0000000000BB";
+        let manifest = format!(
+            r#"{{
+  "fileFormatVersion": "1.0.0",
+  "itemInfoEntries": {{
+    "{model_id}": {{
+      "author": "com.apple.CoreML",
+      "description": "CoreML Model Specification",
+      "name": "model.mlmodel",
+      "path": "com.apple.CoreML/model.mlmodel"
+    }},
+    "{weights_id}": {{
+      "author": "com.apple.CoreML",
+      "description": "CoreML Model Weights",
+      "name": "weights",
+      "path": "com.apple.CoreML/weights"
+    }}
+  }},
+  "rootModelIdentifier": "{model_id}"
+}}
+"#
+        );
+        std::fs::write(&manifest_path, manifest)
+            .map_err(|err| GraphError::export(&manifest_path, err))?;
+
         Ok(package_path)
     } else {
         // No weights: write single .mlmodel file as before
@@ -1013,6 +1070,38 @@ fn map_dtype(data_type: DataType) -> Result<i32, GraphError> {
         DataType::Uint64 => 4,   // closest available signed int type
     };
     Ok(code)
+}
+
+/// Element size in bytes for an `MLMultiArrayDataType` raw code, if known.
+///
+/// Covers Apple's canonical `0x1_0000`/`0x2_0000`-flagged values as well as the
+/// legacy bare codes still used by [`map_dtype`].
+fn ml_dtype_code_element_size(code: i32) -> Option<usize> {
+    match code {
+        65600 | 4 => Some(8),               // Double / Int64
+        65568 | 131104 | 32 | 3 => Some(4), // Float32 / Int32
+        65552 | 16 => Some(2),              // Float16
+        1 => Some(1),                       // Int8
+        _ => None,
+    }
+}
+
+/// Query the model's declared `MLMultiArrayDataType` code for the input named `key`.
+/// Returns `None` when the model exposes no multi-array constraint for that input.
+unsafe fn model_input_dtype_code(input_descs: *mut Object, key: *mut Object) -> Option<i32> {
+    if input_descs.is_null() {
+        return None;
+    }
+    let desc_obj: *mut Object = msg_send![input_descs, objectForKey: key];
+    if desc_obj.is_null() {
+        return None;
+    }
+    let constraint_obj: *mut Object = msg_send![desc_obj, multiArrayConstraint];
+    if constraint_obj.is_null() {
+        return None;
+    }
+    let ml_data_type: i64 = msg_send![constraint_obj, dataType];
+    Some(ml_data_type as i32)
 }
 
 fn data_type_from_code(code: i32) -> Option<DataType> {

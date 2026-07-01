@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gru.https.any.js gru float32 tensors steps=2 with options.bias, options.recurrentBias, options.direction='backward', options.activations=['relu', 'relu'] and explicit options.returnSequence=false, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: Unsupported operation: gru
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gruBias: f32[1, 12];
+    gruInput: f32[2, 3, 2];
+    gruRecurrentBias: f32[1, 12];
+    gruRecurrentWeight: f32[1, 12, 4];
+    gruWeight: f32[1, 12, 2];
+  }
+
+  nodes {
+    [gruOutput] = gru(gruInput, gruWeight, gruRecurrentWeight, activations=["relu", "relu"], bias=0, direction="backward", initialHiddenState=null, label="", layout="", recurrentBias=2, resetAfter=false, returnSequence=false);
+  }
+
+  outputs { gruOutput; }
+}

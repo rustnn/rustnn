@@ -1,0 +1,32 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+qdq_subgraph.https.any.js per-channel quantized gemm with non-zero quantized dimension of the filter, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type dequantize: parameter scale[0] has invalid rank 2, expected [0, 1].
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: i8[2, 2];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([0, 0, 0, 63]);
+    operand_2: i8[1, 1] @bytes([0]);
+    operand_3: i8[5, 2] @bytes([1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    operand_4: f32[1, 2] @bytes([0, 0, 0, 63, 0, 0, 0, 63]);
+    operand_5: i8[1, 2] @bytes([0, 0]);
+    operand_6: f32[1, 1] @bytes([0, 0, 0, 63]);
+    operand_7: i8[1, 1] @bytes([0]);
+  }
+
+  nodes {
+    [operand_8] = dequantizeLinear(inputA, operand_1, operand_2, label="");
+    [operand_9] = dequantizeLinear(operand_3, operand_4, operand_5, label="");
+    [operand_10] = gemm(operand_8, operand_9, aTranspose=false, alpha=1.0, bTranspose=true, beta=1.0, c=null, label="");
+    [output] = quantizeLinear(operand_10, operand_6, operand_7, label="");
+  }
+
+  outputs { output; }
+}

@@ -2,7 +2,7 @@
 //!
 //! Matches JSON produced by `scripts/wpt_bridge/dump_corpus.mjs`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Full corpus dumped by the Node bridge in one invocation.
@@ -50,7 +50,7 @@ impl WptLoadedCase {
 }
 
 /// A single test case within a WPT file.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptTestCase {
     pub name: String,
     pub graph: WptGraph,
@@ -59,7 +59,7 @@ pub struct WptTestCase {
     pub tolerance: Option<WptTolerance>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptTolerance {
     #[serde(default, rename = "metricType", alias = "type")]
     pub metric_type: String,
@@ -68,7 +68,7 @@ pub struct WptTolerance {
 }
 
 /// Graph description: inputs, operators, and expected outputs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptGraph {
     /// Canonically ordered so operand creation and diagnostics are reproducible. (not HashMap)
     pub inputs: BTreeMap<String, WptTensorSpec>,
@@ -79,7 +79,7 @@ pub struct WptGraph {
 }
 
 /// Descriptor for shape and data type (used in inputs and expectedOutputs).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptDescriptor {
     #[serde(default)]
     pub shape: Vec<u32>,
@@ -88,7 +88,7 @@ pub struct WptDescriptor {
 }
 
 /// Tensor spec: data (array or scalar) plus optional descriptor.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptTensorSpec {
     /// Can be array of numbers, single number, or (in JSON) string for bigint.
     pub data: serde_json::Value,
@@ -122,7 +122,7 @@ impl WptTensorSpec {
 }
 
 /// Single operator in the graph: name, arguments (object or list of objects), outputs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct WptOperator {
     pub name: String,
     /// Arguments: either a map or list of maps (WPT uses list of single-key dicts).

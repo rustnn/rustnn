@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+maxPool2d.https.any.js maxPool2d float16 4D constant tensor default options, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type max_pool: Required param 'pad' is missing
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[1, 2, 5, 5] @bytes([144, 85, 183, 209, 170, 211, 4, 196, 233, 213, 201, 81, 53, 86, 7, 201, 223, 72, 225, 208, 177, 84, 105, 74, 32, 208, 214, 80, 33, 84, 30, 86, 94, 200, 173, 210, 130, 84, 14, 209, 118, 208, 122, 213, 220, 80, 236, 80, 110, 71, 204, 212, 71, 82, 157, 210, 149, 209, 30, 214, 28, 85, 110, 69, 79, 207, 135, 84, 107, 211, 230, 80, 32, 212, 52, 196, 145, 211, 252, 82, 5, 85, 142, 84, 211, 209, 32, 77, 200, 207, 41, 211, 168, 206, 248, 75, 236, 212, 133, 84]);
+  }
+
+  nodes {
+    [maxPool2dOutput] = maxPool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { maxPool2dOutput; }
+}

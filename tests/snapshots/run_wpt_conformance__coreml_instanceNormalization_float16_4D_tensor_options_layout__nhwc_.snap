@@ -1,0 +1,26 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+instance_normalization.https.any.js instanceNormalization float16 4D tensor options.layout='nhwc', coreml
+ instance_normalization :: instanceNormalization float16 4D tensor options.layout='nhwc': index 5: actual=0.05203247 expected=-1.6630859 ulp=26960 tolerance=8400
+  inputs: instanceNormInput: [-97.9375, 41.34375, 35.8125, 29.4375, -59.78125, -6.94921875, -73.9375, -74.6875, 54.4375, -38.125, -68.1875, 47.53125, 66.9375, 37.375, 73.875, 76.75, 56.25, -99, 5.67578125, -16.578125, -33.125, 25.6875, 42.9375, -17.375]
+  expected instanceNormOutput: [-1.0996094, 1.7216797, 0.13024902, 1.5527344, -0.4099121, -1.6630859, -0.5996094, -0.7241211, 0.9111328, 0.14611816 ...] (len=24)
+  actual instanceNormOutput: [-1.6826172, 0.97265625, 0.8671875, 0.74560547, -0.9550781, 0.05203247, -0.8730469, -0.88671875, 1.4404297, -0.22766113 ...] (len=24)
+  expected instanceNormOutput full nd:
+[-1.0996094, 1.7216797, 0.13024902, 1.5527344, -0.4099121, -1.6630859, -0.5996094, -0.7241211, 0.9111328, 0.14611816, ...] (len=24, shape=[2, 2, 2, 3])
+  actual instanceNormOutput full nd:
+[-1.6826172, 0.97265625, 0.8671875, 0.74560547, -0.9550781, 0.05203247, -0.8730469, -0.88671875, 1.4404297, -0.22766113, ...] (len=24, shape=[2, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    instanceNormInput: f16[2, 2, 2, 3];
+  }
+
+  nodes {
+    [instanceNormOutput] = instanceNormalization(instanceNormInput, bias=null, epsilon=0.00001, label="", layout="nhwc", scale=null);
+  }
+
+  outputs { instanceNormOutput; }
+}

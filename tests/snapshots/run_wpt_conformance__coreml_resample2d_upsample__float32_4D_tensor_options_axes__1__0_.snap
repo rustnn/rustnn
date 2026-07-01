@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+resample2d.https.any.js resample2d(upsample) float32 4D tensor options.axes=[1, 0], coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: Unsupported operation: resample2d
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    resample2dInput: f32[3, 2, 1, 1];
+  }
+
+  nodes {
+    [resample2dOutput] = resample2d(resample2dInput, axes=[1, 0], label="", mode="", scales=[], sizes=[4, 6]);
+  }
+
+  outputs { resample2dOutput; }
+}

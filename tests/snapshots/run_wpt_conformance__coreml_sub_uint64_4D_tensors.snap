@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+sub.https.any.js sub uint64 4D tensors, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: Unsupported graph cast dtype Uint64
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: u64[1, 2, 2, 1];
+    inputB: u64[1, 2, 2, 1];
+  }
+
+  nodes {
+    [output] = sub(inputA, inputB, label="");
+  }
+
+  outputs { output; }
+}

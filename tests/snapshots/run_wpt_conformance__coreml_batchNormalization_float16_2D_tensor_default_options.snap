@@ -1,0 +1,24 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+batch_normalization.https.any.js batchNormalization float16 2D tensor default options, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type batch_norm: In 'ios17.batch_norm' operations, tensors parameter mean[0], parameter variance[0], parameter beta[0], parameter gamma[0], and parameter epsilon[0] must have the same data type.
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    bnInput: f16[4, 6];
+  }
+
+  consts {
+    operand_1: f16[6] @bytes([208, 199, 250, 213, 197, 80, 254, 210, 126, 213, 52, 209]);
+    operand_2: f16[6] @bytes([138, 83, 156, 78, 169, 82, 5, 81, 109, 83, 128, 80]);
+  }
+
+  nodes {
+    [bnOutput] = batchNormalization(bnInput, operand_1, operand_2, axis=1, bias=null, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { bnOutput; }
+}

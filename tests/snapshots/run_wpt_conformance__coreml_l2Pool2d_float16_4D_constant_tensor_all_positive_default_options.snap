@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+l2Pool2d.https.any.js l2Pool2d float16 4D constant tensor all positive default options, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: Unsupported operation: l2Pool2d
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[1, 2, 5, 5] @bytes([225, 85, 201, 84, 215, 83, 62, 85, 146, 84, 49, 81, 235, 80, 106, 85, 198, 77, 181, 82, 158, 32, 89, 81, 17, 85, 48, 80, 54, 80, 218, 54, 1, 85, 238, 69, 29, 82, 164, 75, 171, 74, 226, 80, 17, 86, 59, 85, 115, 77, 129, 82, 102, 70, 73, 85, 168, 76, 67, 80, 160, 84, 133, 80, 152, 83, 227, 82, 253, 83, 108, 83, 93, 82, 75, 82, 106, 83, 108, 84, 114, 80, 41, 85, 147, 71, 189, 83, 11, 75, 174, 85, 242, 80, 60, 84, 91, 84, 153, 85]);
+  }
+
+  nodes {
+    [l2Pool2dOutput] = l2Pool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { l2Pool2dOutput; }
+}

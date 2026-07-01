@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "softmax.https.any.js",
+    "softmax float16 2D tensor all positive",
+    "coreml",
+    "PASS",
+)

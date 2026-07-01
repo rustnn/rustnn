@@ -80,7 +80,7 @@ pub(crate) enum MLBackendGraph<'context> {
         crate::backends::ort::OrtGraph,
         std::marker::PhantomData<&'context ()>,
     ),
-    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    #[cfg(feature = "coreml-runtime")]
     CoremlModel(crate::backends::coreml::CoremlGraph),
     #[cfg(feature = "litert-runtime")]
     LiteRtGraph(crate::backends::litert::LiteRtGraph),
@@ -105,7 +105,7 @@ impl<'context> MLBackendGraph<'context> {
         }
     }
 
-    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    #[cfg(feature = "coreml-runtime")]
     pub(crate) fn as_coreml_model(&self) -> Option<&crate::backends::coreml::CoremlGraph> {
         if let Self::CoremlModel(v) = self {
             Some(v)
@@ -505,7 +505,8 @@ impl<'context> MLContext<'context> {
     // those are methods on `create_context`
     //pub async
     pub fn create(options: &MLContextOptions) -> Result<Self> {
-        let device = select_backend(options)?;
+        let device = select_backend(options)
+            .inspect_err(|e| log::warn!("Error selecting backend: {e:?}"))?;
         info!("Backend selected: {device:?}");
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match device {
             crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => {
@@ -691,7 +692,7 @@ webnn_graph "sample_graph" v1 {
         let graph_info = from_graph_json(&graph_json).unwrap();
 
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return None;
         };
 
@@ -738,7 +739,10 @@ webnn_graph "sample_graph" v1 {
             &MLContextOptions::new(MLPowerPreference::Default, true)
                 .with_rustnn_backend_hint(Backend::Onnx),
         );
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(
+            context,
+            Err(crate::error::Error::NoBackendAvailableForBackendHint { .. })
+        ) {
             return;
         };
         assert_eq!(context.unwrap().rustnn_backend(), Backend::Onnx);
@@ -747,7 +751,7 @@ webnn_graph "sample_graph" v1 {
     fn test_create_context() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         };
 

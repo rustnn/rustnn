@@ -110,25 +110,19 @@ impl BackendDevice {
 }
 
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let want_trtx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Trtx);
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     let trtx_devices = TrtxContext::list_devices();
 
-    #[cfg(feature = "onnx-runtime")]
     let have_onnx = cfg!(feature = "onnx-runtime");
-    #[cfg(feature = "onnx-runtime")]
     let want_onnx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Onnx);
 
     let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
     let want_coreml =
         options.backend_hint.is_none() || options.backend_hint == Some(Backend::Coreml);
 
-    #[cfg(feature = "litert-runtime")]
     let have_litert = cfg!(feature = "litert-runtime");
-    #[cfg(feature = "litert-runtime")]
     let want_litert =
         options.backend_hint.is_none() || options.backend_hint == Some(Backend::Litert);
     #[cfg(feature = "litert-runtime")]
@@ -222,7 +216,31 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
-        _ => return Err(crate::error::Error::NoBackendAvailable),
+        (_, _) if let Some(backend_hint) = options.backend_hint => {
+            return Err(crate::error::Error::NoBackendAvailableForBackendHint {
+                backend_hint,
+                want_trtx,
+                have_trtx,
+                want_onnx,
+                have_onnx,
+                want_coreml,
+                have_coreml,
+                want_litert,
+                have_litert,
+            });
+        }
+        _ => {
+            return Err(crate::error::Error::NoBackendAvailable {
+                want_trtx,
+                have_trtx,
+                want_onnx,
+                have_onnx,
+                want_coreml,
+                have_coreml,
+                want_litert,
+                have_litert,
+            });
+        }
     })
 }
 

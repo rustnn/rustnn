@@ -1,0 +1,27 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+lesser_or_equal.https.any.js lesserOrEqual float32 broadcast 2D to 4D, coreml
+ lesser_or_equal :: lesserOrEqual float32 broadcast 2D to 4D: index 3: actual=0 expected=1 tolerance=0
+  inputs: inputA: [-8.284008979797363, -3.219264507293701, -6.543179988861084, -0.540285050868988, -5.413843631744385, 5.583743095397949, 1.50178062915802, 6.5922441482543945, -9.92548656463623, -7.134799957275391, -4.915772914886475, -9.137166976928713, 9.40368366241455, -9.831502914428713, -2.0123181343078613, -6.597689628601074, -8.26932144165039, 8.281030654907227, 1.64528226852417, -1.4862726926803589, -4.998753547668457, -0.920993447303772, -9.434256553649902, 9.813238143920898]; inputB: [-8.499547004699707, -8.321310043334961, -7.182070732116699, 3.418306350708008, 5.389469146728516, 6.904313087463379]
+  expected output: [0, 0, 0, 1, 1, 1, 0, 0, 1, 1 ...] (len=24)
+  actual output: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ...] (len=24)
+  expected output full nd:
+[0, 0, 0, 1, 1, 1, 0, 0, 1, 1, ...] (len=24, shape=[2, 2, 2, 3])
+  actual output full nd:
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[2, 2, 2, 3];
+    inputB: f32[2, 3];
+  }
+
+  nodes {
+    [output] = lesserOrEqual(inputA, inputB, label="");
+  }
+
+  outputs { output; }
+}
