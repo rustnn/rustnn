@@ -25,7 +25,8 @@ use wpt_tensor::{
 };
 use wpt_types::WptGraph;
 
-const FAILURE_DISPLAY_LEN: usize = 24;
+const FAILURE_RESULT_DISPLAY_LEN: usize = 10;
+const FAILURE_INPUT_DISPLAY_LEN: usize = 24;
 
 const SUPPORTED_DTYPES: &[&str] = &[
     "float32", "float16", "int8", "uint8", "int32", "uint32", "int64", "uint64", "int4", "uint4",
@@ -64,6 +65,15 @@ fn runtime_input_names(graph: &WptGraph) -> Vec<String> {
 
 /// Format a flat integer slice as n-dimensional for failure output (exact values, no f32 precision loss).
 fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
+    if slice.len() > FAILURE_RESULT_DISPLAY_LEN {
+        let head = slice
+            .iter()
+            .take(FAILURE_RESULT_DISPLAY_LEN)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("[{head}, ...] (len={}, shape={:?})", slice.len(), shape);
+    }
     if shape.is_empty() {
         return format!(
             "[{}]",
@@ -139,6 +149,15 @@ fn format_int_nd<T: std::fmt::Display>(slice: &[T], shape: &[u32]) -> String {
 /// Format a flat f32 slice as n-dimensional for failure output (full tensor, shape e.g. [1,6,6,2]).
 /// For 4D [N,H,W,C]: prints N*H lines, each line has W cells of C values as [a, b, ...].
 fn format_f32_nd(slice: &[f32], shape: &[u32]) -> String {
+    if slice.len() > FAILURE_RESULT_DISPLAY_LEN {
+        let head = slice
+            .iter()
+            .take(FAILURE_RESULT_DISPLAY_LEN)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return format!("[{head}, ...] (len={}, shape={:?})", slice.len(), shape);
+    }
     if shape.is_empty() {
         return format!(
             "[{}]",
@@ -285,10 +304,10 @@ fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String
             let data_str = if let Some(arr) = spec.data.as_array() {
                 let head: Vec<String> = arr
                     .iter()
-                    .take(FAILURE_DISPLAY_LEN)
+                    .take(FAILURE_INPUT_DISPLAY_LEN)
                     .map(format_input_value)
                     .collect();
-                if arr.len() <= FAILURE_DISPLAY_LEN {
+                if arr.len() <= FAILURE_INPUT_DISPLAY_LEN {
                     format!("[{}]", head.join(", "))
                 } else {
                     format!("[{} ...] (len={})", head.join(", "), arr.len())
@@ -304,10 +323,10 @@ fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String
             let data_str = if let Some(arr) = spec.data.as_array() {
                 let head: Vec<String> = arr
                     .iter()
-                    .take(FAILURE_DISPLAY_LEN)
+                    .take(FAILURE_INPUT_DISPLAY_LEN)
                     .map(format_input_value)
                     .collect();
-                if arr.len() <= FAILURE_DISPLAY_LEN {
+                if arr.len() <= FAILURE_INPUT_DISPLAY_LEN {
                     format!("[{}]", head.join(", "))
                 } else {
                     format!("[{} ...] (len={})", head.join(", "), arr.len())
@@ -368,8 +387,10 @@ pub fn run_one_test_case(
                         })
                         .unwrap_or(0) as i64;
                     let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
-                    let expected_str = format_int_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                    let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
+                    let expected_str =
+                        format_int_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
+                    let actual_str =
+                        format_int_slice_for_failure(actual_i64, FAILURE_RESULT_DISPLAY_LEN);
                     (pass, msg, expected_str, actual_str)
                 }
                 "uint64" => {
@@ -392,8 +413,9 @@ pub fn run_one_test_case(
                     };
                     let expected_u64_str: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
                     let expected_str =
-                        format_int_slice_for_failure(&expected_u64_str, FAILURE_DISPLAY_LEN);
-                    let actual_str = format_int_slice_for_failure(actual_i64, FAILURE_DISPLAY_LEN);
+                        format_int_slice_for_failure(&expected_u64_str, FAILURE_RESULT_DISPLAY_LEN);
+                    let actual_str =
+                        format_int_slice_for_failure(actual_i64, FAILURE_RESULT_DISPLAY_LEN);
                     (pass, msg, expected_str, actual_str)
                 }
                 "int4" | "uint4" | "int8" | "uint8" | "int32" | "uint32" => {
@@ -416,8 +438,10 @@ pub fn run_one_test_case(
                     let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
                     let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
                     let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
-                    let expected_str = format_i32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                    let actual_str = format_i32_slice_for_failure(actual_i32, FAILURE_DISPLAY_LEN);
+                    let expected_str =
+                        format_i32_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
+                    let actual_str =
+                        format_i32_slice_for_failure(actual_i32, FAILURE_RESULT_DISPLAY_LEN);
                     (pass, msg, expected_str, actual_str)
                 }
                 _ => {
@@ -437,8 +461,10 @@ pub fn run_one_test_case(
                         float16,
                         wpt_ulp_only,
                     );
-                    let expected_str = format_f32_slice_for_failure(&expected, FAILURE_DISPLAY_LEN);
-                    let actual_str = format_f32_slice_for_failure(actual_f32, FAILURE_DISPLAY_LEN);
+                    let expected_str =
+                        format_f32_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
+                    let actual_str =
+                        format_f32_slice_for_failure(actual_f32, FAILURE_RESULT_DISPLAY_LEN);
                     (pass, msg, expected_str, actual_str)
                 }
             };
