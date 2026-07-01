@@ -574,7 +574,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         stream
             .memcpy_htod(array, &mut cuda_tensor.memory)
             .to_write_tensor_result(|| tensor.clone())?;
-        stream.synchronize().to_write_tensor_result(|| tensor.clone())?;
+        stream
+            .synchronize()
+            .to_write_tensor_result(|| tensor.clone())?;
         Ok(())
     }
 
