@@ -192,7 +192,9 @@ Contributions welcome! Please see:
 2. Install hooks (optional): `./scripts/install-git-hooks.sh`
 3. Make changes and test: `make test && make python-test`
 4. If Snapshots need to be updated (will be indicated by test failures),
-   run `cargo insta review` (see https://insta.rs/docs/cli/ to install)
+   run `cargo insta review` (see https://insta.rs/docs/cli/ to install) or
+   `INSTA_UPDATE=always cargo test` to update all snapshots automatically
+   (review before committing!)
 5. Format code: `make fmt`
 6. Commit and push
 
