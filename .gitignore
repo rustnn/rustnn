@@ -50,3 +50,4 @@ env/
 *.swo
 *~
 .DS_Store
+*.snap.new
