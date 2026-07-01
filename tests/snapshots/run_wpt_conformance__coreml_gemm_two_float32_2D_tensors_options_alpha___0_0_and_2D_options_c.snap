@@ -1,0 +1,32 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gemm.https.any.js gemm two float32 2D tensors options.alpha = 0.0 and 2D options.c, coreml
+ gemm :: gemm two float32 2D tensors options.alpha = 0.0 and 2D options.c: index 0: actual=0 expected=165.54404 ulp=1126533958 tolerance=11
+  inputs: inputA: [0.12300000190734862, 0.4560000002384186, 0.7889999747276306, 0.012000000104308128, 0.3449999988079071, 0.6779999732971191, 0.9010000228881836, 0.23399999737739563]; inputB: [0.9869999885559082, 0.6539999842643738, 0.32100000977516174, 0.09799999743700027, 0.7649999856948853, 0.4320000112056732, 0.10899999737739564, 0.8759999871253967]; inputC: [82.77201843261719, 91.3852081298828, 12.651897430419922, 20.12200355529785]
+  expected gemmOutput: [165.54404, 182.77042, 25.303795, 40.244007]
+  actual gemmOutput: [0, 0, 0, 0]
+  expected gemmOutput full nd:
+(shape [2, 2])
+  [165.54404, 182.77042]
+  [25.303795, 40.244007]
+  actual gemmOutput full nd:
+(shape [2, 2])
+  [0, 0]
+  [0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[2, 4];
+    inputB: f32[4, 2];
+    inputC: f32[2, 2];
+  }
+
+  nodes {
+    [gemmOutput] = gemm(inputA, inputB, aTranspose=false, alpha=0.0, bTranspose=false, beta=2.0, c=2, label="");
+  }
+
+  outputs { gemmOutput; }
+}

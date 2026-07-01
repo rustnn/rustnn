@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+averagePool2d.https.any.js averagePool2d float32 4D constant tensor all positive default options, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type avg_pool: Required param 'pad' is missing
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[1, 2, 5, 5] @bytes([240, 205, 183, 65, 11, 79, 156, 66, 80, 250, 26, 65, 49, 49, 77, 66, 184, 197, 0, 66, 254, 76, 175, 66, 108, 128, 174, 66, 228, 253, 29, 66, 3, 51, 160, 66, 180, 133, 35, 65, 42, 105, 82, 66, 186, 216, 180, 63, 217, 67, 63, 65, 98, 0, 170, 66, 71, 145, 129, 66, 5, 16, 176, 66, 116, 87, 53, 65, 178, 59, 141, 66, 17, 207, 169, 66, 62, 34, 158, 66, 234, 132, 234, 64, 112, 233, 15, 66, 63, 214, 34, 65, 111, 0, 181, 63, 101, 51, 156, 66, 229, 48, 183, 66, 69, 75, 131, 66, 144, 145, 92, 66, 162, 117, 147, 65, 141, 98, 69, 66, 79, 94, 122, 65, 242, 13, 136, 66, 138, 189, 162, 65, 215, 210, 213, 65, 186, 191, 129, 66, 195, 68, 58, 66, 27, 40, 159, 66, 178, 212, 138, 64, 64, 188, 24, 66, 20, 4, 53, 66, 144, 241, 161, 66, 153, 41, 135, 66, 22, 217, 192, 64, 3, 59, 238, 65, 23, 92, 106, 66, 143, 67, 15, 64, 125, 22, 104, 65, 241, 114, 137, 66, 196, 233, 152, 66, 213, 66, 188, 65]);
+  }
+
+  nodes {
+    [averagePool2dOutput] = averagePool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { averagePool2dOutput; }
+}

@@ -1,0 +1,32 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gatherElements.https.any.js gatherElements float32 3D input and int32 negative indices, coreml
+ gatherElements :: gatherElements float32 3D input and int32 negative indices: index 0: actual=-66.05901 expected=89.033714 ulp=2234920826 tolerance=4
+  inputs: gatherElementsInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781]; gatherElementsIndices: [-1, 0, 0, -1] (constant)
+  expected gatherElementsOutput: [89.033714, -68.9197, -77.020454, 48.81807]
+  actual gatherElementsOutput: [-66.05901, -68.9197, -77.020454, -26.158037]
+  expected gatherElementsOutput full nd:
+(shape [1, 2, 2])
+[89.033714, -68.9197, -77.020454, 48.81807]
+  actual gatherElementsOutput full nd:
+(shape [1, 2, 2])
+[-66.05901, -68.9197, -77.020454, -26.158037]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f32[2, 2, 2];
+  }
+
+  consts {
+    operand_0: i32[1, 2, 2] @bytes([255, 255, 255, 255, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255]);
+  }
+
+  nodes {
+    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_0, axis=0, label="");
+  }
+
+  outputs { gatherElementsOutput; }
+}

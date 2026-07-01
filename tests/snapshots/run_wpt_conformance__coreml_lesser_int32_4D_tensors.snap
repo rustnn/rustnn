@@ -1,0 +1,27 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+lesser.https.any.js lesser int32 4D tensors, coreml
+ lesser :: lesser int32 4D tensors: index 1: actual=0 expected=1 tolerance=0
+  inputs: inputA: [10, -20, 30, -40, 50, -60, 70, -80, 90, -100, 110, -120]; inputB: [5, -10, 35, -35, 55, -55, 65, -85, 95, -95, 105, -125]
+  expected output: [0, 1, 1, 1, 1, 1, 0, 0, 1, 1 ...] (len=12)
+  actual output: [0, 0, 0, 0, 0, 0, 128, 63, 0, 0 ...] (len=12)
+  expected output full nd:
+[0, 1, 1, 1, 1, 1, 0, 0, 1, 1, ...] (len=12, shape=[1, 2, 2, 3])
+  actual output full nd:
+[0, 0, 0, 0, 0, 0, 128, 63, 0, 0, ...] (len=12, shape=[1, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: i32[1, 2, 2, 3];
+    inputB: i32[1, 2, 2, 3];
+  }
+
+  nodes {
+    [output] = lesser(inputA, inputB, label="");
+  }
+
+  outputs { output; }
+}

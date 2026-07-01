@@ -1,0 +1,24 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+batch_normalization.https.any.js batchNormalization float32 4D NHWC tensor options.axis=3, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type batch_norm: Dimension 0 of tensor parameter mean[0] has unexpected length 3; expected 2.
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    bnInput: f32[2, 2, 2, 3];
+  }
+
+  consts {
+    operand_1: f32[3] @bytes([64, 132, 78, 66, 181, 184, 198, 66, 115, 75, 192, 194]);
+    operand_2: f32[3] @bytes([137, 149, 243, 65, 113, 185, 172, 66, 228, 196, 147, 66]);
+  }
+
+  nodes {
+    [bnOutput] = batchNormalization(bnInput, operand_1, operand_2, axis=3, bias=null, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { bnOutput; }
+}

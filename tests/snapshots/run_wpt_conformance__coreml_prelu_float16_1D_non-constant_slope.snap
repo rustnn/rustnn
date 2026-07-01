@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+prelu.https.any.js prelu float16 1D non-constant slope, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type prelu: Param 'alpha' must be const
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    preluInput: f16[24];
+    preluSlope: f16[24];
+  }
+
+  nodes {
+    [preluOutput] = prelu(preluInput, preluSlope, label="");
+  }
+
+  outputs { preluOutput; }
+}

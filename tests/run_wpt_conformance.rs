@@ -15,6 +15,7 @@ use wpt_conformance::{
     wpt_types::WptTestCase,
 };
 
+
 fn run_trial(
     backend: &WptBackend,
     operation: &str,
@@ -71,11 +72,13 @@ fn push_backend_trials(
                     report.record_skip(&file_name, &test_name, &backend_prefix, reason, duration);
                 }
                 Err(err) => {
-                    let msg = err.message().unwrap_or("test failed").to_string();
-                    insta::assert_snapshot!(
-                        snapshot_name,
-                        format!("{file_name} {test_name}, {backend_prefix}\n {msg}")
-                    );
+                    let msg = err.message().unwrap_or("test failed");
+                    if backend_prefix == "onnx" || backend_prefix == "trtx" {
+                        insta::assert_snapshot!(
+                            snapshot_name,
+                            format!("{file_name} {test_name}, {backend_prefix}\n {msg}")
+                        );
+                    }
                     report.record_fail(&file_name, &test_name, &backend_prefix, msg, duration);
                 }
             }
@@ -85,7 +88,8 @@ fn push_backend_trials(
 }
 
 fn main() {
-    let _ = pretty_env_logger::try_init();
+    pretty_env_logger::init();
+
     let args = Arguments::from_args();
     let wpt_dir = default_wpt_dir();
 
@@ -113,7 +117,9 @@ fn main() {
 
     let backends = WptBackend::selected();
     if backends.is_empty() {
-        eprintln!("No WPT backends available (enable onnx-runtime and/or trtx-runtime).");
+        eprintln!(
+            "No WPT backends available (enable onnx-runtime, trtx-runtime, coreml-runtime, ...)."
+        );
         eprintln!("Set WPT_BACKEND=onnx or trtx to limit registered trials.");
         std::process::exit(2);
     }

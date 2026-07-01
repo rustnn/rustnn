@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+layer_normalization.https.any.js layerNormalization float16 5D tensor default options, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: CoreML layer_norm with empty axes requires special handling (not yet implemented)
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    layerNormInput: f16[2, 1, 2, 2, 3];
+  }
+
+  nodes {
+    [layerNormOutput] = layerNormalization(layerNormInput, axes=null, bias=null, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { layerNormOutput; }
+}

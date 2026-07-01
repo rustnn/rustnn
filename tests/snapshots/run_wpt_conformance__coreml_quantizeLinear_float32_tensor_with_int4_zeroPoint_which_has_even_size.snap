@@ -1,0 +1,24 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+quantizeLinear.https.any.js quantizeLinear float32 tensor with int4 zeroPoint which has even size, coreml
+ Failed to build graph: graph conversion failed for coreml: int4/uint4 tensors are not supported in CoreML conversion yet
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    quantizeLinearInput: f32[2];
+  }
+
+  consts {
+    operand_1: f32[2] @bytes([42, 101, 143, 63, 42, 101, 143, 63]);
+    operand_2: i4[2] @bytes([171]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(quantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

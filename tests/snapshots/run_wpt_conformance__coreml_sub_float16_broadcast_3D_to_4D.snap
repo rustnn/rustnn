@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "sub.https.any.js",
+    "sub float16 broadcast 3D to 4D",
+    "coreml",
+    "PASS",
+)

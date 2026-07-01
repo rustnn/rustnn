@@ -5,7 +5,7 @@
 //! to a CoreML MLProgram and compiles it once, and [`CoremlGraph`] holds the
 //! compiled model for repeated dispatch.
 
-#![cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+#![cfg(feature = "coreml-runtime")]
 
 use std::collections::HashMap;
 use std::fmt;
@@ -312,7 +312,8 @@ mod test {
     use std::collections::HashMap;
 
     use crate::mlcontext::{
-        MLContext, MLContextOptions, MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+        Backend, MLContext, MLContextOptions, MLOperandDescriptor, MLPowerPreference,
+        MLTensorDescriptor,
     };
     use crate::mlgraphbuilder::MLGraphBuilder;
     use crate::operator_enums::MLOperandDataType;
@@ -320,10 +321,13 @@ mod test {
     /// Build a context backed by CoreML. Returns `None` (test skipped) if no
     /// accelerated backend is available on this machine.
     fn coreml_context<'a>() -> Option<MLContext<'a>> {
-        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        let context = MLContext::create(
+            &MLContextOptions::new(MLPowerPreference::Default, true)
+                .with_rustnn_backend_hint(Backend::Coreml),
+        );
         match context {
             Ok(ctx) => Some(ctx),
-            Err(crate::error::Error::NoBackendAvailable) => None,
+            Err(crate::error::Error::NoBackendAvailableForBackendHint { .. }) => None,
             Err(e) => panic!("unexpected context creation error: {e:?}"),
         }
     }

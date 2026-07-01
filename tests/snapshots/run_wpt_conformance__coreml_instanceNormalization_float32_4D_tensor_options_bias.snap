@@ -1,0 +1,30 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+instance_normalization.https.any.js instanceNormalization float32 4D tensor options.bias, coreml
+ instance_normalization :: instanceNormalization float32 4D tensor options.bias: index 0: actual=-1.0995289 expected=-34.14817 ulp=41671261 tolerance=840
+  inputs: instanceNormInput: [-97.949951171875, 29.44037628173828, -73.92131042480469, -38.11185836791992, 41.33772659301758, -59.77853012084961, -74.66901397705078, -68.16508483886719, 35.82481384277344, -6.948329448699951, 54.42462158203125, 47.53074645996094, 66.93562316894531, 76.74034881591797, 5.6758809089660645, 25.68659210205078, 37.37651062011719, 56.252689361572266, -16.574905395507813, 42.949893951416016, 73.8739242553711, -99.00035095214844, -33.11322784423828, -17.380685806274414]; instanceNormBias: [-33.048641204833984, 4.511423587799072, -37.93617248535156] (constant)
+  expected instanceNormOutput: [-34.14817, -31.496058, -33.647923, -32.902412, 6.2327185, 4.1012163, 3.7873292, 3.9244301, -37.80544, -39.599503 ...] (len=24)
+  actual instanceNormOutput: [-1.0995289, 1.5525833, -0.5992818, 0.14622764, 1.7212949, -0.41020718, -0.7240944, -0.5869934, 0.13073231, -1.6633317 ...] (len=24)
+  expected instanceNormOutput full nd:
+[-34.14817, -31.496058, -33.647923, -32.902412, 6.2327185, 4.1012163, 3.7873292, 3.9244301, -37.80544, -39.599503, ...] (len=24, shape=[2, 3, 2, 2])
+  actual instanceNormOutput full nd:
+[-1.0995289, 1.5525833, -0.5992818, 0.14622764, 1.7212949, -0.41020718, -0.7240944, -0.5869934, 0.13073231, -1.6633317, ...] (len=24, shape=[2, 3, 2, 2])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    instanceNormInput: f32[2, 3, 2, 2];
+  }
+
+  consts {
+    operand_0: f32[3] @bytes([207, 49, 4, 194, 149, 93, 144, 64, 164, 190, 23, 194]);
+  }
+
+  nodes {
+    [instanceNormOutput] = instanceNormalization(instanceNormInput, bias=0, epsilon=0.00001, label="", layout="", scale=null);
+  }
+
+  outputs { instanceNormOutput; }
+}

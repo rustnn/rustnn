@@ -1,7 +1,8 @@
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use std::io::Write;
 use std::path::PathBuf;
@@ -18,7 +19,8 @@ use rustnn::graph::get_static_or_max_size;
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
 
@@ -59,7 +61,8 @@ struct Cli {
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
+    feature = "trtx-runtime",
+    all(target_os = "macos", feature = "coreml-runtime")
 ))]
 fn run() -> Result<(), GraphError> {
     let cli = Cli::parse();
@@ -303,7 +306,8 @@ fn main() {
     #[cfg(any(
         feature = "onnx-runtime",
         feature = "trtx-runtime-mock",
-        feature = "trtx-runtime"
+        feature = "trtx-runtime",
+        all(target_os = "macos", feature = "coreml-runtime")
     ))]
     {
         if let Err(err) = run() {
@@ -314,12 +318,13 @@ fn main() {
     #[cfg(not(any(
         feature = "onnx-runtime",
         feature = "trtx-runtime-mock",
-        feature = "trtx-runtime"
+        feature = "trtx-runtime",
+        all(target_os = "macos", feature = "coreml-runtime")
     )))]
     {
         eprintln!(
             "rustnn CLI requires a runtime feature. Build with --features onnx-runtime or \
-             --features trtx-runtime-mock (or trtx-runtime)."
+             --features trtx-runtime-mock (or trtx-runtime), or --features coreml-runtime on macOS."
         );
         std::process::exit(1);
     }

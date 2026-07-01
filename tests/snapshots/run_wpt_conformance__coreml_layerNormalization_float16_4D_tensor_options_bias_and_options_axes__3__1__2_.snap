@@ -1,0 +1,30 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+layer_normalization.https.any.js layerNormalization float16 4D tensor options.bias and options.axes=[3, 1, 2], coreml
+ layer_normalization :: layerNormalization float16 4D tensor options.bias and options.axes=[3, 1, 2]: index 0: actual=-1.4052734 expected=-1.5449219 ulp=143 tolerance=30
+  inputs: layerNormInput: [-35.5, 54.75, 19.65625, -15.8828125, 65.5, 25.8125, 97.5625, -8.0546875, 62.9375, -48.90625, 91.9375, 46.65625, -74.875, 30.125, 26.125, 59.3125, -60.375, 18.5625, -88.0625, -26.5625, 70.8125, 9.109375, 56.65625, 21.78125]; layerNormBias: [-0.1396484375, -6.15625, 4.36328125, 8.859375, 9.7734375, -3.462890625, 9.7421875, -0.39599609375, -8.5, 6.171875, -2.892578125, 1.7216796875] (constant)
+  expected layerNormOutput: [-1.5449219, 10.3125, -8.71875, -7.140625, -2.6914063, 6.0898438, 5.8242188, 8.9296875, -2.1757813, 7.1640625 ...] (len=24)
+  actual layerNormOutput: [-1.4052734, 0.54003906, -0.21655273, -0.9824219, 0.7714844, -0.08392334, 1.4628906, -0.81396484, 0.7163086, -1.6943359 ...] (len=24)
+  expected layerNormOutput full nd:
+[-1.5449219, 10.3125, -8.71875, -7.140625, -2.6914063, 6.0898438, 5.8242188, 8.9296875, -2.1757813, 7.1640625, ...] (len=24, shape=[2, 1, 4, 3])
+  actual layerNormOutput full nd:
+[-1.4052734, 0.54003906, -0.21655273, -0.9824219, 0.7714844, -0.08392334, 1.4628906, -0.81396484, 0.7163086, -1.6943359, ...] (len=24, shape=[2, 1, 4, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    layerNormInput: f16[2, 1, 4, 3];
+  }
+
+  consts {
+    operand_0: f16[3, 1, 4] @bytes([120, 176, 40, 198, 93, 68, 110, 72, 227, 72, 237, 194, 223, 72, 86, 182, 64, 200, 44, 70, 201, 193, 227, 62]);
+  }
+
+  nodes {
+    [layerNormOutput] = layerNormalization(layerNormInput, axes=[3, 1, 2], bias=0, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { layerNormOutput; }
+}

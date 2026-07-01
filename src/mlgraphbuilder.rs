@@ -3014,7 +3014,7 @@ mod test {
     fn add_inputs() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         };
 
@@ -3059,7 +3059,7 @@ mod test {
     fn unused_incompatible_inputs() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         };
 
@@ -3152,7 +3152,7 @@ mod test {
     fn add_mat_plus_scalar() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         };
 
@@ -3232,7 +3232,7 @@ mod test {
     fn quantize_dequantize_linear_output_dtype() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
-        if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         }
 

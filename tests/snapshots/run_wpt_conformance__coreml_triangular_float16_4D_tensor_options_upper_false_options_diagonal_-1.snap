@@ -1,0 +1,26 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+triangular.https.any.js triangular float16 4D tensor options.upper=false options.diagonal=-1, coreml
+ triangular :: triangular float16 4D tensor options.upper=false options.diagonal=-1: index 0: actual=84.9375 expected=0 ulp=21839 tolerance=4
+  inputs: triangularInput: [84.9375, -86.1875, 50.375, -98.5, -94.5, -21.421875, 24.671875, -50.34375, -37.03125, 97.25, 73.375, -75.125, 41.65625, 58.875, -29.921875, 67.5, 42.125, -70.25, 20.890625, 71.375, -85, -89, 77.5625, 91.0625]
+  expected triangularOutput: [0, 0, 0, -98.5, 0, 0, 0, 0, 0, 97.25 ...] (len=24)
+  actual triangularOutput: [84.9375, -86.1875, 50.375, -98.5, -94.5, -21.421875, 24.671875, -50.34375, -37.03125, 97.25 ...] (len=24)
+  expected triangularOutput full nd:
+[0, 0, 0, -98.5, 0, 0, 0, 0, 0, 97.25, ...] (len=24, shape=[2, 2, 2, 3])
+  actual triangularOutput full nd:
+[84.9375, -86.1875, 50.375, -98.5, -94.5, -21.421875, 24.671875, -50.34375, -37.03125, 97.25, ...] (len=24, shape=[2, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    triangularInput: f16[2, 2, 2, 3];
+  }
+
+  nodes {
+    [triangularOutput] = triangular(triangularInput, diagonal=-1, label="", upper=false);
+  }
+
+  outputs { triangularOutput; }
+}

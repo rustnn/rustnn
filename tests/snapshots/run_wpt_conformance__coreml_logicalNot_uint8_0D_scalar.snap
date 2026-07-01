@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+logical_not.https.any.js logicalNot uint8 0D scalar, coreml
+ Failed to dispatch graph: coreml runtime failed: input dtype mismatch: model expects 4-byte elements (code 65568), but input is Uint8 (1-byte); type conversion is not supported for this input
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    logicalNotInput: u8[];
+  }
+
+  nodes {
+    [logicalNotOutput] = logicalNot(logicalNotInput, label="");
+  }
+
+  outputs { logicalNotOutput; }
+}

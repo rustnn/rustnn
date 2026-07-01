@@ -1,0 +1,22 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_log_sum_exp.https.any.js reduceLogSumExp avoids overflows caused by taking the exp of large inputs, coreml
+ reduce_log_sum_exp :: reduceLogSumExp avoids overflows caused by taking the exp of large inputs: index 0: actual=inf expected=100 ulp=4294967295 tolerance=32
+  inputs: reduceLogSumExpInput: [100]
+  expected reduceLogSumExpOutput: [100]
+  actual reduceLogSumExpOutput: [inf]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    reduceLogSumExpInput: f32[1];
+  }
+
+  nodes {
+    [reduceLogSumExpOutput] = reduceLogSumExp(reduceLogSumExpInput, axes=[0], keepDimensions=false, label="");
+  }
+
+  outputs { reduceLogSumExpOutput; }
+}

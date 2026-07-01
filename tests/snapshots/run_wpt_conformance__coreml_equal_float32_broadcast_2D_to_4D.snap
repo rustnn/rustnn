@@ -1,0 +1,27 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+equal.https.any.js equal float32 broadcast 2D to 4D, coreml
+ equal :: equal float32 broadcast 2D to 4D: index 0: actual=0 expected=1 tolerance=0
+  inputs: inputA: [2.80570650100708, 5.588105201721191, 2.855226516723633, 4.996258735656738, 0.9727277755737304, -4.742599964141846, 2.80570650100708, 5.588105201721191, -5.107602119445801, 6.624142169952393, -2.3207247257232666, -7.053895950317383, 2.80570650100708, 5.588105201721191, 4.980423927307129, -5.440841197967529, 1.1459590196609497, 7.774532794952393, 2.80570650100708, 5.588105201721191, -6.245251178741455, -2.8490731716156006, -2.6951117515563965, 5.817563056945801]; inputB: [2.80570650100708, 5.588105201721191, -4.9622955322265625, -2.863192081451416, -3.011512279510498, 3.6268343925476074]
+  expected output: [1, 1, 0, 0, 0, 0, 1, 1, 0, 0 ...] (len=24)
+  actual output: [0, 0, 128, 63, 0, 0, 128, 63, 0, 0 ...] (len=24)
+  expected output full nd:
+[1, 1, 0, 0, 0, 0, 1, 1, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])
+  actual output full nd:
+[0, 0, 128, 63, 0, 0, 128, 63, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[2, 2, 2, 3];
+    inputB: f32[2, 3];
+  }
+
+  nodes {
+    [output] = equal(inputA, inputB, label="");
+  }
+
+  outputs { output; }
+}

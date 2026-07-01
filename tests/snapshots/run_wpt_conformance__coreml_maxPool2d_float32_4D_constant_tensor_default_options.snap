@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+maxPool2d.https.any.js maxPool2d float32 4D constant tensor default options, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type max_pool: Required param 'pad' is missing
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[1, 2, 5, 5] @bytes([64, 4, 178, 66, 174, 225, 54, 194, 122, 57, 117, 194, 231, 118, 128, 192, 14, 25, 189, 194, 165, 31, 57, 66, 246, 144, 198, 66, 13, 237, 32, 193, 45, 225, 27, 65, 220, 35, 28, 194, 242, 41, 150, 66, 83, 28, 77, 65, 107, 15, 4, 194, 239, 195, 26, 66, 104, 47, 132, 66, 149, 206, 195, 66, 232, 205, 11, 193, 190, 175, 85, 194, 144, 55, 144, 66, 63, 177, 33, 194, 44, 193, 14, 194, 172, 75, 175, 194, 58, 127, 27, 66, 207, 136, 29, 66, 23, 187, 237, 64, 132, 113, 153, 194, 70, 222, 72, 66, 248, 148, 83, 194, 192, 145, 50, 194, 44, 188, 195, 194, 95, 118, 163, 66, 51, 182, 173, 64, 99, 210, 233, 193, 226, 229, 144, 66, 112, 93, 109, 194, 100, 204, 28, 66, 33, 253, 131, 194, 210, 137, 134, 192, 247, 46, 114, 194, 230, 143, 95, 66, 20, 156, 160, 66, 208, 198, 145, 66, 107, 98, 58, 194, 242, 7, 164, 65, 255, 2, 249, 193, 161, 45, 101, 194, 22, 253, 212, 193, 218, 248, 126, 65, 31, 143, 157, 194, 235, 171, 144, 66]);
+  }
+
+  nodes {
+    [maxPool2dOutput] = maxPool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { maxPool2dOutput; }
+}

@@ -1,0 +1,21 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+scatterElements.https.any.js scatterElements float32 tensors along axis 1, coreml
+ Failed to build graph: coreml runtime failed: MLModel compile failed: Failed to parse the model specification. Error: Unable to parse ML Program: in operation of type scatter: Required param 'mode' is missing
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    indices: i32[1, 2];
+    input: f32[1, 5];
+    updates: f32[1, 2];
+  }
+
+  nodes {
+    [output] = scatterElements(input, indices, updates, axis=1, label="");
+  }
+
+  outputs { output; }
+}

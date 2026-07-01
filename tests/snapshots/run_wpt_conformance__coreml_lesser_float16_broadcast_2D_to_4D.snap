@@ -1,0 +1,27 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+lesser.https.any.js lesser float16 broadcast 2D to 4D, coreml
+ lesser :: lesser float16 broadcast 2D to 4D: index 0: actual=0 expected=1 tolerance=0
+  inputs: inputA: [-1.1474609375, -8.40625, -2.275390625, -0.5771484375, 8.171875, -0.9072265625, 5.2890625, -3.9140625, 9.828125, -8.9296875, -3.45703125, -7.33203125, 1.232421875, 4.3125, 1.271484375, 4.18359375, -6.7109375, 3.076171875, 1.0029296875, -9.078125, 8.90625, 4.234375, 2.1015625, -6.203125]; inputB: [3.587890625, -2.853515625, -3.685546875, 2.40625, -4.359375, 5.546875]
+  expected output: [1, 1, 0, 1, 0, 1, 0, 1, 0, 1 ...] (len=24)
+  actual output: [0, 0, 128, 63, 0, 0, 128, 63, 0, 0 ...] (len=24)
+  expected output full nd:
+[1, 1, 0, 1, 0, 1, 0, 1, 0, 1, ...] (len=24, shape=[2, 2, 2, 3])
+  actual output full nd:
+[0, 0, 128, 63, 0, 0, 128, 63, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f16[2, 2, 2, 3];
+    inputB: f16[2, 3];
+  }
+
+  nodes {
+    [output] = lesser(inputA, inputB, label="");
+  }
+
+  outputs { output; }
+}

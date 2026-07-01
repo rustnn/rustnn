@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+maxPool2d.https.any.js maxPool2d float32 4D tensor options.dilations, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: CoreML pooling does not support non-default dilations; got [2, 2] for maxPool2d
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    maxPool2dInput: f32[1, 2, 5, 5];
+  }
+
+  nodes {
+    [maxPool2dOutput] = maxPool2d(maxPool2dInput, dilations=[2, 2], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=[3, 3]);
+  }
+
+  outputs { maxPool2dOutput; }
+}

@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gatherND.https.any.js gatherND float16 2D input and 2D negative indices, coreml
+ Failed to build graph: graph conversion failed for coreml_mlprogram: Unsupported operation: gatherND
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherNDInput: f16[4, 4];
+  }
+
+  consts {
+    operand_0: i32[2, 2] @bytes([255, 255, 255, 255, 254, 255, 255, 255, 253, 255, 255, 255, 252, 255, 255, 255]);
+  }
+
+  nodes {
+    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
+  }
+
+  outputs { gatherNDOutput; }
+}

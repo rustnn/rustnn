@@ -1,0 +1,30 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+averagePool2d.https.any.js averagePool2d float16 4D tensor options.outputShapeRounding=floor, coreml
+ averagePool2d :: averagePool2d float16 4D tensor options.outputShapeRounding=floor: index 0: actual=36.125 expected=54.1875 ulp=578 tolerance=11
+  inputs: averagePool2dInput: [22.96875, 78.125, 9.6875, 51.3125, 32.1875, 87.625, 87.25, 39.5, 80.125, 10.21875, 52.59375, 1.4130859375, 11.953125, 85, 64.8125, 88.0625, 11.3359375, 70.625, 84.875, 79.0625, 7.328125, 35.96875, 10.1796875, 1.4140625 ...] (len=50)
+  expected averagePool2dOutput: [54.1875, 37.1875, 50.03125, 58.46875, 52.71875, 39.15625, 43.21875, 32.6875]
+  actual averagePool2dOutput: [36.125, 24.78125, 50.03125, 58.46875, 35.15625, 26.09375, 43.21875, 32.6875]
+  expected averagePool2dOutput full nd:
+(shape [1, 2, 2, 2])
+  [54.1875, 37.1875] [50.03125, 58.46875]
+  [52.71875, 39.15625] [43.21875, 32.6875]
+  actual averagePool2dOutput full nd:
+(shape [1, 2, 2, 2])
+  [36.125, 24.78125] [50.03125, 58.46875]
+  [35.15625, 26.09375] [43.21875, 32.6875]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    averagePool2dInput: f16[1, 2, 5, 5];
+  }
+
+  nodes {
+    [averagePool2dOutput] = averagePool2d(averagePool2dInput, dilations=[], label="", layout="", outputShapeRounding="floor", outputSizes=null, padding=[1, 0, 0, 1], strides=[2, 2], windowDimensions=[3, 3]);
+  }
+
+  outputs { averagePool2dOutput; }
+}

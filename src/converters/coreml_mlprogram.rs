@@ -420,7 +420,12 @@ impl CoremlMlProgramConverter {
     ) -> Result<MilOperation, GraphError> {
         use crate::protos::coreml::mil_spec::{TensorValue, Value, tensor_value, value};
 
-        let (_name, output_type) = Self::create_value(graph, operand_id)?;
+        let name = operand_name(graph, operand_id);
+        let dtype = Self::mil_data_type(&operand.descriptor.data_type)?;
+        // Keep WebNN scalar constants at rank 0. Promoting them to [1] breaks
+        // MIL ops such as `quantize` that distinguish scalars from vectors.
+        let output_type =
+            Self::create_named_value_type(name, dtype, &operand.descriptor.shape, false);
 
         // Create tensor value from constant data
         let tensor_value = match operand.descriptor.data_type {
@@ -514,6 +519,11 @@ impl CoremlMlProgramConverter {
                     })),
                 }
             }
+            crate::graph::DataType::Int8 | crate::graph::DataType::Uint8 => TensorValue {
+                value: Some(tensor_value::Value::Bytes(tensor_value::RepeatedBytes {
+                    values: constant_data.data.clone().into(),
+                })),
+            },
             _ => {
                 return Err(GraphError::ConversionFailed {
                     format: "coreml_mlprogram".to_string(),
@@ -1013,7 +1023,21 @@ impl CoremlMlProgramConverter {
         outputs: Vec<NamedValueType>,
         mil_op_type: &str,
     ) -> Result<MilOperation, GraphError> {
-        let inputs = self.create_operation_inputs(graph, op, input_names)?;
+        let mut inputs = self.create_operation_inputs(graph, op, input_names)?;
+
+        // MIL `quantize` declares `output_dtype` as a required const string input.
+        if matches!(op, Operation::QuantizeLinear { .. })
+            && let Some(output_id) = op.output_operand()
+            && let Some(output_operand) = graph.operand(output_id)
+        {
+            let dtype_str =
+                Self::cast_dtype_string_for_graph_type(&output_operand.descriptor.data_type)?;
+            inputs.insert(
+                "output_dtype".to_string(),
+                Self::create_immediate_string(dtype_str),
+            );
+        }
+
         Ok(Self::create_mil_operation(mil_op_type, inputs, outputs))
     }
 
@@ -3675,21 +3699,17 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             ..Default::default()
         };
 
-        // Create ModelDescription with function descriptions
-        use crate::protos::coreml::specification::{
-            FeatureDescription, FunctionDescription, ModelDescription,
-        };
+        // Create ModelDescription with model-level input/output feature descriptions.
+        // Single-function MLProgram models must use model-level I/O (not the
+        // `functions` field), otherwise CoreML rejects them with
+        // "multi-function description syntax" at load time.
+        use crate::protos::coreml::specification::{FeatureDescription, ModelDescription};
 
-        let mut function_desc = FunctionDescription {
-            name: "main".to_string(),
-            ..Default::default()
-        };
-
-        // Add input descriptions
+        let mut input_descriptions = Vec::new();
         for &input_id in &graph_info.input_operands {
             if let Some(operand) = graph_info.operand(input_id) {
                 let input_name = operand_name(graph_info, input_id);
-                function_desc.input.push(FeatureDescription {
+                input_descriptions.push(FeatureDescription {
                     name: input_name,
                     r#type: Some(Self::create_feature_type(&operand.descriptor)?),
                     ..Default::default()
@@ -3697,11 +3717,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
         }
 
-        // Add output descriptions
+        let mut output_descriptions = Vec::new();
         for &output_id in &graph_info.output_operands {
             if let Some(operand) = graph_info.operand(output_id) {
                 let output_name = operand_name(graph_info, output_id);
-                function_desc.output.push(FeatureDescription {
+                output_descriptions.push(FeatureDescription {
                     name: output_name,
                     r#type: Some(Self::create_feature_type(&operand.descriptor)?),
                     ..Default::default()
@@ -3710,8 +3730,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         model.description = Some(ModelDescription {
-            functions: vec![function_desc],
-            default_function_name: "main".to_string(),
+            input: input_descriptions,
+            output: output_descriptions,
             ..Default::default()
         });
 
