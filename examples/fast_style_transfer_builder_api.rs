@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, ValueEnum};
 use futures_util::future::join_all;
 use rustnn::mlcontext::{
@@ -478,7 +478,7 @@ fn add_npy_constant(
         NpyDataType::Int8 => builder.constant_from_slice(&descriptor, &array.data),
         NpyDataType::Uint8 => builder.constant_from_slice(&descriptor, &array.data),
     }
-    .map_err(|e| anyhow!("add `{}` to MLGraphBuilder: {e}", spec.name))?;
+    .with_context(|| format!("add `{}` to MLGraphBuilder", spec.name))?;
 
     Ok(LoadedWeight {
         name: spec.name,
@@ -489,20 +489,15 @@ fn add_npy_constant(
     })
 }
 
-fn rustnn<T, E: fmt::Display>(result: std::result::Result<T, E>, context: &str) -> Result<T> {
-    result.map_err(|error| anyhow!("{context}: {error}"))
-}
-
 fn scalar_constant(
     builder: &mut MLGraphBuilder<'_, '_>,
     label: &str,
     value: f32,
 ) -> Result<MLOperand> {
     let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1]);
-    rustnn(
-        builder.constant_from_slice(&descriptor, &[value]),
-        &format!("add scalar constant `{label}`"),
-    )
+    builder
+        .constant_from_slice(&descriptor, &[value])
+        .with_context(|| format!("add scalar constant `{label}`"))
 }
 
 fn reflection_pad(
@@ -517,10 +512,9 @@ fn reflection_pad(
         mode: "reflection".to_string(),
         ..Default::default()
     };
-    rustnn(
-        builder.pad_with_options(input, padding.clone(), padding, options),
-        label,
-    )
+    builder
+        .pad_with_options(input, padding.clone(), padding, options)
+        .with_context(|| label.to_string())
 }
 
 fn conv2d(
@@ -537,7 +531,9 @@ fn conv2d(
         filter_layout: "oihw".to_string(),
         ..Default::default()
     };
-    rustnn(builder.conv2_with_options(input, filter, options), label)
+    builder
+        .conv2_with_options(input, filter, options)
+        .with_context(|| label.to_string())
 }
 
 fn conv_transpose2d(
@@ -556,10 +552,9 @@ fn conv_transpose2d(
         filter_layout: "iohw".to_string(),
         ..Default::default()
     };
-    rustnn(
-        builder.conv_transpose2d_with_options(input, filter, options),
-        label,
-    )
+    builder
+        .conv_transpose2d_with_options(input, filter, options)
+        .with_context(|| label.to_string())
 }
 
 fn instance_normalization_fallback(
@@ -576,21 +571,33 @@ fn instance_normalization_fallback(
         axes: Some(vec![2, 3]),
         keep_dimensions: true,
     };
-    let mean = rustnn(
-        builder.reduce_mean_with_options(input, reduce_options.clone()),
-        &format!("{label}/mean"),
-    )?;
-    let centered = rustnn(builder.sub(input, mean), &format!("{label}/center"))?;
-    let squared = rustnn(builder.mul(centered, centered), &format!("{label}/square"))?;
-    let variance = rustnn(
-        builder.reduce_mean_with_options(squared, reduce_options),
-        &format!("{label}/variance"),
-    )?;
-    let stabilized = rustnn(builder.add(variance, epsilon), &format!("{label}/epsilon"))?;
-    let stddev = rustnn(builder.pow(stabilized, exponent), &format!("{label}/sqrt"))?;
-    let normalized = rustnn(builder.div(centered, stddev), &format!("{label}/normalize"))?;
-    let scaled = rustnn(builder.mul(scale, normalized), &format!("{label}/scale"))?;
-    rustnn(builder.add(scaled, bias), &format!("{label}/bias"))
+    let mean = builder
+        .reduce_mean_with_options(input, reduce_options.clone())
+        .with_context(|| format!("{label}/mean"))?;
+    let centered = builder
+        .sub(input, mean)
+        .with_context(|| format!("{label}/center"))?;
+    let squared = builder
+        .mul(centered, centered)
+        .with_context(|| format!("{label}/square"))?;
+    let variance = builder
+        .reduce_mean_with_options(squared, reduce_options)
+        .with_context(|| format!("{label}/variance"))?;
+    let stabilized = builder
+        .add(variance, epsilon)
+        .with_context(|| format!("{label}/epsilon"))?;
+    let stddev = builder
+        .pow(stabilized, exponent)
+        .with_context(|| format!("{label}/sqrt"))?;
+    let normalized = builder
+        .div(centered, stddev)
+        .with_context(|| format!("{label}/normalize"))?;
+    let scaled = builder
+        .mul(scale, normalized)
+        .with_context(|| format!("{label}/scale"))?;
+    builder
+        .add(scaled, bias)
+        .with_context(|| format!("{label}/bias"))
 }
 
 fn conv_norm_relu(
@@ -619,7 +626,9 @@ fn conv_norm_relu(
         norm_constants.1,
         &format!("instance_norm{index}"),
     )?;
-    rustnn(builder.relu(normalized), &format!("relu{index}"))
+    builder
+        .relu(normalized)
+        .with_context(|| format!("relu{index}"))
 }
 
 fn conv_norm(
@@ -686,7 +695,9 @@ fn conv_transpose_norm_relu(
         norm_constants.1,
         &format!("instance_norm{norm_index}"),
     )?;
-    rustnn(builder.relu(normalized), &format!("relu{norm_index}"))
+    builder
+        .relu(normalized)
+        .with_context(|| format!("relu{norm_index}"))
 }
 
 fn build_fast_style_transfer_graph(
@@ -701,10 +712,9 @@ fn build_fast_style_transfer_graph(
 
     let input_descriptor =
         MLOperandDescriptor::new(MLOperandDataType::Float32, INPUT_SHAPE.to_vec());
-    let input = rustnn(
-        builder.input("input", &input_descriptor),
-        "create input operand",
-    )?;
+    let input = builder
+        .input("input", &input_descriptor)
+        .context("create input operand")?;
     let norm_constants = (norm_epsilon, norm_exponent);
 
     let relu0 = conv_norm_relu(builder, input, &weights, 0, 4, None, norm_constants)?;
@@ -712,29 +722,29 @@ fn build_fast_style_transfer_graph(
     let relu2 = conv_norm_relu(builder, relu1, &weights, 2, 1, Some([2, 2]), norm_constants)?;
 
     let add4 = conv_norm(builder, relu2, &weights, 3, 1, norm_constants)?;
-    let relu3 = rustnn(builder.relu(add4), "relu3")?;
+    let relu3 = builder.relu(add4).context("relu3")?;
     let add4 = conv_norm(builder, relu3, &weights, 4, 1, norm_constants)?;
-    let add5 = rustnn(builder.add(relu2, add4), "add5")?;
+    let add5 = builder.add(relu2, add4).context("add5")?;
 
     let add6 = conv_norm(builder, add5, &weights, 5, 1, norm_constants)?;
-    let relu4 = rustnn(builder.relu(add6), "relu4")?;
+    let relu4 = builder.relu(add6).context("relu4")?;
     let add7 = conv_norm(builder, relu4, &weights, 6, 1, norm_constants)?;
-    let add8 = rustnn(builder.add(add5, add7), "add8")?;
+    let add8 = builder.add(add5, add7).context("add8")?;
 
     let add9 = conv_norm(builder, add8, &weights, 7, 1, norm_constants)?;
-    let relu5 = rustnn(builder.relu(add9), "relu5")?;
+    let relu5 = builder.relu(add9).context("relu5")?;
     let add10 = conv_norm(builder, relu5, &weights, 8, 1, norm_constants)?;
-    let add11 = rustnn(builder.add(add8, add10), "add11")?;
+    let add11 = builder.add(add8, add10).context("add11")?;
 
     let add12 = conv_norm(builder, add11, &weights, 9, 1, norm_constants)?;
-    let relu6 = rustnn(builder.relu(add12), "relu6")?;
+    let relu6 = builder.relu(add12).context("relu6")?;
     let add13 = conv_norm(builder, relu6, &weights, 10, 1, norm_constants)?;
-    let add14 = rustnn(builder.add(add11, add13), "add14")?;
+    let add14 = builder.add(add11, add13).context("add14")?;
 
     let add15 = conv_norm(builder, add14, &weights, 11, 1, norm_constants)?;
-    let relu7 = rustnn(builder.relu(add15), "relu7")?;
+    let relu7 = builder.relu(add15).context("relu7")?;
     let add16 = conv_norm(builder, relu7, &weights, 12, 1, norm_constants)?;
-    let add17 = rustnn(builder.add(add14, add16), "add17")?;
+    let add17 = builder.add(add14, add16).context("add17")?;
 
     let relu8 =
         conv_transpose_norm_relu(builder, add17, &weights, 0, 13, [270, 270], norm_constants)?;
@@ -742,9 +752,9 @@ fn build_fast_style_transfer_graph(
         conv_transpose_norm_relu(builder, relu8, &weights, 1, 14, [540, 540], norm_constants)?;
 
     let add20 = conv_norm_with_indices(builder, relu9, &weights, 13, 15, 4, norm_constants)?;
-    let tanh = rustnn(builder.tanh(add20), "tanh_output")?;
-    let scaled = rustnn(builder.mul(tanh, output_scale), "scale_output")?;
-    rustnn(builder.add(scaled, output_offset), "offset_output")
+    let tanh = builder.tanh(add20).context("tanh_output")?;
+    let scaled = builder.mul(tanh, output_scale).context("scale_output")?;
+    builder.add(scaled, output_offset).context("offset_output")
 }
 
 fn image_to_tensor(image: &image::RgbImage) -> Vec<f32> {
@@ -818,14 +828,16 @@ fn run_inferences(
     let mut input_tensors = Vec::with_capacity(tensor_count);
     let mut output_tensors = Vec::with_capacity(tensor_count);
     for _ in 0..tensor_count {
-        input_tensors.push(rustnn(
-            context.create_tensor(&input_descriptor),
-            "create input tensor",
-        )?);
-        output_tensors.push(rustnn(
-            context.create_tensor(&output_descriptor),
-            "create output tensor",
-        )?);
+        input_tensors.push(
+            context
+                .create_tensor(&input_descriptor)
+                .context("create input tensor")?,
+        );
+        output_tensors.push(
+            context
+                .create_tensor(&output_descriptor)
+                .context("create output tensor")?,
+        );
     }
 
     let mut output_data = vec![0.0f32; IMAGE_ELEMENT_COUNT];
@@ -834,31 +846,30 @@ fn run_inferences(
 
     for i in 0..num_inferences {
         let slot = i % tensor_count;
-        rustnn(
-            context.write_tensor(&input_tensors[slot], input_data),
-            "write input tensor",
-        )?;
+        context
+            .write_tensor(&input_tensors[slot], input_data)
+            .context("write input tensor")?;
         starts[slot] = Some(Instant::now());
         let inputs = HashMap::from([("input", &input_tensors[slot])]);
         let outputs = HashMap::from([("output", &output_tensors[slot])]);
-        rustnn(context.dispatch(graph, &inputs, &outputs), "dispatch graph")?;
+        context
+            .dispatch(graph, &inputs, &outputs)
+            .context("dispatch graph")?;
 
         if i + 1 >= tensor_count {
             let completed_slot = next_to_read % tensor_count;
-            rustnn(
-                context.read_tensor(&output_tensors[completed_slot], &mut output_data),
-                "read output tensor",
-            )?;
+            context
+                .read_tensor(&output_tensors[completed_slot], &mut output_data)
+                .context("read output tensor")?;
             next_to_read += 1;
         }
     }
 
     while next_to_read < num_inferences {
         let completed_slot = next_to_read % tensor_count;
-        rustnn(
-            context.read_tensor(&output_tensors[completed_slot], &mut output_data),
-            "drain output tensor",
-        )?;
+        context
+            .read_tensor(&output_tensors[completed_slot], &mut output_data)
+            .context("drain output tensor")?;
         println!(
             "inference {} took {:?}",
             next_to_read + 1,
@@ -966,12 +977,10 @@ async fn main() -> Result<()> {
     println!("Output shape: {:?}", OUTPUT_SHAPE);
 
     let options = MLContextOptions::new(MLPowerPreference::HighPerformance, true);
-    let mut context = MLContext::create(&options).map_err(|e| {
-        anyhow!("create MLContext; run this example with an enabled RustNN backend feature enabled and make sure the runtime libraries can be found: {e}")
-    })?;
-    let builder = Mutex::new(
-        MLGraphBuilder::new(&mut context).map_err(|e| anyhow!("create MLGraphBuilder: {e}"))?,
-    );
+    let mut context = MLContext::create(&options).context(
+        "create MLContext; run this example with an enabled RustNN backend feature enabled and make sure the runtime libraries can be found",
+    )?;
+    let builder = Mutex::new(MLGraphBuilder::new(&mut context).context("create MLGraphBuilder")?);
     let client = reqwest::Client::new();
     let model_base_url = format!(
         "{}/{}",
@@ -992,10 +1001,9 @@ async fn main() -> Result<()> {
     let mut graph = {
         let mut builder = builder.lock().await;
         let output_operand = build_fast_style_transfer_graph(&mut builder, &loaded)?;
-        let inferred_output_shape = rustnn(
-            builder.rustnn_operand_shape(output_operand),
-            "infer output shape",
-        )?;
+        let inferred_output_shape = builder
+            .rustnn_operand_shape(output_operand)
+            .context("infer output shape")?;
         ensure!(
             inferred_output_shape == OUTPUT_SHAPE,
             "inferred output shape {:?}, expected {:?}",
@@ -1003,7 +1011,7 @@ async fn main() -> Result<()> {
             OUTPUT_SHAPE
         );
         let outputs = HashMap::from([("output", output_operand)]);
-        rustnn(builder.build(&outputs), "build MLGraph")?
+        builder.build(&outputs).context("build MLGraph")?
     };
 
     let input_data = load_input_image(input)?;
