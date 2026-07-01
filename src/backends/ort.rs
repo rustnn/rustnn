@@ -115,7 +115,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
         ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
         let session = builder
             .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|e| Error::GraphBuildError { source: e.into() })?
+            .map_err(|e| Error::GraphBuildError {
+                source: format!("{e}").into(),
+            })?
             .commit_from_memory(&converted.data)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         MLGraph::new(
