@@ -3,7 +3,7 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 qdq_subgraph.https.any.js quantized element-wise logical greater, trtx
- Failed to convert graph: graph conversion failed for trtx: Failed to get dimensions for tensor 0 in greater: Could not get dimensions from Tensor "(Unnamed Layer* 28) [ElementWise]_output"
+ Failed to convert graph: graph conversion failed for trtx: Failed to get dimensions for tensor 0 in greater: Could not get dimensions from Tensor "(Unnamed Layer* 23) [Identity]_output"
 
 --- built graph ---
 webnn_graph "graph" v2 {
