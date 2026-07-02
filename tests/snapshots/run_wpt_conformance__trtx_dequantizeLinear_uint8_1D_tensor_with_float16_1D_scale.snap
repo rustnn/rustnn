@@ -1,24 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-dequantizeLinear.https.any.js dequantizeLinear uint8 1D tensor with float16 1D scale, trtx
- Failed to build graph: Runtime error: Failed to build serialized network
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    dequantizeLinearInput: u8[4];
-  }
-
-  consts {
-    operand_1: f16[4] @bytes([172, 72, 123, 52, 158, 68, 123, 60]);
-    operand_2: u8[4] @bytes([128, 128, 128, 128]);
-  }
-
-  nodes {
-    [dequantizeLinearOutput] = dequantizeLinear(dequantizeLinearInput, operand_1, operand_2, label="");
-  }
-
-  outputs { dequantizeLinearOutput; }
-}
+(
+    "dequantizeLinear.https.any.js",
+    "dequantizeLinear uint8 1D tensor with float16 1D scale",
+    "trtx",
+    "PASS",
+)

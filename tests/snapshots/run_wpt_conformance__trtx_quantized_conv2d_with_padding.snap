@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 qdq_subgraph.https.any.js quantized conv2d with padding, trtx
- Failed to convert graph: graph conversion failed for trtx: quantizeLinear input: dimensions: Could not get dimensions from Tensor "(Unnamed Layer* 50) [Identity]_output"
+ qdq_subgraph :: quantized conv2d with padding: index 0: actual=0.19215688 expected=0.043137256 ulp=18093077 tolerance=100
+  inputs: input: [0.6124474406242371, 0.8857858777046204, 0.13667134940624237, 0.5645291209220886, 0.8965172171592712, 0.36792829632759094, 0.6811466217041016, 0.0479511022567749, 0.33355462551116943, 0.19882695376873016, 0.4116714000701904, 0.07934240251779556, 0.4272463321685791, 0.535800576210022, 0.5910806059837341, 0.28415432572364807, 0.4147258698940277, 0.026906268671154976, 0.3621256649494171, 0.994568169116974, 0.07184549421072006, 0.12204372137784958, 0.8422137498855591, 0.4537501037120819 ...] (len=25); bias: [1] (constant); biasScale: [0.00009199511500427] (constant); biasZeroPoint: [0] (constant); filter: [2, 3, 4, 5, 6, 7, 8, 9, 3] (constant); filterScale: [0.02345875293876223] (constant); filterZeroPoint: [0] (constant); inputScale: [0.003921568859368563] (constant); inputZeroPoint: [-128] (constant); outputScale: [0.003921568859368563] (constant); outputZeroPoint: [0] (constant)
+  expected output: [0.043137256, 0.19215688, 0.30980393, 0.23529413, 0.20784315, 0.29411766, 0.1254902, 0.35686275, 0.43529415, 0.37647063 ...] (len=36)
+  actual output: [0.19215688, 0.30980393, 0.23529413, 0.20784315, 0.29411766, 0.35686275, 0.43529415, 0.37647063, 0.3372549, 0.29803923 ...] (len=36)
+  expected output full nd:
+[0.043137256, 0.19215688, 0.30980393, 0.23529413, 0.20784315, 0.29411766, 0.1254902, 0.35686275, 0.43529415, 0.37647063, ...] (len=36, shape=[1, 6, 6, 1])
+  actual output full nd:
+[0.19215688, 0.30980393, 0.23529413, 0.20784315, 0.29411766, 0.35686275, 0.43529415, 0.37647063, 0.3372549, 0.29803923, ...] (len=36, shape=[1, 6, 6, 1])
 
 --- built graph ---
 webnn_graph "graph" v2 {

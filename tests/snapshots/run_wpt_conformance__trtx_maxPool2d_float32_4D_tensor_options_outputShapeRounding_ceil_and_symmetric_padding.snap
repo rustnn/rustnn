@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-maxPool2d.https.any.js maxPool2d float32 4D tensor options.outputShapeRounding=ceil and symmetric padding, trtx
- maxPool2d :: maxPool2d float32 4D tensor options.outputShapeRounding=ceil and symmetric padding: index 2: actual=-inf expected=0 ulp=4294967295 tolerance=4
-  inputs: maxPool2dInput: [89.00830078125, -45.72039031982422, -61.306129455566406, -4.014514446258545, -94.54893493652344, 46.28090286254883, 99.28312683105467, -10.057873725891112, 9.742474555969238, -39.03501892089844, 75.08192443847656, 12.819415092468262, -33.01505661010742, 38.69134140014648, 66.09259033203125, 97.90348052978516, -8.737770080566406, -53.42162322998047, 72.1085205078125, -40.423091888427734, -35.68864440917969, -87.64779663085938, 38.874244689941406, 39.383602142333984 ...] (len=50)
-  expected maxPool2dOutput: [99.28313, 9.742475, 0, 97.90348, 72.10852, 0, 0, 0, 0, 81.73119 ...] (len=18)
-  actual maxPool2dOutput: [99.28313, 9.742475, -inf, 97.90348, 72.10852, -inf, -inf, -inf, -inf, 81.73119 ...] (len=18)
-  expected maxPool2dOutput full nd:
-[99.28313, 9.742475, 0, 97.90348, 72.10852, 0, 0, 0, 0, 81.73119, ...] (len=18, shape=[1, 2, 3, 3])
-  actual maxPool2dOutput full nd:
-[99.28313, 9.742475, -inf, 97.90348, 72.10852, -inf, -inf, -inf, -inf, 81.73119, ...] (len=18, shape=[1, 2, 3, 3])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    maxPool2dInput: f32[1, 2, 5, 5];
-  }
-
-  nodes {
-    [maxPool2dOutput] = maxPool2d(maxPool2dInput, dilations=[], label="", layout="", outputShapeRounding="ceil", outputSizes=null, padding=[1, 1, 1, 1], strides=[3, 3], windowDimensions=[3, 3]);
-  }
-
-  outputs { maxPool2dOutput; }
-}
+(
+    "maxPool2d.https.any.js",
+    "maxPool2d float32 4D tensor options.outputShapeRounding=ceil and symmetric padding",
+    "trtx",
+    "PASS",
+)

@@ -3,7 +3,18 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 qdq_subgraph.https.any.js per-channel quantized gemm with non-zero quantized dimension of the filter, trtx
- Failed to convert graph: graph conversion failed for trtx: Failed to get input A dimensions: Could not get dimensions from Tensor "(Unnamed Layer* 10) [Identity]_output"
+ qdq_subgraph :: per-channel quantized gemm with non-zero quantized dimension of the filter: index 2: actual=0 expected=1 tolerance=0
+  inputs: inputA: [1, 1, 1, 1]; inputAScale: [0.5] (constant); inputAZeroPoint: [0] (constant); inputB: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1] (constant); inputBScale: [0.5, 0.5] (constant); inputBZeroPoint: [0, 0] (constant); outputScale: [0.5] (constant); outputZeroPoint: [0] (constant)
+  expected output: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  actual output: [1, 1, 0, 0, 0, 1, 1, 0, 0, 0]
+  expected output full nd:
+(shape [2, 5])
+  [1, 1, 1, 1, 1]
+  [1, 1, 1, 1, 1]
+  actual output full nd:
+(shape [2, 5])
+  [1, 1, 0, 0, 0]
+  [1, 1, 0, 0, 0]
 
 --- built graph ---
 webnn_graph "graph" v2 {

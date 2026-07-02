@@ -3,7 +3,18 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 qdq_subgraph.https.any.js quantized element-wise binary sub, trtx
- Failed to convert graph: graph conversion failed for trtx: Failed to get dimensions for tensor 0 in sub: Could not get dimensions from Tensor "(Unnamed Layer* 33) [Identity]_output"
+ qdq_subgraph :: quantized element-wise binary sub: index 0: actual=4.319591 expected=4.319595 ulp=8 tolerance=4
+  inputs: inputA: [15.57776927947998, -62.7008056640625, 82.55709075927734, -74.90638732910156]; inputAScale: [0.617084980010986] (constant); inputAZeroPoint: [120] (constant); inputB: [12, 9, 2, 43] (constant); inputBScale: [0.617084980010986] (constant); inputBZeroPoint: [120] (constant); outputScale: [0.617084980010986] (constant); outputZeroPoint: [120] (constant)
+  expected output: [4.319595, 4.319595, 4.319595, -27.15174]
+  actual output: [4.319591, 4.319591, 4.319591, -27.151743]
+  expected output full nd:
+(shape [2, 2])
+  [4.319595, 4.319595]
+  [4.319595, -27.15174]
+  actual output full nd:
+(shape [2, 2])
+  [4.319591, 4.319591]
+  [4.319591, -27.151743]
 
 --- built graph ---
 webnn_graph "graph" v2 {
