@@ -1,27 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-clamp.https.any.js clamp uint64 1D tensor with bigint max, trtx
- clamp :: clamp uint64 1D tensor with bigint max: uint64 output mismatch
-  inputs: clampInput: [String("9007199254740995"), 127, 5, 0]
-  expected clampOutput: [9007199254740992, 127, 5, 5]
-  actual clampOutput: [9007199254740996, 127, 5, 5]
-  expected clampOutput full nd:
-(shape [4])
-[9007199000000000, 127, 5, 5]
-  actual clampOutput full nd:
-[ ...] (len=0, shape=[4])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    clampInput: u64[4];
-  }
-
-  nodes {
-    [clampOutput] = clamp(clampInput, label="", maxValue="9007199254740992", minValue=5);
-  }
-
-  outputs { clampOutput; }
-}
+(
+    "clamp.https.any.js",
+    "clamp uint64 1D tensor with bigint max",
+    "trtx",
+    "PASS",
+)

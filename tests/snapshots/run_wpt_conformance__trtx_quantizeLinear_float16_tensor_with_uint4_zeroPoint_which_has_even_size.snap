@@ -1,0 +1,33 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+quantizeLinear.https.any.js quantizeLinear float16 tensor with uint4 zeroPoint which has even size, trtx
+ quantizeLinear :: quantizeLinear float16 tensor with uint4 zeroPoint which has even size: index 0: actual=0 expected=5 tolerance=1
+  inputs: quantizeLinearInput: [4.79296875, 3.234375]; quantizeLinearScale: [1.1201171875, 1.1201171875] (constant); quantizeLinearZeroPoint: [1, 5] (constant)
+  expected quantizeLinearOutput: [5, 8]
+  actual quantizeLinearOutput: [0, 5]
+  expected quantizeLinearOutput full nd:
+(shape [2])
+[5, 8]
+  actual quantizeLinearOutput full nd:
+(shape [2])
+[0, 5]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    quantizeLinearInput: f16[2];
+  }
+
+  consts {
+    operand_1: f16[2] @bytes([123, 60, 123, 60]);
+    operand_2: u4[2] @bytes([21]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(quantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

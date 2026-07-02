@@ -10,6 +10,8 @@ pub mod onnx;
 mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx;
+#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+mod trtx_gru;
 mod weight_file_builder;
 
 pub use coreml_mlprogram::CoremlMlProgramConverter;
