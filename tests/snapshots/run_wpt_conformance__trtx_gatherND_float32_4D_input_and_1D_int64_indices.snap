@@ -1,23 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-gatherND.https.any.js gatherND float32 4D input and 1D int64 indices, trtx
- An error in the Trtx: Runtime error: setNamedWeights (with location) rejected
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    gatherNDInput: f32[2, 2, 2, 2];
-  }
-
-  consts {
-    operand_0: i64[3] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-  }
-
-  nodes {
-    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
-  }
-
-  outputs { gatherNDOutput; }
-}
+(
+    "gatherND.https.any.js",
+    "gatherND float32 4D input and 1D int64 indices",
+    "trtx",
+    "PASS",
+)

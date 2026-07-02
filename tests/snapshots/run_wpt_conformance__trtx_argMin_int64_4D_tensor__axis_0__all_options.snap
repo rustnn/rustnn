@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMin int64 4D tensor, axis=0, all options, trtx
- arg_min_max :: argMin int64 4D tensor, axis=0, all options: index 0: actual=4575657222473777152 expected=1 tolerance=0
-  inputs: argMinInput: [String("3"), String("-24"), String("5"), String("-48"), String("40"), String("60"), String("-82"), String("96"), String("71"), String("38"), String("-39"), String("31"), String("-82"), String("-96"), String("-25"), String("-16"), String("66"), String("82"), String("-82"), String("96"), String("39"), String("42"), String("82"), String("85")]
-  expected argMinOutput: [1, 1, 1, 0, 0, 0, 0, 0, 1, 0 ...] (len=12)
-  actual argMinOutput: [4575657222473777152, 1065353216, 0, 0, 1065353216, 0, 0, 0, 0, 0 ...] (len=12)
-  expected argMinOutput full nd:
-[1, 1, 1, 0, 0, 0, 0, 0, 1, 0, ...] (len=12, shape=[1, 1, 4, 3])
-  actual argMinOutput full nd:
-[ ...] (len=0, shape=[1, 1, 4, 3])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMinInput: i64[2, 1, 4, 3];
-  }
-
-  nodes {
-    [argMinOutput] = argMin(argMinInput, keepDimensions=true, label="", outputDataType="int64");
-  }
-
-  outputs { argMinOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMin int64 4D tensor, axis=0, all options",
+    "trtx",
+    "PASS",
+)

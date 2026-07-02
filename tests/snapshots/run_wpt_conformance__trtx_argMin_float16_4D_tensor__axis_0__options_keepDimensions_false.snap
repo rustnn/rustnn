@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMin float16 4D tensor, axis=0, options.keepDimensions=false, trtx
- arg_min_max :: argMin float16 4D tensor, axis=0, options.keepDimensions=false: index 0: actual=1065353216 expected=1 tolerance=0
-  inputs: argMinInput: [3.830078125, -24.984375, 5.30078125, -48.5625, 40.3125, 60.1875, -82.8125, -96.5, 71.875, 38.875, -39.15625, 31.4375, -82.8125, -96.5, -25.53125, -16.140625, 66.625, 82.5, -82.8125, -96.5, 39.78125, 42.15625, 82.6875, 85.4375]
-  expected argMinOutput: [1, 1, 1, 0, 0, 0, 0, 0, 1, 0 ...] (len=12)
-  actual argMinOutput: [1065353216, 1065353216, 1065353216, 0, 0, 0, 0, 0, 1065353216, 0 ...] (len=12)
-  expected argMinOutput full nd:
-[1, 1, 1, 0, 0, 0, 0, 0, 1, 0, ...] (len=12, shape=[1, 4, 3])
-  actual argMinOutput full nd:
-[1065353216, 1065353216, 1065353216, 0, 0, 0, 0, 0, 1065353216, 0, ...] (len=12, shape=[1, 4, 3])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMinInput: f16[2, 1, 4, 3];
-  }
-
-  nodes {
-    [argMinOutput] = argMin(argMinInput, keepDimensions=false, label="", outputDataType="int32");
-  }
-
-  outputs { argMinOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMin float16 4D tensor, axis=0, options.keepDimensions=false",
+    "trtx",
+    "PASS",
+)

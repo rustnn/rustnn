@@ -1,30 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMin uint32 4D tensor, axis=1, all options, trtx
- arg_min_max :: argMin uint32 4D tensor, axis=1, all options: index 2: actual=1065353216 expected=1 tolerance=0
-  inputs: argMinInput: [0, 0, 254, 10, 1, 512, 1, 11, 21, 50, 128, 254, 20, 50, 127, 512]
-  expected argMinOutput: [0, 0, 1, 0, 1, 0, 1, 0]
-  actual argMinOutput: [0, 0, 1065353216, 0, 1065353216, 0, 1065353216, 0]
-  expected argMinOutput full nd:
-(shape [2, 1, 2, 2])
-  [0, 0] [1, 0]
-  [1, 0] [1, 0]
-  actual argMinOutput full nd:
-(shape [2, 1, 2, 2])
-  [0, 0] [1065353216, 0]
-  [1065353216, 0] [1065353216, 0]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMinInput: u32[2, 2, 2, 2];
-  }
-
-  nodes {
-    [argMinOutput] = argMin(argMinInput, keepDimensions=true, label="", outputDataType="int32");
-  }
-
-  outputs { argMinOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMin uint32 4D tensor, axis=1, all options",
+    "trtx",
+    "PASS",
+)

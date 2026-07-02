@@ -1,19 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMin uint8 4D tensor, axis=1, all options, trtx
- Failed to build graph: Runtime error: Failed to build serialized network
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMinInput: u8[2, 2, 2, 2];
-  }
-
-  nodes {
-    [argMinOutput] = argMin(argMinInput, keepDimensions=true, label="", outputDataType="int32");
-  }
-
-  outputs { argMinOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMin uint8 4D tensor, axis=1, all options",
+    "trtx",
+    "PASS",
+)

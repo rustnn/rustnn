@@ -1,28 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-is_infinite.https.any.js isInfinite float32 all infinite values, trtx
- is_infinite :: isInfinite float32 all infinite values: index 0: actual=0 expected=1 tolerance=0
-  inputs: isInfiniteInput: [String("Infinity"), String("-Infinity"), String("Infinity"), String("-Infinity")]
-  expected isInfiniteOutput: [1, 1, 1, 1]
-  actual isInfiniteOutput: [0, 0, 128, 63]
-  expected isInfiniteOutput full nd:
-(shape [4])
-[1, 1, 1, 1]
-  actual isInfiniteOutput full nd:
-(shape [4])
-[0, 0, 128, 63]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    isInfiniteInput: f32[4];
-  }
-
-  nodes {
-    [isInfiniteOutput] = isInfinite(isInfiniteInput, label="");
-  }
-
-  outputs { isInfiniteOutput; }
-}
+(
+    "is_infinite.https.any.js",
+    "isInfinite float32 all infinite values",
+    "trtx",
+    "PASS",
+)

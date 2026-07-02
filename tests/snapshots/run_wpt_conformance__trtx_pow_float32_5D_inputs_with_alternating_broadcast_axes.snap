@@ -1,27 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-pow.https.any.js pow float32 5D inputs with alternating broadcast axes, trtx
- pow :: pow float32 5D inputs with alternating broadcast axes: index 1: actual=17.84601 expected=-0.06310698 ulp=2131755740 tolerance=32
-  inputs: inputA: [17.846010208129883, -0.0631069764494896, -9.868203163146973, 11.17772102355957, -17.346275329589844, 11.862250328063965, -16.832275390625, 2.6574816703796387]; inputB: [1, 6, -7, 7]
-  expected output: [17.84601, -0.06310698, 32303294, 0.00000006316321, -9.868203, 11.177721, 923482.1, 1950381.6, 0.0000000017346508, -250875580 ...] (len=32)
-  actual output: [17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601 ...] (len=32)
-  expected output full nd:
-[17.84601, -0.06310698, 32303294, 0.00000006316321, -9.868203, 11.177721, 923482.1, 1950381.6, 0.0000000017346508, -250875580, ...] (len=32, shape=[2, 2, 2, 2, 2])
-  actual output full nd:
-[17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, 17.84601, ...] (len=32, shape=[2, 2, 2, 2, 2])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    inputA: f32[2, 1, 2, 1, 2];
-    inputB: f32[1, 2, 1, 2, 1];
-  }
-
-  nodes {
-    [output] = pow(inputA, inputB, label="");
-  }
-
-  outputs { output; }
-}
+(
+    "pow.https.any.js",
+    "pow float32 5D inputs with alternating broadcast axes",
+    "trtx",
+    "PASS",
+)

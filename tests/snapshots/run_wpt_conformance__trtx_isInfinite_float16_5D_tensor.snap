@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-is_infinite.https.any.js isInfinite float16 5D tensor, trtx
- is_infinite :: isInfinite float16 5D tensor: index 1: actual=0 expected=1 tolerance=0
-  inputs: isInfiniteInput: [1, String("Infinity"), -2.5, 0, String("NaN"), String("-Infinity"), 3, String("Infinity"), 0, 42, String("-Infinity"), -999, 1000, -0.5, String("Infinity"), 100.5, 0.5, String("Infinity"), -1, 2, String("-Infinity"), 7.5, -8.5, 9 ...] (len=32)
-  expected isInfiniteOutput: [0, 1, 0, 0, 0, 1, 0, 1, 0, 0 ...] (len=32)
-  actual isInfiniteOutput: [0, 0, 0, 0, 0, 0, 128, 63, 0, 0 ...] (len=32)
-  expected isInfiniteOutput full nd:
-[0, 1, 0, 0, 0, 1, 0, 1, 0, 0, ...] (len=32, shape=[2, 2, 2, 2, 2])
-  actual isInfiniteOutput full nd:
-[0, 0, 0, 0, 0, 0, 128, 63, 0, 0, ...] (len=32, shape=[2, 2, 2, 2, 2])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    isInfiniteInput: f16[2, 2, 2, 2, 2];
-  }
-
-  nodes {
-    [isInfiniteOutput] = isInfinite(isInfiniteInput, label="");
-  }
-
-  outputs { isInfiniteOutput; }
-}
+(
+    "is_infinite.https.any.js",
+    "isInfinite float16 5D tensor",
+    "trtx",
+    "PASS",
+)

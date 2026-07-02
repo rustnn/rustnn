@@ -1,22 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMax float16 1D constant tensor, axis=0, default options, trtx
- arg_min_max :: argMax float16 1D constant tensor, axis=0, default options: index 0: actual=1077936128 expected=3 tolerance=0
-  inputs: argMaxInput: [-51.09375, -6.5390625, 73.8125, 88.4375, -5.29296875, -79.1875, -41.6875, 73.8125, 88.4375, -84.9375, -61.5, -98.3125, -51.09375, -6.5390625, 73.8125, 88.4375, -5.29296875, -79.1875, -41.6875, 73.8125, 88.4375, -84.9375, -61.5, -98.3125] (constant)
-  expected argMaxOutput: [3]
-  actual argMaxOutput: [1077936128]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  consts {
-    operand_0: f16[24] @bytes([99, 210, 138, 198, 157, 84, 135, 85, 75, 197, 243, 212, 54, 209, 157, 84, 135, 85, 79, 213, 176, 211, 37, 214, 99, 210, 138, 198, 157, 84, 135, 85, 75, 197, 243, 212, 54, 209, 157, 84, 135, 85, 79, 213, 176, 211, 37, 214]);
-  }
-
-  nodes {
-    [argMaxOutput] = argMax(operand_0, keepDimensions=false, label="", outputDataType="int32");
-  }
-
-  outputs { argMaxOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMax float16 1D constant tensor, axis=0, default options",
+    "trtx",
+    "PASS",
+)

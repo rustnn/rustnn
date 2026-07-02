@@ -543,6 +543,7 @@ The following operations have been approved for Claude Code to execute without r
 
 ### Build & Development
 - `cargo *` - All Cargo commands (check, build, fmt, test, clean, clippy, doc, etc.)
+- `cd "c:\git\rustnn-workspace\rustnn" && cargo test --features trtx-runtime --test run_wpt_conformance -- --test-threads 1 --nocapture *` - Run WPT conformance tests with TensorRT backend; append test name filter (e.g. `trtx::not_equal`)
 - `pip *` - All pip commands (install, uninstall, list, freeze, etc.)
 - `maturin *` - All maturin commands (develop, build, publish, etc.)
 - `make *` - All Makefile targets approved
@@ -571,6 +572,7 @@ The following operations have been approved for Claude Code to execute without r
 ### Git Operations
 - `git *` - All git commands approved (status, add, commit, push, pull, checkout, branch, tag, log, diff, show, reset, rebase, merge, etc.)
   - Note: Destructive operations (force push to main, hard reset) should still be used cautiously
+- `cd "c:\git\rustnn-workspace\rustnn" && git diff *` - View diffs for any file in the rustnn repo (read-only)
 
 ### GitHub Operations
 - `gh run list` - List GitHub Actions workflow runs

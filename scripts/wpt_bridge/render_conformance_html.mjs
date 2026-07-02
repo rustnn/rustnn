@@ -29,6 +29,14 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+function formatMultilineCell(value) {
+  const text = value ?? '';
+  if (!text.includes('\n')) {
+    return escapeHtml(text);
+  }
+  return `<pre class="multiline-cell">${escapeHtml(text)}</pre>`;
+}
+
 function percent(passed, total) {
   if (total === 0) return '0.00';
   return ((passed / total) * 100).toFixed(2);
@@ -92,7 +100,7 @@ export function renderConformanceHtmlReport(report) {
             <thead>
               <tr><th>Test</th><th>Backend</th><th>Variant</th><th>Error</th></tr>
             </thead>
-            <tbody>${failedCases.map((c) => `<tr><td>${escapeHtml(c.testName)}</td><td>${escapeHtml(c.backend ?? 'onnx')}</td><td>${escapeHtml(c.variant)}</td><td>${escapeHtml(c.error ?? '')}</td></tr>`).join('\n')}</tbody>
+            <tbody>${failedCases.map((c) => `<tr><td>${escapeHtml(c.testName)}</td><td>${escapeHtml(c.backend ?? 'onnx')}</td><td>${escapeHtml(c.variant)}</td><td>${formatMultilineCell(c.error)}</td></tr>`).join('\n')}</tbody>
           </table>
         </details>
       `
@@ -106,7 +114,7 @@ export function renderConformanceHtmlReport(report) {
             <thead>
               <tr><th>Test</th><th>Backend</th><th>Variant</th><th>Reason</th></tr>
             </thead>
-            <tbody>${skippedCases.map((c) => `<tr><td><a href="${escapeHtml(sourceUrl)}">${escapeHtml(c.testName)}</a></td><td>${escapeHtml(c.backend ?? 'onnx')}</td><td>${escapeHtml(c.variant)}</td><td>${escapeHtml(c.reason ?? '')}</td></tr>`).join('\n')}</tbody>
+            <tbody>${skippedCases.map((c) => `<tr><td><a href="${escapeHtml(sourceUrl)}">${escapeHtml(c.testName)}</a></td><td>${escapeHtml(c.backend ?? 'onnx')}</td><td>${escapeHtml(c.variant)}</td><td>${formatMultilineCell(c.reason)}</td></tr>`).join('\n')}</tbody>
           </table>
         </details>
       `
@@ -288,6 +296,15 @@ export function renderConformanceHtmlReport(report) {
       }
       th {
         background: #f8fbff;
+      }
+      .multiline-cell {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+        font-size: 12px;
+        line-height: 1.45;
+        max-width: 72ch;
       }
     </style>
   </head>

@@ -1,30 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMax float32 4D tensor, axis=3, options.keepDimensions=true, trtx
- arg_min_max :: argMax float32 4D tensor, axis=3, options.keepDimensions=true: index 0: actual=1073741824 expected=2 tolerance=0
-  inputs: argMaxInput: [-51.09362030029297, -6.53970193862915, 73.8133773803711, 88.46114349365234, -5.294266700744629, -79.20668029785156, -41.70176696777344, 73.8133773803711, 88.46114349365234, -84.94000244140625, -61.48894119262695, -98.3387451171875, -51.09362030029297, -6.53970193862915, 73.8133773803711, 88.46114349365234, -5.294266700744629, -79.20668029785156, -41.70176696777344, 73.8133773803711, 88.46114349365234, -84.94000244140625, -61.48894119262695, -98.3387451171875]
-  expected argMaxOutput: [2, 0, 2, 1, 2, 0, 2, 1]
-  actual argMaxOutput: [1073741824, 0, 1073741824, 1065353216, 1073741824, 0, 1073741824, 1065353216]
-  expected argMaxOutput full nd:
-(shape [2, 1, 4, 1])
-  [2] [0] [2] [1]
-  [2] [0] [2] [1]
-  actual argMaxOutput full nd:
-(shape [2, 1, 4, 1])
-  [1073741824] [0] [1073741824] [1065353216]
-  [1073741824] [0] [1073741824] [1065353216]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMaxInput: f32[2, 1, 4, 3];
-  }
-
-  nodes {
-    [argMaxOutput] = argMax(argMaxInput, keepDimensions=true, label="", outputDataType="int32");
-  }
-
-  outputs { argMaxOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMax float32 4D tensor, axis=3, options.keepDimensions=true",
+    "trtx",
+    "PASS",
+)

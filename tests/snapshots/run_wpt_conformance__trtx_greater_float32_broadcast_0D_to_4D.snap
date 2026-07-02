@@ -1,27 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-greater.https.any.js greater float32 broadcast 0D to 4D, trtx
- greater :: greater float32 broadcast 0D to 4D: index 0: actual=0 expected=1 tolerance=0
-  inputs: inputA: [6.2216410636901855]; inputB: [-5.394711494445801, -7.189248561859131, -3.1081764698028564, 4.977657318115234, 5.111654281616211, -1.5386580228805542, 1.414366364479065, -0.9362112283706664, -6.029961585998535, -3.0134198665618896, 0.170855313539505, 7.395327091217041, 7.178691864013672, -4.826237678527832, -2.020440101623535, -3.267888069152832, 8.944384574890137, -5.932100772857666, 0.7069857120513916, 2.7764203548431396, 0.978833794593811, -6.254901885986328, 4.409034729003906, -6.775286674499512]
-  expected output: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ...] (len=24)
-  actual output: [0, 0, 128, 63, 0, 0, 128, 63, 0, 0 ...] (len=24)
-  expected output full nd:
-[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...] (len=24, shape=[2, 2, 2, 3])
-  actual output full nd:
-[0, 0, 128, 63, 0, 0, 128, 63, 0, 0, ...] (len=24, shape=[2, 2, 2, 3])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    inputA: f32[];
-    inputB: f32[2, 2, 2, 3];
-  }
-
-  nodes {
-    [output] = greater(inputA, inputB, label="");
-  }
-
-  outputs { output; }
-}
+(
+    "greater.https.any.js",
+    "greater float32 broadcast 0D to 4D",
+    "trtx",
+    "PASS",
+)

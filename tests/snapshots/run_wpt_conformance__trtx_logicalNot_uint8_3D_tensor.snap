@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-logical_not.https.any.js logicalNot uint8 3D tensor, trtx
- logical_not :: logicalNot uint8 3D tensor: index 3: actual=0 expected=1 tolerance=0
-  inputs: logicalNotInput: [204, 130, 90, 0, 147, 42, 10, 18, 13, 235, 0, 233, 53, 83, 9, 254, 69, 56, 219, 109, 171, 0, 228, 135]
-  expected logicalNotOutput: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0 ...] (len=24)
-  actual logicalNotOutput: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ...] (len=24)
-  expected logicalNotOutput full nd:
-[0, 0, 0, 1, 0, 0, 0, 0, 0, 0, ...] (len=24, shape=[2, 3, 4])
-  actual logicalNotOutput full nd:
-[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...] (len=24, shape=[2, 3, 4])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    logicalNotInput: u8[2, 3, 4];
-  }
-
-  nodes {
-    [logicalNotOutput] = logicalNot(logicalNotInput, label="");
-  }
-
-  outputs { logicalNotOutput; }
-}
+(
+    "logical_not.https.any.js",
+    "logicalNot uint8 3D tensor",
+    "trtx",
+    "PASS",
+)

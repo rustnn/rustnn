@@ -1,22 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMax float32 1D constant tensor, axis=0, default options, trtx
- arg_min_max :: argMax float32 1D constant tensor, axis=0, default options: index 0: actual=1077936128 expected=3 tolerance=0
-  inputs: argMaxInput: [-51.09362030029297, -6.53970193862915, 73.8133773803711, 88.46114349365234, -5.294266700744629, -79.20668029785156, -41.70176696777344, 73.8133773803711, 88.46114349365234, -84.94000244140625, -61.48894119262695, -98.3387451171875, -51.09362030029297, -6.53970193862915, 73.8133773803711, 88.46114349365234, -5.294266700744629, -79.20668029785156, -41.70176696777344, 73.8133773803711, 88.46114349365234, -84.94000244140625, -61.48894119262695, -98.3387451171875] (constant)
-  expected argMaxOutput: [3]
-  actual argMaxOutput: [1077936128]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  consts {
-    operand_0: f32[24] @bytes([222, 95, 76, 194, 61, 69, 209, 192, 115, 160, 147, 66, 27, 236, 176, 66, 162, 106, 169, 192, 210, 105, 158, 194, 156, 206, 38, 194, 115, 160, 147, 66, 27, 236, 176, 66, 72, 225, 169, 194, 173, 244, 117, 194, 112, 173, 196, 194, 222, 95, 76, 194, 61, 69, 209, 192, 115, 160, 147, 66, 27, 236, 176, 66, 162, 106, 169, 192, 210, 105, 158, 194, 156, 206, 38, 194, 115, 160, 147, 66, 27, 236, 176, 66, 72, 225, 169, 194, 173, 244, 117, 194, 112, 173, 196, 194]);
-  }
-
-  nodes {
-    [argMaxOutput] = argMax(operand_0, keepDimensions=false, label="", outputDataType="int32");
-  }
-
-  outputs { argMaxOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMax float32 1D constant tensor, axis=0, default options",
+    "trtx",
+    "PASS",
+)

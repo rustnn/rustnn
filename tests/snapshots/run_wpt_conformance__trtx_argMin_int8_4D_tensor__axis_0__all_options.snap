@@ -1,28 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-arg_min_max.https.any.js argMin int8 4D tensor, axis=0, all options, trtx
- arg_min_max :: argMin int8 4D tensor, axis=0, all options: index 2: actual=4575657221408423936 expected=0 tolerance=0
-  inputs: argMinInput: [-128, -50, -5, -1, 0, 11, 50, 126, -127, -50, 0, 0, 1, 10, 50, 127]
-  expected argMinOutput: [0, 0, 0, 0, 0, 1, 0, 0]
-  actual argMinOutput: [0, 0, 4575657221408423936, 0, 0, 0, 0, 0]
-  expected argMinOutput full nd:
-(shape [1, 2, 2, 2])
-  [0, 0] [0, 0]
-  [0, 1] [0, 0]
-  actual argMinOutput full nd:
-[ ...] (len=0, shape=[1, 2, 2, 2])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    argMinInput: i8[2, 2, 2, 2];
-  }
-
-  nodes {
-    [argMinOutput] = argMin(argMinInput, keepDimensions=true, label="", outputDataType="int64");
-  }
-
-  outputs { argMinOutput; }
-}
+(
+    "arg_min_max.https.any.js",
+    "argMin int8 4D tensor, axis=0, all options",
+    "trtx",
+    "PASS",
+)

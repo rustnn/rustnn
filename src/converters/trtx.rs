@@ -30,7 +30,9 @@ use super::{
 };
 use crate::error::GraphError;
 use crate::executors::trtx::create_trtx_logger;
-use crate::graph::{DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size};
+use crate::graph::{
+    DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
+};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
 use crate::shape_inference::{
@@ -333,20 +335,33 @@ impl TrtxConverter {
     pub fn gather_baked_constant_operand_ids(graph: &GraphInfo) -> HashSet<u32> {
         let mut ids = HashSet::new();
         for op in &graph.operations {
-            let indices_id = match op {
+            match op {
                 Operation::Gather { .. }
                 | Operation::GatherND { .. }
                 | Operation::GatherElements { .. } => {
                     if op.input_operands().len() >= 2 {
-                        op.input_operands()[1]
-                    } else {
-                        continue;
+                        let indices_id = op.input_operands()[1];
+                        if Self::is_graph_constant(graph, indices_id) {
+                            ids.insert(indices_id);
+                        }
                     }
                 }
-                _ => continue,
-            };
-            if Self::is_graph_constant(graph, indices_id) {
-                ids.insert(indices_id);
+                Operation::QuantizeLinear { .. } => {
+                    let ins = op.input_operands();
+                    if ins.len() >= 2 {
+                        let scale_id = ins[1];
+                        if Self::is_graph_constant(graph, scale_id) {
+                            ids.insert(scale_id);
+                        }
+                    }
+                    if ins.len() >= 3 {
+                        let zp_id = ins[2];
+                        if Self::is_graph_constant(graph, zp_id) {
+                            ids.insert(zp_id);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         ids
@@ -436,7 +451,8 @@ impl TrtxConverter {
                 }
 
                 // TensorRT Constant permits kINT8 (not kUINT8). Use kINT8 for Int8/Uint8/Int4/Uint4
-                // graph constants with packed int4/uint4 host bytes.
+                // graph constants. Packed int4/uint4 host bytes are expanded to one byte per logical
+                // element before upload (TRT kINT8 weight size = element count).
                 //
                 // Do not pass `kINT4` / sub-byte dtypes to `add_constant` / `add_small_constant_copied`:
                 // trtx-rs validates weight size as `(element_count * size_bits) / 8` with truncating
@@ -452,7 +468,41 @@ impl TrtxConverter {
                 let add_dims: Vec<i64> = dims.iter().map(|&d| d as i64).collect();
                 let constant_name = Self::constant_weight_name(operand_id as u32);
                 let constant_name_ref = constant_name.as_str();
-                let layer = if use_int8_constant {
+
+                let int8_constant_bytes: Option<Vec<u8>> = if use_int8_constant
+                    && matches!(
+                        operand.descriptor.data_type,
+                        DataType::Int4 | DataType::Uint4
+                    ) {
+                    let element_count = operand.descriptor.element_count().ok_or_else(|| {
+                            GraphError::ConversionFailed {
+                                format: "trtx".to_string(),
+                                reason: format!(
+                                    "Constant operand {operand_id} has dynamic shape for int4/uint4 unpack"
+                                ),
+                            }
+                        })?;
+                    non_refittable_constants.insert(operand_id as u32);
+                    Some(match operand.descriptor.data_type {
+                        DataType::Int4 => unpack_int4(data, element_count)
+                            .into_iter()
+                            .map(|v| v as i8 as u8)
+                            .collect(),
+                        DataType::Uint4 => unpack_uint4(data, element_count),
+                        _ => unreachable!(),
+                    })
+                } else {
+                    None
+                };
+
+                let layer = if let Some(ref bytes) = int8_constant_bytes {
+                    network.add_small_constant_copied(
+                        &add_dims,
+                        bytes,
+                        TrtDataType::kINT8,
+                        Some(constant_name_ref),
+                    )
+                } else if use_int8_constant {
                     network.add_small_constant_copied(
                         &add_dims,
                         data,
@@ -3021,6 +3071,102 @@ impl TrtxConverter {
         Ok(out)
     }
 
+    fn trtx_cast_or_identity_to_fp<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        fp_trt: TrtDataType,
+        label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if tensor.get_type(&*network) == fp_trt {
+            network
+                .add_identity(tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} identity output: {e}"),
+                })
+        } else {
+            network
+                .add_cast(tensor, fp_trt)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} cast: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} cast output: {e}"),
+                })
+        }
+    }
+
+    /// `quantizeLinear` → **int4** via `IQuantizeLayer` on `(input + scale * zero_point)` so zero-point
+    /// is folded before quantize. Avoids `Cast` → `kINT4` from elementwise (invalid in TensorRT).
+    fn add_quantize_linear_int4_via_trt_quantize<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        scale: &trtx::Tensor<'a>,
+        zero_point: &trtx::Tensor<'a>,
+        fp_trt: TrtDataType,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let input_r = Self::trtx_qdq_ensure_rank1(network, input, "quantizeLinear int4 input")?;
+        let scale_r = Self::trtx_qdq_ensure_rank1(network, scale, "quantizeLinear int4 scale")?;
+        let zp_r =
+            Self::trtx_qdq_ensure_rank1(network, zero_point, "quantizeLinear int4 zero_point")?;
+
+        let input_e = Self::trtx_cast_or_identity_to_fp(network, &input_r, fp_trt, "quantizeLinear int4 input")?;
+        let scale_e = Self::trtx_cast_or_identity_to_fp(network, &scale_r, fp_trt, "quantizeLinear int4 scale")?;
+        let zp_e =
+            Self::trtx_cast_or_identity_to_fp(network, &zp_r, fp_trt, "quantizeLinear int4 zero_point")?;
+
+        let scale_zp = network
+            .add_elementwise(&scale_e, &zp_e, ElementWiseOperation::kPROD)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 scale*zero_point: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 scale*zero_point output: {e}"),
+            })?;
+
+        let adjusted = network
+            .add_elementwise(&input_e, &scale_zp, ElementWiseOperation::kSUM)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 input+scale*zp: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 input+scale*zp output: {e}"),
+            })?;
+
+        let input_q =
+            Self::trtx_qdq_ensure_rank1(network, &adjusted, "quantizeLinear int4 quantize input")?;
+        let scale_q =
+            Self::trtx_qdq_ensure_rank1(network, &scale_r, "quantizeLinear int4 quantize scale")?;
+
+        let layer = network
+            .add_quantize(&input_q, &scale_q, TrtDataType::kINT4)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 quantize layer: {e}"),
+            })?;
+
+        layer
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 quantize output: {e}"),
+            })
+    }
+
     /// Add quantizeLinear operation (float to quantized integer)
     fn add_quantize_linear_op<'a>(
         graph: &GraphInfo,
@@ -3164,9 +3310,15 @@ impl TrtxConverter {
                     Some(fp_trt),
                     Some(z_operand.descriptor.data_type),
                 )?;
-                Self::add_quantize_linear_elementwise_manual(
-                    network, input, &scale_a, &zp_a, fp_trt, out_trt, out_dtype,
-                )?
+                if out_dtype == DataType::Int4 {
+                    Self::add_quantize_linear_int4_via_trt_quantize(
+                        network, input, &scale_a, &zp_a, fp_trt,
+                    )?
+                } else {
+                    Self::add_quantize_linear_elementwise_manual(
+                        network, input, &scale_a, &zp_a, fp_trt, out_trt, out_dtype,
+                    )?
+                }
             } else {
                 let (zdt, zp_bytes): (TrtDataType, &[u8]) = match out_dtype {
                     DataType::Int8 => (TrtDataType::kINT8, &[0u8][..]),
@@ -3239,9 +3391,15 @@ impl TrtxConverter {
                     Some(fp_trt),
                     Some(out_dtype),
                 )?;
-                Self::add_quantize_linear_elementwise_manual(
-                    network, input, &scale_a, &zp_a, fp_trt, out_trt, out_dtype,
-                )?
+                if out_dtype == DataType::Int4 {
+                    Self::add_quantize_linear_int4_via_trt_quantize(
+                        network, input, &scale_a, &zp_a, fp_trt,
+                    )?
+                } else {
+                    Self::add_quantize_linear_elementwise_manual(
+                        network, input, &scale_a, &zp_a, fp_trt, out_trt, out_dtype,
+                    )?
+                }
             };
             // Elementwise path uses `trtx_qdq_ensure_rank1`, so scalar inputs become `[1]`. WebNN
             // output rank must match the float input (e.g. `[]` not `[1]`).
