@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-lstm.https.any.js lstm float32 tensors steps=1 with options.bias, options.recurrentBias, options.activations=['relu', 'relu', 'relu'] and explicit options.layout='iofg', trtx
- Failed to convert graph: graph conversion failed for trtx: Unsupported operation: lstm
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    lstmInput: f32[1, 2, 2];
-  }
-
-  consts {
-    operand_0: f32[1, 8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);
-    operand_2: f32[1, 8] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 128, 63, 0, 0, 0, 64]);
-    operand_3: f32[1, 8, 2] @bytes([205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61, 205, 204, 204, 61]);
-    operand_4: f32[1, 8, 2] @bytes([0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 128, 191, 0, 0, 0, 64, 0, 0, 0, 192]);
-  }
-
-  nodes {
-    [lstmOutput1, lstmOutput2] = lstm(lstmInput, operand_4, operand_3, activations=["relu", "relu", "relu"], bias=0, direction="", initialCellState=null, initialHiddenState=null, label="", layout="iofg", peepholeWeight=null, recurrentBias=2, returnSequence=false);
-  }
-
-  outputs { lstmOutput1; lstmOutput2; }
-}
+(
+    "lstm.https.any.js",
+    "lstm float32 tensors steps=1 with options.bias, options.recurrentBias, options.activations=['relu', 'relu', 'relu'] and explicit options.layout='iofg'",
+    "trtx",
+    "PASS",
+)

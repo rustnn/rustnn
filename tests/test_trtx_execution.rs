@@ -4603,7 +4603,7 @@ mod tests {
 
     // NOTE: RNN operation tests removed
     // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
-    // lstm, lstmCell remain deferred for TRTX
+    // GRU and LSTM recurrent ops implemented via trtx_gru / trtx_lstm for TRTX
 
     // ============================================================================
     // Conv2D Padding Tests (2026-01-30)

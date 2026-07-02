@@ -1044,7 +1044,12 @@ impl TrtxConverter {
             "gruCell" => {
                 crate::converters::trtx_gru::add_gru_cell_op(graph, network, tensor_map, operation)?
             }
-            // NOTE: lstm, lstmCell still deferred
+            "lstm" => {
+                crate::converters::trtx_lstm::add_lstm_op(graph, network, tensor_map, operation)?
+            }
+            "lstmCell" => crate::converters::trtx_lstm::add_lstm_cell_op(
+                graph, network, tensor_map, operation,
+            )?,
             _ => {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
@@ -13620,7 +13625,7 @@ impl TrtxConverter {
 
     // NOTE: RNN operation implementations removed
     // IRNNv2Layer is deprecated in TensorRT and autocxx cannot generate bindings for it
-    // lstm, lstmCell remain deferred
+    // GRU/LSTM recurrent ops: trtx_gru.rs / trtx_lstm.rs
 }
 
 impl GraphConverter for TrtxConverter {

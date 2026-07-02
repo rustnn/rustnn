@@ -8,19 +8,33 @@
 
 use std::collections::HashMap;
 
-use half::f16;
 use trtx::ActivationType;
 use trtx::ElementWiseOperation as Ew;
 use trtx::LoopOutput;
-use trtx::MatrixOperation as MatOp;
-use trtx::TripLimit;
 
 use super::trtx::TrtxConverter;
+use super::trtx_rnn::{
+    RnnDirection as GruDirection, rnn_activation as gru_activation,
+    rnn_activation_type as gru_activation_type, rnn_add_trip_limit,
+    rnn_batch_size as gru_batch_size, rnn_check_bidirectional_activations,
+    rnn_concat_loop_outputs as gru_concat_loop_outputs, rnn_err as gru_err,
+    rnn_err_fmt as gru_err_fmt, rnn_ew as gru_ew, rnn_f32_one as gru_f32_one,
+    rnn_fit_cell_output as gru_fit_cell_output, rnn_fit_hidden_output as gru_fit_hidden_output,
+    rnn_fit_sequence_output as gru_fit_sequence_output,
+    rnn_initial_state as gru_initial_hidden_state, rnn_input_size as gru_input_size,
+    rnn_isolate_gate as gru_isolate_gate, rnn_iteration_input as gru_iteration_input,
+    rnn_matmul_t as gru_matmul_t, rnn_reshape as gru_reshape, rnn_tensor as gru_tensor,
+    rnn_to_3d as gru_to_3d, rnn_validate_hidden_size as gru_validate_hidden_size,
+};
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, get_static_or_max_size};
 use crate::operators::Operation;
 
 const GRU_NUM_GATES: i32 = 3;
+
+fn gru_check_bidirectional_activations(names: Option<&[String]>) -> Result<(), GraphError> {
+    rnn_check_bidirectional_activations(names, 2, "gru")
+}
 
 /// Entry point from [`super::trtx::TrtxConverter`].
 pub(crate) fn add_gru_op<'a>(
@@ -40,30 +54,6 @@ pub(crate) fn add_gru_cell_op<'a>(
     operation: &Operation,
 ) -> Result<(), GraphError> {
     TrtxConverter::add_gru_cell_op_impl(graph, network, tensor_map, operation)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum GruDirection {
-    Forward,
-    Reverse,
-    Bidirectional,
-}
-
-impl GruDirection {
-    fn num_directions(self) -> i32 {
-        match self {
-            Self::Forward | Self::Reverse => 1,
-            Self::Bidirectional => 2,
-        }
-    }
-
-    fn from_webnn(s: &str) -> Self {
-        match s.to_ascii_lowercase().as_str() {
-            "backward" | "reverse" => Self::Reverse,
-            "both" | "bidirectional" => Self::Bidirectional,
-            _ => Self::Forward,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -304,15 +294,13 @@ fn gru_run_loop<'a>(
         params.direction,
         &gate_output_shape,
         params.input_dtype,
+        "gru initial hidden",
     )?;
 
     let mut loop_body = network
         .add_loop()
         .map_err(|e| gru_err_fmt(format!("add_loop: {e}")))?;
-    let trip = gru_i32_scalar(network, params.seq_steps, "gru trip limit")?;
-    loop_body
-        .add_trip_limit(network, &trip, TripLimit::kCOUNT)
-        .map_err(|e| gru_err_fmt(format!("add_trip_limit: {e}")))?;
+    rnn_add_trip_limit(network, &mut loop_body, params.seq_steps, "gru")?;
 
     let iteration_input = gru_iteration_input(
         network,
@@ -320,6 +308,7 @@ fn gru_run_loop<'a>(
         &seq_input,
         params.direction,
         num_directions,
+        "gru",
     )?;
 
     let mut ht1_layer = loop_body
@@ -352,7 +341,13 @@ fn gru_run_loop<'a>(
 
     match output_mode {
         GruOutputMode::Cell { output_id } => {
-            let out = gru_fit_cell_output(network, &yh, params.batch_size, params.hidden_size)?;
+            let out = gru_fit_cell_output(
+                network,
+                &yh,
+                params.batch_size,
+                params.hidden_size,
+                "gruCell output",
+            )?;
             tensor_map.insert(output_id, out);
         }
         GruOutputMode::Full {
@@ -373,6 +368,7 @@ fn gru_run_loop<'a>(
                     &single_pass_shape,
                     params.seq_steps,
                     reverse,
+                    "gru",
                 )?;
                 let seq_final = gru_fit_sequence_output(
                     graph,
@@ -380,90 +376,21 @@ fn gru_run_loop<'a>(
                     seq_output_id,
                     &seq_tensor,
                     params.direction,
+                    "gru",
                 )?;
                 tensor_map.insert(seq_output_id, seq_final);
 
-                let yh_final = gru_fit_hidden_output(graph, network, last_output_id, &yh)?;
+                let yh_final = gru_fit_hidden_output(graph, network, last_output_id, &yh, "gru")?;
                 tensor_map.insert(last_output_id, yh_final);
             } else {
                 let last_output_id = outputs[0];
-                let yh_final = gru_fit_hidden_output(graph, network, last_output_id, &yh)?;
+                let yh_final = gru_fit_hidden_output(graph, network, last_output_id, &yh, "gru")?;
                 tensor_map.insert(last_output_id, yh_final);
             }
         }
     }
 
     Ok(())
-}
-
-fn gru_validate_hidden_size(hidden_size: u32, label: &str) -> Result<i32, GraphError> {
-    let h = i32::try_from(hidden_size).map_err(|_| gru_err_fmt(format!("{label} hidden_size")))?;
-    if h <= 0 {
-        return Err(gru_err_fmt(format!("{label} hidden_size must be positive")));
-    }
-    Ok(h)
-}
-
-/// Squeeze `[1, batch, hidden]` (or `[numDir, batch, hidden]` with numDir=1) to `[batch, hidden]`.
-fn gru_fit_cell_output<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    tensor: &trtx::Tensor<'a>,
-    batch_size: u32,
-    hidden_size: i32,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    gru_reshape(
-        network,
-        tensor,
-        &[batch_size as i64, hidden_size as i64],
-        "gruCell output",
-    )
-}
-
-fn gru_err(reason: &str) -> GraphError {
-    GraphError::ConversionFailed {
-        format: "trtx".to_string(),
-        reason: reason.to_string(),
-    }
-}
-
-fn gru_err_fmt(reason: String) -> GraphError {
-    GraphError::ConversionFailed {
-        format: "trtx".to_string(),
-        reason,
-    }
-}
-
-fn gru_tensor<'a>(
-    tensor_map: &HashMap<u32, trtx::Tensor<'a>>,
-    id: u32,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    tensor_map
-        .get(&id)
-        .cloned()
-        .ok_or_else(|| gru_err_fmt(format!("{label} operand {id} not found")))
-}
-
-fn gru_batch_size(shape: &[crate::graph::Dimension]) -> u32 {
-    match shape.len() {
-        2 => get_static_or_max_size(&shape[0]),
-        3 => get_static_or_max_size(&shape[1]),
-        _ => 1,
-    }
-}
-
-fn gru_input_size(graph: &GraphInfo, input_id: u32) -> Result<i64, GraphError> {
-    let shape = &graph
-        .operand(input_id)
-        .ok_or_else(|| gru_err("gru input operand"))?
-        .descriptor
-        .shape;
-    let size = match shape.len() {
-        2 => get_static_or_max_size(&shape[1]),
-        3 => get_static_or_max_size(&shape[2]),
-        _ => return Err(gru_err("gru input must have rank 2 or 3")),
-    };
-    Ok(size as i64)
 }
 
 fn gru_parse_activations(names: Option<&[String]>) -> GruActivations {
@@ -477,115 +404,6 @@ fn gru_parse_activations(names: Option<&[String]>) -> GruActivations {
         }
     }
     acts
-}
-
-fn gru_check_bidirectional_activations(names: Option<&[String]>) -> Result<(), GraphError> {
-    if let Some(list) = names {
-        if list.len() > 2 {
-            return Err(gru_err(
-                "bidirectional gru requires the same activations for forward and reverse passes",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn gru_activation_type(name: &str) -> ActivationType {
-    match name.to_ascii_lowercase().as_str() {
-        "tanh" => ActivationType::kTANH,
-        "relu" => ActivationType::kRELU,
-        "sigmoid" => ActivationType::kSIGMOID,
-        _ => ActivationType::kSIGMOID,
-    }
-}
-
-fn gru_reshape<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    tensor: &trtx::Tensor<'a>,
-    dims: &[i64],
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let mut shuffle = network
-        .add_shuffle(tensor)
-        .map_err(|e| gru_err_fmt(format!("{label}: shuffle: {e}")))?;
-    shuffle
-        .set_reshape_dimensions(network, dims)
-        .map_err(|e| gru_err_fmt(format!("{label}: reshape {dims:?}: {e}")))?;
-    shuffle
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label}: output: {e}")))
-}
-
-fn gru_ew<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    a: &trtx::Tensor<'a>,
-    b: &trtx::Tensor<'a>,
-    op: Ew,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    network
-        .add_elementwise(a, b, op)
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
-fn gru_matmul_t<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    a: &trtx::Tensor<'a>,
-    b: &trtx::Tensor<'a>,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    network
-        .add_matrix_multiply(a, MatOp::kNONE, b, MatOp::kTRANSPOSE)
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
-fn gru_activation<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    input: &trtx::Tensor<'a>,
-    act: ActivationType,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let layer = network
-        .add_activation(input, act)
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?;
-    layer
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
-fn gru_i32_scalar<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    value: i32,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    network
-        .add_small_constant_copied(&[], &value.to_le_bytes(), trtx::DataType::kINT32, None)
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
-fn gru_f32_one<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    like: &trtx::Tensor<'a>,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let (bytes, dt) = if like.get_type(&*network) == trtx::DataType::kHALF {
-        (
-            f16::from_f32(1.0).to_le_bytes().to_vec(),
-            trtx::DataType::kHALF,
-        )
-    } else {
-        (1.0f32.to_le_bytes().to_vec(), trtx::DataType::kFLOAT)
-    };
-    network
-        .add_small_constant_copied(&[1, 1, 1], &bytes, dt, None)
-        .map_err(|e| gru_err_fmt(format!("gru one constant: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("gru one constant output: {e}")))
 }
 
 fn gru_slice_weights<'a>(
@@ -659,34 +477,6 @@ fn gru_maybe_reorder_gates<'a>(
     } else {
         Ok(tensor.clone())
     }
-}
-
-fn gru_to_3d<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    tensor: &trtx::Tensor<'a>,
-    num_directions: i32,
-    rows: i32,
-    cols: i32,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let dims = tensor
-        .dimensions(&*network)
-        .map_err(|e| gru_err_fmt(e.to_string()))?;
-    if dims.len() == 3 {
-        return Ok(tensor.clone());
-    }
-    if dims.len() == 2 {
-        return gru_reshape(
-            network,
-            tensor,
-            &[num_directions as i64, rows as i64, cols as i64],
-            label,
-        );
-    }
-    Err(gru_err_fmt(format!(
-        "{label}: expected rank 2 or 3, got {}D",
-        dims.len()
-    )))
 }
 
 fn gru_prepare_weights<'a>(
@@ -916,23 +706,6 @@ fn gru_slice_bias<'a>(
         .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
 }
 
-fn gru_isolate_gate<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    gates: &trtx::Tensor<'a>,
-    gate_index: i32,
-    hidden_size: i32,
-    num_directions: i32,
-    batch_size: i64,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let start = [0_i64, 0_i64, (gate_index * hidden_size) as i64];
-    let size = [num_directions as i64, batch_size, hidden_size as i64];
-    network
-        .add_slice(gates, &start, &size, &[1, 1, 1])
-        .map_err(|e| gru_err_fmt(format!("gru isolate gate {gate_index}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("gru isolate gate {gate_index} output: {e}")))
-}
-
 fn gru_compute_ht<'a>(
     network: &mut trtx::NetworkDefinition<'a>,
     iteration_input: &trtx::Tensor<'a>,
@@ -1006,221 +779,6 @@ fn gru_compute_ht<'a>(
     gru_ew(network, &left, &right, Ew::kSUM, "gru Ht")
 }
 
-fn gru_iteration_input<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    loop_body: &mut trtx::network::Loop<'a>,
-    seq_input: &trtx::Tensor<'a>,
-    direction: GruDirection,
-    num_directions: i32,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    match direction {
-        GruDirection::Forward => {
-            let mut it = loop_body
-                .add_iterator(network, seq_input, 0, false)
-                .map_err(|e| gru_err_fmt(format!("gru iterator: {e}")))?;
-            it.set_axis(network, 0);
-            let step = it
-                .output(network, 0)
-                .map_err(|e| gru_err_fmt(format!("gru iterator output: {e}")))?;
-            let dims = step
-                .dimensions(&*network)
-                .map_err(|e| gru_err_fmt(e.to_string()))?;
-            gru_reshape(
-                network,
-                &step,
-                &[num_directions as i64, dims[0], dims[1]],
-                "gru iter input",
-            )
-        }
-        GruDirection::Reverse => {
-            let mut it = loop_body
-                .add_iterator(network, seq_input, 0, true)
-                .map_err(|e| gru_err_fmt(format!("gru reverse iterator: {e}")))?;
-            it.set_axis(network, 0);
-            let step = it
-                .output(network, 0)
-                .map_err(|e| gru_err_fmt(format!("gru reverse iterator output: {e}")))?;
-            let dims = step
-                .dimensions(&*network)
-                .map_err(|e| gru_err_fmt(e.to_string()))?;
-            gru_reshape(
-                network,
-                &step,
-                &[num_directions as i64, dims[0], dims[1]],
-                "gru reverse iter input",
-            )
-        }
-        GruDirection::Bidirectional => {
-            let mut fwd = loop_body
-                .add_iterator(network, seq_input, 0, false)
-                .map_err(|e| gru_err_fmt(format!("gru fwd iterator: {e}")))?;
-            fwd.set_axis(network, 0);
-            let fwd_step = fwd
-                .output(network, 0)
-                .map_err(|e| gru_err_fmt(format!("gru fwd iterator output: {e}")))?;
-            let fwd_dims = fwd_step
-                .dimensions(&*network)
-                .map_err(|e| gru_err_fmt(e.to_string()))?;
-            let fwd_3d = gru_reshape(
-                network,
-                &fwd_step,
-                &[1, fwd_dims[0], fwd_dims[1]],
-                "gru fwd 3d",
-            )?;
-
-            let mut rev = loop_body
-                .add_iterator(network, seq_input, 0, true)
-                .map_err(|e| gru_err_fmt(format!("gru rev iterator: {e}")))?;
-            rev.set_axis(network, 0);
-            let rev_step = rev
-                .output(network, 0)
-                .map_err(|e| gru_err_fmt(format!("gru rev iterator output: {e}")))?;
-            let rev_dims = rev_step
-                .dimensions(&*network)
-                .map_err(|e| gru_err_fmt(e.to_string()))?;
-            let rev_3d = gru_reshape(
-                network,
-                &rev_step,
-                &[1, rev_dims[0], rev_dims[1]],
-                "gru rev 3d",
-            )?;
-
-            let refs = [&fwd_3d, &rev_3d];
-            let mut concat = network
-                .add_concatenation(&refs)
-                .map_err(|e| gru_err_fmt(format!("gru bidi concat: {e}")))?;
-            concat.set_axis(network, 0);
-            concat
-                .output(&*network, 0)
-                .map_err(|e| gru_err_fmt(format!("gru bidi concat output: {e}")))
-        }
-    }
-}
-
-fn gru_initial_hidden_state<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    tensor_map: &HashMap<u32, trtx::Tensor<'a>>,
-    initial_id: Option<u32>,
-    direction: GruDirection,
-    shape: &[i64; 3],
-    dtype: DataType,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let base = if let Some(id) = initial_id {
-        let t = gru_tensor(tensor_map, id, "gru initial hidden")?;
-        gru_reshape(network, &t, shape, "gru initial hidden reshape")?
-    } else {
-        gru_zeros(network, shape, dtype, "gru initial hidden zero")?
-    };
-
-    if direction == GruDirection::Bidirectional {
-        let refs = [&base, &base];
-        let mut concat = network
-            .add_concatenation(&refs)
-            .map_err(|e| gru_err_fmt(format!("gru bidi initial hidden: {e}")))?;
-        concat.set_axis(network, 0);
-        return concat
-            .output(&*network, 0)
-            .map_err(|e| gru_err_fmt(format!("gru bidi initial hidden output: {e}")));
-    }
-
-    if direction == GruDirection::Reverse {
-        return gru_reshape(network, &base, shape, "gru reverse initial hidden");
-    }
-
-    gru_reshape(network, &base, shape, "gru initial hidden 3d")
-}
-
-fn gru_zeros<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    shape: &[i64; 3],
-    dtype: DataType,
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let count: usize = shape.iter().map(|&d| d as usize).product();
-    let (trt_dt, elem) = match dtype {
-        DataType::Float16 => (trtx::DataType::kHALF, 2),
-        _ => (trtx::DataType::kFLOAT, 4),
-    };
-    network
-        .add_small_constant_copied(shape, &vec![0u8; count * elem], trt_dt, None)
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
-fn gru_concat_loop_outputs<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    loop_body: &mut trtx::network::Loop<'a>,
-    ht: &trtx::Tensor<'a>,
-    num_directions: i32,
-    single_pass_shape: &[i64; 3],
-    seq_steps: i32,
-    reverse: bool,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    if num_directions == 2 {
-        let fwd = gru_slice_pass(network, ht, 0, single_pass_shape, "gru fwd pass")?;
-        let rev = gru_slice_pass(network, ht, 1, single_pass_shape, "gru rev pass")?;
-        let mut fwd_out = loop_body
-            .add_loop_output(network, &fwd, LoopOutput::kCONCATENATE, 0)
-            .map_err(|e| gru_err_fmt(format!("gru fwd loop out: {e}")))?;
-        let trip = gru_i32_scalar(network, seq_steps, "gru seq len")?;
-        fwd_out
-            .set_input(network, 1, &trip)
-            .map_err(|e| gru_err_fmt(format!("gru fwd loop trip: {e}")))?;
-        let fwd_tensor = fwd_out
-            .output(network, 0)
-            .map_err(|e| gru_err_fmt(format!("gru fwd loop tensor: {e}")))?;
-
-        let mut rev_out = loop_body
-            .add_loop_output(network, &rev, LoopOutput::kREVERSE, 0)
-            .map_err(|e| gru_err_fmt(format!("gru rev loop out: {e}")))?;
-        rev_out
-            .set_input(network, 1, &trip)
-            .map_err(|e| gru_err_fmt(format!("gru rev loop trip: {e}")))?;
-        let rev_tensor = rev_out
-            .output(network, 0)
-            .map_err(|e| gru_err_fmt(format!("gru rev loop tensor: {e}")))?;
-
-        let refs = [&fwd_tensor, &rev_tensor];
-        let mut concat = network
-            .add_concatenation(&refs)
-            .map_err(|e| gru_err_fmt(format!("gru bidi seq concat: {e}")))?;
-        concat.set_axis(network, 1);
-        return concat
-            .output(&*network, 0)
-            .map_err(|e| gru_err_fmt(format!("gru bidi seq output: {e}")));
-    }
-
-    let kind = if reverse {
-        LoopOutput::kREVERSE
-    } else {
-        LoopOutput::kCONCATENATE
-    };
-    let mut out = loop_body
-        .add_loop_output(network, ht, kind, 0)
-        .map_err(|e| gru_err_fmt(format!("gru loop out: {e}")))?;
-    let trip = gru_i32_scalar(network, seq_steps, "gru seq len")?;
-    out.set_input(network, 1, &trip)
-        .map_err(|e| gru_err_fmt(format!("gru loop trip: {e}")))?;
-    out.output(network, 0)
-        .map_err(|e| gru_err_fmt(format!("gru loop tensor: {e}")))
-}
-
-fn gru_slice_pass<'a>(
-    network: &mut trtx::NetworkDefinition<'a>,
-    ht: &trtx::Tensor<'a>,
-    pass_index: i32,
-    single_pass_shape: &[i64; 3],
-    label: &str,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let start = [pass_index as i64, 0_i64, 0_i64];
-    network
-        .add_slice(ht, &start, single_pass_shape, &[1, 1, 1])
-        .map_err(|e| gru_err_fmt(format!("{label}: {e}")))?
-        .output(&*network, 0)
-        .map_err(|e| gru_err_fmt(format!("{label} output: {e}")))
-}
-
 fn gru_resolve_output_ids(graph: &GraphInfo, outputs: &[u32], return_sequence: bool) -> (u32, u32) {
     if return_sequence && outputs.len() >= 2 {
         let name0 = graph
@@ -1235,56 +793,4 @@ fn gru_resolve_output_ids(graph: &GraphInfo, outputs: &[u32], return_sequence: b
     let last = outputs[0];
     let seq = outputs.get(1).copied().unwrap_or(last);
     (seq, last)
-}
-
-fn gru_fit_sequence_output<'a>(
-    graph: &GraphInfo,
-    network: &mut trtx::NetworkDefinition<'a>,
-    output_id: u32,
-    tensor: &trtx::Tensor<'a>,
-    direction: GruDirection,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let expected_rank = graph
-        .operand(output_id)
-        .map(|o| o.descriptor.shape.len())
-        .unwrap_or(4);
-    if direction != GruDirection::Bidirectional && expected_rank == 3 {
-        // [S, 1, B, H] -> [S, B, H]
-        let dims = tensor
-            .dimensions(&*network)
-            .map_err(|e| gru_err_fmt(e.to_string()))?;
-        if dims.len() == 4 && dims[1] == 1 {
-            return gru_reshape(
-                network,
-                tensor,
-                &[dims[0], dims[2], dims[3]],
-                "gru squeeze direction from sequence",
-            );
-        }
-    }
-    Ok(tensor.clone())
-}
-
-fn gru_fit_hidden_output<'a>(
-    graph: &GraphInfo,
-    network: &mut trtx::NetworkDefinition<'a>,
-    output_id: u32,
-    tensor: &trtx::Tensor<'a>,
-) -> Result<trtx::Tensor<'a>, GraphError> {
-    let expected_rank = graph
-        .operand(output_id)
-        .map(|o| o.descriptor.shape.len())
-        .unwrap_or(3);
-    let dims = tensor
-        .dimensions(&*network)
-        .map_err(|e| gru_err_fmt(e.to_string()))?;
-    if expected_rank == 4 && dims.len() == 3 {
-        return gru_reshape(
-            network,
-            tensor,
-            &[1, dims[0], dims[1], dims[2]],
-            "gru unsqueeze hidden to 4d",
-        );
-    }
-    Ok(tensor.clone())
 }
