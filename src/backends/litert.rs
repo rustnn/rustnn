@@ -16,6 +16,33 @@ use crate::mlcontext::{
 use crate::operator_enums::MLOperandDataType;
 use crate::{GraphError, GraphInfo};
 
+/// WebNN operations not (yet) supported by the LiteRT backend (crash, wrong results, or layout-dependent).
+const LITERT_UNSUPPORTED_OPS: &[&str] = &[
+    "averagePool2d",
+    "conv2d",
+    "equal",
+    "gemm",
+    "greater",
+    "greater_or_equal",
+    "identity",
+    "lesser",
+    "lesser_or_equal",
+    "logical_and",
+    "logical_or",
+    "matmul",
+    "maxPool2d",
+    "not_equal",
+    "pow",
+    "slice",
+    "split",
+    "sub",
+];
+
+/// Returns the list of WebNN operations not supported by this backend.
+pub fn unsupported_ops() -> &'static [&'static str] {
+    LITERT_UNSUPPORTED_OPS
+}
+
 struct LiteRt;
 
 impl LiteRt {
