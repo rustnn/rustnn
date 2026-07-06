@@ -77,54 +77,57 @@ impl fmt::Debug for OrtGraph {
     }
 }
 
-pub(crate) struct OrtBuilder<'a> {
-    graph: Option<&'a GraphInfo>,
-}
+pub(crate) struct OrtBuilder;
 
-impl fmt::Debug for OrtBuilder<'_> {
+impl fmt::Debug for OrtBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("OrtBuilder")
-            .field("has_graph", &self.graph.is_some())
-            .finish()
+        f.debug_struct("OrtBuilder").finish()
     }
 }
 
-impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'context> {
-    fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
-        let converted = OnnxConverter.convert(&graph_info)?;
+impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder {
+    fn build(
+        self: Box<Self>,
+        graph_info: GraphInfo,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::error::Result<MLGraph<'context>>> + 'builder>,
+    > {
+        Box::pin(async move {
+            let converted = OnnxConverter.convert(&graph_info)?;
 
-        let mut builder = Session::builder()
-            .map_err(|e| GraphError::OnnxRuntimeFailed {
-                reason: format!("session builder failed: {e}"),
-            })?
-            .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|e| GraphError::OnnxRuntimeFailed {
-                reason: format!("set opt level failed: {e}"),
-            })?;
-        if let Some(weights) = converted.weights_data {
-            builder = builder
-                .with_external_initializer_file_in_memory(
-                    ONNX_EXTERNAL_WEIGHTS_FILENAME,
-                    Cow::Owned(weights.to_vec()),
-                )
+            let mut builder = Session::builder()
                 .map_err(|e| GraphError::OnnxRuntimeFailed {
-                    reason: format!("set external initializer failed: {e}"),
+                    reason: format!("session builder failed: {e}"),
+                })?
+                .with_optimization_level(GraphOptimizationLevel::Disable)
+                .map_err(|e| GraphError::OnnxRuntimeFailed {
+                    reason: format!("set opt level failed: {e}"),
                 })?;
-        }
+            if let Some(weights) = converted.weights_data {
+                builder = builder
+                    .with_external_initializer_file_in_memory(
+                        ONNX_EXTERNAL_WEIGHTS_FILENAME,
+                        Cow::Owned(weights.to_vec()),
+                    )
+                    .map_err(|e| GraphError::OnnxRuntimeFailed {
+                        reason: format!("set external initializer failed: {e}"),
+                    })?;
+            }
 
-        ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        let session = builder
-            .with_optimization_level(GraphOptimizationLevel::Disable)
-            .map_err(|e| Error::GraphBuildError { source: e.into() })?
-            .commit_from_memory(&converted.data)
-            .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        MLGraph::new(
-            crate::mlcontext::MLBackendGraph::OnnxSession(
-                OrtGraph { session },
-                std::marker::PhantomData,
-            ),
-            &graph_info,
-        )
+            ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            let session = builder
+                .with_optimization_level(GraphOptimizationLevel::Disable)
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?
+                .commit_from_memory(&converted.data)
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            MLGraph::new(
+                crate::mlcontext::MLBackendGraph::OnnxSession(
+                    OrtGraph { session },
+                    std::marker::PhantomData,
+                ),
+                &graph_info,
+            )
+        })
     }
 }
 
@@ -666,7 +669,7 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     where
         'context: 'builder,
     {
-        Ok(Box::new(OrtBuilder { graph: None }))
+        Ok(Box::new(OrtBuilder))
     }
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> crate::error::Result<MLTensor> {

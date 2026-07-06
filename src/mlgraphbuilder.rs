@@ -39,7 +39,7 @@ pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context, 'builder> {
-    backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
+    backend: Option<Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>>,
 
     graph: Option<GraphInfo>,
 }
@@ -1996,16 +1996,20 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     {
         let backend = context.backend.create_builder()?;
         Ok(Self {
-            backend,
+            backend: Some(backend),
             graph: Some(Default::default()),
         })
     }
 
-    pub fn build_graph_info(
+    pub async fn build_graph_info(
         &mut self,
         graph: GraphInfo,
     ) -> crate::error::Result<MLGraph<'context>> {
-        self.backend.build(graph)
+        let backend = self
+            .backend
+            .take()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        backend.build(graph).await
     }
 
     /// Serialize the in-progress graph (with outputs marked) as `.webnn` text for debugging.
@@ -2039,8 +2043,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         .ok()
     }
 
-    /*async*/
-    pub fn build(
+    pub async fn build(
         &mut self,
         outputs: &'_ HashMap<&str, MLOperand>,
     ) -> crate::error::Result<MLGraph<'context>> {
@@ -2117,7 +2120,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             });
         }
 
-        self.backend.build(graph)
+        let backend = self
+            .backend
+            .take()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        backend.build(graph).await
     }
 
     /// Debug tool to check operand shape
@@ -3010,8 +3017,8 @@ mod test {
         mlgraphbuilder::MLGraphBuilder,
     };
 
-    #[test]
-    fn add_inputs() {
+    #[tokio::test]
+    async fn add_inputs() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
@@ -3034,7 +3041,7 @@ mod test {
         let mut outputs = HashMap::new();
         outputs.insert("out1", a);
         outputs.insert("out2", b);
-        let error = builder.build(&outputs).unwrap_err();
+        let error = builder.build(&outputs).await.unwrap_err();
         assert!(matches!(
             error,
             crate::error::Error::GraphBuilderError { .. }
@@ -3052,7 +3059,7 @@ mod test {
         let mut outputs = HashMap::new();
         outputs.insert("out1", out1);
         outputs.insert("out2", out2);
-        builder.build(&outputs).unwrap();
+        builder.build(&outputs).await.unwrap();
     }
 
     #[tokio::test]
@@ -3095,7 +3102,7 @@ mod test {
         // gaps. The builder-level assertions above run on every backend; only the
         // backend execution of this degenerate graph is skipped on CoreML.
         #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
-        let mut graph = match builder.build(&outputs) {
+        let mut graph = match builder.build(&outputs).await {
             Ok(graph) => graph,
             Err(e) => {
                 eprintln!(
@@ -3105,7 +3112,7 @@ mod test {
             }
         };
         #[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
-        let mut graph = builder.build(&outputs).unwrap();
+        let mut graph = builder.build(&outputs).await.unwrap();
         dbg!(&graph);
 
         let mut a_desc = MLTensorDescriptor::from_operand_descriptor(&mat_desc);
@@ -3183,7 +3190,7 @@ mod test {
 
         let mut outputs = HashMap::new();
         outputs.insert("out", output);
-        let mut graph = builder.build(&outputs).unwrap();
+        let mut graph = builder.build(&outputs).await.unwrap();
 
         // should error with GraphAlreadyBuilt
         builder.input("a", &mat_desc).unwrap_err();
@@ -3204,7 +3211,7 @@ mod test {
         let output = builder.add(a, b).unwrap();
         let mut outputs = HashMap::new();
         outputs.insert("out", output);
-        let mut graph2 = builder.build(&outputs).unwrap();
+        let mut graph2 = builder.build(&outputs).await.unwrap();
 
         let mut a_desc = MLTensorDescriptor::from_operand_descriptor(&mat_desc);
         a_desc.set_writable(true);
@@ -3260,8 +3267,8 @@ mod test {
         );
     }
 
-    #[test]
-    fn quantize_dequantize_linear_output_dtype() {
+    #[tokio::test]
+    async fn quantize_dequantize_linear_output_dtype() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
@@ -3315,6 +3322,6 @@ mod test {
 
         let mut outputs = HashMap::new();
         outputs.insert("out", dq);
-        builder.build(&outputs).unwrap();
+        builder.build(&outputs).await.unwrap();
     }
 }

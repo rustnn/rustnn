@@ -60,20 +60,27 @@ impl fmt::Debug for CoremlBuilder {
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder {
-    fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
-        let converted = CoremlMlProgramConverter
-            .convert(&graph_info)
+    fn build(
+        self: Box<Self>,
+        graph_info: GraphInfo,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = crate::error::Result<MLGraph<'context>>> + 'builder>,
+    > {
+        Box::pin(async move {
+            let converted = CoremlMlProgramConverter
+                .convert(&graph_info)
+                .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+            let model = compile_model(
+                &converted.data,
+                converted.weights_data.as_deref(),
+                self.device_type,
+            )
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        let model = compile_model(
-            &converted.data,
-            converted.weights_data.as_deref(),
-            self.device_type,
-        )
-        .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        MLGraph::new(
-            MLBackendGraph::CoremlModel(CoremlGraph { model }),
-            &graph_info,
-        )
+            MLGraph::new(
+                MLBackendGraph::CoremlModel(CoremlGraph { model }),
+                &graph_info,
+            )
+        })
     }
 }
 
@@ -358,7 +365,7 @@ mod test {
         let output = builder.add(a, b).unwrap();
         let mut outputs = HashMap::new();
         outputs.insert("out", output);
-        let mut graph = builder.build(&outputs).unwrap();
+        let mut graph = builder.build(&outputs).await.unwrap();
 
         let mut io_desc = MLTensorDescriptor::from_operand_descriptor(&desc);
         io_desc.set_writable(true);
@@ -429,7 +436,7 @@ mod test {
 
         // CoreML's MLMultiArray has no native int32 add on every compute unit; if the
         // converter/runtime rejects this graph, skip rather than fail (records a known gap).
-        let mut graph = match builder.build(&outputs) {
+        let mut graph = match builder.build(&outputs).await {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("skipping int32 CoreML test: build failed: {e:?}");

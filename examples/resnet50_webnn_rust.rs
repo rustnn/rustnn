@@ -225,7 +225,7 @@ fn print_predictions(args: &Args, shape: &[usize], logits: &[f32]) {
     }
 }
 
-fn run() -> Result<(), String> {
+async fn run() -> Result<(), String> {
     let args = Args::parse();
     if args.iters == 0 {
         return Err("--iters must be >= 1".to_string());
@@ -264,6 +264,7 @@ fn run() -> Result<(), String> {
         MLGraphBuilder::new(&mut context).map_err(|e| format!("create MLGraphBuilder: {e}"))?;
     let mut ml_graph = builder
         .build_graph_info(graph)
+        .await
         .map_err(|e| format!("build graph: {e}"))?;
     println!("Graph build took {:?}", build_start.elapsed());
 
@@ -344,8 +345,9 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
-    if let Err(err) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
         eprintln!("error: {err}");
         std::process::exit(1);
     }

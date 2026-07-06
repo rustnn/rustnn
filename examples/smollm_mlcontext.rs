@@ -558,6 +558,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Building graph...");
     let mut graph = builder
         .build_graph_info(graph_info)
+        .await
         .map_err(|e| anyhow!("Failed to build graph:\n{e}"))?;
     info!("Graph built");
 

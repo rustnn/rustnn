@@ -1,10 +1,11 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
-use std::ops::Deref;
+use std::ops::ControlFlow;
 use std::rc::Rc;
 use std::sync::LazyLock;
+use std::task::{Context, Poll};
+use std::{future::Future, pin::Pin, thread::JoinHandle};
 
 use cudarc::driver::CudaSlice;
 use cudarc::driver::CudaStream;
@@ -14,11 +15,12 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
 use trtx::Refitter;
-use trtx::host_memory::HostMemory;
+use trtx::interfaces::MonitorProgress;
 
 use crate::GraphInfo;
 use crate::backends::caching::CacheResult;
@@ -35,40 +37,6 @@ use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
-// TODO: also used in trtexec-rs. Should be part of trtx API?
-enum HostMemoryOrVec<'memory> {
-    HostMemory(HostMemory<'memory>),
-    Cow(Cow<'memory, [u8]>),
-}
-
-impl<'memory> AsRef<[u8]> for HostMemoryOrVec<'memory> {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            HostMemoryOrVec::HostMemory(host_memory) => host_memory.as_ref(),
-            HostMemoryOrVec::Cow(items) => items.as_ref(),
-        }
-    }
-}
-
-impl<'memory> Deref for HostMemoryOrVec<'memory> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_ref()
-    }
-}
-
-impl<'buffer> From<HostMemory<'buffer>> for HostMemoryOrVec<'buffer> {
-    fn from(value: HostMemory<'buffer>) -> Self {
-        HostMemoryOrVec::HostMemory(value)
-    }
-}
-impl<'memory> From<Cow<'memory, [u8]>> for HostMemoryOrVec<'memory> {
-    fn from(value: Cow<'memory, [u8]>) -> Self {
-        HostMemoryOrVec::Cow(value)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum TrtxError {
     #[error("Cuda driver error: {source}")]
@@ -83,6 +51,137 @@ pub enum TrtxError {
     },
 }
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
+
+#[derive(Default)]
+struct TrtxBuildCancellation {
+    active: Mutex<Option<Arc<AtomicBool>>>,
+}
+
+struct TrtxBuildProgressMonitor {
+    cancellation: Arc<TrtxBuildCancellation>,
+}
+
+impl MonitorProgress for TrtxBuildProgressMonitor {
+    fn phase_start(&self, _phase_name: &str, _parent_phase: Option<&str>, _num_steps: i32) {}
+
+    fn step_complete(&self, _phase_name: &str, _step: i32) -> ControlFlow<()> {
+        let cancelled = self
+            .cancellation
+            .active
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed));
+        if cancelled {
+            ControlFlow::Break(())
+        } else {
+            ControlFlow::Continue(())
+        }
+    }
+
+    fn phase_finish(&self, _phase_name: &str) {}
+}
+
+struct ActiveBuildCancellation<'a> {
+    cancellation: &'a TrtxBuildCancellation,
+}
+
+impl<'a> ActiveBuildCancellation<'a> {
+    fn set(cancellation: &'a TrtxBuildCancellation, flag: Arc<AtomicBool>) -> Self {
+        *cancellation.active.lock().unwrap() = Some(flag);
+        Self { cancellation }
+    }
+}
+
+impl Drop for ActiveBuildCancellation<'_> {
+    fn drop(&mut self) {
+        *self.cancellation.active.lock().unwrap() = None;
+    }
+}
+
+struct BuildThreadState<T> {
+    callback: StreamCallbackState,
+    result: Mutex<Option<std::result::Result<T, String>>>,
+}
+
+struct CancelableBuildThread<T> {
+    state: Arc<BuildThreadState<T>>,
+    cancel: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+    complete: bool,
+}
+
+impl<T: Send + 'static> CancelableBuildThread<T> {
+    fn spawn(
+        cancel: Arc<AtomicBool>,
+        work: impl FnOnce() -> std::result::Result<T, String> + Send + 'static,
+    ) -> Self {
+        let state = Arc::new(BuildThreadState {
+            callback: StreamCallbackState::new(),
+            result: Mutex::new(None),
+        });
+        let thread_state = Arc::clone(&state);
+        let thread = std::thread::Builder::new()
+            .name("rustnn-trtx-build".to_string())
+            .spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work))
+                    .unwrap_or_else(|_| Err("TensorRT build thread panicked".to_string()));
+                *thread_state.result.lock().unwrap() = Some(result);
+                thread_state.callback.signal();
+            })
+            .expect("failed to spawn TensorRT build thread");
+        Self {
+            state,
+            cancel,
+            thread: Some(thread),
+            complete: false,
+        }
+    }
+}
+
+impl<T> Future for CancelableBuildThread<T> {
+    type Output = std::result::Result<T, String>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.state.callback.complete.load(Ordering::Relaxed) {
+            self.complete = true;
+            return Poll::Ready(
+                self.state
+                    .result
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("completed build thread must store a result"),
+            );
+        }
+        self.state.callback.waker.register(cx.waker());
+        if self.state.callback.complete.load(Ordering::Relaxed) {
+            self.complete = true;
+            Poll::Ready(
+                self.state
+                    .result
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("completed build thread must store a result"),
+            )
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
+impl<T> Drop for CancelableBuildThread<T> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.cancel.store(true, Ordering::Relaxed);
+        }
+        // Dropping a JoinHandle detaches the thread. The worker owns everything it
+        // needs, so cancellation never blocks the executor while TensorRT reaches
+        // its next progress-monitor callback.
+        self.thread.take();
+    }
+}
 
 // TODO: the mapping to GraphDispatchError/TensorReadError/TensorWriteError
 // should be done for all backends in mlcontext.rs
@@ -297,9 +396,11 @@ pub(crate) struct TrtxContext<'context> {
     tensors: Vec<TrtxTensor>,
     registered_host_buffers: Vec<HostBuffer>,
     events: Vec<CudaEvent>,
-    runtime: Arc<Mutex<trtx::Runtime<'context>>>,
-    config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
-    builder: Arc<Mutex<trtx::Builder<'context>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'static>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'static>>>, // needs to be destroyed before builder
+    builder: Arc<Mutex<trtx::Builder<'static>>>,
+    build_cancellation: Arc<TrtxBuildCancellation>,
+    _context: std::marker::PhantomData<&'context ()>,
 }
 
 impl std::fmt::Debug for TrtxContext<'_> {
@@ -334,14 +435,19 @@ impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
         // this retains the primary context
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
-        let mut builder = trtx::Builder::new(&LOGGER)?;
+        let mut builder: trtx::Builder<'static> = trtx::Builder::new(&LOGGER)?;
         let mut config = builder.create_config()?;
         // Strip marked weights weights from engine and makes them refittable, keeps other weights
         // (mostly scalars)
         config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT_INDIVIDUAL);
         config.set_flag(trtx::trtx_sys::BuilderFlag::kSTRIP_PLAN);
+        let build_cancellation = Arc::new(TrtxBuildCancellation::default());
+        config.set_progress_monitor(Box::new(TrtxBuildProgressMonitor {
+            cancellation: Arc::clone(&build_cancellation),
+        }))?;
         let config = Arc::new(config.into());
-        let runtime = Arc::new(trtx::Runtime::new(&LOGGER)?.into());
+        let runtime: trtx::Runtime<'static> = trtx::Runtime::new(&LOGGER)?;
+        let runtime = Arc::new(runtime.into());
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
@@ -351,23 +457,27 @@ impl<'context> TrtxContext<'context> {
             runtime,
             builder: Arc::new(builder.into()),
             config,
+            build_cancellation,
+            _context: std::marker::PhantomData,
         })
     }
 }
 
 #[allow(dead_code)]
-pub(crate) struct TrtxBuilder<'builder> {
-    network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
-    builder: Arc<Mutex<trtx::Builder<'builder>>>,
-    config: Arc<Mutex<trtx::BuilderConfig<'builder>>>,
+pub(crate) struct TrtxBuilder {
+    network: Mutex<Option<trtx::NetworkDefinition<'static>>>,
+    builder: Arc<Mutex<trtx::Builder<'static>>>,
+    config: Arc<Mutex<trtx::BuilderConfig<'static>>>,
     cuda_context: Arc<CudaContext>,
-    runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
+    runtime: Arc<Mutex<trtx::Runtime<'static>>>,
+    build_cancellation: Arc<TrtxBuildCancellation>,
+    cancel: Arc<AtomicBool>,
     operands: HashMap<String, MLOperand>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
 }
 
-impl std::fmt::Debug for TrtxBuilder<'_> {
+impl std::fmt::Debug for TrtxBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TrtxBuilder").finish()
     }
@@ -384,139 +494,168 @@ static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'context> {
-    /*async */
+impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder {
     fn build(
-        &mut self,
+        self: Box<Self>,
         graph: GraphInfo,
-    ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        let mut engine_bytes: Option<HostMemoryOrVec> = None;
-        let mut hash_key: Option<String> = None;
+    ) -> Pin<Box<dyn Future<Output = crate::error::Result<MLGraph<'context>>> + 'builder>> {
+        let TrtxBuilder {
+            network,
+            builder,
+            config,
+            cuda_context,
+            runtime,
+            build_cancellation,
+            cancel,
+            caching_enabled,
+            ..
+        } = *self;
 
-        if self.caching_enabled {
-            let key = graph.hash_identifier_without_weights(&TRTX_SUFFIX);
-            if let Ok(cache) = ENGINE_CACHE.as_ref()
-                && let Ok(engine) = cache.get(&key)
-            {
-                debug!("Using cached engine of size {}", engine.len());
-                engine_bytes = Some(engine.into());
-            } else {
-                debug!("Could not get cached engine. Rebuilding from network defintion...");
-            }
-            hash_key = Some(key);
-        }
+        Box::pin(async move {
+            let thread_cancel = Arc::clone(&cancel);
+            let worker = CancelableBuildThread::spawn(Arc::clone(&cancel), move || {
+                let mut engine_bytes: Option<Vec<u8>> = None;
+                let mut hash_key: Option<String> = None;
 
-        if engine_bytes.is_none() {
-            let mut network = self
-                .network
+                if caching_enabled {
+                    let key = graph.hash_identifier_without_weights(&TRTX_SUFFIX);
+                    if let Ok(cache) = ENGINE_CACHE.as_ref()
+                        && let Ok(engine) = cache.get(&key)
+                    {
+                        debug!("Using cached engine of size {}", engine.len());
+                        engine_bytes = Some(engine.to_vec());
+                    } else {
+                        debug!(
+                            "Could not get cached engine. Rebuilding from network definition..."
+                        );
+                    }
+                    hash_key = Some(key);
+                }
+
+                if engine_bytes.is_none() {
+                    let mut network = network
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("frontend API prevents TrtxBuilder::build being called twice");
+                    TrtxConverter::build_network(&graph, &mut network)
+                        .map_err(|error| error.to_string())?;
+                    for constant_id in graph.constant_operand_ids_to_handles.keys() {
+                        network
+                            .mark_weights_refittable(&format!("{constant_id}"))
+                            .map_err(|error| error.to_string())?;
+                    }
+
+                    let mut builder = builder.lock().unwrap();
+                    let mut config = config.lock().unwrap();
+                    let _active_build = ActiveBuildCancellation::set(
+                        &build_cancellation,
+                        Arc::clone(&thread_cancel),
+                    );
+                    if thread_cancel.load(Ordering::Relaxed) {
+                        return Err("TensorRT build cancelled".to_string());
+                    }
+                    let host_mem = builder
+                        .build_serialized_network(&mut network, &mut config)
+                        .map_err(|error| error.to_string())?;
+                    if let Ok(cache) = ENGINE_CACHE.as_ref()
+                        && let Some(key) = hash_key
+                        && let Err(error) = cache.set(&key, &host_mem)
+                    {
+                        warn!("Failed to write engine to cache: {error}");
+                    }
+                    engine_bytes = Some(host_mem.to_vec());
+                }
+
+                Ok((
+                    engine_bytes.expect("cached or newly built engine must be available"),
+                    graph,
+                ))
+            });
+            let (engine_bytes, graph) = worker.await.map_err(|reason| Error::GraphBuildError {
+                source: std::io::Error::other(reason).into(),
+            })?;
+
+            cuda_context.bind_to_thread()?;
+            let mut engine = runtime
                 .lock()
                 .unwrap()
-                .take()
-                .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
-            crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
-            for constant_id in graph.constant_operand_ids_to_handles.keys() {
-                network.mark_weights_refittable(&format!("{constant_id}"))?;
-            }
-
-            let host_mem = self
-                .builder
-                .lock()
-                .unwrap()
-                .build_serialized_network(&mut network, &mut self.config.lock().unwrap())
+                .deserialize_cuda_engine(&engine_bytes)
                 .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-            if let Ok(cache) = ENGINE_CACHE.as_ref()
-                && let Some(key) = hash_key
-                && let Err(error) = cache.set(&key, &host_mem)
-            {
-                warn!("Failed to write engine to cache: {error}");
-            }
-            engine_bytes = Some(host_mem.into());
-        }
 
-        let engine_bytes =
-            engine_bytes.expect("already got cached engine or tried building engine");
+            // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
+            let mut refitter = Refitter::new(&engine, &LOGGER)?;
 
-        self.cuda_context.bind_to_thread()?;
-        let mut engine = self
-            .runtime
-            .lock()
-            .unwrap()
-            .deserialize_cuda_engine(&engine_bytes)
-            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-
-        // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
-        let mut refitter = Refitter::new(&engine, &LOGGER)?;
-
-        for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
-            let operand = graph.operands.get(*id as usize);
-            if let Some(operand) = operand.as_ref() {
-                let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let element_count = operand.descriptor.element_count().ok_or_else(|| {
-                    std::convert::Into::<crate::error::Error>::into(
-                        GraphBuilderError::InconsistentGraphInfo {
-                            message: format!(
-                                "Constant with dynamic size: id={id} operand={operand:#?}"
-                            ),
-                        },
-                    )
-                })?;
-                let expected_bytes = element_count * trt_type.size_bits() / 8;
-                if constant.data.len() != expected_bytes {
-                    return Err(GraphBuilderError::InconsistentGraphInfo {
+            for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
+                let operand = graph.operands.get(*id as usize);
+                if let Some(operand) = operand.as_ref() {
+                    let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
+                    let element_count = operand.descriptor.element_count().ok_or_else(|| {
+                        std::convert::Into::<crate::error::Error>::into(
+                            GraphBuilderError::InconsistentGraphInfo {
+                                message: format!(
+                                    "Constant with dynamic size: id={id} operand={operand:#?}"
+                                ),
+                            },
+                        )
+                    })?;
+                    let expected_bytes = element_count * trt_type.size_bits() / 8;
+                    if constant.data.len() != expected_bytes {
+                        return Err(GraphBuilderError::InconsistentGraphInfo {
                         message: format!(
                             "Weight size mismatch: expected {expected_bytes} bytes, got {} bytes",
                             constant.data.len()
                         ),
                     }
                     .into());
-                }
-                let weight_name = format!("{id}");
-                trace!("Trying to refit weight {weight_name}");
-                unsafe {
-                    refitter.set_named_weights_with_location(
-                        &weight_name, // TODO: add API to name weights to trtx
-                        trtx::trtx_sys::Weights {
-                            type_: trt_type.into(),
-                            values: constant.data.as_ptr() as *const std::ffi::c_void,
-                            count: element_count as i64,
-                        },
-                        // TODO: register and upload during build, refit with device location
-                        trtx::trtx_sys::nvinfer1::TensorLocation::kHOST,
-                    )?
-                };
-            } else {
-                return Err(GraphBuilderError::InconsistentGraphInfo {
+                    }
+                    let weight_name = format!("{id}");
+                    trace!("Trying to refit weight {weight_name}");
+                    unsafe {
+                        refitter.set_named_weights_with_location(
+                            &weight_name, // TODO: add API to name weights to trtx
+                            trtx::trtx_sys::Weights {
+                                type_: trt_type.into(),
+                                values: constant.data.as_ptr() as *const std::ffi::c_void,
+                                count: element_count as i64,
+                            },
+                            // TODO: register and upload during build, refit with device location
+                            trtx::trtx_sys::nvinfer1::TensorLocation::kHOST,
+                        )?
+                    };
+                } else {
+                    return Err(GraphBuilderError::InconsistentGraphInfo {
                     message: format!(
                         "Inconsistent GraphInfo: Constant operation with {id} is missing operations"
                     ),
                 }
                 .into());
+                }
             }
-        }
-        refitter.refit_cuda_engine()?;
+            refitter.refit_cuda_engine()?;
 
-        let mut runtime_config = engine
-            .create_runtime_config()
-            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-        runtime_config
-            .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kDISABLED)
-            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-        let exec = engine
-            .create_execution_context_with_config(Rc::new(runtime_config))
-            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+            let mut runtime_config = engine
+                .create_runtime_config()
+                .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+            runtime_config
+                .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kDISABLED)
+                .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+            let exec = engine
+                .create_execution_context_with_config(Rc::new(runtime_config))
+                .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
-        MLGraph::new(
-            MLBackendGraph::TrtxEngine(TrtxGraph {
-                _engine: engine,
-                exec,
-                cuda_stream: self
-                    .cuda_context
-                    .new_stream()
-                    .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
-                cuda_graphs: HashMap::new(),
-            }),
-            &graph,
-        )
+            MLGraph::new(
+                MLBackendGraph::TrtxEngine(TrtxGraph {
+                    _engine: engine,
+                    exec,
+                    cuda_stream: cuda_context
+                        .new_stream()
+                        .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
+                    cuda_graphs: HashMap::new(),
+                }),
+                &graph,
+            )
+        })
     }
 }
 
@@ -550,6 +689,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             builder: Arc::clone(&self.builder),
             config: Arc::clone(&self.config),
             runtime: Arc::clone(&self.runtime),
+            build_cancellation: Arc::clone(&self.build_cancellation),
+            cancel: Arc::new(AtomicBool::new(false)),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             strings: vec![],
@@ -920,8 +1061,53 @@ impl ListDevices for TrtxContext<'_> {
 #[cfg(test)]
 #[cfg(feature = "trtx-runtime")]
 mod tests {
+    use std::ops::ControlFlow;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use trtx::interfaces::MonitorProgress;
+
     use crate::mlcontext::{HostBuffer, MLBackendContext, MLTensorDescriptor};
-    use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
+    use crate::{
+        backends::trtx::{
+            CancelableBuildThread, TrtxBuildCancellation, TrtxBuildProgressMonitor, TrtxContext,
+        },
+        mlcontext::ListDevices,
+    };
+
+    #[test]
+    fn progress_monitor_cancels_active_build() {
+        let cancellation = Arc::new(TrtxBuildCancellation::default());
+        let flag = Arc::new(AtomicBool::new(false));
+        *cancellation.active.lock().unwrap() = Some(Arc::clone(&flag));
+        let monitor = TrtxBuildProgressMonitor { cancellation };
+
+        assert_eq!(monitor.step_complete("phase", 0), ControlFlow::Continue(()));
+        flag.store(true, Ordering::Relaxed);
+        assert_eq!(monitor.step_complete("phase", 1), ControlFlow::Break(()));
+    }
+
+    #[test]
+    fn dropping_build_thread_requests_cancellation() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let observed = Arc::new(AtomicBool::new(false));
+        let worker_observed = Arc::clone(&observed);
+        let worker = CancelableBuildThread::spawn(Arc::clone(&cancel), move || {
+            while !worker_cancel.load(Ordering::Relaxed) {
+                std::thread::yield_now();
+            }
+            worker_observed.store(true, Ordering::Relaxed);
+            Ok(())
+        });
+
+        drop(worker);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !observed.load(Ordering::Relaxed) && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert!(observed.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn test_context_creation() {

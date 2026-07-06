@@ -1646,8 +1646,11 @@ pub fn execute_wpt_graph(
 
     let webnn_text = builder.rustnn_webnn_text_for_outputs(&build_outputs);
 
-    let mut ml_graph = builder
-        .build(&build_outputs)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(|error| format!("failed to create graph-build runtime: {error}"))?;
+    let mut ml_graph = runtime
+        .block_on(builder.build(&build_outputs))
         .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
 
     let mut input_tensors: HashMap<&str, &MLTensor> = HashMap::new();

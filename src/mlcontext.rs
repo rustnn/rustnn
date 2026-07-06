@@ -75,8 +75,10 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
 }
 
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
-    /*async*/
-    fn build(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>>;
+    fn build(
+        self: Box<Self>,
+        graph: GraphInfo,
+    ) -> Pin<Box<dyn Future<Output = Result<MLGraph<'context>>> + 'builder>>;
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -84,7 +86,7 @@ pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
 #[derive(Debug)]
 pub(crate) enum MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-    TrtxEngine(TrtxGraph<'context>),
+    TrtxEngine(TrtxGraph<'static>),
     #[cfg(feature = "onnx-runtime")]
     OnnxSession(
         crate::backends::ort::OrtGraph,
@@ -102,7 +104,7 @@ pub(crate) enum MLBackendGraph<'context> {
 
 impl<'context> MLBackendGraph<'context> {
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
-    pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
+    pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'static>> {
         if let Self::TrtxEngine(v) = self {
             Some(v)
         } else {
@@ -960,7 +962,8 @@ impl<'context> MLContext<'context> {
 mod test {
     use crate::{mlcontext::*, mlgraphbuilder::MLGraphBuilder, webnn_json::from_graph_json};
 
-    fn create_add_graph_context_and_graph() -> Option<(MLContext<'static>, MLGraph<'static>)> {
+    async fn create_add_graph_context_and_graph() -> Option<(MLContext<'static>, MLGraph<'static>)>
+    {
         let contents = r#"
 webnn_graph "sample_graph" v1 {
   inputs {
@@ -990,7 +993,7 @@ webnn_graph "sample_graph" v1 {
 
         let mut context = context.unwrap();
         let mut builder = MLGraphBuilder::new(&mut context).unwrap();
-        let graph = builder.build_graph_info(graph_info).unwrap();
+        let graph = builder.build_graph_info(graph_info).await.unwrap();
         drop(builder);
 
         Some((context, graph))
@@ -1125,7 +1128,7 @@ webnn_graph "sample_graph" v1 {
 
     #[tokio::test]
     async fn test_dispatch() {
-        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph().await else {
             return;
         };
         dbg!(&context);
@@ -1163,9 +1166,9 @@ webnn_graph "sample_graph" v1 {
         );
     }
 
-    #[test]
-    fn test_dispatch_invalid_input_name_error_message() {
-        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+    #[tokio::test]
+    async fn test_dispatch_invalid_input_name_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph().await else {
             return;
         };
 
@@ -1184,9 +1187,9 @@ webnn_graph "sample_graph" v1 {
         );
     }
 
-    #[test]
-    fn test_dispatch_invalid_input_shape_error_message() {
-        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+    #[tokio::test]
+    async fn test_dispatch_invalid_input_shape_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph().await else {
             return;
         };
 
@@ -1206,9 +1209,9 @@ webnn_graph "sample_graph" v1 {
         );
     }
 
-    #[test]
-    fn test_dispatch_invalid_output_shape_error_message() {
-        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+    #[tokio::test]
+    async fn test_dispatch_invalid_output_shape_error_message() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph().await else {
             return;
         };
 

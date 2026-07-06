@@ -1017,7 +1017,7 @@ async fn main() -> Result<()> {
             OUTPUT_SHAPE
         );
         let outputs = HashMap::from([("output", output_operand)]);
-        rustnn(builder.build(&outputs), "build MLGraph")?
+        rustnn(builder.build(&outputs).await, "build MLGraph")?
     };
 
     let input_data = load_input_image(input)?;

@@ -187,9 +187,15 @@ impl fmt::Debug for LiteRtBuilder {
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder {
-    fn build(&mut self, _graph_info: GraphInfo) -> Result<MLGraph<'context>> {
-        Err(Error::GraphBuildError {
-            source: "LiteRT builder not yet implemented".into(),
+    fn build(
+        self: Box<Self>,
+        _graph_info: GraphInfo,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MLGraph<'context>>> + 'builder>>
+    {
+        Box::pin(async {
+            Err(Error::GraphBuildError {
+                source: "LiteRT builder not yet implemented".into(),
+            })
         })
     }
 }
