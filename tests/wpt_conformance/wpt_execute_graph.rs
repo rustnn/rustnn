@@ -22,7 +22,9 @@
 use half::f16;
 use rustnn::error::GraphBuilderError;
 use rustnn::graph::{unpack_int4, unpack_uint4};
-use rustnn::mlcontext::{MLContext, MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor};
+use rustnn::mlcontext::{
+    HostBuffer, MLContext, MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor,
+};
 use rustnn::mlgraphbuilder::MLGraphBuilder;
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operator_options::{
@@ -1403,44 +1405,22 @@ fn write_runtime_input(
     spec: &WptTensorSpec,
 ) -> Result<(), String> {
     let dtype = spec.data_type();
-    match dtype {
-        "float32" => context
-            .write_tensor(tensor, &tensor_f32_values(spec))
-            .map_err(|e| e.to_string()),
-        "float16" => context
-            .write_tensor(tensor, &tensor_f16_bits(spec))
-            .map_err(|e| e.to_string()),
-        "int32" => context
-            .write_tensor(tensor, &tensor_i32_values(spec))
-            .map_err(|e| e.to_string()),
-        "int8" => context
-            .write_tensor(tensor, &tensor_i8_values(spec))
-            .map_err(|e| e.to_string()),
-        "uint8" => context
-            .write_tensor(tensor, &tensor_u8_values(spec))
-            .map_err(|e| e.to_string()),
-        "int4" | "uint4" => {
-            let bytes = tensor_spec_to_bytes(spec)?;
-            context
-                .write_tensor(tensor, &bytes)
-                .map_err(|e| e.to_string())
-        }
-        "uint32" => context
-            .write_tensor(tensor, &tensor_u32_values(spec))
-            .map_err(|e| e.to_string()),
-        "int64" => context
-            .write_tensor(tensor, &tensor_i64_values(spec))
-            .map_err(|e| e.to_string()),
-        "uint64" => context
-            .write_tensor(tensor, &tensor_u64_values(spec))
-            .map_err(|e| e.to_string()),
-        _ => {
-            let bytes = tensor_spec_to_bytes(spec)?;
-            context
-                .write_tensor(tensor, &bytes)
-                .map_err(|e| e.to_string())
-        }
-    }
+    let buffer = match dtype {
+        "float32" => HostBuffer::from_slice(&tensor_f32_values(spec)),
+        "float16" => HostBuffer::from_slice(&tensor_f16_bits(spec)),
+        "int32" => HostBuffer::from_slice(&tensor_i32_values(spec)),
+        "int8" => HostBuffer::from_slice(&tensor_i8_values(spec)),
+        "uint8" => HostBuffer::from_slice(&tensor_u8_values(spec)),
+        "uint32" => HostBuffer::from_slice(&tensor_u32_values(spec)),
+        "int64" => HostBuffer::from_slice(&tensor_i64_values(spec)),
+        "uint64" => HostBuffer::from_slice(&tensor_u64_values(spec)),
+        _ => HostBuffer::from(tensor_spec_to_bytes(spec)?),
+    };
+    context
+        .rustnn_enqueue_write_tensor(tensor, &buffer)
+        .map_err(|e| e.to_string())?
+        .sync()
+        .map_err(|e| e.to_string())
 }
 
 fn read_output_tensor(
@@ -1450,12 +1430,15 @@ fn read_output_tensor(
 ) -> Result<WptActualOutput, String> {
     let dtype = spec.data_type();
     let n = shape_element_count(spec.shape()).max(1);
+    let buffer = HostBuffer::from(vec![0; tensor.rustnn_required_bytes()]);
+    context
+        .rustnn_enqueue_read_tensor(tensor, &buffer)
+        .map_err(|e| e.to_string())?
+        .sync()
+        .map_err(|e| e.to_string())?;
     match dtype {
         "float32" => {
-            let mut buf = vec![0.0f32; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, f32>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: Some(buf),
@@ -1464,10 +1447,7 @@ fn read_output_tensor(
             })
         }
         "float16" => {
-            let mut buf = vec![0u16; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, u16>(&buffer.read()).to_vec();
             let f32_data: Vec<f32> = buf
                 .iter()
                 .map(|&bits| f16::from_bits(bits).to_f32())
@@ -1480,10 +1460,7 @@ fn read_output_tensor(
             })
         }
         "int32" => {
-            let mut buf = vec![0i32; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, i32>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: None,
@@ -1492,11 +1469,7 @@ fn read_output_tensor(
             })
         }
         "int4" => {
-            let packed_len = MLOperandDataType::Int4.rustnn_storage_byte_length(n).max(1);
-            let mut bytes = vec![0u8; packed_len];
-            context
-                .read_tensor(tensor, &mut bytes)
-                .map_err(|e| e.to_string())?;
+            let bytes = buffer.read().to_vec();
             let logical = unpack_int4(&bytes, n);
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
@@ -1506,10 +1479,7 @@ fn read_output_tensor(
             })
         }
         "int8" => {
-            let mut buf = vec![0i8; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, i8>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: None,
@@ -1518,10 +1488,7 @@ fn read_output_tensor(
             })
         }
         "uint8" => {
-            let mut buf = vec![0u8; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = buffer.read().to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: None,
@@ -1530,13 +1497,7 @@ fn read_output_tensor(
             })
         }
         "uint4" => {
-            let packed_len = MLOperandDataType::Uint4
-                .rustnn_storage_byte_length(n)
-                .max(1);
-            let mut bytes = vec![0u8; packed_len];
-            context
-                .read_tensor(tensor, &mut bytes)
-                .map_err(|e| e.to_string())?;
+            let bytes = buffer.read().to_vec();
             let logical = unpack_uint4(&bytes, n);
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
@@ -1546,10 +1507,7 @@ fn read_output_tensor(
             })
         }
         "uint32" => {
-            let mut buf = vec![0u32; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, u32>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: None,
@@ -1558,10 +1516,7 @@ fn read_output_tensor(
             })
         }
         "int64" | "uint64" => {
-            let mut buf = vec![0i64; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, i64>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: None,
@@ -1570,10 +1525,7 @@ fn read_output_tensor(
             })
         }
         _ => {
-            let mut buf = vec![0.0f32; n];
-            context
-                .read_tensor(tensor, &mut buf)
-                .map_err(|e| e.to_string())?;
+            let buf = bytemuck::cast_slice::<u8, f32>(&buffer.read()).to_vec();
             Ok(WptActualOutput {
                 data_type: dtype.to_string(),
                 f32_data: Some(buf),
@@ -1694,8 +1646,11 @@ pub fn execute_wpt_graph(
 
     let webnn_text = builder.rustnn_webnn_text_for_outputs(&build_outputs);
 
-    let mut ml_graph = builder
-        .build(&build_outputs)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .map_err(|error| format!("failed to create graph-build runtime: {error}"))?;
+    let mut ml_graph = runtime
+        .block_on(builder.build(&build_outputs))
         .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
 
     let mut input_tensors: HashMap<&str, &MLTensor> = HashMap::new();

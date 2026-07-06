@@ -11,8 +11,8 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::{Parser, ValueEnum};
 use futures_util::future::join_all;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraphBuilder, MLOperand, MLOperandDescriptor, MLPowerPreference,
-    MLTensorDescriptor,
+    HostBuffer, MLContext, MLContextOptions, MLGraphBuilder, MLOperand, MLOperandDescriptor,
+    MLPowerPreference, MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operator_options::{
@@ -747,7 +747,7 @@ fn build_fast_style_transfer_graph(
     rustnn(builder.add(scaled, output_offset), "offset_output")
 }
 
-fn image_to_tensor(image: &image::RgbImage) -> Vec<f32> {
+fn write_image_to_buffer(image: &image::RgbImage, buffer: &HostBuffer) {
     let resized = image::imageops::resize(
         image,
         WIDTH as u32,
@@ -755,7 +755,8 @@ fn image_to_tensor(image: &image::RgbImage) -> Vec<f32> {
         image::imageops::FilterType::Triangle,
     );
     let plane = HEIGHT * WIDTH;
-    let mut tensor = vec![0.0f32; IMAGE_ELEMENT_COUNT];
+    let mut buffer = buffer.write();
+    let tensor = bytemuck::cast_slice_mut::<u8, f32>(&mut buffer);
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
             let pixel = resized.get_pixel(x as u32, y as u32);
@@ -765,17 +766,17 @@ fn image_to_tensor(image: &image::RgbImage) -> Vec<f32> {
             }
         }
     }
-    tensor
 }
 
-fn load_input_image(path: &Path) -> Result<Vec<f32>> {
-    let image = image::open(path)
+fn load_input_image(path: &Path) -> Result<image::RgbImage> {
+    Ok(image::open(path)
         .with_context(|| format!("decode input image {}", path.display()))?
-        .to_rgb8();
-    Ok(image_to_tensor(&image))
+        .to_rgb8())
 }
 
-fn save_output_image(path: &PathBuf, output: &[f32]) -> Result<()> {
+fn save_output_image(path: &PathBuf, output_buffer: &HostBuffer) -> Result<()> {
+    let output_buffer = output_buffer.read();
+    let output = bytemuck::cast_slice::<u8, f32>(&output_buffer);
     ensure!(
         output.len() == IMAGE_ELEMENT_COUNT,
         "output tensor length {}, expected {}",
@@ -800,13 +801,13 @@ fn save_output_image(path: &PathBuf, output: &[f32]) -> Result<()> {
         .with_context(|| format!("write output image {}", path.display()))
 }
 
-fn run_inferences(
+async fn run_inferences(
     context: &mut MLContext<'_>,
     graph: &mut rustnn::mlcontext::MLGraph<'_>,
-    input_data: &[f32],
+    input_image: &image::RgbImage,
     num_inferences: usize,
     pipelined: bool,
-) -> Result<Vec<f32>> {
+) -> Result<HostBuffer> {
     let mut input_descriptor =
         MLTensorDescriptor::new(MLOperandDataType::Float32, INPUT_SHAPE.to_vec());
     input_descriptor.set_writable(true);
@@ -817,6 +818,8 @@ fn run_inferences(
     let tensor_count = if pipelined { PIPELINE_DEPTH } else { 1 };
     let mut input_tensors = Vec::with_capacity(tensor_count);
     let mut output_tensors = Vec::with_capacity(tensor_count);
+    let mut input_buffers = Vec::with_capacity(tensor_count);
+    let mut output_buffers = Vec::with_capacity(tensor_count);
     for _ in 0..tensor_count {
         input_tensors.push(rustnn(
             context.create_tensor(&input_descriptor),
@@ -826,16 +829,21 @@ fn run_inferences(
             context.create_tensor(&output_descriptor),
             "create output tensor",
         )?);
+        let input_buffer = HostBuffer::new(&input_descriptor);
+        write_image_to_buffer(input_image, &input_buffer);
+        input_buffers.push(input_buffer);
+        output_buffers.push(HostBuffer::new(&output_descriptor));
     }
 
-    let mut output_data = vec![0.0f32; IMAGE_ELEMENT_COUNT];
     let mut starts = vec![None; tensor_count];
     let mut next_to_read = 0;
 
     for i in 0..num_inferences {
         let slot = i % tensor_count;
-        rustnn(
-            context.write_tensor(&input_tensors[slot], input_data),
+        let _write = rustnn(
+            context
+                .write_tensor(&input_tensors[slot], &input_buffers[slot])
+                .await,
             "write input tensor",
         )?;
         starts[slot] = Some(Instant::now());
@@ -846,7 +854,16 @@ fn run_inferences(
         if i + 1 >= tensor_count {
             let completed_slot = next_to_read % tensor_count;
             rustnn(
-                context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+                rustnn(
+                    context
+                        .read_tensor(
+                            &output_tensors[completed_slot],
+                            &output_buffers[completed_slot],
+                        )
+                        .await,
+                    "enqueue output read",
+                )?
+                .await,
                 "read output tensor",
             )?;
             next_to_read += 1;
@@ -856,7 +873,16 @@ fn run_inferences(
     while next_to_read < num_inferences {
         let completed_slot = next_to_read % tensor_count;
         rustnn(
-            context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+            rustnn(
+                context
+                    .read_tensor(
+                        &output_tensors[completed_slot],
+                        &output_buffers[completed_slot],
+                    )
+                    .await,
+                "enqueue output drain",
+            )?
+            .await,
             "drain output tensor",
         )?;
         println!(
@@ -870,7 +896,7 @@ fn run_inferences(
         next_to_read += 1;
     }
 
-    Ok(output_data)
+    Ok(output_buffers[(num_inferences - 1) % tensor_count].clone())
 }
 
 async fn download_weight(
@@ -1003,18 +1029,19 @@ async fn main() -> Result<()> {
             OUTPUT_SHAPE
         );
         let outputs = HashMap::from([("output", output_operand)]);
-        rustnn(builder.build(&outputs), "build MLGraph")?
+        rustnn(builder.build(&outputs).await, "build MLGraph")?
     };
 
-    let input_data = load_input_image(input)?;
-    let output_data = run_inferences(
+    let input_image = load_input_image(input)?;
+    let output_buffer = run_inferences(
         &mut context,
         &mut graph,
-        &input_data,
+        &input_image,
         args.num_inferences,
         !args.disable_pipelining,
-    )?;
-    save_output_image(&args.output, &output_data)?;
+    )
+    .await?;
+    save_output_image(&args.output, &output_buffer)?;
     println!("Wrote output image: {}", args.output.display());
 
     Ok(())

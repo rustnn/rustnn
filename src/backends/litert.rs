@@ -105,17 +105,26 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
     ) -> Result<MLTensor> {
         let mut tensor = self.create_tensor(descriptor)?;
         tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
+        self.write_tensor(
+            &tensor,
+            &crate::mlcontext::HostBuffer::from(input_data.to_vec()),
+        )
+        .and_then(|handle| handle.sync())
+        .map_err(|e| Error::TensorCreationError {
+            source: e.into(),
+            descriptor: descriptor.clone(),
+        })?;
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()> {
+    fn read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> Result<crate::mlcontext::TensorSyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor())?;
+        let mut array = buffer.write();
         if array.len() < logical {
             return Err(Error::TensorReadError {
                 source: format!(
@@ -132,10 +141,15 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()> {
+    fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> Result<crate::mlcontext::TensorSyncHandle> {
+        let array = buffer.read();
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -148,8 +162,8 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
                 tensor: tensor.clone(),
             });
         }
-        host[..array.len()].copy_from_slice(array);
-        Ok(())
+        host[..array.len()].copy_from_slice(&array);
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
     fn dispatch(
@@ -173,9 +187,15 @@ impl fmt::Debug for LiteRtBuilder {
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder {
-    fn build(&mut self, _graph_info: GraphInfo) -> Result<MLGraph<'context>> {
-        Err(Error::GraphBuildError {
-            source: "LiteRT builder not yet implemented".into(),
+    fn build(
+        self: Box<Self>,
+        _graph_info: GraphInfo,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MLGraph<'context>>> + 'builder>>
+    {
+        Box::pin(async {
+            Err(Error::GraphBuildError {
+                source: "LiteRT builder not yet implemented".into(),
+            })
         })
     }
 }
@@ -213,10 +233,11 @@ mod tests {
         let tensor = ctx.create_tensor(&desc).unwrap();
 
         let data: Vec<u8> = vec![0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x40];
-        ctx.write_tensor(&tensor, &data).unwrap();
+        ctx.write_tensor(&tensor, &crate::mlcontext::HostBuffer::from(data.clone()))
+            .unwrap();
 
-        let mut read_buf = vec![0u8; 8];
-        ctx.read_tensor(&tensor, &mut read_buf).unwrap();
-        assert_eq!(read_buf, data);
+        let read_buf = crate::mlcontext::HostBuffer::new(&desc);
+        ctx.read_tensor(&tensor, &read_buf).unwrap().sync().unwrap();
+        assert_eq!(&*read_buf.read(), data);
     }
 }

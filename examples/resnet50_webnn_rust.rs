@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference, MLTensorDescriptor,
+    HostBuffer, MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference, MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::{ContextProperties, GraphValidator, load_graph_from_path};
@@ -225,7 +225,7 @@ fn print_predictions(args: &Args, shape: &[usize], logits: &[f32]) {
     }
 }
 
-fn run() -> Result<(), String> {
+async fn run() -> Result<(), String> {
     let args = Args::parse();
     if args.iters == 0 {
         return Err("--iters must be >= 1".to_string());
@@ -264,6 +264,7 @@ fn run() -> Result<(), String> {
         MLGraphBuilder::new(&mut context).map_err(|e| format!("create MLGraphBuilder: {e}"))?;
     let mut ml_graph = builder
         .build_graph_info(graph)
+        .await
         .map_err(|e| format!("build graph: {e}"))?;
     println!("Graph build took {:?}", build_start.elapsed());
 
@@ -283,25 +284,25 @@ fn run() -> Result<(), String> {
         .map_err(|e| format!("create output tensor: {e}"))?;
 
     let output_shape: Vec<usize> = output_shape_u64.iter().map(|&d| d as usize).collect();
-    let num_classes: usize = output_shape.iter().product();
-
     let dispatch_once = |context: &mut MLContext,
                          ml_graph: &mut rustnn::mlcontext::MLGraph,
                          input_data: &[f32]|
      -> Result<Vec<f32>, String> {
         context
-            .write_tensor(&input_tensor, input_data)
+            .rustnn_enqueue_write_tensor(&input_tensor, &HostBuffer::from_slice(input_data))
             .map_err(|e| format!("write_tensor: {e}"))?;
         let inputs = HashMap::from([(input_name.as_str(), &input_tensor)]);
         let outputs = HashMap::from([(output_name.as_str(), &output_tensor)]);
         context
             .dispatch(ml_graph, &inputs, &outputs)
             .map_err(|e| format!("dispatch: {e:?}"))?;
-        let mut logits = vec![0.0f32; num_classes];
+        let logits = HostBuffer::new(&output_td);
         context
-            .read_tensor(&output_tensor, &mut logits)
-            .map_err(|e| format!("read_tensor: {e}"))?;
-        Ok(logits)
+            .rustnn_enqueue_read_tensor(&output_tensor, &logits)
+            .map_err(|e| format!("read_tensor: {e}"))?
+            .sync()
+            .map_err(|e| format!("read_tensor sync: {e}"))?;
+        Ok(bytemuck::cast_slice::<u8, f32>(&logits.read()).to_vec())
     };
 
     if args.bench {
@@ -314,7 +315,7 @@ fn run() -> Result<(), String> {
         let mut last_logits = Vec::new();
         for _ in 0..args.iters {
             context
-                .write_tensor(&input_tensor, &input_data)
+                .rustnn_enqueue_write_tensor(&input_tensor, &HostBuffer::from_slice(&input_data))
                 .map_err(|e| format!("write_tensor: {e}"))?;
             let inputs = HashMap::from([(input_name.as_str(), &input_tensor)]);
             let outputs = HashMap::from([(output_name.as_str(), &output_tensor)]);
@@ -323,11 +324,13 @@ fn run() -> Result<(), String> {
                 .dispatch(&mut ml_graph, &inputs, &outputs)
                 .map_err(|e| format!("dispatch: {e:?}"))?;
             samples.push(start.elapsed());
-            let mut logits = vec![0.0f32; num_classes];
+            let logits = HostBuffer::new(&output_td);
             context
-                .read_tensor(&output_tensor, &mut logits)
-                .map_err(|e| format!("read_tensor: {e}"))?;
-            last_logits = logits;
+                .rustnn_enqueue_read_tensor(&output_tensor, &logits)
+                .map_err(|e| format!("read_tensor: {e}"))?
+                .sync()
+                .map_err(|e| format!("read_tensor sync: {e}"))?;
+            last_logits = bytemuck::cast_slice::<u8, f32>(&logits.read()).to_vec();
         }
         report_stats(&samples);
         println!();
@@ -342,8 +345,9 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-fn main() {
-    if let Err(err) = run() {
+#[tokio::main]
+async fn main() {
+    if let Err(err) = run().await {
         eprintln!("error: {err}");
         std::process::exit(1);
     }
