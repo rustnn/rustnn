@@ -33,6 +33,20 @@ fn run_flatc(schema: &str, out_dir: &str) -> Result<(), String> {
     if !status.success() {
         return Err("flatc exited with error".into());
     }
+
+    // Keep warnings in generated bindings from obscuring warnings in handwritten code.
+    // flatc does not currently emit Rust 2024-compatible unsafe blocks, among other
+    // lints, so scope the allowance to the generated schema rather than the crate.
+    let generated_path = Path::new(out_dir).join("schema_generated.rs");
+    let generated = fs::read_to_string(&generated_path)
+        .map_err(|e| format!("failed to read generated FlatBuffers schema: {e}"))?;
+    let wrapped = format!(
+        "#[allow(warnings)]\nmod generated_flatc_schema {{\n{generated}\n}}\n\
+         pub use generated_flatc_schema::*;\n"
+    );
+    fs::write(generated_path, wrapped)
+        .map_err(|e| format!("failed to wrap generated FlatBuffers schema: {e}"))?;
+
     Ok(())
 }
 
