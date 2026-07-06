@@ -1,0 +1,26 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+identity.https.any.js identity float16 1D tensor, litert
+ identity :: identity float16 1D tensor: index 0: actual=0.13049316 expected=0.3774414 ulp=1501 tolerance=4
+  inputs: identityInput: [0.37744140625, -0.88916015625, 9.96875, 7.96484375, -4.20703125, -3.748046875, -2.51171875, 5.77734375, -4.47265625, -8.40625, -3.857421875, 6.03515625, 9.078125, 7.1015625, 1.4169921875, -5.64453125, -2.599609375, -7.265625, -9.78125, 5.49609375, -9.96875, -6.90234375, -2.849609375, 3.279296875]
+  expected identityOutput: [0.3774414, -0.88916016, 9.96875, 7.9648438, -4.2070313, -3.7480469, -2.5117188, 5.7773438, -4.4726563, -8.40625 ...] (len=24)
+  actual identityOutput: [0.13049316, 0.52246094, 0.65234375, 0.5234375, 0.45141602, 0.0657959, 0.640625, 0.64746094, 0.3256836, 0.13183594 ...] (len=24)
+  expected identityOutput full nd:
+[0.3774414, -0.88916016, 9.96875, 7.9648438, -4.2070313, -3.7480469, -2.5117188, 5.7773438, -4.4726563, -8.40625, ...] (len=24, shape=[24])
+  actual identityOutput full nd:
+[0.13049316, 0.52246094, 0.65234375, 0.5234375, 0.45141602, 0.0657959, 0.640625, 0.64746094, 0.3256836, 0.13183594, ...] (len=24, shape=[24])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    identityInput: f16[24];
+  }
+
+  nodes {
+    [identityOutput] = identity(identityInput, label="");
+  }
+
+  outputs { identityOutput; }
+}

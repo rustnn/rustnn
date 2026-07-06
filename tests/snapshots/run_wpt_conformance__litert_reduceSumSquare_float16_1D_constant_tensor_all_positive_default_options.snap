@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_sum_square.https.any.js reduceSumSquare float16 1D constant tensor all positive default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceSumSquare { input: 0, options: Some(MLReduceOptions { label: "", axes: None, keep_dimensions: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([147, 61, 212, 60, 188, 60, 4, 54, 147, 57, 5, 58, 70, 60, 210, 61, 8, 59, 225, 50, 102, 58, 90, 48, 102, 60, 55, 58, 105, 60, 64, 57, 208, 62, 105, 62, 19, 62, 146, 63, 186, 58, 235, 60, 30, 62, 39, 57]);
+  }
+
+  nodes {
+    [reduceSumSquareOutput] = reduceSumSquare(operand_0, axes=null, keepDimensions=false, label="");
+  }
+
+  outputs { reduceSumSquareOutput; }
+}

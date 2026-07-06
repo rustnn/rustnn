@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+arg_min_max.https.any.js argMax float16 1D constant tensor, axis=0, default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ArgMax { input: 0, axis: 0, options: Some(MLArgMinMaxOptions { label: "", keep_dimensions: false, output_data_type: Int32 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([99, 210, 138, 198, 157, 84, 135, 85, 75, 197, 243, 212, 54, 209, 157, 84, 135, 85, 79, 213, 176, 211, 37, 214, 99, 210, 138, 198, 157, 84, 135, 85, 75, 197, 243, 212, 54, 209, 157, 84, 135, 85, 79, 213, 176, 211, 37, 214]);
+  }
+
+  nodes {
+    [argMaxOutput] = argMax(operand_0, keepDimensions=false, label="", outputDataType="int32");
+  }
+
+  outputs { argMaxOutput; }
+}

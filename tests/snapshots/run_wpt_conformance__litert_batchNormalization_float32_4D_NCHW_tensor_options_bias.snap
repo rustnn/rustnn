@@ -1,0 +1,26 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+batch_normalization.https.any.js batchNormalization float32 4D NCHW tensor options.bias, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: BatchNormalization { input: 1, mean: 2, variance: 3, options: Some(MLBatchNormalizationOptions { label: "", scale: None, bias: Some(0), axis: 1, epsilon: 1e-5 }), outputs: [4] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    bnInput: f32[2, 3, 2, 2];
+  }
+
+  consts {
+    operand_0: f32[3] @bytes([176, 104, 128, 66, 100, 146, 150, 66, 22, 37, 169, 194]);
+    operand_2: f32[3] @bytes([64, 132, 78, 66, 181, 184, 198, 66, 115, 75, 192, 194]);
+    operand_3: f32[3] @bytes([137, 149, 243, 65, 113, 185, 172, 66, 228, 196, 147, 66]);
+  }
+
+  nodes {
+    [bnOutput] = batchNormalization(bnInput, operand_2, operand_3, axis=1, bias=0, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { bnOutput; }
+}

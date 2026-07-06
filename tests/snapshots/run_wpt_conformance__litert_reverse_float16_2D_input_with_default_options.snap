@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reverse.https.any.js reverse float16 2D input with default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Reverse { input: 0, options: Some(MLReverseOptions { label: "", axes: None }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    reverseInput: f16[3, 4];
+  }
+
+  nodes {
+    [reverseOutput] = reverse(reverseInput, axes=null, label="");
+  }
+
+  outputs { reverseOutput; }
+}

@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+erf.https.any.js erf float16 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Erf { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([181, 184, 66, 184, 24, 48, 158, 56, 61, 59, 250, 183, 224, 59, 237, 50, 10, 52, 198, 176, 79, 59, 151, 184, 236, 57, 41, 56, 76, 177, 104, 58, 103, 54, 254, 185, 40, 187, 70, 182, 124, 57, 101, 185, 9, 183, 86, 52]);
+  }
+
+  nodes {
+    [erfOutput] = erf(operand_0, label="");
+  }
+
+  outputs { erfOutput; }
+}

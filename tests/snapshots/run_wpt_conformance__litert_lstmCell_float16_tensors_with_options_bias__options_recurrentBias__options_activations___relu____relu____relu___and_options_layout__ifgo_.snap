@@ -1,0 +1,28 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+lstm_cell.https.any.js lstmCell float16 tensors with options.bias, options.recurrentBias, options.activations=['relu', 'relu', 'relu'] and options.layout='ifgo', litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: LstmCell { input: 3, weight: 6, recurrence: 5, hidden_state: 2, cell_state: 1, hidden_size: 2, options: Some(MLLstmCellOptions { label: "", bias: Some(0), recurrent_bias: Some(4), peephole_weight: None, layout: "ifgo", activations: Some(["relu", "relu", "relu"]) }), outputs: [7, 8] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    lstmCellCellState: f16[2, 2];
+    lstmCellHiddenState: f16[2, 2];
+    lstmCellInput: f16[2, 2];
+  }
+
+  consts {
+    operand_0: f16[8] @bytes([0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64]);
+    operand_4: f16[8] @bytes([0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64, 0, 60, 0, 64]);
+    operand_5: f16[8, 2] @bytes([102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46, 102, 46]);
+    operand_6: f16[8, 2] @bytes([0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192, 0, 60, 0, 188, 0, 64, 0, 192]);
+  }
+
+  nodes {
+    [lstmCellOutput1, lstmCellOutput2] = lstmCell(lstmCellInput, operand_6, operand_5, lstmCellHiddenState, lstmCellCellState, activations=["relu", "relu", "relu"], bias=0, label="", layout="ifgo", peepholeWeight=null, recurrentBias=4);
+  }
+
+  outputs { lstmCellOutput1; lstmCellOutput2; }
+}

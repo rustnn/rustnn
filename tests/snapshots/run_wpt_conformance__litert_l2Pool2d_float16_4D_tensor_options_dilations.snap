@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+l2Pool2d.https.any.js l2Pool2d float16 4D tensor options.dilations, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: L2Pool2d { input: 0, options: Some(MLPool2dOptions { label: "", window_dimensions: Some([3, 3]), padding: [], strides: [], dilations: [2, 2], layout: "", output_shape_rounding: "", output_sizes: None }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    l2Pool2dInput: f16[1, 2, 5, 5];
+  }
+
+  nodes {
+    [l2Pool2dOutput] = l2Pool2d(l2Pool2dInput, dilations=[2, 2], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=[3, 3]);
+  }
+
+  outputs { l2Pool2dOutput; }
+}

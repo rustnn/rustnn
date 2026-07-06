@@ -1,0 +1,25 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gemm.https.any.js gemm two float32 2D tensors all options, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[4, 3];
+  }
+
+  consts {
+    operand_1: f32[5, 4] @bytes([220, 45, 201, 65, 23, 42, 116, 59, 100, 127, 151, 66, 142, 160, 43, 66, 128, 98, 133, 66, 64, 254, 131, 65, 185, 54, 193, 66, 124, 82, 8, 66, 71, 50, 125, 66, 197, 88, 66, 64, 106, 51, 198, 66, 203, 192, 174, 66, 86, 20, 42, 65, 203, 71, 186, 66, 64, 243, 185, 65, 39, 175, 184, 66, 60, 79, 117, 66, 82, 42, 140, 66, 181, 60, 172, 66, 210, 73, 113, 66]);
+    operand_2: f32[3, 5] @bytes([70, 139, 165, 66, 58, 197, 182, 66, 44, 110, 74, 65, 221, 249, 160, 65, 69, 6, 137, 66, 70, 207, 12, 66, 203, 90, 85, 65, 82, 36, 75, 66, 82, 57, 177, 66, 169, 158, 244, 65, 245, 240, 138, 66, 168, 81, 229, 64, 102, 178, 226, 65, 100, 99, 181, 66, 228, 117, 142, 66]);
+  }
+
+  nodes {
+    [gemmOutput] = gemm(inputA, operand_1, aTranspose=true, alpha=74.43204170482103, bTranspose=true, beta=62.01828598608989, c=2, label="");
+  }
+
+  outputs { gemmOutput; }
+}

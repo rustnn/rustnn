@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+elu.https.any.js elu float32 1D constant tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Elu { input: 0, options: Some(MLEluOptions { label: "", alpha: 1.0 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([126, 24, 151, 64, 41, 246, 192, 62, 201, 161, 181, 63, 141, 114, 119, 192, 250, 243, 173, 63, 204, 78, 119, 192, 8, 223, 250, 64, 11, 27, 214, 192, 27, 175, 11, 63, 210, 218, 184, 64, 188, 108, 232, 64, 55, 112, 237, 192, 53, 72, 181, 64, 34, 208, 214, 192, 235, 110, 85, 192, 83, 237, 154, 191, 113, 45, 232, 64, 155, 116, 14, 65, 178, 162, 128, 192, 114, 171, 227, 64, 157, 163, 229, 189, 248, 21, 108, 192, 40, 83, 196, 64, 171, 82, 30, 193]);
+  }
+
+  nodes {
+    [eluOutput] = elu(operand_0, alpha=1.0, label="");
+  }
+
+  outputs { eluOutput; }
+}

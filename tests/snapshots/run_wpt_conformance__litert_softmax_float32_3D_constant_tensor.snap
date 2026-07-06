@@ -1,0 +1,26 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+softmax.https.any.js softmax float32 3D constant tensor, litert
+ softmax :: softmax float32 3D constant tensor: index 0: actual=0.25 expected=0.3958904 ulp=4895270 tolerance=256
+  inputs: softmaxInput: [0.4301910996437073, 0.5471914410591125, -1.1637765169143677, 0.18390046060085297, 0.583903968334198, 0.17356790602207184, 0.5397239923477173, -0.9535139799118042, -0.5920282602310181, -0.17344485223293304, 0.14395014941692352, -0.37920907139778137] (constant)
+  expected softmaxOutput: [0.3958904, 0.45983806, 0.098126754, 0.5290774, 0.46166998, 0.3164771, 0.53902423, 0.16964708, 0.1424396, 0.22368485 ...] (len=12)
+  actual softmaxOutput: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25 ...] (len=12)
+  expected softmaxOutput full nd:
+[0.3958904, 0.45983806, 0.098126754, 0.5290774, 0.46166998, 0.3164771, 0.53902423, 0.16964708, 0.1424396, 0.22368485, ...] (len=12, shape=[1, 3, 4])
+  actual softmaxOutput full nd:
+[0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, ...] (len=12, shape=[1, 3, 4])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[1, 3, 4] @bytes([2, 66, 220, 62, 189, 20, 12, 63, 161, 246, 148, 191, 103, 80, 60, 62, 187, 122, 21, 63, 201, 187, 49, 62, 90, 43, 10, 63, 126, 25, 116, 191, 42, 143, 23, 191, 135, 155, 49, 190, 171, 103, 19, 62, 177, 39, 194, 190]);
+  }
+
+  nodes {
+    [softmaxOutput] = softmax(operand_0, label="");
+  }
+
+  outputs { softmaxOutput; }
+}

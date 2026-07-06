@@ -1,0 +1,22 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+subgraph.https.any.js batchNormalization default + leakyRelu, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: BatchNormalization { input: 0, mean: 1, variance: 2, options: Some(MLBatchNormalizationOptions { label: "", scale: None, bias: None, axis: 1, epsilon: 1e-5 }), outputs: [3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    bnInput: f32[4, 6];
+    bnMean: f32[6];
+    bnVariance: f32[6];
+  }
+
+  nodes {
+    [operand_3] = batchNormalization(bnInput, bnMean, bnVariance, axis=1, bias=null, epsilon=0.00001, label="", scale=null);
+    [output] = leakyRelu(operand_3, alpha=0.01, label="");
+  }
+
+  outputs { output; }
+}

@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+softmax.https.any.js softmax float16 2D constant tensor all positive, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[4, 6] @bytes([231, 71, 92, 70, 213, 68, 202, 72, 190, 50, 142, 68, 38, 71, 42, 72, 37, 62, 162, 70, 209, 61, 212, 50, 66, 69, 25, 72, 21, 72, 192, 65, 122, 72, 29, 70, 140, 62, 108, 52, 7, 69, 204, 67, 203, 65, 228, 70]);
+  }
+
+  nodes {
+    [softmaxOutput] = softmax(operand_0, label="");
+  }
+
+  outputs { softmaxOutput; }
+}

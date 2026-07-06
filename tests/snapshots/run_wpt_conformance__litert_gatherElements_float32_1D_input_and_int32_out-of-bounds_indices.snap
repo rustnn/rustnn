@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gatherElements.https.any.js gatherElements float32 1D input and int32 out-of-bounds indices, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: GatherElements { input: 1, indices: 0, batch_dimensions: None, options: Some(MLGatherOptions { label: "", axis: 0 }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f32[6];
+  }
+
+  consts {
+    operand_0: i32[1] @bytes([7, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_0, axis=0, label="");
+  }
+
+  outputs { gatherElementsOutput; }
+}

@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+tan.https.any.js tan float32 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Tan { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([144, 202, 82, 66, 101, 35, 140, 66, 105, 254, 180, 66, 220, 64, 197, 65, 92, 164, 58, 65, 130, 207, 75, 194, 191, 71, 33, 66, 10, 66, 26, 193, 193, 138, 252, 193, 126, 97, 54, 66, 51, 185, 95, 194, 113, 105, 50, 194, 112, 232, 160, 66, 2, 39, 20, 192, 83, 204, 203, 193, 154, 91, 122, 66, 88, 227, 141, 194, 252, 100, 123, 66, 104, 152, 169, 66, 137, 43, 191, 194, 250, 214, 120, 65, 179, 6, 93, 194, 65, 20, 215, 193, 87, 21, 35, 62]);
+  }
+
+  nodes {
+    [tanOutput] = tan(operand_0, label="");
+  }
+
+  outputs { tanOutput; }
+}

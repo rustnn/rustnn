@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+pad.https.any.js pad float32 1D constant tensor default options, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[9] @bytes([228, 27, 182, 65, 38, 89, 169, 193, 201, 82, 183, 194, 15, 233, 134, 65, 19, 15, 114, 66, 150, 34, 141, 194, 182, 146, 114, 194, 93, 135, 63, 194, 127, 115, 137, 66]);
+  }
+
+  nodes {
+    [padOutput] = pad(operand_0, label="", mode="", value=null);
+  }
+
+  outputs { padOutput; }
+}

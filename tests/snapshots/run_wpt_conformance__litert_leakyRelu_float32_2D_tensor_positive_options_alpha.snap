@@ -1,0 +1,27 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+leaky_relu.https.any.js leakyRelu float32 2D tensor positive options.alpha, litert
+ leaky_relu :: leakyRelu float32 2D tensor positive options.alpha: index 0: actual=-0 expected=-682.1044 ulp=1143637678 tolerance=4
+  inputs: leakyReluInput: [-19.053640365600582, 50.77590560913086, -69.54966735839844, -80.57432556152344, -90.4011001586914, 76.02884674072266, 66.33873748779297, -84.10186767578125, -17.19101333618164, -87.47624206542969, -3.416466474533081, -22.77235984802246, -2.509489059448242, 18.933284759521484, 98.61402893066406, 55.3392333984375, -33.17860412597656, -46.03901290893555, -61.47925567626953, 64.26514434814453, 21.469341278076172, -31.51469039916992, -41.27694320678711, -65.59529113769531]
+  expected leakyReluOutput: [-682.1044, 50.775906, -2489.8198, -2884.4934, -3236.2837, 76.02885, 66.33874, -3010.7766, -615.4239, -3131.5764 ...] (len=24)
+  actual leakyReluOutput: [-0, 50.775906, -0, -0, -0, 76.02885, 66.33874, -0, -0, -0 ...] (len=24)
+  expected leakyReluOutput full nd:
+[-682.1044, 50.775906, -2489.8198, -2884.4934, -3236.2837, 76.02885, 66.33874, -3010.7766, -615.4239, -3131.5764, ...] (len=24, shape=[4, 6])
+  actual leakyReluOutput full nd:
+[-0, 50.775906, -0, -0, -0, 76.02885, 66.33874, -0, -0, -0, ...] (len=24, shape=[4, 6])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    leakyReluInput: f32[4, 6];
+  }
+
+  nodes {
+    [leakyReluOutput] = leakyRelu(leakyReluInput, alpha=35.799162942273234, label="");
+  }
+
+  outputs { leakyReluOutput; }
+}

@@ -1,0 +1,28 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+concat.https.any.js concat two float16 5D tensors of same others dimensions except different 5th dimension along axis 4, litert
+ concat :: concat two float16 5D tensors of same others dimensions except different 5th dimension along axis 4: index 4: actual=0.57666016 expected=-0.59472656 ulp=29023 tolerance=4
+  inputs: concatInput1: [-0.3944413363933563, 0.861982524394989, 0.337996244430542, -0.990639865398407, 0.576785683631897, 0.32276400923728943, -0.44735023379325867, 0.11028251051902772]; concatInput2: [-0.5945112705230713, -0.402848482131958, -0.9531654119491576, -0.6731740236282349, 0.49189892411231995, -0.15864109992980957, -0.3418811559677124, -0.9158143401145936, -0.7206121683120728, -0.7993468642234802, 0.6653800010681152, 0.03886038810014725, 0.5182055234909058, -0.8742017149925232, -0.4790218770503998, 0.1211843192577362]
+  expected concatOutput: [-0.39453125, 0.8618164, 0.33789063, -0.99072266, -0.59472656, -0.40283203, -0.953125, -0.67333984, 0.49194336, -0.1586914 ...] (len=24)
+  actual concatOutput: [-0.39453125, 0.8618164, 0.33789063, -0.99072266, 0.57666016, 0.3227539, -0.44726563, 0.11029053, -0.59472656, -0.40283203 ...] (len=24)
+  expected concatOutput full nd:
+[-0.39453125, 0.8618164, 0.33789063, -0.99072266, -0.59472656, -0.40283203, -0.953125, -0.67333984, 0.49194336, -0.1586914, ...] (len=24, shape=[1, 2, 1, 1, 12])
+  actual concatOutput full nd:
+[-0.39453125, 0.8618164, 0.33789063, -0.99072266, 0.57666016, 0.3227539, -0.44726563, 0.11029053, -0.59472656, -0.40283203, ...] (len=24, shape=[1, 2, 1, 1, 12])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    concatInput1: f16[1, 2, 1, 1, 4];
+    concatInput2: f16[1, 2, 1, 1, 8];
+  }
+
+  nodes {
+    [concatOutput] = concat(concatInput1, concatInput2, label="");
+  }
+
+  outputs { concatOutput; }
+}

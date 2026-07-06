@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "tanh.https.any.js",
+    "tanh float16 1D constant tensor",
+    "litert",
+    "PASS",
+)

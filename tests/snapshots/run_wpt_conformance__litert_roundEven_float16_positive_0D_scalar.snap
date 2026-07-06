@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+round_even.https.any.js roundEven float16 positive 0D scalar, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: RoundEven { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    roundEvenInput: f16[];
+  }
+
+  nodes {
+    [roundEvenOutput] = roundEven(roundEvenInput, label="");
+  }
+
+  outputs { roundEvenOutput; }
+}

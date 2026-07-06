@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gelu.https.any.js gelu float32 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Gelu { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([198, 215, 96, 63, 1, 202, 198, 189, 1, 0, 12, 62, 235, 153, 237, 62, 20, 96, 136, 190, 96, 66, 83, 191, 43, 100, 90, 63, 82, 236, 196, 62, 14, 95, 45, 63, 175, 83, 246, 190, 178, 198, 152, 62, 105, 131, 45, 63, 227, 182, 6, 191, 250, 18, 179, 62, 96, 74, 4, 190, 88, 220, 21, 63, 113, 35, 101, 191, 162, 218, 231, 60, 0, 199, 202, 189, 44, 69, 98, 191, 87, 155, 24, 191, 157, 36, 163, 62, 105, 116, 245, 62, 180, 230, 132, 189]);
+  }
+
+  nodes {
+    [geluOutput] = gelu(operand_0, label="");
+  }
+
+  outputs { geluOutput; }
+}

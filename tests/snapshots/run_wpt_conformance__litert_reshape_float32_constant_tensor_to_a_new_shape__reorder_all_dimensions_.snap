@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reshape.https.any.js reshape float32 constant tensor to a new shape (reorder all dimensions), litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[2, 3, 4] @bytes([253, 114, 240, 193, 139, 35, 199, 66, 168, 23, 176, 66, 10, 192, 183, 194, 189, 96, 190, 193, 196, 146, 182, 194, 178, 155, 124, 194, 61, 18, 65, 65, 13, 60, 192, 194, 57, 24, 51, 194, 75, 44, 160, 194, 9, 224, 128, 194, 185, 34, 221, 65, 228, 185, 193, 194, 240, 93, 167, 66, 223, 101, 74, 66, 82, 128, 161, 193, 159, 250, 177, 191, 64, 223, 193, 194, 209, 174, 130, 66, 15, 88, 11, 66, 55, 15, 120, 66, 124, 171, 55, 192, 225, 58, 223, 65]);
+  }
+
+  nodes {
+    [reshapeOutput] = reshape(operand_0, label="");
+  }
+
+  outputs { reshapeOutput; }
+}

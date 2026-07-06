@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gather.https.any.js gather float16 2D tensor and 1D indices default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Gather { input: 1, indices: 0, batch_dimensions: None, options: Some(MLGatherOptions { label: "", axis: 0 }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherInput: f16[12, 2];
+  }
+
+  consts {
+    operand_0: i32[8] @bytes([1, 0, 0, 0, 10, 0, 0, 0, 9, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 5, 0, 0, 0, 3, 0, 0, 0, 8, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherOutput] = gather(gatherInput, operand_0, axis=0, label="");
+  }
+
+  outputs { gatherOutput; }
+}

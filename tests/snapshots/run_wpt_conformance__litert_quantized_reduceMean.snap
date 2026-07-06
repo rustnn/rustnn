@@ -1,0 +1,30 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+qdq_subgraph.https.any.js quantized reduceMean, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 0, scale: 1, zero_point: Some(2), options: Some(MLOperatorOptions { label: "" }), outputs: [5] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[2, 3];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_2: i8[1, 1] @bytes([0]);
+    operand_3: f32[1] @bytes([129, 128, 128, 59]);
+    operand_4: i8[1] @bytes([0]);
+  }
+
+  nodes {
+    [operand_5] = quantizeLinear(input, operand_1, operand_2, label="");
+    [operand_6] = dequantizeLinear(operand_5, operand_1, operand_2, label="");
+    [operand_7] = reduceMean(operand_6, axes=[1], keepDimensions=false, label="");
+    [operand_8] = quantizeLinear(operand_7, operand_3, operand_4, label="");
+    [output] = dequantizeLinear(operand_8, operand_3, operand_4, label="");
+  }
+
+  outputs { output; }
+}

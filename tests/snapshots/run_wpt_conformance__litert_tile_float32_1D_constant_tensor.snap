@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+tile.https.any.js tile float32 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Tile { input: 0, repetitions: [2], options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[4] @bytes([0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64, 0, 0, 128, 64]);
+  }
+
+  nodes {
+    [tileOutput] = tile(operand_0, label="");
+  }
+
+  outputs { tileOutput; }
+}

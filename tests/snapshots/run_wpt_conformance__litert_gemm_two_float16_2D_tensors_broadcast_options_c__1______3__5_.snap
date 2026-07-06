@@ -1,0 +1,25 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gemm.https.any.js gemm two float16 2D tensors broadcast options.c [1] => [3, 5], litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f16[3, 4];
+  }
+
+  consts {
+    operand_1: f16[4, 5] @bytes([83, 59, 205, 58, 241, 50, 229, 54, 238, 52, 29, 59, 242, 59, 164, 57, 105, 56, 77, 59, 101, 59, 194, 48, 228, 54, 152, 57, 228, 51, 44, 50, 54, 56, 217, 59, 109, 58, 135, 54]);
+    operand_2: f16[1] @bytes([12, 58]);
+  }
+
+  nodes {
+    [gemmOutput] = gemm(inputA, operand_1, aTranspose=false, alpha=1.0, bTranspose=false, beta=1.0, c=2, label="");
+  }
+
+  outputs { gemmOutput; }
+}

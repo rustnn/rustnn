@@ -1,0 +1,28 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+subgraph.https.any.js gemm default + softmax, litert
+ subgraph :: gemm default + softmax: index 0: actual=0.2 expected=0 ulp=1045220557 tolerance=100
+  inputs: inputA: [82.98884582519531, 90.51641082763672, 59.638519287109375, 36.271873474121094, 18.9648494720459, 43.89479446411133, 98.89488220214844, 91.46013641357422, 50.51683807373047, 40.45679473876953, 50.76741409301758, 9.336554527282717]; inputB: [25.14739227294922, 66.6923828125, 63.29909896850586, 10.629964828491213, 61.32737731933594, 0.0037256532814353704, 16.4991455078125, 3.036668062210083, 93.14022064208984, 70.08265686035156, 75.74880981445313, 96.60688018798828, 99.10041809082033, 23.2437744140625, 86.11856842041016, 42.90679168701172, 34.08055114746094, 87.37654876708984, 92.34209442138672, 60.32209014892578]
+  expected output: [0, 0, 0, 0, 1, 0, 0, 1, 0, 0 ...] (len=15)
+  actual output: [0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2 ...] (len=15)
+  expected output full nd:
+[0, 0, 0, 0, 1, 0, 0, 1, 0, 0, ...] (len=15, shape=[3, 5])
+  actual output full nd:
+[0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, ...] (len=15, shape=[3, 5])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[3, 4];
+    inputB: f32[4, 5];
+  }
+
+  nodes {
+    [operand_2] = gemm(inputA, inputB, aTranspose=false, alpha=1.0, bTranspose=false, beta=1.0, c=null, label="");
+    [output] = softmax(operand_2, label="");
+  }
+
+  outputs { output; }
+}

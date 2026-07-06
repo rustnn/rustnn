@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+hard_swish.https.any.js hardSwish float16 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: HardSwish { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([224, 57, 143, 72, 23, 67, 62, 65, 114, 198, 188, 190, 134, 69, 245, 197, 150, 200, 108, 70, 150, 194, 42, 60, 63, 199, 148, 187, 199, 197, 95, 66, 67, 199, 45, 68, 143, 67, 18, 198, 244, 200, 191, 199, 37, 200, 11, 72]);
+  }
+
+  nodes {
+    [hardSwishOutput] = hardSwish(operand_0, label="");
+  }
+
+  outputs { hardSwishOutput; }
+}

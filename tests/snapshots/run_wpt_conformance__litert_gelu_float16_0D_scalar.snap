@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gelu.https.any.js gelu float16 0D scalar, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Gelu { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    geluInput: f16[];
+  }
+
+  nodes {
+    [geluOutput] = gelu(geluInput, label="");
+  }
+
+  outputs { geluOutput; }
+}

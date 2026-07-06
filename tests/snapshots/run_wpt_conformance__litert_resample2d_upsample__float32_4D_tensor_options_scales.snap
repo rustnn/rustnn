@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+resample2d.https.any.js resample2d(upsample) float32 4D tensor options.scales, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Resample2d { input: 0, options: Some(MLResample2dOptions { label: "", mode: "", scales: [2.0, 2.0], sizes: None, axes: [] }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    resample2dInput: f32[1, 1, 2, 3];
+  }
+
+  nodes {
+    [resample2dOutput] = resample2d(resample2dInput, axes=[], label="", mode="", scales=[2.0, 2.0], sizes=null);
+  }
+
+  outputs { resample2dOutput; }
+}

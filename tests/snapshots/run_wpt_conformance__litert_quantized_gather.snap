@@ -1,0 +1,31 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+qdq_subgraph.https.any.js quantized gather, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 1, scale: 2, zero_point: Some(3), options: Some(MLOperatorOptions { label: "" }), outputs: [6] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[2, 3];
+  }
+
+  consts {
+    operand_0: i32[] @bytes([1, 0, 0, 0]);
+    operand_2: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_3: i8[1, 1] @bytes([128]);
+    operand_4: f32[1] @bytes([224, 169, 175, 62]);
+    operand_5: i8[1] @bytes([128]);
+  }
+
+  nodes {
+    [operand_6] = quantizeLinear(input, operand_2, operand_3, label="");
+    [operand_7] = dequantizeLinear(operand_6, operand_2, operand_3, label="");
+    [operand_8] = gather(operand_7, operand_0, axis=0, label="");
+    [operand_9] = quantizeLinear(operand_8, operand_4, operand_5, label="");
+    [output] = dequantizeLinear(operand_9, operand_4, operand_5, label="");
+  }
+
+  outputs { output; }
+}

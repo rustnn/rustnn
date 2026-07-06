@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+mlNumber.https.any.js cast BigInt to int64 underflow, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Clamp { input: 0, options: Some(MLClampOptions { label: "", min_value: None, max_value: Some(String("-9223372036854775820")) }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: i64[5] @bytes([10, 0, 0, 0, 251, 255, 255, 255, 246, 255, 255, 255, 4, 0, 0, 0, 254, 255, 255, 255, 255, 255, 255, 255, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [clampOutput] = clamp(operand_0, label="", maxValue="-9223372036854775820", minValue=null);
+  }
+
+  outputs { clampOutput; }
+}

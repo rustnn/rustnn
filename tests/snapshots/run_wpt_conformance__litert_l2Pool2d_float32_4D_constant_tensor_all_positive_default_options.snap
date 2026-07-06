@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+l2Pool2d.https.any.js l2Pool2d float32 4D constant tensor all positive default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: L2Pool2d { input: 0, options: Some(MLPool2dOptions { label: "", window_dimensions: None, padding: [], strides: [], dilations: [], layout: "", output_shape_rounding: "", output_sizes: None }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[1, 2, 5, 5] @bytes([34, 38, 188, 66, 250, 27, 153, 66, 183, 223, 122, 66, 205, 190, 167, 66, 104, 52, 146, 66, 77, 25, 38, 66, 253, 85, 29, 66, 146, 48, 173, 66, 32, 185, 184, 65, 192, 153, 86, 66, 209, 202, 19, 60, 238, 39, 43, 66, 71, 20, 162, 66, 132, 241, 5, 66, 23, 176, 6, 66, 36, 64, 219, 62, 235, 40, 160, 66, 126, 194, 189, 64, 12, 145, 67, 66, 216, 134, 116, 65, 30, 95, 85, 65, 39, 67, 28, 66, 250, 30, 194, 66, 216, 92, 167, 66, 160, 93, 174, 65, 248, 27, 80, 66, 231, 186, 204, 64, 129, 24, 169, 66, 234, 250, 148, 65, 208, 108, 8, 66, 75, 240, 147, 66, 61, 147, 16, 66, 135, 243, 114, 66, 20, 94, 92, 66, 221, 145, 127, 66, 233, 113, 109, 66, 235, 165, 75, 66, 248, 91, 73, 66, 78, 71, 109, 66, 134, 143, 141, 66, 71, 63, 14, 66, 82, 17, 165, 66, 198, 80, 242, 64, 132, 154, 119, 66, 30, 88, 97, 65, 23, 187, 181, 66, 252, 63, 30, 66, 25, 139, 135, 66, 231, 99, 139, 66, 34, 23, 179, 66]);
+  }
+
+  nodes {
+    [l2Pool2dOutput] = l2Pool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { l2Pool2dOutput; }
+}

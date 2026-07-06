@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+gatherND.https.any.js gatherND float32 4D input and 1D maximum indices, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: GatherND { input: 1, indices: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherNDInput: f32[2, 2, 2, 2];
+  }
+
+  consts {
+    operand_0: i32[3] @bytes([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
+  }
+
+  outputs { gatherNDOutput; }
+}

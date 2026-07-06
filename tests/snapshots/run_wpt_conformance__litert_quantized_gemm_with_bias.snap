@@ -1,0 +1,38 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+qdq_subgraph.https.any.js quantized gemm with bias, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 0, scale: 1, zero_point: Some(2), options: Some(MLOperatorOptions { label: "" }), outputs: [11] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[2, 3];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_10: i8[1, 1] @bytes([16]);
+    operand_2: i8[1, 1] @bytes([128]);
+    operand_3: i8[3, 2] @bytes([21, 24, 8, 15, 6, 7]);
+    operand_4: f32[1, 1] @bytes([146, 44, 192, 60]);
+    operand_5: i8[1, 1] @bytes([0]);
+    operand_6: i32[2] @bytes([8, 0, 0, 0, 15, 0, 0, 0]);
+    operand_7: f32[1] @bytes([128, 237, 192, 56]);
+    operand_8: i32[1] @bytes([0, 0, 0, 0]);
+    operand_9: f32[1, 1] @bytes([202, 200, 200, 62]);
+  }
+
+  nodes {
+    [operand_11] = quantizeLinear(inputA, operand_1, operand_2, label="");
+    [operand_12] = dequantizeLinear(operand_11, operand_1, operand_2, label="");
+    [operand_13] = dequantizeLinear(operand_3, operand_4, operand_5, label="");
+    [operand_14] = dequantizeLinear(operand_6, operand_7, operand_8, label="");
+    [operand_15] = gemm(operand_12, operand_13, aTranspose=false, alpha=1.0, bTranspose=false, beta=1.0, c=14, label="");
+    [operand_16] = quantizeLinear(operand_15, operand_9, operand_10, label="");
+    [output] = dequantizeLinear(operand_16, operand_9, operand_10, label="");
+  }
+
+  outputs { output; }
+}

@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+log.https.any.js log float16 positive 1D constant tensor, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([250, 83, 84, 78, 7, 86, 29, 81, 147, 80, 58, 83, 7, 73, 118, 76, 89, 82, 62, 85, 8, 74, 173, 77, 242, 81, 99, 76, 21, 80, 23, 77, 145, 82, 179, 81, 153, 79, 219, 74, 51, 73, 91, 82, 175, 69, 224, 85]);
+  }
+
+  nodes {
+    [logOutput] = log(operand_0, label="");
+  }
+
+  outputs { logOutput; }
+}
