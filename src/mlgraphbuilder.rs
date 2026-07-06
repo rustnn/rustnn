@@ -3004,8 +3004,8 @@ mod test {
 
     use crate::{
         mlcontext::{
-            Backend, MLContext, MLContextOptions, MLOperandDescriptor, MLPowerPreference,
-            MLTensorDescriptor,
+            Backend, HostBuffer, MLContext, MLContextOptions, MLOperandDescriptor,
+            MLPowerPreference, MLTensorDescriptor,
         },
         mlgraphbuilder::MLGraphBuilder,
     };
@@ -3055,8 +3055,8 @@ mod test {
         builder.build(&outputs).unwrap();
     }
 
-    #[test]
-    fn unused_incompatible_inputs() {
+    #[tokio::test]
+    async fn unused_incompatible_inputs() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
@@ -3125,7 +3125,12 @@ mod test {
         inputs.insert("incompatible", &incompatible);
         let mut outputs = HashMap::new();
         outputs.insert("out", &output);
-        context.write_tensor(&a, &[3.0f32, 4., 5., 6.]).unwrap();
+        context
+            .write_tensor(&a, &HostBuffer::from_slice(&[3.0f32, 4., 5., 6.]))
+            .await
+            .unwrap()
+            .await
+            .unwrap();
         // CoreML rejects binding the declared-but-unused `incompatible` input at dispatch
         // ("Unable to copy Float32 3 vector"); tolerate that known gap while keeping the
         // execution assertion strict on every other backend.
@@ -3136,13 +3141,21 @@ mod test {
         }
         #[cfg(not(all(target_os = "macos", feature = "coreml-runtime")))]
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
-        let mut output_cpu = vec![0.0f32; 4];
-        context.read_tensor(&output, &mut output_cpu).unwrap();
-        assert_eq!(output_cpu, &[3.0f32, 4., 5., 6.]);
+        let output_buffer = HostBuffer::new(&a_desc);
+        context
+            .read_tensor(&output, &output_buffer)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, f32>(&output_buffer.read()),
+            &[3.0f32, 4., 5., 6.]
+        );
     }
 
-    #[test]
-    fn add_mat_plus_scalar() {
+    #[tokio::test]
+    async fn add_mat_plus_scalar() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
@@ -3203,8 +3216,18 @@ mod test {
         let b = context.create_tensor(&b_desc).unwrap();
         let output = context.create_tensor(&a_desc).unwrap();
 
-        context.write_tensor(&a, &[1.0f32, 2., 3., 4.]).unwrap();
-        context.write_tensor(&b, &[2.0f32]).unwrap();
+        context
+            .write_tensor(&a, &HostBuffer::from_slice(&[1.0f32, 2., 3., 4.]))
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        context
+            .write_tensor(&b, &HostBuffer::from_slice(&[2.0f32]))
+            .await
+            .unwrap()
+            .await
+            .unwrap();
 
         let mut inputs = HashMap::new();
         inputs.insert("a", &a);
@@ -3212,13 +3235,29 @@ mod test {
         let mut outputs = HashMap::new();
         outputs.insert("out", &output);
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
-        let mut output_cpu = vec![0.0f32; 4];
-        context.read_tensor(&output, &mut output_cpu).unwrap();
-        assert_eq!(output_cpu, &[3.0f32, 4., 5., 6.]);
+        let output_buffer = HostBuffer::new(&a_desc);
+        context
+            .read_tensor(&output, &output_buffer)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, f32>(&output_buffer.read()),
+            &[3.0f32, 4., 5., 6.]
+        );
         inputs.remove("b");
         context.dispatch(&mut graph2, &inputs, &outputs).unwrap();
-        context.read_tensor(&output, &mut output_cpu).unwrap();
-        assert_eq!(output_cpu, &[4.0f32, 5., 6., 7.]);
+        context
+            .read_tensor(&output, &output_buffer)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, f32>(&output_buffer.read()),
+            &[4.0f32, 5., 6., 7.]
+        );
     }
 
     #[test]

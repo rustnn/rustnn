@@ -11,8 +11,8 @@ use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::{Parser, ValueEnum};
 use futures_util::future::join_all;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraphBuilder, MLOperand, MLOperandDescriptor, MLPowerPreference,
-    MLTensorDescriptor,
+    HostBuffer, MLContext, MLContextOptions, MLGraphBuilder, MLOperand, MLOperandDescriptor,
+    MLPowerPreference, MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operator_options::{
@@ -800,7 +800,7 @@ fn save_output_image(path: &PathBuf, output: &[f32]) -> Result<()> {
         .with_context(|| format!("write output image {}", path.display()))
 }
 
-fn run_inferences(
+async fn run_inferences(
     context: &mut MLContext<'_>,
     graph: &mut rustnn::mlcontext::MLGraph<'_>,
     input_data: &[f32],
@@ -828,14 +828,16 @@ fn run_inferences(
         )?);
     }
 
-    let mut output_data = vec![0.0f32; IMAGE_ELEMENT_COUNT];
+    let output_buffer = HostBuffer::new(&output_descriptor);
     let mut starts = vec![None; tensor_count];
     let mut next_to_read = 0;
 
     for i in 0..num_inferences {
         let slot = i % tensor_count;
-        rustnn(
-            context.write_tensor(&input_tensors[slot], input_data),
+        let _write = rustnn(
+            context
+                .write_tensor(&input_tensors[slot], &HostBuffer::from_slice(input_data))
+                .await,
             "write input tensor",
         )?;
         starts[slot] = Some(Instant::now());
@@ -846,7 +848,13 @@ fn run_inferences(
         if i + 1 >= tensor_count {
             let completed_slot = next_to_read % tensor_count;
             rustnn(
-                context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+                rustnn(
+                    context
+                        .read_tensor(&output_tensors[completed_slot], &output_buffer)
+                        .await,
+                    "enqueue output read",
+                )?
+                .await,
                 "read output tensor",
             )?;
             next_to_read += 1;
@@ -856,7 +864,13 @@ fn run_inferences(
     while next_to_read < num_inferences {
         let completed_slot = next_to_read % tensor_count;
         rustnn(
-            context.read_tensor(&output_tensors[completed_slot], &mut output_data),
+            rustnn(
+                context
+                    .read_tensor(&output_tensors[completed_slot], &output_buffer)
+                    .await,
+                "enqueue output drain",
+            )?
+            .await,
             "drain output tensor",
         )?;
         println!(
@@ -870,7 +884,7 @@ fn run_inferences(
         next_to_read += 1;
     }
 
-    Ok(output_data)
+    Ok(bytemuck::cast_slice::<u8, f32>(&output_buffer.read()).to_vec())
 }
 
 async fn download_weight(
@@ -1013,7 +1027,8 @@ async fn main() -> Result<()> {
         &input_data,
         args.num_inferences,
         !args.disable_pipelining,
-    )?;
+    )
+    .await?;
     save_output_image(&args.output, &output_data)?;
     println!("Wrote output image: {}", args.output.display());
 

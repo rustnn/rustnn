@@ -127,17 +127,26 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     ) -> crate::error::Result<MLTensor> {
         let mut tensor = self.create_tensor(descriptor)?;
         tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
+        self.write_tensor(
+            &tensor,
+            &crate::mlcontext::HostBuffer::from(input_data.to_vec()),
+        )
+        .and_then(|handle| handle.sync())
+        .map_err(|e| Error::TensorCreationError {
+            source: e.into(),
+            descriptor: descriptor.clone(),
+        })?;
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
+    fn read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> crate::error::Result<crate::mlcontext::TensorSyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor());
+        let mut array = buffer.write();
         if array.len() < logical {
             return Err(Error::TensorReadError {
                 source: format!(
@@ -154,10 +163,15 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
+    fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> crate::error::Result<crate::mlcontext::TensorSyncHandle> {
+        let array = buffer.read();
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -171,8 +185,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             });
         }
         let n = array.len();
-        host[..n].copy_from_slice(array);
-        Ok(())
+        host[..n].copy_from_slice(&array);
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
     fn dispatch(
@@ -328,8 +342,8 @@ mod test {
         }
     }
 
-    #[test]
-    fn coreml_relu_add_f32() {
+    #[tokio::test]
+    async fn coreml_relu_add_f32() {
         let _ = pretty_env_logger::try_init();
         let Some(mut context) = coreml_context() else {
             return;
@@ -355,8 +369,24 @@ mod test {
         let out = context.create_tensor(&io_desc).unwrap();
 
         // relu(-1, 2, -3, 4) = (0, 2, 0, 4); + (1,1,1,1) = (1, 3, 1, 5)
-        context.write_tensor(&a, &[-1.0f32, 2., -3., 4.]).unwrap();
-        context.write_tensor(&b, &[1.0f32, 1., 1., 1.]).unwrap();
+        context
+            .write_tensor(
+                &a,
+                &crate::mlcontext::HostBuffer::from_slice(&[-1.0f32, 2., -3., 4.]),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        context
+            .write_tensor(
+                &b,
+                &crate::mlcontext::HostBuffer::from_slice(&[1.0f32, 1., 1., 1.]),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
 
         let mut inputs = HashMap::new();
         inputs.insert("a", &a);
@@ -368,13 +398,21 @@ mod test {
             .dispatch(&mut graph, &inputs, &out_bindings)
             .unwrap();
 
-        let mut result = vec![0.0f32; 4];
-        context.read_tensor(&out, &mut result).unwrap();
-        assert_eq!(result, &[1.0f32, 3., 1., 5.]);
+        let result = crate::mlcontext::HostBuffer::new(&io_desc);
+        context
+            .read_tensor(&out, &result)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, f32>(&result.read()),
+            &[1.0f32, 3., 1., 5.]
+        );
     }
 
-    #[test]
-    fn coreml_add_int32_byte_path() {
+    #[tokio::test]
+    async fn coreml_add_int32_byte_path() {
         let _ = pretty_env_logger::try_init();
         let Some(mut context) = coreml_context() else {
             return;
@@ -407,8 +445,24 @@ mod test {
         let b = context.create_tensor(&io_desc).unwrap();
         let out = context.create_tensor(&io_desc).unwrap();
 
-        context.write_tensor(&a, &[1i32, 2, 3, 4]).unwrap();
-        context.write_tensor(&b, &[10i32, 20, 30, 40]).unwrap();
+        context
+            .write_tensor(
+                &a,
+                &crate::mlcontext::HostBuffer::from_slice(&[1i32, 2, 3, 4]),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        context
+            .write_tensor(
+                &b,
+                &crate::mlcontext::HostBuffer::from_slice(&[10i32, 20, 30, 40]),
+            )
+            .await
+            .unwrap()
+            .await
+            .unwrap();
 
         let mut inputs = HashMap::new();
         inputs.insert("a", &a);
@@ -421,8 +475,16 @@ mod test {
             return;
         }
 
-        let mut result = vec![0i32; 4];
-        context.read_tensor(&out, &mut result).unwrap();
-        assert_eq!(result, &[11, 22, 33, 44]);
+        let result = crate::mlcontext::HostBuffer::new(&io_desc);
+        context
+            .read_tensor(&out, &result)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            bytemuck::cast_slice::<u8, i32>(&result.read()),
+            &[11, 22, 33, 44]
+        );
     }
 }

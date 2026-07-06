@@ -39,6 +39,7 @@ prost = "0.12"
 prost-types = "0.12"
 bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
+futures-util = "0.3"
 ndarray = { version = "0.17", optional = true }
 objc = { version = "0.2", optional = true }
 tempfile = { version = "3.8", optional = true }
@@ -73,7 +74,6 @@ insta = { version = "1.47.2", features = ["yaml"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 dirs = "6.0.0"
 anyhow = "1.0.102"
-futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 libtest-mimic = "0.8.2"

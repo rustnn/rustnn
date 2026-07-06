@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write, path::PathBuf, process::Command};
+use std::{collections::HashMap, io::Write, mem::size_of, path::PathBuf, process::Command};
 
 use anyhow::{Context, anyhow, bail};
 use clap::Parser;
@@ -6,8 +6,8 @@ use log::{debug, info};
 use rustnn::{
     ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
     mlcontext::{
-        MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLPowerPreference, MLTensor,
-        MLTensorDescriptor,
+        HostBuffer, MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLPowerPreference,
+        MLTensor, MLTensorDescriptor,
     },
     operator_enums::MLOperandDataType,
 };
@@ -300,9 +300,9 @@ fn store_present(
 
 // Each step: resize cached tensors to the active shapes, write inputs, dispatch, read outputs.
 // Buffers were pre-sized with `rustnn_set_tensor_capacity` in `init_step_tensors`.
-fn run_step<'context>(
+async fn run_step<'context>(
     context: &mut MLContext<'context>,
-    graph: &mut MLGraph,
+    graph: &mut MLGraph<'_>,
     layout: &Layout,
     tensors: &mut StepTensors,
     state: &mut StepState,
@@ -339,29 +339,50 @@ fn run_step<'context>(
     }
 
     context
-        .write_tensor(&tensors.input_ids, &[token_id])
+        .write_tensor(&tensors.input_ids, &HostBuffer::from_slice(&[token_id]))
+        .await
+        .map_err(|e| anyhow!("enqueue input_ids: {e:?}"))?
+        .await
         .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
 
     context
-        .write_tensor(&tensors.position_ids, &[past_len as i64])
+        .write_tensor(
+            &tensors.position_ids,
+            &HostBuffer::from_slice(&[past_len as i64]),
+        )
+        .await
+        .map_err(|e| anyhow!("enqueue position_ids: {e:?}"))?
+        .await
         .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
 
     context
-        .write_tensor(&tensors.attention_mask, &vec![1i64; seq_len])
+        .write_tensor(
+            &tensors.attention_mask,
+            &HostBuffer::from_slice(&vec![1i64; seq_len]),
+        )
+        .await
+        .map_err(|e| anyhow!("enqueue attention_mask: {e:?}"))?
+        .await
         .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
 
     for layer in 0..layout.num_layers {
         let k_data = compact_kv(state, layout, layer, "key", past_len);
         if !k_data.is_empty() {
             context
-                .write_tensor(&tensors.past_k[layer], &k_data)
+                .write_tensor(&tensors.past_k[layer], &HostBuffer::from_slice(&k_data))
+                .await
+                .map_err(|e| anyhow!("enqueue past_key {layer}: {e:?}"))?
+                .await
                 .map_err(|e| anyhow!("write past_key {layer}: {e:?}"))?;
         }
 
         let v_data = compact_kv(state, layout, layer, "value", past_len);
         if !v_data.is_empty() {
             context
-                .write_tensor(&tensors.past_v[layer], &v_data)
+                .write_tensor(&tensors.past_v[layer], &HostBuffer::from_slice(&v_data))
+                .await
+                .map_err(|e| anyhow!("enqueue past_val {layer}: {e:?}"))?
+                .await
                 .map_err(|e| anyhow!("write past_val {layer}: {e:?}"))?;
         }
     }
@@ -402,29 +423,53 @@ fn run_step<'context>(
 
     let kv_elems = layout.num_heads * seq_len * layout.head_dim;
     for layer in 0..layout.num_layers {
-        let mut k = vec![0f32; kv_elems];
+        let k = HostBuffer::from(vec![0; kv_elems * size_of::<f32>()]);
         context
-            .read_tensor(&tensors.present_k[layer], &mut k)
+            .read_tensor(&tensors.present_k[layer], &k)
+            .await
+            .map_err(|e| anyhow!("enqueue present_key read {layer}: {e:?}"))?
+            .await
             .map_err(|e| anyhow!("read present_key {layer}: {e:?}"))?;
-        store_present(state, layout, layer, "key", &k, seq_len);
+        store_present(
+            state,
+            layout,
+            layer,
+            "key",
+            bytemuck::cast_slice(&k.read()),
+            seq_len,
+        );
 
-        let mut v = vec![0f32; kv_elems];
+        let v = HostBuffer::from(vec![0; kv_elems * size_of::<f32>()]);
         context
-            .read_tensor(&tensors.present_v[layer], &mut v)
+            .read_tensor(&tensors.present_v[layer], &v)
+            .await
+            .map_err(|e| anyhow!("enqueue present_val read {layer}: {e:?}"))?
+            .await
             .map_err(|e| anyhow!("read present_val {layer}: {e:?}"))?;
-        store_present(state, layout, layer, "value", &v, seq_len);
+        store_present(
+            state,
+            layout,
+            layer,
+            "value",
+            bytemuck::cast_slice(&v.read()),
+            seq_len,
+        );
     }
 
-    let mut logits = vec![0f32; layout.vocab_size];
+    let logits = HostBuffer::from(vec![0; layout.vocab_size * size_of::<f32>()]);
     context
-        .read_tensor(logits_tensor, &mut logits)
+        .read_tensor(logits_tensor, &logits)
+        .await
+        .map_err(|e| anyhow!("enqueue logits read: {e:?}"))?
+        .await
         .map_err(|e| anyhow!("read logits: {e:?}"))?;
 
     state.current_pos += 1;
-    Ok(argmax(&logits))
+    Ok(argmax(bytemuck::cast_slice(&logits.read())))
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     if std::env::var("RUST_LOG").is_err() {
         unsafe { std::env::set_var("RUST_LOG", "info") };
     }
@@ -552,7 +597,8 @@ fn main() -> anyhow::Result<()> {
             &mut state,
             *token_id as i64,
             &logits_tensor,
-        )?;
+        )
+        .await?;
     }
 
     info!("Decoding (max {} tokens)...", args.max_new_tokens);
@@ -575,7 +621,8 @@ fn main() -> anyhow::Result<()> {
             &mut state,
             last_token as i64,
             &logits_tensor,
-        )?;
+        )
+        .await?;
     }
 
     let generated_text = tokenizer

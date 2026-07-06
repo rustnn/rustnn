@@ -49,16 +49,16 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     fn read_tensor(
         &mut self,
         _tensor: &mlcontext::MLTensor,
-        _array: &mut [u8],
-    ) -> crate::error::Result<()> {
+        _buffer: &mlcontext::HostBuffer,
+    ) -> crate::error::Result<mlcontext::TensorSyncHandle> {
         panic!("RustNN is expected to never use a disabled backend")
     }
 
     fn write_tensor(
         &mut self,
         _tensor: &mlcontext::MLTensor,
-        _array: &[u8],
-    ) -> crate::error::Result<()> {
+        _buffer: &mlcontext::HostBuffer,
+    ) -> crate::error::Result<mlcontext::TensorSyncHandle> {
         panic!("RustNN is expected to never use a disabled backend")
     }
 

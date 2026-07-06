@@ -1,5 +1,6 @@
 #![allow(dead_code, unused_variables)]
 
+use futures_util::task::AtomicWaker;
 use log::{debug, info};
 
 use crate::GraphInfo;
@@ -17,7 +18,18 @@ use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
-use std::{collections::HashMap, fmt::Display, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::{
+        Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+};
 
 pub use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::{
@@ -52,10 +64,8 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         descriptor: &MLTensorDescriptor,
         input_data: &[u8],
     ) -> Result<MLTensor>;
-    /*async*/
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()>;
-    /*async*/
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()>;
+    fn read_tensor(&mut self, tensor: &MLTensor, buffer: &HostBuffer) -> Result<TensorSyncHandle>;
+    fn write_tensor(&mut self, tensor: &MLTensor, buffer: &HostBuffer) -> Result<TensorSyncHandle>;
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
@@ -127,6 +137,176 @@ pub struct GpuDevice {}
 #[derive(Debug)]
 pub struct MLContextLostInfo {
     message: String,
+}
+
+/// Cloneable host storage used by asynchronous tensor transfers.
+#[derive(Clone, Debug)]
+pub struct HostBuffer {
+    inner: Arc<RwLock<Vec<u8>>>,
+}
+
+/// A shared lock guard that exposes host bytes without copying.
+pub struct HostBufferReadGuard<'a>(RwLockReadGuard<'a, Vec<u8>>);
+
+impl std::ops::Deref for HostBufferReadGuard<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_slice()
+    }
+}
+
+/// An exclusive lock guard that exposes mutable host bytes without copying.
+pub struct HostBufferWriteGuard<'a>(RwLockWriteGuard<'a, Vec<u8>>);
+
+impl std::ops::Deref for HostBufferWriteGuard<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_slice()
+    }
+}
+
+impl std::ops::DerefMut for HostBufferWriteGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut_slice()
+    }
+}
+
+impl HostBuffer {
+    /// Allocates a zeroed host buffer sized for an operand descriptor.
+    pub fn new(descriptor: &MLOperandDescriptor) -> Self {
+        Self::from(vec![0; descriptor.rustnn_required_bytes()])
+    }
+
+    /// Locks the buffer for shared, zero-copy access as a byte slice.
+    pub fn read(&self) -> HostBufferReadGuard<'_> {
+        HostBufferReadGuard(self.inner.read().unwrap_or_else(|error| error.into_inner()))
+    }
+
+    /// Locks the buffer for exclusive, zero-copy access as a mutable byte slice.
+    pub fn write(&self) -> HostBufferWriteGuard<'_> {
+        HostBufferWriteGuard(
+            self.inner
+                .write()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
+    }
+
+    pub fn len(&self) -> usize {
+        self.read().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn from_slice<T: bytemuck::Pod>(data: &[T]) -> Self {
+        Self::from(bytemuck::cast_slice(data).to_vec())
+    }
+
+    pub(crate) fn replace(&self, data: Vec<u8>) {
+        *self
+            .inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = data;
+    }
+}
+
+impl From<Vec<u8>> for HostBuffer {
+    fn from(data: Vec<u8>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(data)),
+        }
+    }
+}
+
+/// Shared state between a CUDA stream callback and the async waker.
+///
+/// Adapted from `StreamCallbackState` in NVlabs' Apache-2.0 licensed
+/// `cuda-async` crate: https://github.com/NVlabs/cuda-oxide/tree/main/crates/cuda-async
+#[derive(Debug)]
+pub struct StreamCallbackState {
+    pub(crate) waker: AtomicWaker,
+    pub(crate) complete: AtomicBool,
+}
+
+impl StreamCallbackState {
+    pub fn new() -> Self {
+        Self {
+            waker: AtomicWaker::new(),
+            complete: AtomicBool::new(false),
+        }
+    }
+
+    pub fn signal(&self) {
+        self.complete.store(true, Ordering::Relaxed);
+        self.waker.wake();
+    }
+}
+
+impl Default for StreamCallbackState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A tensor-transfer completion handle that can be blocked on or awaited.
+#[derive(Debug)]
+pub struct TensorSyncHandle {
+    state: Arc<StreamCallbackState>,
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    cuda_event: Option<cudarc::driver::CudaEvent>,
+}
+
+impl TensorSyncHandle {
+    pub(crate) fn ready() -> Self {
+        let state = Arc::new(StreamCallbackState::new());
+        state.signal();
+        Self {
+            state,
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            cuda_event: None,
+        }
+    }
+
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    pub(crate) fn cuda(state: Arc<StreamCallbackState>, event: cudarc::driver::CudaEvent) -> Self {
+        Self {
+            state,
+            cuda_event: Some(event),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.state.complete.load(Ordering::Relaxed)
+    }
+
+    /// Blocks the current thread until the transfer completes.
+    pub fn sync(self) -> Result<()> {
+        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+        if let Some(event) = &self.cuda_event {
+            event.synchronize()?;
+        }
+        debug_assert!(self.is_ready());
+        Ok(())
+    }
+}
+
+impl Future for TensorSyncHandle {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.is_ready() {
+            return Poll::Ready(Ok(()));
+        }
+        self.state.waker.register(cx.waker());
+        if self.is_ready() {
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Pending
+        }
+    }
 }
 
 impl MLContextLostInfo {
@@ -605,52 +785,72 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
-    //async
-    pub fn read_tensor<T: bytemuck::Pod>(
+    /// Asynchronously obtains a handle for an enqueued tensor read.
+    ///
+    /// Awaiting this method does not await the transfer itself; await the
+    /// returned [`TensorSyncHandle`] when completion is required.
+    pub async fn read_tensor(
         &mut self,
         tensor: &MLTensor,
-        array: &mut [T],
-    ) -> Result<()> {
-        debug!(
-            "Read {} bytes from tensor {tensor:?}",
-            std::mem::size_of_val(array)
-        );
+        buffer: &HostBuffer,
+    ) -> Result<TensorSyncHandle> {
+        self.rustnn_enqueue_read_tensor(tensor, buffer)
+    }
+
+    /// Immediately enqueues a tensor read and returns its completion handle.
+    pub fn rustnn_enqueue_read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &HostBuffer,
+    ) -> Result<TensorSyncHandle> {
+        debug!("Read {} bytes from tensor {tensor:?}", buffer.len());
         if !tensor.readable() {
             return Err(Error::ReadToNonReadableTensor {
                 tensor: tensor.clone(),
             });
         }
-        if tensor.rustnn_required_bytes() != std::mem::size_of_val(array) {
+        if tensor.rustnn_required_bytes() != buffer.len() {
             return Err(Error::WrongReadSize {
-                read_size: std::mem::size_of_val(array),
+                read_size: buffer.len(),
                 required_size: tensor.rustnn_required_bytes(),
                 tensor: tensor.clone(),
             });
         }
-        self.backend
-            .read_tensor(tensor, bytemuck::cast_slice_mut(array))
+        self.backend.read_tensor(tensor, buffer)
     }
 
-    //async
-    pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
-        debug!(
-            "Write {} bytes to tensor {tensor:?}",
-            std::mem::size_of_val(array)
-        );
+    /// Asynchronously obtains a handle for an enqueued tensor write.
+    ///
+    /// Awaiting this method does not await the transfer itself; await the
+    /// returned [`TensorSyncHandle`] when completion is required.
+    pub async fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &HostBuffer,
+    ) -> Result<TensorSyncHandle> {
+        self.rustnn_enqueue_write_tensor(tensor, buffer)
+    }
+
+    /// Immediately enqueues a tensor write and returns its completion handle.
+    pub fn rustnn_enqueue_write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &HostBuffer,
+    ) -> Result<TensorSyncHandle> {
+        debug!("Write {} bytes to tensor {tensor:?}", buffer.len());
         if !tensor.writable() {
             return Err(Error::WriteToNonWritableTensor {
                 tensor: tensor.clone(),
             });
         }
-        if tensor.rustnn_required_bytes() != std::mem::size_of_val(array) {
+        if tensor.rustnn_required_bytes() != buffer.len() {
             return Err(Error::WrongWriteSize {
-                write_size: std::mem::size_of_val(array),
+                write_size: buffer.len(),
                 required_size: tensor.rustnn_required_bytes(),
                 tensor: tensor.clone(),
             });
         }
-        self.backend
-            .write_tensor(tensor, bytemuck::cast_slice(array))
+        self.backend.write_tensor(tensor, buffer)
     }
 
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
@@ -713,6 +913,56 @@ webnn_graph "sample_graph" v1 {
     }
 
     #[test]
+    fn host_buffer_clones_share_zero_copy_slice_access() {
+        let bytes = vec![1, 2, 3, 4];
+        let allocation = bytes.as_ptr();
+        let buffer = HostBuffer::from(bytes);
+        let clone = buffer.clone();
+        assert_eq!(buffer.read().as_ptr(), allocation);
+        assert_eq!(&*buffer.read(), &[1, 2, 3, 4]);
+
+        clone.write()[2] = 9;
+        assert_eq!(&*buffer.read(), &[1, 2, 9, 4]);
+    }
+
+    #[test]
+    fn host_buffer_new_allocates_from_operand_descriptor() {
+        let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 3]);
+        let buffer = HostBuffer::new(&descriptor);
+
+        assert_eq!(buffer.len(), 6 * std::mem::size_of::<f32>());
+        assert!(buffer.read().iter().all(|&byte| byte == 0));
+    }
+
+    #[tokio::test]
+    async fn ready_tensor_sync_handle_can_be_awaited() {
+        let handle = TensorSyncHandle::ready();
+        assert!(handle.is_ready());
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn tensor_sync_handle_poll_only_observes_callback_state() {
+        let state = Arc::new(StreamCallbackState::new());
+        let mut handle = TensorSyncHandle {
+            state: Arc::clone(&state),
+            #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+            cuda_event: None,
+        };
+        let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
+
+        assert!(matches!(
+            Pin::new(&mut handle).poll(&mut context),
+            Poll::Pending
+        ));
+        state.signal();
+        assert!(matches!(
+            Pin::new(&mut handle).poll(&mut context),
+            Poll::Ready(Ok(()))
+        ));
+    }
+
+    #[test]
     fn test_tensor_desc() {
         let default_operand_desc = MLOperandDescriptor::default();
         let mut default_tensor_desc = MLTensorDescriptor::default();
@@ -746,8 +996,8 @@ webnn_graph "sample_graph" v1 {
         };
         assert_eq!(context.unwrap().rustnn_backend(), Backend::Onnx);
     }
-    #[test]
-    fn test_create_context() {
+    #[tokio::test]
+    async fn test_create_context() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable)) {
@@ -765,14 +1015,26 @@ webnn_graph "sample_graph" v1 {
         let tensor = context.create_tensor(&desc).unwrap();
 
         let upload = vec![1.0f32, 2., 3., 4.];
-        let mut download = vec![0.0f32; 4];
-        context.write_tensor(&tensor, &upload).unwrap();
-        context.read_tensor(&tensor, &mut download).unwrap();
-        assert_eq!(&upload, &download);
+        let upload_buffer = HostBuffer::from_slice(&upload);
+        let download_buffer = HostBuffer::new(&desc);
+        context
+            .write_tensor(&tensor, &upload_buffer)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        context
+            .read_tensor(&tensor, &download_buffer)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        let download = download_buffer.read();
+        assert_eq!(&upload, bytemuck::cast_slice::<u8, f32>(&download));
     }
 
-    #[test]
-    fn test_dispatch() {
+    #[tokio::test]
+    async fn test_dispatch() {
         let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
             return;
         };
@@ -787,12 +1049,28 @@ webnn_graph "sample_graph" v1 {
 
         let upload = vec![1.0f32, 2., 3., 4.];
         let upload_f64 = vec![1.0, 2., 3., 4.];
-        let mut download = vec![0.0f32; 4];
-        context.write_tensor(&tensor, &upload_f64).unwrap_err();
-        context.write_tensor(&tensor, &upload).unwrap();
+        let download = HostBuffer::new(&desc);
+        context
+            .write_tensor(&tensor, &HostBuffer::from_slice(&upload_f64))
+            .await
+            .unwrap_err();
+        context
+            .write_tensor(&tensor, &HostBuffer::from_slice(&upload))
+            .await
+            .unwrap()
+            .await
+            .unwrap();
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
-        context.read_tensor(&tensor, &mut download).unwrap();
-        assert_eq!(&vec![2.0f32, 3., 4., 5.], &download);
+        context
+            .read_tensor(&tensor, &download)
+            .await
+            .unwrap()
+            .await
+            .unwrap();
+        assert_eq!(
+            &[2.0f32, 3., 4., 5.],
+            bytemuck::cast_slice::<u8, f32>(&download.read())
+        );
     }
 
     #[test]

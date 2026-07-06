@@ -28,7 +28,7 @@ use crate::converters::TrtxConverter;
 use crate::error::Error;
 
 use crate::error::GraphBuilderError;
-use crate::mlcontext::MLTensor;
+use crate::mlcontext::{HostBuffer, MLTensor, StreamCallbackState, TensorSyncHandle};
 use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
@@ -238,6 +238,34 @@ impl TrtxTensor {
         let memory = stream.alloc_zeros(size)?;
         Ok(Self { memory, stream })
     }
+}
+
+struct ReadTensorCallback {
+    state: Arc<StreamCallbackState>,
+    buffer: HostBuffer,
+    staging: Vec<u8>,
+}
+
+struct WriteTensorCallback {
+    state: Arc<StreamCallbackState>,
+    _staging: Vec<u8>,
+}
+
+unsafe extern "C" fn finish_read_tensor(user_data: *mut c_void) {
+    // SAFETY: `user_data` was created by `Box::into_raw` immediately before
+    // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
+    let mut callback = unsafe { Box::from_raw(user_data.cast::<ReadTensorCallback>()) };
+    callback
+        .buffer
+        .replace(std::mem::take(&mut callback.staging));
+    callback.state.signal();
+}
+
+unsafe extern "C" fn finish_write_tensor(user_data: *mut c_void) {
+    // SAFETY: `user_data` was created by `Box::into_raw` immediately before
+    // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
+    let callback = unsafe { Box::from_raw(user_data.cast::<WriteTensorCallback>()) };
+    callback.state.signal();
 }
 
 pub(crate) struct TrtxContext<'context> {
@@ -521,55 +549,97 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<crate::mlcontext::MLTensor> {
         let mut tensor = self.create_tensor(descriptor)?;
         tensor.constant = true;
-        self.write_tensor(&tensor, input_data).map_err(|e| {
-            crate::error::Error::TensorCreationError {
+        self.write_tensor(&tensor, &HostBuffer::from(input_data.to_vec()))
+            .and_then(|handle| handle.sync())
+            .map_err(|e| crate::error::Error::TensorCreationError {
                 source: e.into(),
                 descriptor: descriptor.clone(),
-            }
-        })?; // need to free tensor in case of error
+            })?; // need to free tensor in case of error
         Ok(tensor)
     }
 
     fn read_tensor(
         &mut self,
         tensor: &crate::mlcontext::MLTensor,
-        array: &mut [u8],
-    ) -> crate::error::Result<()> {
+        buffer: &HostBuffer,
+    ) -> crate::error::Result<TensorSyncHandle> {
         let cuda_tensor = &self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
+        let state = Arc::new(StreamCallbackState::new());
+        let mut callback = Box::new(ReadTensorCallback {
+            state: Arc::clone(&state),
+            buffer: buffer.clone(),
+            staging: vec![0; buffer.len()],
+        });
         debug!(
             "Downloading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            array.as_ptr(),
-            array.len(),
+            callback.staging.as_ptr(),
+            callback.staging.len(),
         );
+        let device_view = cuda_tensor.memory.slice(..callback.staging.len());
         stream
-            .memcpy_dtoh(&cuda_tensor.memory, array)
+            .memcpy_dtoh(&device_view, &mut callback.staging)
             .to_read_tensor_result(|| tensor.clone())?;
-        stream
-            .synchronize()
+        let callback_ptr = Box::into_raw(callback).cast::<c_void>();
+        if let Err(error) = unsafe {
+            result::stream::launch_host_function(
+                stream.cu_stream(),
+                finish_read_tensor,
+                callback_ptr,
+            )
+        } {
+            // The copy may already be in flight, so reclaim its host storage
+            // only after the stream has stopped using it.
+            let sync_result = stream.synchronize();
+            let _callback = unsafe { Box::from_raw(callback_ptr.cast::<ReadTensorCallback>()) };
+            sync_result.to_read_tensor_result(|| tensor.clone())?;
+            return Err(error).to_read_tensor_result(|| tensor.clone());
+        }
+        // Recorded after the host function so `sync()` also waits until the
+        // callback has published the staging bytes into `HostBuffer`.
+        let event = stream
+            .record_event(None)
             .to_read_tensor_result(|| tensor.clone())?;
-        Ok(())
+        Ok(TensorSyncHandle::cuda(state, event))
     }
 
     fn write_tensor(
         &mut self,
         tensor: &crate::mlcontext::MLTensor,
-        array: &[u8],
-    ) -> crate::error::Result<()> {
+        buffer: &HostBuffer,
+    ) -> crate::error::Result<TensorSyncHandle> {
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
+        let state = Arc::new(StreamCallbackState::new());
+        let callback = Box::new(WriteTensorCallback {
+            state: Arc::clone(&state),
+            _staging: buffer.read().to_vec(),
+        });
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            array.as_ptr(),
-            array.len(),
+            callback._staging.as_ptr(),
+            callback._staging.len(),
         );
         stream
-            .memcpy_htod(array, &mut cuda_tensor.memory)
+            .memcpy_htod(&callback._staging, &mut cuda_tensor.memory)
             .to_write_tensor_result(|| tensor.clone())?;
-        stream
-            .synchronize()
+        let callback_ptr = Box::into_raw(callback).cast::<c_void>();
+        if let Err(error) = unsafe {
+            result::stream::launch_host_function(
+                stream.cu_stream(),
+                finish_write_tensor,
+                callback_ptr,
+            )
+        } {
+            let sync_result = stream.synchronize();
+            let _callback = unsafe { Box::from_raw(callback_ptr.cast::<WriteTensorCallback>()) };
+            sync_result.to_write_tensor_result(|| tensor.clone())?;
+            return Err(error).to_write_tensor_result(|| tensor.clone());
+        }
+        let event = stream
+            .record_event(None)
             .to_write_tensor_result(|| tensor.clone())?;
-        Ok(())
+        Ok(TensorSyncHandle::cuda(state, event))
     }
 
     fn dispatch(
@@ -770,7 +840,7 @@ impl ListDevices for TrtxContext<'_> {
 #[cfg(test)]
 #[cfg(feature = "trtx-runtime")]
 mod tests {
-    use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
+    use crate::mlcontext::{HostBuffer, MLBackendContext, MLTensorDescriptor};
     use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
 
     #[test]
@@ -800,8 +870,8 @@ mod tests {
         let _builder = context.create_builder().unwrap();
     }
 
-    #[test]
-    fn test_create_tensors() {
+    #[tokio::test]
+    async fn test_create_tensors() {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
@@ -819,14 +889,18 @@ mod tests {
         let tensor = context.create_tensor(&desc).unwrap();
 
         let upload = vec![1.0f32, 2., 3., 4.];
-        let mut download = vec![0.0f32; 4];
+        let download = HostBuffer::new(&desc);
         context
-            .write_tensor(&tensor, bytemuck::cast_slice(&upload))
+            .write_tensor(&tensor, &HostBuffer::from_slice(&upload))
+            .unwrap()
+            .await
             .unwrap();
         context
-            .read_tensor(&tensor, bytemuck::cast_slice_mut(&mut download))
+            .read_tensor(&tensor, &download)
+            .unwrap()
+            .await
             .unwrap();
-        assert_eq!(&upload, &download);
+        assert_eq!(&upload, bytemuck::cast_slice::<u8, f32>(&download.read()));
     }
 
     #[test]
@@ -848,7 +922,7 @@ mod tests {
         desc.set_writable(true);
         let tensor = context.create_tensor(&desc).unwrap();
         context
-            .write_tensor(&tensor, bytemuck::cast_slice(&too_big))
+            .write_tensor(&tensor, &HostBuffer::from_slice(&too_big))
             .unwrap_err();
     }
 }

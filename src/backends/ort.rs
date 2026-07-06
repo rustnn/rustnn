@@ -687,17 +687,26 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     ) -> crate::error::Result<MLTensor> {
         let mut tensor = self.create_tensor(descriptor)?;
         tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
+        self.write_tensor(
+            &tensor,
+            &crate::mlcontext::HostBuffer::from(input_data.to_vec()),
+        )
+        .and_then(|handle| handle.sync())
+        .map_err(|e| Error::TensorCreationError {
+            source: e.into(),
+            descriptor: descriptor.clone(),
+        })?;
         Ok(tensor)
     }
 
-    fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
+    fn read_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> crate::error::Result<crate::mlcontext::TensorSyncHandle> {
         let host = &self.tensors[tensor.id].memory;
         let logical = tensor_byte_len(tensor.descriptor())?;
+        let mut array = buffer.write();
         if host.len() > logical {
             debug!(
                 target: "rustnn::backends::ort",
@@ -724,10 +733,15 @@ impl<'context> MLBackendContext<'context> for OrtContext {
             tensor: tensor.clone(),
         })?;
         array[..logical].copy_from_slice(slice);
-        Ok(())
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
-    fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
+    fn write_tensor(
+        &mut self,
+        tensor: &MLTensor,
+        buffer: &crate::mlcontext::HostBuffer,
+    ) -> crate::error::Result<crate::mlcontext::TensorSyncHandle> {
+        let array = buffer.read();
         let host = &mut self.tensors[tensor.id].memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
@@ -741,8 +755,8 @@ impl<'context> MLBackendContext<'context> for OrtContext {
             });
         }
         let n = array.len();
-        host[..n].copy_from_slice(array);
-        Ok(())
+        host[..n].copy_from_slice(&array);
+        Ok(crate::mlcontext::TensorSyncHandle::ready())
     }
 
     fn dispatch(
