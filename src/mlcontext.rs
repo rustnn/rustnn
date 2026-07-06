@@ -142,34 +142,64 @@ pub struct MLContextLostInfo {
 /// Cloneable host storage used by asynchronous tensor transfers.
 #[derive(Clone, Debug)]
 pub struct HostBuffer {
-    inner: Arc<RwLock<Vec<u8>>>,
+    inner: Arc<RwLock<HostBufferState>>,
+}
+
+#[derive(Debug)]
+struct HostBufferState {
+    data: Vec<u8>,
+    cuda_host_registered: bool,
+    cuda_transfer_in_flight: bool,
+}
+
+#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HostBufferCudaError {
+    #[error("CUDA host registration failed: {0}")]
+    Registration(#[from] cudarc::runtime::result::RuntimeError),
+    #[error("host buffer already has a CUDA transfer in flight")]
+    TransferInFlight,
+}
+
+impl Drop for HostBufferState {
+    fn drop(&mut self) {
+        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+        if self.cuda_host_registered {
+            use cudarc::runtime::sys;
+
+            let result = unsafe { sys::cudaHostUnregister(self.data.as_mut_ptr().cast()) }.result();
+            if let Err(error) = result {
+                log::warn!("Failed to unregister CUDA host buffer: {error}");
+            }
+        }
+    }
 }
 
 /// A shared lock guard that exposes host bytes without copying.
-pub struct HostBufferReadGuard<'a>(RwLockReadGuard<'a, Vec<u8>>);
+pub struct HostBufferReadGuard<'a>(RwLockReadGuard<'a, HostBufferState>);
 
 impl std::ops::Deref for HostBufferReadGuard<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_slice()
+        self.0.data.as_slice()
     }
 }
 
 /// An exclusive lock guard that exposes mutable host bytes without copying.
-pub struct HostBufferWriteGuard<'a>(RwLockWriteGuard<'a, Vec<u8>>);
+pub struct HostBufferWriteGuard<'a>(RwLockWriteGuard<'a, HostBufferState>);
 
 impl std::ops::Deref for HostBufferWriteGuard<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        self.0.as_slice()
+        self.0.data.as_slice()
     }
 }
 
 impl std::ops::DerefMut for HostBufferWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        self.0.as_mut_slice()
+        self.0.data.as_mut_slice()
     }
 }
 
@@ -181,20 +211,33 @@ impl HostBuffer {
 
     /// Locks the buffer for shared, zero-copy access as a byte slice.
     pub fn read(&self) -> HostBufferReadGuard<'_> {
-        HostBufferReadGuard(self.inner.read().unwrap_or_else(|error| error.into_inner()))
+        let state = self.inner.read().unwrap_or_else(|error| error.into_inner());
+        assert!(
+            !state.cuda_transfer_in_flight,
+            "cannot access a HostBuffer while a CUDA transfer is in flight"
+        );
+        HostBufferReadGuard(state)
     }
 
     /// Locks the buffer for exclusive, zero-copy access as a mutable byte slice.
     pub fn write(&self) -> HostBufferWriteGuard<'_> {
-        HostBufferWriteGuard(
-            self.inner
-                .write()
-                .unwrap_or_else(|error| error.into_inner()),
-        )
+        let state = self
+            .inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(
+            !state.cuda_transfer_in_flight,
+            "cannot access a HostBuffer while a CUDA transfer is in flight"
+        );
+        HostBufferWriteGuard(state)
     }
 
     pub fn len(&self) -> usize {
-        self.read().len()
+        self.inner
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .data
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -205,18 +248,65 @@ impl HostBuffer {
         Self::from(bytemuck::cast_slice(data).to_vec())
     }
 
-    pub(crate) fn replace(&self, data: Vec<u8>) {
-        *self
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    pub(crate) fn rustnn_cuda_begin_transfer(
+        &self,
+    ) -> std::result::Result<(*mut u8, usize), HostBufferCudaError> {
+        use cudarc::runtime::sys;
+
+        let mut state = self
             .inner
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = data;
+            .unwrap_or_else(|error| error.into_inner());
+        if state.cuda_transfer_in_flight {
+            return Err(HostBufferCudaError::TransferInFlight);
+        }
+        if !state.cuda_host_registered && !state.data.is_empty() {
+            unsafe {
+                sys::cudaHostRegister(
+                    state.data.as_mut_ptr().cast(),
+                    state.data.len(),
+                    sys::cudaHostRegisterDefault,
+                )
+            }
+            .result()?;
+            state.cuda_host_registered = true;
+        }
+        state.cuda_transfer_in_flight = true;
+        Ok((state.data.as_mut_ptr(), state.data.len()))
+    }
+
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    pub(crate) fn rustnn_cuda_finish_transfer(&self) {
+        let mut state = self
+            .inner
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(state.cuda_transfer_in_flight);
+        state.cuda_transfer_in_flight = false;
+    }
+
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    #[cfg(all(test, any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
+    pub(crate) fn rustnn_cuda_host_registered(&self) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .cuda_host_registered
     }
 }
 
 impl From<Vec<u8>> for HostBuffer {
     fn from(data: Vec<u8>) -> Self {
         Self {
-            inner: Arc::new(RwLock::new(data)),
+            inner: Arc::new(RwLock::new(HostBufferState {
+                data,
+                cuda_host_registered: false,
+                cuda_transfer_in_flight: false,
+            })),
         }
     }
 }

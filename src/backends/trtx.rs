@@ -28,7 +28,9 @@ use crate::converters::TrtxConverter;
 use crate::error::Error;
 
 use crate::error::GraphBuilderError;
-use crate::mlcontext::{HostBuffer, MLTensor, StreamCallbackState, TensorSyncHandle};
+use crate::mlcontext::{
+    HostBuffer, HostBufferCudaError, MLTensor, StreamCallbackState, TensorSyncHandle,
+};
 use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
@@ -118,6 +120,18 @@ impl<T> ToReadTensorResult<T> for std::result::Result<T, DriverError> {
     }
 }
 
+impl<T> ToReadTensorResult<T> for std::result::Result<T, HostBufferCudaError> {
+    fn to_read_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::TensorReadError {
+            source: Box::new(e),
+            tensor: get_tensor(),
+        })
+    }
+}
+
 trait ToWriteTensorResult<T> {
     fn to_write_tensor_result(
         self,
@@ -126,6 +140,18 @@ trait ToWriteTensorResult<T> {
 }
 
 impl<T> ToWriteTensorResult<T> for std::result::Result<T, DriverError> {
+    fn to_write_tensor_result(
+        self,
+        get_tensor: impl FnOnce() -> MLTensor,
+    ) -> crate::error::Result<T> {
+        self.map_err(|e| crate::error::Error::TensorWriteError {
+            source: Box::new(e),
+            tensor: get_tensor(),
+        })
+    }
+}
+
+impl<T> ToWriteTensorResult<T> for std::result::Result<T, HostBufferCudaError> {
     fn to_write_tensor_result(
         self,
         get_tensor: impl FnOnce() -> MLTensor,
@@ -243,21 +269,18 @@ impl TrtxTensor {
 struct ReadTensorCallback {
     state: Arc<StreamCallbackState>,
     buffer: HostBuffer,
-    staging: Vec<u8>,
 }
 
 struct WriteTensorCallback {
     state: Arc<StreamCallbackState>,
-    _staging: Vec<u8>,
+    buffer: HostBuffer,
 }
 
 unsafe extern "C" fn finish_read_tensor(user_data: *mut c_void) {
     // SAFETY: `user_data` was created by `Box::into_raw` immediately before
     // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
-    let mut callback = unsafe { Box::from_raw(user_data.cast::<ReadTensorCallback>()) };
-    callback
-        .buffer
-        .replace(std::mem::take(&mut callback.staging));
+    let callback = unsafe { Box::from_raw(user_data.cast::<ReadTensorCallback>()) };
+    callback.buffer.rustnn_cuda_finish_transfer();
     callback.state.signal();
 }
 
@@ -265,12 +288,14 @@ unsafe extern "C" fn finish_write_tensor(user_data: *mut c_void) {
     // SAFETY: `user_data` was created by `Box::into_raw` immediately before
     // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
     let callback = unsafe { Box::from_raw(user_data.cast::<WriteTensorCallback>()) };
+    callback.buffer.rustnn_cuda_finish_transfer();
     callback.state.signal();
 }
 
 pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     tensors: Vec<TrtxTensor>,
+    registered_host_buffers: Vec<HostBuffer>,
     events: Vec<CudaEvent>,
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
@@ -285,6 +310,19 @@ impl std::fmt::Debug for TrtxContext<'_> {
             //.field("logger", &self.logger)
             //.field("runtime", &self.runtime)
             .finish()
+    }
+}
+
+impl Drop for TrtxContext<'_> {
+    fn drop(&mut self) {
+        for tensor in &self.tensors {
+            if let Err(error) = tensor.stream.synchronize() {
+                warn!(
+                    "Failed to synchronize tensor stream before unregistering host buffers: {error}"
+                );
+            }
+        }
+        self.registered_host_buffers.clear();
     }
 }
 
@@ -308,6 +346,7 @@ impl<'context> TrtxContext<'context> {
         Ok(Self {
             cuda_ctx,
             tensors: vec![],
+            registered_host_buffers: vec![],
             events: vec![],
             runtime,
             builder: Arc::new(builder.into()),
@@ -563,23 +602,36 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         buffer: &HostBuffer,
     ) -> crate::error::Result<TensorSyncHandle> {
+        self.cuda_ctx
+            .bind_to_thread()
+            .to_read_tensor_result(|| tensor.clone())?;
+        let (host_ptr, host_len) = buffer
+            .rustnn_cuda_begin_transfer()
+            .to_read_tensor_result(|| tensor.clone())?;
+        if !self
+            .registered_host_buffers
+            .iter()
+            .any(|registered| registered.ptr_eq(buffer))
+        {
+            self.registered_host_buffers.push(buffer.clone());
+        }
         let cuda_tensor = &self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         let state = Arc::new(StreamCallbackState::new());
-        let mut callback = Box::new(ReadTensorCallback {
+        let callback = Box::new(ReadTensorCallback {
             state: Arc::clone(&state),
             buffer: buffer.clone(),
-            staging: vec![0; buffer.len()],
         });
         debug!(
             "Downloading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            callback.staging.as_ptr(),
-            callback.staging.len(),
+            host_ptr, host_len,
         );
-        let device_view = cuda_tensor.memory.slice(..callback.staging.len());
-        stream
-            .memcpy_dtoh(&device_view, &mut callback.staging)
-            .to_read_tensor_result(|| tensor.clone())?;
+        let device_view = cuda_tensor.memory.slice(..host_len);
+        let host = unsafe { std::slice::from_raw_parts_mut(host_ptr, host_len) };
+        if let Err(error) = stream.memcpy_dtoh(&device_view, host) {
+            buffer.rustnn_cuda_finish_transfer();
+            return Err(error).to_read_tensor_result(|| tensor.clone());
+        }
         let callback_ptr = Box::into_raw(callback).cast::<c_void>();
         if let Err(error) = unsafe {
             result::stream::launch_host_function(
@@ -591,15 +643,22 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             // The copy may already be in flight, so reclaim its host storage
             // only after the stream has stopped using it.
             let sync_result = stream.synchronize();
-            let _callback = unsafe { Box::from_raw(callback_ptr.cast::<ReadTensorCallback>()) };
+            let callback = unsafe { Box::from_raw(callback_ptr.cast::<ReadTensorCallback>()) };
+            callback.buffer.rustnn_cuda_finish_transfer();
             sync_result.to_read_tensor_result(|| tensor.clone())?;
             return Err(error).to_read_tensor_result(|| tensor.clone());
         }
         // Recorded after the host function so `sync()` also waits until the
-        // callback has published the staging bytes into `HostBuffer`.
-        let event = stream
-            .record_event(None)
-            .to_read_tensor_result(|| tensor.clone())?;
+        // callback has released the `HostBuffer` for CPU access.
+        let event = match stream.record_event(None) {
+            Ok(event) => event,
+            Err(error) => {
+                stream
+                    .synchronize()
+                    .to_read_tensor_result(|| tensor.clone())?;
+                return Err(error).to_read_tensor_result(|| tensor.clone());
+            }
+        };
         Ok(TensorSyncHandle::cuda(state, event))
     }
 
@@ -608,21 +667,35 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         buffer: &HostBuffer,
     ) -> crate::error::Result<TensorSyncHandle> {
+        self.cuda_ctx
+            .bind_to_thread()
+            .to_write_tensor_result(|| tensor.clone())?;
+        let (host_ptr, host_len) = buffer
+            .rustnn_cuda_begin_transfer()
+            .to_write_tensor_result(|| tensor.clone())?;
+        if !self
+            .registered_host_buffers
+            .iter()
+            .any(|registered| registered.ptr_eq(buffer))
+        {
+            self.registered_host_buffers.push(buffer.clone());
+        }
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         let state = Arc::new(StreamCallbackState::new());
         let callback = Box::new(WriteTensorCallback {
             state: Arc::clone(&state),
-            _staging: buffer.read().to_vec(),
+            buffer: buffer.clone(),
         });
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            callback._staging.as_ptr(),
-            callback._staging.len(),
+            host_ptr, host_len,
         );
-        stream
-            .memcpy_htod(&callback._staging, &mut cuda_tensor.memory)
-            .to_write_tensor_result(|| tensor.clone())?;
+        let host = unsafe { std::slice::from_raw_parts(host_ptr, host_len) };
+        if let Err(error) = stream.memcpy_htod(host, &mut cuda_tensor.memory) {
+            buffer.rustnn_cuda_finish_transfer();
+            return Err(error).to_write_tensor_result(|| tensor.clone());
+        }
         let callback_ptr = Box::into_raw(callback).cast::<c_void>();
         if let Err(error) = unsafe {
             result::stream::launch_host_function(
@@ -632,13 +705,20 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             )
         } {
             let sync_result = stream.synchronize();
-            let _callback = unsafe { Box::from_raw(callback_ptr.cast::<WriteTensorCallback>()) };
+            let callback = unsafe { Box::from_raw(callback_ptr.cast::<WriteTensorCallback>()) };
+            callback.buffer.rustnn_cuda_finish_transfer();
             sync_result.to_write_tensor_result(|| tensor.clone())?;
             return Err(error).to_write_tensor_result(|| tensor.clone());
         }
-        let event = stream
-            .record_event(None)
-            .to_write_tensor_result(|| tensor.clone())?;
+        let event = match stream.record_event(None) {
+            Ok(event) => event,
+            Err(error) => {
+                stream
+                    .synchronize()
+                    .to_write_tensor_result(|| tensor.clone())?;
+                return Err(error).to_write_tensor_result(|| tensor.clone());
+            }
+        };
         Ok(TensorSyncHandle::cuda(state, event))
     }
 
@@ -889,17 +969,20 @@ mod tests {
         let tensor = context.create_tensor(&desc).unwrap();
 
         let upload = vec![1.0f32, 2., 3., 4.];
+        let upload_buffer = HostBuffer::from_slice(&upload);
         let download = HostBuffer::new(&desc);
-        context
-            .write_tensor(&tensor, &HostBuffer::from_slice(&upload))
-            .unwrap()
-            .await
-            .unwrap();
+        let upload_handle = context.write_tensor(&tensor, &upload_buffer).unwrap();
+        assert!(upload_buffer.rustnn_cuda_host_registered());
+        upload_handle.await.unwrap();
         context
             .read_tensor(&tensor, &download)
             .unwrap()
             .await
             .unwrap();
+        assert!(download.rustnn_cuda_host_registered());
+        upload_buffer.rustnn_cuda_begin_transfer().unwrap();
+        assert!(std::panic::catch_unwind(|| upload_buffer.read()).is_err());
+        upload_buffer.rustnn_cuda_finish_transfer();
         assert_eq!(&upload, bytemuck::cast_slice::<u8, f32>(&download.read()));
     }
 
