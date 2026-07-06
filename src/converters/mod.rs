@@ -4,6 +4,8 @@ use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
 mod coreml_mlprogram;
+#[cfg(feature = "litert-runtime")]
+pub mod litert;
 pub mod onnx;
 mod pool2d_shared;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
@@ -11,6 +13,8 @@ mod trtx;
 mod weight_file_builder;
 
 pub use coreml_mlprogram::CoremlMlProgramConverter;
+#[cfg(feature = "litert-runtime")]
+pub use litert::LiteRtConverter;
 pub use onnx::OnnxConverter;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 pub use trtx::TrtxConverter;
@@ -60,6 +64,8 @@ impl ConverterRegistry {
         registry.register(Box::new(CoremlMlProgramConverter));
         #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
         registry.register(Box::new(TrtxConverter::new()));
+        #[cfg(feature = "litert-runtime")]
+        registry.register(Box::new(LiteRtConverter::new()));
         registry
     }
 

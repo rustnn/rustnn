@@ -129,7 +129,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     #[cfg(feature = "litert-runtime")]
     let have_litert = cfg!(feature = "litert-runtime");
     #[cfg(feature = "litert-runtime")]
-    let want_litert = false;
+    let want_litert =
+        options.backend_hint.is_none() || options.backend_hint == Some(Backend::Litert);
     #[cfg(feature = "litert-runtime")]
     let litert_devices = LiteRtContext::list_devices();
 

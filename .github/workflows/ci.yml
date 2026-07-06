@@ -33,6 +33,13 @@ jobs:
           sudo apt-get install -y protobuf-compiler
           protoc --version
 
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -134,6 +141,77 @@ jobs:
           path: |
             reports/wpt-conformance.json
             reports/wpt-conformance.html
+
+  wpt-conformance-litert:
+    name: WPT Conformance (LiteRT)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/wpt
+          key: wpt-${{ runner.os }}-${{ hashFiles('scripts/fetch_wpt.mjs') }}
+          restore-keys: |
+            wpt-${{ runner.os }}-
+
+      - name: Cache cargo build + litert-sys
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            ~/.cache/litert-sys
+          key: ${{ runner.os }}-wpt-litert-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Fetch WPT corpus
+        run: node scripts/fetch_wpt.mjs
+
+      - name: Run WPT conformance tests (LiteRT)
+        env:
+          WPT_REPORT_LITERT_JSON: reports/wpt-conformance-litert.json
+          RUSTNN_GIT_SHA: ${{ github.sha }}
+          RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          mkdir -p reports
+          make test-wpt-litert || true
+          REPORT_FILE=reports/wpt-conformance-litert.json
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "Report not found at $REPORT_FILE (process crashed before report was written)"
+            exit 1
+          fi
+          PASSED=$(jq -r '.summary.passed // 0' "$REPORT_FILE")
+          echo "Passed: ${PASSED}"
+
+      - name: Upload WPT conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wpt-conformance-litert-report
+          path: |
+            reports/wpt-conformance-litert.json
 
   # Legacy rustnnpt gate: keeps branch protection happy until "RustNNPT Conformance Gate"
   # is replaced with "WPT Conformance" in repo settings. Remove once admins update checks.

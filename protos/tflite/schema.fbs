@@ -1,0 +1,1314 @@
+// Copyright 2017 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Revision History
+// Version 0: Initial version.
+// Version 1: Add subgraphs to schema.
+// Version 2: Rename operators to conform to NN API.
+// Version 3: Move buffer data from Model.Subgraph.Tensors to Model.Buffers.
+// Version 3a: Add new builtin op code field. Has backward compatibility with
+//             version 3.
+// Version 3b: Rename fields in SignatureDef. Has backward compatibility with
+//             version 3 and 3a.
+// Version 3c: Move constant tensor buffers & custom op buffers outside from
+//             Flatbuffers. Has backward compatibility with version 3, 3a and
+//             3b.
+
+namespace tflite;
+
+// This corresponds to the version.
+file_identifier "TFL3";
+// File extension of any written files.
+file_extension "tflite";
+
+// IMPORTANT: All new members of tables, enums and unions must be added at the
+// end to ensure backwards compatibility.
+
+// The type of data stored in a tensor.
+enum TensorType : byte {
+  FLOAT32 = 0,
+  FLOAT16 = 1,
+  INT32 = 2,
+  UINT8 = 3,
+  INT64 = 4,
+  STRING = 5,
+  BOOL = 6,
+  INT16 = 7,
+  COMPLEX64 = 8,
+  INT8 = 9,
+  FLOAT64 = 10,
+  COMPLEX128 = 11,
+  UINT64 = 12,
+  RESOURCE = 13,
+  VARIANT = 14,
+  UINT32 = 15,
+  UINT16 = 16,
+  INT4 = 17,
+  BFLOAT16 = 18,
+}
+
+table CustomQuantization {
+  custom:[ubyte] (force_align: 16);
+}
+
+union QuantizationDetails {
+  CustomQuantization,
+}
+
+table QuantizationParameters {
+  min:[float];
+  max:[float];
+  scale:[float];
+  zero_point:[long];
+  details:QuantizationDetails;
+  quantized_dimension:int;
+}
+
+enum DimensionType : byte {
+  DENSE = 0,
+  SPARSE_CSR = 1,
+}
+
+table Int32Vector {
+  values:[int];
+}
+
+table Uint16Vector {
+  values:[ushort] (force_align: 4);
+}
+
+table Uint8Vector {
+  values:[ubyte] (force_align: 4);
+}
+
+union SparseIndexVector {
+  Int32Vector,
+  Uint16Vector,
+  Uint8Vector
+}
+
+table DimensionMetadata {
+  format:DimensionType;
+  dense_size:int;
+  array_segments:SparseIndexVector;
+  array_indices:SparseIndexVector;
+}
+
+table SparsityParameters {
+  traversal_order:[int];
+  block_map:[int];
+  dim_metadata:[DimensionMetadata];
+}
+
+table VariantSubType {
+  shape:[int];
+  type:TensorType;
+  has_rank: bool = false;
+}
+
+table Tensor {
+  shape:[int];
+  type:TensorType;
+  buffer:uint;
+  name:string;
+  quantization:QuantizationParameters;
+  is_variable:bool = false;
+  sparsity:SparsityParameters;
+  shape_signature:[int];
+  has_rank: bool = false;
+  variant_tensors:[VariantSubType];
+}
+
+enum BuiltinOperator : int32 {
+  ADD = 0,
+  AVERAGE_POOL_2D = 1,
+  CONCATENATION = 2,
+  CONV_2D = 3,
+  DEPTHWISE_CONV_2D = 4,
+  DEPTH_TO_SPACE = 5,
+  DEQUANTIZE = 6,
+  EMBEDDING_LOOKUP = 7,
+  FLOOR = 8,
+  FULLY_CONNECTED = 9,
+  HASHTABLE_LOOKUP = 10,
+  L2_NORMALIZATION = 11,
+  L2_POOL_2D = 12,
+  LOCAL_RESPONSE_NORMALIZATION = 13,
+  LOGISTIC = 14,
+  LSH_PROJECTION = 15,
+  LSTM = 16,
+  MAX_POOL_2D = 17,
+  MUL = 18,
+  RELU = 19,
+  RELU_N1_TO_1 = 20,
+  RELU6 = 21,
+  RESHAPE = 22,
+  RESIZE_BILINEAR = 23,
+  RNN = 24,
+  SOFTMAX = 25,
+  SPACE_TO_DEPTH = 26,
+  SVDF = 27,
+  TANH = 28,
+  CONCAT_EMBEDDINGS = 29,
+  SKIP_GRAM = 30,
+  CALL = 31,
+  CUSTOM = 32,
+  EMBEDDING_LOOKUP_SPARSE = 33,
+  PAD = 34,
+  UNIDIRECTIONAL_SEQUENCE_RNN = 35,
+  GATHER = 36,
+  BATCH_TO_SPACE_ND = 37,
+  SPACE_TO_BATCH_ND = 38,
+  TRANSPOSE = 39,
+  MEAN = 40,
+  SUB = 41,
+  DIV = 42,
+  SQUEEZE = 43,
+  UNIDIRECTIONAL_SEQUENCE_LSTM = 44,
+  STRIDED_SLICE = 45,
+  BIDIRECTIONAL_SEQUENCE_RNN = 46,
+  EXP = 47,
+  TOPK_V2 = 48,
+  SPLIT = 49,
+  LOG_SOFTMAX = 50,
+  DELEGATE = 51,
+  BIDIRECTIONAL_SEQUENCE_LSTM = 52,
+  CAST = 53,
+  PRELU = 54,
+  MAXIMUM = 55,
+  ARG_MAX = 56,
+  MINIMUM = 57,
+  LESS = 58,
+  NEG = 59,
+  PADV2 = 60,
+  GREATER = 61,
+  GREATER_EQUAL = 62,
+  LESS_EQUAL = 63,
+  SELECT = 64,
+  SLICE = 65,
+  SIN = 66,
+  TRANSPOSE_CONV = 67,
+  SPARSE_TO_DENSE = 68,
+  TILE = 69,
+  EXPAND_DIMS = 70,
+  EQUAL = 71,
+  NOT_EQUAL = 72,
+  LOG = 73,
+  SUM = 74,
+  SQRT = 75,
+  RSQRT = 76,
+  SHAPE = 77,
+  POW = 78,
+  ARG_MIN = 79,
+  FAKE_QUANT = 80,
+  REDUCE_PROD = 81,
+  REDUCE_MAX = 82,
+  PACK = 83,
+  LOGICAL_OR = 84,
+  ONE_HOT = 85,
+  LOGICAL_AND = 86,
+  LOGICAL_NOT = 87,
+  UNPACK = 88,
+  REDUCE_MIN = 89,
+  FLOOR_DIV = 90,
+  REDUCE_ANY = 91,
+  SQUARE = 92,
+  ZEROS_LIKE = 93,
+  FILL = 94,
+  FLOOR_MOD = 95,
+  RANGE = 96,
+  RESIZE_NEAREST_NEIGHBOR = 97,
+  LEAKY_RELU = 98,
+  SQUARED_DIFFERENCE = 99,
+  MIRROR_PAD = 100,
+  ABS = 101,
+  SPLIT_V = 102,
+  UNIQUE = 103,
+  CEIL = 104,
+  REVERSE_V2 = 105,
+  ADD_N = 106,
+  GATHER_ND = 107,
+  COS = 108,
+  WHERE = 109,
+  RANK = 110,
+  ELU = 111,
+  REVERSE_SEQUENCE = 112,
+  MATRIX_DIAG = 113,
+  QUANTIZE = 114,
+  MATRIX_SET_DIAG = 115,
+  ROUND = 116,
+  HARD_SWISH = 117,
+  IF = 118,
+  WHILE = 119,
+  NON_MAX_SUPPRESSION_V4 = 120,
+  NON_MAX_SUPPRESSION_V5 = 121,
+  SCATTER_ND = 122,
+  SELECT_V2 = 123,
+  DENSIFY = 124,
+  SEGMENT_SUM = 125,
+  BATCH_MATMUL = 126,
+  PLACEHOLDER_FOR_GREATER_OP_CODES = 127,
+  CUMSUM = 128,
+  CALL_ONCE = 129,
+  BROADCAST_TO = 130,
+  RFFT2D = 131,
+  CONV_3D = 132,
+  IMAG=133,
+  REAL=134,
+  COMPLEX_ABS=135,
+  HASHTABLE = 136,
+  HASHTABLE_FIND = 137,
+  HASHTABLE_IMPORT = 138,
+  HASHTABLE_SIZE = 139,
+  REDUCE_ALL = 140,
+  CONV_3D_TRANSPOSE = 141,
+  VAR_HANDLE = 142,
+  READ_VARIABLE = 143,
+  ASSIGN_VARIABLE = 144,
+  BROADCAST_ARGS = 145,
+  RANDOM_STANDARD_NORMAL = 146,
+  BUCKETIZE = 147,
+  RANDOM_UNIFORM = 148,
+  MULTINOMIAL = 149,
+  GELU = 150,
+  DYNAMIC_UPDATE_SLICE = 151,
+  RELU_0_TO_1 = 152,
+  UNSORTED_SEGMENT_PROD = 153,
+  UNSORTED_SEGMENT_MAX = 154,
+  UNSORTED_SEGMENT_SUM = 155,
+  ATAN2 = 156,
+  UNSORTED_SEGMENT_MIN = 157,
+  SIGN = 158,
+  BITCAST = 159,
+  BITWISE_XOR = 160,
+  RIGHT_SHIFT = 161,
+  STABLEHLO_LOGISTIC = 162,
+  STABLEHLO_ADD = 163,
+  STABLEHLO_DIVIDE = 164,
+  STABLEHLO_MULTIPLY = 165,
+  STABLEHLO_MAXIMUM = 166,
+  STABLEHLO_RESHAPE = 167,
+  STABLEHLO_CLAMP = 168,
+  STABLEHLO_CONCATENATE = 169,
+  STABLEHLO_BROADCAST_IN_DIM = 170,
+  STABLEHLO_CONVOLUTION = 171,
+  STABLEHLO_SLICE = 172,
+  STABLEHLO_CUSTOM_CALL = 173,
+  STABLEHLO_REDUCE = 174,
+  STABLEHLO_ABS = 175,
+  STABLEHLO_AND = 176,
+  STABLEHLO_COSINE = 177,
+  STABLEHLO_EXPONENTIAL = 178,
+  STABLEHLO_FLOOR = 179,
+  STABLEHLO_LOG = 180,
+  STABLEHLO_MINIMUM = 181,
+  STABLEHLO_NEGATE = 182,
+  STABLEHLO_OR = 183,
+  STABLEHLO_POWER = 184,
+  STABLEHLO_REMAINDER = 185,
+  STABLEHLO_RSQRT = 186,
+  STABLEHLO_SELECT = 187,
+  STABLEHLO_SUBTRACT = 188,
+  STABLEHLO_TANH = 189,
+  STABLEHLO_SCATTER = 190,
+  STABLEHLO_COMPARE = 191,
+  STABLEHLO_CONVERT = 192,
+  STABLEHLO_DYNAMIC_SLICE = 193,
+  STABLEHLO_DYNAMIC_UPDATE_SLICE = 194,
+  STABLEHLO_PAD = 195,
+  STABLEHLO_IOTA = 196,
+  STABLEHLO_DOT_GENERAL = 197,
+  STABLEHLO_REDUCE_WINDOW = 198,
+  STABLEHLO_SORT = 199,
+  STABLEHLO_WHILE = 200,
+  STABLEHLO_GATHER = 201,
+  STABLEHLO_TRANSPOSE = 202,
+  DILATE = 203,
+  STABLEHLO_RNG_BIT_GENERATOR = 204,
+  REDUCE_WINDOW = 205 (deprecated),
+  STABLEHLO_COMPOSITE = 206,
+  STABLEHLO_SHIFT_LEFT = 207,
+  STABLEHLO_CBRT = 208,
+}
+
+union BuiltinOptions {
+  Conv2DOptions,
+  DepthwiseConv2DOptions,
+  ConcatEmbeddingsOptions,
+  LSHProjectionOptions,
+  Pool2DOptions,
+  SVDFOptions,
+  RNNOptions,
+  FullyConnectedOptions,
+  SoftmaxOptions,
+  ConcatenationOptions,
+  AddOptions,
+  L2NormOptions,
+  LocalResponseNormalizationOptions,
+  LSTMOptions,
+  ResizeBilinearOptions,
+  CallOptions,
+  ReshapeOptions,
+  SkipGramOptions,
+  SpaceToDepthOptions,
+  EmbeddingLookupSparseOptions,
+  MulOptions,
+  PadOptions,
+  GatherOptions,
+  BatchToSpaceNDOptions,
+  SpaceToBatchNDOptions,
+  TransposeOptions,
+  ReducerOptions,
+  SubOptions,
+  DivOptions,
+  SqueezeOptions,
+  SequenceRNNOptions,
+  StridedSliceOptions,
+  ExpOptions,
+  TopKV2Options,
+  SplitOptions,
+  LogSoftmaxOptions,
+  CastOptions,
+  DequantizeOptions,
+  MaximumMinimumOptions,
+  ArgMaxOptions,
+  LessOptions,
+  NegOptions,
+  PadV2Options,
+  GreaterOptions,
+  GreaterEqualOptions,
+  LessEqualOptions,
+  SelectOptions,
+  SliceOptions,
+  TransposeConvOptions,
+  SparseToDenseOptions,
+  TileOptions,
+  ExpandDimsOptions,
+  EqualOptions,
+  NotEqualOptions,
+  ShapeOptions,
+  PowOptions,
+  ArgMinOptions,
+  FakeQuantOptions,
+  PackOptions,
+  LogicalOrOptions,
+  OneHotOptions,
+  LogicalAndOptions,
+  LogicalNotOptions,
+  UnpackOptions,
+  FloorDivOptions,
+  SquareOptions,
+  ZerosLikeOptions,
+  FillOptions,
+  BidirectionalSequenceLSTMOptions,
+  BidirectionalSequenceRNNOptions,
+  UnidirectionalSequenceLSTMOptions,
+  FloorModOptions,
+  RangeOptions,
+  ResizeNearestNeighborOptions,
+  LeakyReluOptions,
+  SquaredDifferenceOptions,
+  MirrorPadOptions,
+  AbsOptions,
+  SplitVOptions,
+  UniqueOptions,
+  ReverseV2Options,
+  AddNOptions,
+  GatherNdOptions,
+  CosOptions,
+  WhereOptions,
+  RankOptions,
+  ReverseSequenceOptions,
+  MatrixDiagOptions,
+  QuantizeOptions,
+  MatrixSetDiagOptions,
+  HardSwishOptions,
+  IfOptions,
+  WhileOptions,
+  DepthToSpaceOptions,
+  NonMaxSuppressionV4Options,
+  NonMaxSuppressionV5Options,
+  ScatterNdOptions,
+  SelectV2Options,
+  DensifyOptions,
+  SegmentSumOptions,
+  BatchMatMulOptions,
+  CumsumOptions,
+  CallOnceOptions,
+  BroadcastToOptions,
+  Rfft2dOptions,
+  Conv3DOptions,
+  HashtableOptions,
+  HashtableFindOptions,
+  HashtableImportOptions,
+  HashtableSizeOptions,
+  VarHandleOptions,
+  ReadVariableOptions,
+  AssignVariableOptions,
+  RandomOptions,
+  BucketizeOptions,
+  GeluOptions,
+  DynamicUpdateSliceOptions,
+  UnsortedSegmentProdOptions,
+  UnsortedSegmentMaxOptions,
+  UnsortedSegmentMinOptions,
+  UnsortedSegmentSumOptions,
+  ATan2Options,
+  SignOptions,
+  BitcastOptions,
+  BitwiseXorOptions,
+  RightShiftOptions,
+}
+
+union BuiltinOptions2{
+  StablehloConcatenateOptions,
+  StablehloBroadcastInDimOptions,
+  StablehloSliceOptions,
+  StablehloConvolutionOptions,
+  StablehloCustomCallOptions,
+  StablehloReduceOptions,
+  StablehloScatterOptions,
+  StablehloCompareOptions,
+  StablehloDynamicSliceOptions,
+  StablehloPadOptions,
+  StablehloIotaOptions,
+  StablehloDotGeneralOptions,
+  StablehloReduceWindowOptions,
+  StablehloSortOptions,
+  StablehloWhileOptions,
+  StablehloGatherOptions,
+  StablehloTransposeOptions,
+  DilateOptions,
+  StablehloRngBitGeneratorOptions,
+  ReduceWindowOptions (deprecated),
+  StableHLOCompositeOptions,
+  StablehloShiftLeftOptions,
+}
+
+table StablehloGatherOptions{
+  offset_dims : [long];
+  collapsed_slice_dims : [long];
+  start_index_map : [long];
+  index_vector_dim : long;
+  slice_sizes : [long];
+  indices_are_sorted : bool;
+}
+
+table StablehloTransposeOptions{
+  permutation : [long];
+}
+
+enum StablehloPrecisionConfig : uint {
+  DEFAULT,
+  HIGH,
+  HIGHEST,
+}
+
+table StablehloDotGeneralOptions{
+  lhs_batching_dimensions : [long];
+  rhs_batching_dimensions : [long];
+  lhs_contracting_dimensions : [long];
+  rhs_contracting_dimensions : [long];
+  precision_config : [StablehloPrecisionConfig];
+}
+
+table StablehloReduceWindowOptions{
+  window_dimensions : [long];
+  window_strides : [long];
+  base_dilations : [long];
+  window_dilations : [long];
+  padding : [long];
+  body_subgraph_index : int;
+}
+
+table StablehloWhileOptions{
+  cond_subgraph_index : int;
+  body_subgraph_index : int;
+}
+
+table StablehloSortOptions{
+  dimension : long;
+  is_stable : bool;
+  comparator_subgraph_index : int;
+}
+
+table StablehloConcatenateOptions {
+  dimension : long;
+}
+
+table StablehloBroadcastInDimOptions{
+  broadcast_dimensions : [long];
+}
+
+enum StablehloComparisonDirection : uint {
+  STABLEHLO_COMPARISON_DIRECTION_EQ,
+  STABLEHLO_COMPARISON_DIRECTION_NE,
+  STABLEHLO_COMPARISON_DIRECTION_GE,
+  STABLEHLO_COMPARISON_DIRECTION_GT,
+  STABLEHLO_COMPARISON_DIRECTION_LE,
+  STABLEHLO_COMPARISON_DIRECTION_LT,
+}
+
+enum StablehloComparisonType : uint {
+  STABLEHLO_COMPARISON_TYPE_NOTYPE,
+  STABLEHLO_COMPARISON_TYPE_FLOAT,
+  STABLEHLO_COMPARISON_TYPE_FLOAT_TOTAL_ORDER,
+  STABLEHLO_COMPARISON_TYPE_SIGNED,
+  STABLEHLO_COMPARISON_TYPE_UNSIGNED,
+}
+
+table StablehloCompareOptions{
+  comparison_direction : StablehloComparisonDirection;
+  compare_type : StablehloComparisonType;
+}
+
+table StablehloDynamicSliceOptions{
+  slice_sizes : [long];
+}
+
+table StablehloPadOptions{
+  edge_padding_low : [long];
+  edge_padding_high : [long];
+  interior_padding : [long];
+}
+
+table StablehloIotaOptions{
+  iota_dimension : long;
+}
+
+table StablehloCustomCallOptions {
+  call_target_name : string;
+  has_side_effect : bool;
+  backend_config: string;
+  api_version : int;
+  called_computations: [int];
+  custom_attributes : [ubyte];
+}
+
+table StablehloReduceOptions {
+  dimensions : [long];
+  body_subgraph_index : int;
+}
+
+table StablehloSliceOptions{
+  start_indices : [long];
+  limit_indices : [long];
+  strides : [long];
+}
+
+table StablehloConvolutionOptions{
+  window_strides : [long];
+  padding : [long];
+  lhs_dilation : [long];
+  rhs_dilation : [long];
+  window_reversal : [bool];
+  input_batch_dimension : long;
+  input_feature_dimension : long;
+  input_spatial_dimensions : [long];
+  kernel_input_feature_dimension : long;
+  kernel_output_feature_dimension : long;
+  kernel_spatial_dimensions : [long];
+  output_batch_dimension : long;
+  output_feature_dimension : long;
+  output_spatial_dimensions	: [long];
+  feature_group_count : long;
+  batch_group_count : long;
+  precision_config : [StablehloPrecisionConfig];
+}
+
+table StablehloScatterOptions {
+  indices_are_sorted: bool;
+  update_window_dims: [long];
+  inserted_window_dims: [long];
+  scatter_dims_to_operand_dims: [long];
+  index_vector_dim: long;
+  unique_indices: bool;
+  update_computation_subgraph_index: int;
+}
+
+enum RngAlgorithm : byte {
+  DEFAULT = 0,
+  PHILOX = 1,
+  THREEFRY = 2,
+}
+
+table StablehloRngBitGeneratorOptions {
+  algorithm:RngAlgorithm;
+}
+
+enum Padding : byte { SAME, VALID }
+
+enum ActivationFunctionType : byte {
+  NONE = 0,
+  RELU = 1,
+  RELU_N1_TO_1 = 2,
+  RELU6 = 3,
+  TANH = 4,
+  SIGN_BIT = 5,
+}
+
+table Conv2DOptions {
+  padding:Padding;
+  stride_w:int;
+  stride_h:int;
+  fused_activation_function:ActivationFunctionType;
+  dilation_w_factor:int = 1;
+  dilation_h_factor:int = 1;
+  quantized_bias_type: TensorType;
+}
+
+table Conv3DOptions {
+  padding:Padding;
+  stride_d:int;
+  stride_w:int;
+  stride_h:int;
+  fused_activation_function:ActivationFunctionType;
+  dilation_d_factor:int = 1;
+  dilation_w_factor:int = 1;
+  dilation_h_factor:int = 1;
+}
+
+table Pool2DOptions {
+  padding:Padding;
+  stride_w:int;
+  stride_h:int;
+  filter_width:int;
+  filter_height:int;
+  fused_activation_function:ActivationFunctionType;
+}
+
+table DepthwiseConv2DOptions {
+  padding:Padding;
+  stride_w:int;
+  stride_h:int;
+  depth_multiplier:int;
+  fused_activation_function:ActivationFunctionType;
+  dilation_w_factor:int = 1;
+  dilation_h_factor:int = 1;
+}
+
+table ConcatEmbeddingsOptions {
+  num_channels:int;
+  num_columns_per_channel:[int];
+  embedding_dim_per_channel:[int];
+}
+
+enum LSHProjectionType: byte {
+  UNKNOWN = 0,
+  SPARSE = 1,
+  DENSE = 2,
+}
+
+table LSHProjectionOptions {
+  type: LSHProjectionType;
+}
+
+table SVDFOptions {
+  rank:int;
+  fused_activation_function:ActivationFunctionType;
+  asymmetric_quantize_inputs:bool;
+}
+
+table RNNOptions {
+  fused_activation_function:ActivationFunctionType;
+  asymmetric_quantize_inputs:bool;
+}
+
+table SequenceRNNOptions {
+  time_major:bool;
+  fused_activation_function:ActivationFunctionType;
+  asymmetric_quantize_inputs:bool;
+}
+
+table BidirectionalSequenceRNNOptions {
+  time_major:bool;
+  fused_activation_function:ActivationFunctionType;
+  merge_outputs: bool;
+  asymmetric_quantize_inputs:bool;
+}
+
+enum FullyConnectedOptionsWeightsFormat: byte {
+  DEFAULT = 0,
+  SHUFFLED4x16INT8 = 1,
+}
+
+table FullyConnectedOptions {
+  fused_activation_function:ActivationFunctionType;
+  weights_format:FullyConnectedOptionsWeightsFormat = DEFAULT;
+  keep_num_dims: bool;
+  asymmetric_quantize_inputs: bool;
+  quantized_bias_type: TensorType;
+}
+
+table SoftmaxOptions {
+  beta: float;
+}
+
+table ConcatenationOptions {
+  axis:int;
+  fused_activation_function:ActivationFunctionType;
+}
+
+table AddOptions {
+  fused_activation_function:ActivationFunctionType;
+  pot_scale_int16:bool = true;
+}
+
+table MulOptions {
+  fused_activation_function:ActivationFunctionType;
+}
+
+table L2NormOptions {
+  fused_activation_function:ActivationFunctionType;
+}
+
+table LocalResponseNormalizationOptions {
+  radius:int;
+  bias:float;
+  alpha:float;
+  beta:float;
+}
+
+enum LSTMKernelType : byte {
+  FULL = 0,
+  BASIC = 1,
+}
+
+table LSTMOptions {
+  fused_activation_function:ActivationFunctionType;
+  cell_clip: float;
+  proj_clip: float;
+  kernel_type: LSTMKernelType = FULL;
+  asymmetric_quantize_inputs: bool;
+}
+
+table UnidirectionalSequenceLSTMOptions {
+  fused_activation_function:ActivationFunctionType;
+  cell_clip: float;
+  proj_clip: float;
+  time_major:bool;
+  asymmetric_quantize_inputs:bool;
+  diagonal_recurrent_tensors:bool;
+}
+
+table BidirectionalSequenceLSTMOptions {
+  fused_activation_function:ActivationFunctionType;
+  cell_clip: float;
+  proj_clip: float;
+  merge_outputs: bool;
+  time_major: bool = true;
+  asymmetric_quantize_inputs:bool;
+}
+
+table ResizeBilinearOptions {
+  new_height: int (deprecated);
+  new_width: int (deprecated);
+  align_corners: bool;
+  half_pixel_centers: bool;
+}
+
+table ResizeNearestNeighborOptions {
+  align_corners: bool;
+  half_pixel_centers: bool;
+}
+
+table CallOptions {
+  subgraph:uint;
+}
+
+table PadOptions {
+}
+
+table PadV2Options {
+}
+
+table ReshapeOptions {
+  new_shape:[int];
+}
+
+table SpaceToBatchNDOptions {
+}
+
+table BatchToSpaceNDOptions {
+}
+
+table SkipGramOptions {
+  ngram_size: int;
+  max_skip_size: int;
+  include_all_ngrams: bool;
+}
+
+table SpaceToDepthOptions {
+  block_size: int;
+}
+
+table DepthToSpaceOptions {
+  block_size: int;
+}
+
+table SubOptions {
+  fused_activation_function:ActivationFunctionType;
+  pot_scale_int16:bool = true;
+}
+
+table DivOptions {
+  fused_activation_function:ActivationFunctionType;
+}
+
+table TopKV2Options {
+}
+
+enum CombinerType : byte {
+  SUM = 0,
+  MEAN = 1,
+  SQRTN = 2,
+}
+
+table EmbeddingLookupSparseOptions {
+  combiner:CombinerType;
+}
+
+table GatherOptions {
+  axis: int;
+  batch_dims: int = 0;
+}
+
+table TransposeOptions {
+}
+
+table ExpOptions {
+}
+
+table CosOptions {
+}
+
+table ReducerOptions {
+  keep_dims: bool;
+}
+
+table SqueezeOptions {
+  squeeze_dims:[int];
+}
+
+table SplitOptions {
+  num_splits: int;
+}
+
+table SplitVOptions {
+  num_splits: int;
+}
+
+table StridedSliceOptions {
+  begin_mask: int;
+  end_mask: int;
+  ellipsis_mask: int;
+  new_axis_mask: int;
+  shrink_axis_mask: int;
+  offset: bool;
+}
+
+table LogSoftmaxOptions {
+}
+
+table CastOptions {
+  in_data_type: TensorType;
+  out_data_type: TensorType;
+}
+
+table DequantizeOptions {
+}
+
+table MaximumMinimumOptions {
+}
+
+table TileOptions {
+}
+
+table ArgMaxOptions {
+  output_type : TensorType;
+}
+
+table ArgMinOptions {
+  output_type : TensorType;
+}
+
+table GreaterOptions {
+}
+
+table GreaterEqualOptions {
+}
+
+table LessOptions {
+}
+
+table LessEqualOptions {
+}
+
+table NegOptions {
+}
+
+table SelectOptions {
+}
+
+table SliceOptions {
+}
+
+table TransposeConvOptions {
+  padding:Padding;
+  stride_w:int;
+  stride_h:int;
+  fused_activation_function:ActivationFunctionType = NONE;
+  quantized_bias_type: TensorType;
+}
+
+table ExpandDimsOptions {
+}
+
+table SparseToDenseOptions {
+  validate_indices:bool;
+}
+
+table EqualOptions {
+}
+
+table NotEqualOptions {
+}
+
+table ShapeOptions {
+  out_type : TensorType;
+}
+
+table RankOptions {
+}
+
+table PowOptions {
+}
+
+table FakeQuantOptions {
+  min:float;
+  max:float;
+  num_bits:int;
+  narrow_range:bool;
+}
+
+table PackOptions {
+  values_count:int;
+  axis:int;
+}
+
+table LogicalOrOptions {
+}
+
+table OneHotOptions {
+  axis:int;
+}
+
+table AbsOptions {
+}
+
+table HardSwishOptions {
+}
+
+table LogicalAndOptions {
+}
+
+table LogicalNotOptions {
+}
+
+table UnpackOptions {
+  num:int;
+  axis:int;
+}
+
+table FloorDivOptions {
+}
+
+table SquareOptions {
+}
+
+table ZerosLikeOptions {
+}
+
+table FillOptions {
+}
+
+table FloorModOptions {
+}
+
+table RangeOptions {
+}
+
+table LeakyReluOptions {
+  alpha:float;
+}
+
+table SquaredDifferenceOptions {
+}
+
+enum MirrorPadMode : byte {
+  REFLECT = 0,
+  SYMMETRIC = 1,
+}
+
+table MirrorPadOptions {
+  mode:MirrorPadMode;
+}
+
+table UniqueOptions {
+  idx_out_type:TensorType = INT32;
+}
+
+table ReverseV2Options {
+}
+
+table AddNOptions {
+}
+
+table GatherNdOptions {
+}
+
+table WhereOptions {
+}
+
+table ReverseSequenceOptions {
+  seq_dim:int;
+  batch_dim:int = 0;
+}
+
+table MatrixDiagOptions {
+}
+
+table QuantizeOptions {
+}
+
+table MatrixSetDiagOptions {
+}
+
+table IfOptions {
+  then_subgraph_index:int;
+  else_subgraph_index:int;
+}
+
+table CallOnceOptions {
+  init_subgraph_index:int;
+}
+
+table WhileOptions {
+  cond_subgraph_index:int;
+  body_subgraph_index:int;
+}
+
+table NonMaxSuppressionV4Options {
+}
+
+table NonMaxSuppressionV5Options {
+}
+
+table ScatterNdOptions {
+}
+
+table SelectV2Options {
+}
+
+table DensifyOptions {
+}
+
+table SegmentSumOptions {
+}
+
+table BatchMatMulOptions {
+  adj_x:bool;
+  adj_y:bool;
+  asymmetric_quantize_inputs: bool;
+}
+
+table CumsumOptions {
+  exclusive:bool;
+  reverse:bool;
+}
+
+table BroadcastToOptions {
+}
+
+table Rfft2dOptions {
+}
+
+table HashtableOptions {
+  table_id:int;
+  key_dtype:TensorType;
+  value_dtype:TensorType;
+}
+
+table HashtableFindOptions {
+}
+
+table HashtableImportOptions {
+}
+
+table HashtableSizeOptions {
+}
+
+table VarHandleOptions {
+  container:string;
+  shared_name:string;
+}
+
+table ReadVariableOptions {
+}
+
+table AssignVariableOptions {
+}
+
+table RandomOptions {
+  seed: long;
+  seed2: long;
+}
+
+table BucketizeOptions {
+  boundaries: [float];
+}
+
+table GeluOptions {
+  approximate: bool;
+}
+
+table DynamicUpdateSliceOptions {
+}
+
+table UnsortedSegmentProdOptions {
+}
+
+table UnsortedSegmentMaxOptions {
+}
+
+table UnsortedSegmentSumOptions {
+}
+
+table ATan2Options {
+}
+
+table UnsortedSegmentMinOptions{
+}
+
+table SignOptions {
+}
+
+table BitcastOptions {
+}
+
+table BitwiseXorOptions {
+}
+
+table RightShiftOptions {
+}
+
+table DilateOptions {
+}
+
+enum ReduceWindowFunction : int {
+  UNSUPPORTED,
+  ADD,
+  MUL,
+  MINIMUM,
+  MAXIMUM,
+  ALL,
+  ANY,
+}
+
+table ReduceWindowOptions (deprecated) {
+  reduce_function: ReduceWindowFunction;
+}
+
+table OperatorCode {
+  deprecated_builtin_code:byte;
+  custom_code:string;
+  version:int = 1;
+  builtin_code:BuiltinOperator;
+}
+
+enum CustomOptionsFormat : byte {
+  FLEXBUFFERS = 0,
+}
+
+table StableHLOCompositeOptions {
+  name:string;
+  decomposition_subgraph_index:int32;
+  composite_attributes:[ubyte];
+  composite_attributes_format:CustomOptionsFormat;
+  version:int32;
+}
+
+table StablehloShiftLeftOptions {
+}
+
+table Operator {
+  opcode_index:uint;
+  inputs:[int];
+  outputs:[int];
+  builtin_options:BuiltinOptions;
+  custom_options:[ubyte];
+  custom_options_format:CustomOptionsFormat;
+  mutating_variable_inputs:[bool];
+  intermediates:[int];
+  large_custom_options_offset: ulong;
+  large_custom_options_size: ulong;
+  builtin_options_2 : BuiltinOptions2;
+  debug_metadata_index: int = -1;
+}
+
+table SubGraph {
+  tensors:[Tensor];
+  inputs:[int];
+  outputs:[int];
+  operators:[Operator];
+  name:string;
+  debug_metadata_index: int = -1;
+}
+
+table Buffer {
+  data:[ubyte] (force_align: 16);
+  offset: ulong;
+  size: ulong;
+}
+
+table Metadata {
+  name:string;
+  buffer:uint;
+}
+
+table TensorMap {
+  name:string;
+  tensor_index:uint;
+}
+
+table SignatureDef {
+  inputs:[TensorMap];
+  outputs:[TensorMap];
+  signature_key:string;
+  deprecated_tag:string (deprecated);
+  subgraph_index:uint;
+}
+
+table Model {
+  version:uint;
+  operator_codes:[OperatorCode];
+  subgraphs:[SubGraph];
+  description:string;
+  buffers:[Buffer];
+  metadata_buffer:[int];
+  metadata:[Metadata];
+  signature_defs:[SignatureDef];
+}
+
+root_type Model;

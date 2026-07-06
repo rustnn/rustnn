@@ -22,6 +22,8 @@ pub mod webnn_json;
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use executors::coreml;
 
+#[cfg(feature = "litert-runtime")]
+pub use converters::litert::LiteRtConverter;
 pub use converters::{
     ConvertedGraph, ConverterRegistry, GraphConverter, ONNX_EXTERNAL_WEIGHTS_FILENAME,
 };

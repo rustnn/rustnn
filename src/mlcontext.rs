@@ -83,10 +83,7 @@ pub(crate) enum MLBackendGraph<'context> {
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     CoremlModel(crate::backends::coreml::CoremlGraph),
     #[cfg(feature = "litert-runtime")]
-    LiteRtGraph {
-        graph: crate::backends::litert::LiteRtGraph,
-        _phantom: std::marker::PhantomData<&'context ()>,
-    },
+    LiteRtGraph(crate::backends::litert::LiteRtGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
