@@ -377,7 +377,7 @@ struct WriteTensorCallback {
 
 unsafe extern "C" fn finish_read_tensor(user_data: *mut c_void) {
     // SAFETY: `user_data` was created by `Box::into_raw` immediately before
-    // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
+    // `cuLaunchHostFunc_v2`, and CUDA invokes this callback exactly once.
     let callback = unsafe { Box::from_raw(user_data.cast::<ReadTensorCallback>()) };
     callback.buffer.rustnn_cuda_finish_transfer();
     callback.state.signal();
@@ -385,10 +385,28 @@ unsafe extern "C" fn finish_read_tensor(user_data: *mut c_void) {
 
 unsafe extern "C" fn finish_write_tensor(user_data: *mut c_void) {
     // SAFETY: `user_data` was created by `Box::into_raw` immediately before
-    // `cuLaunchHostFunc`, and CUDA invokes this callback exactly once.
+    // `cuLaunchHostFunc_v2`, and CUDA invokes this callback exactly once.
     let callback = unsafe { Box::from_raw(user_data.cast::<WriteTensorCallback>()) };
     callback.buffer.rustnn_cuda_finish_transfer();
     callback.state.signal();
+}
+
+unsafe fn launch_host_function_spinwait(
+    stream: sys::CUstream,
+    callback: unsafe extern "C" fn(*mut c_void),
+    user_data: *mut c_void,
+) -> Result<(), DriverError> {
+    // SAFETY: The caller guarantees that the callback and its user data remain
+    // valid until CUDA invokes the callback.
+    unsafe {
+        sys::cuLaunchHostFunc_v2(
+            stream,
+            Some(callback),
+            user_data,
+            sys::CUhostTaskSyncMode_enum::CU_HOST_TASK_SPINWAIT as u32,
+        )
+        .result()
+    }
 }
 
 pub(crate) struct TrtxContext<'context> {
@@ -775,11 +793,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         }
         let callback_ptr = Box::into_raw(callback).cast::<c_void>();
         if let Err(error) = unsafe {
-            result::stream::launch_host_function(
-                stream.cu_stream(),
-                finish_read_tensor,
-                callback_ptr,
-            )
+            launch_host_function_spinwait(stream.cu_stream(), finish_read_tensor, callback_ptr)
         } {
             // The copy may already be in flight, so reclaim its host storage
             // only after the stream has stopped using it.
@@ -839,11 +853,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         }
         let callback_ptr = Box::into_raw(callback).cast::<c_void>();
         if let Err(error) = unsafe {
-            result::stream::launch_host_function(
-                stream.cu_stream(),
-                finish_write_tensor,
-                callback_ptr,
-            )
+            launch_host_function_spinwait(stream.cu_stream(), finish_write_tensor, callback_ptr)
         } {
             let sync_result = stream.synchronize();
             let callback = unsafe { Box::from_raw(callback_ptr.cast::<WriteTensorCallback>()) };
