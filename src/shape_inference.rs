@@ -1593,23 +1593,29 @@ pub fn infer_expand_shape(input_shape: &[u32], new_shape: &[u32]) -> Result<Vec<
     // Align shapes from the right (trailing dimensions)
     let offset = output_rank - input_rank;
 
+    let mut output_shape = new_shape.to_vec();
     for i in 0..input_rank {
         let input_dim = input_shape[i];
-        let output_dim = new_shape[offset + i];
+        let new_dim = new_shape[offset + i];
 
-        // Input dimension must be 1 or match output dimension
-        if input_dim != 1 && input_dim != output_dim {
+        // ONNX Expand: output[i] = max(input[i], new_shape[i]) via broadcast rules:
+        // - if new_shape[i] == 1: output[i] = input[i] (keep)
+        // - if input[i] == 1:     output[i] = new_shape[i] (expand)
+        // - if input[i] == new_shape[i]: output[i] = input[i]
+        // - otherwise: error
+        if new_dim == 1 {
+            output_shape[offset + i] = input_dim;
+        } else if input_dim != 1 && input_dim != new_dim {
             return Err(GraphError::ShapeInferenceFailed {
                 reason: format!(
                     "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
-                    i, input_dim, output_dim, input_shape, new_shape
+                    i, input_dim, new_dim, input_shape, new_shape
                 ),
             });
         }
     }
 
-    // Output shape is the new_shape
-    Ok(new_shape.to_vec())
+    Ok(output_shape)
 }
 
 fn propagate_expand_dimension(input_dim: &Dimension, target_dim: &Dimension) -> Dimension {
@@ -1667,15 +1673,24 @@ pub fn infer_expand_shape_dimensions(
 
         if let (Dimension::Static(in_static), Dimension::Static(out_static)) =
             (input_dim, target_dim)
-            && *in_static != 1
-            && *in_static != *out_static
         {
-            return Err(GraphError::ShapeInferenceFailed {
-                reason: format!(
-                    "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
-                    i, in_static, out_static, input_shape, new_shape
-                ),
-            });
+            if *out_static == 1 {
+                // new_shape=1 means keep the input dimension (numpy broadcast rule)
+                output[offset + i] = input_dim.clone();
+                continue;
+            } else if *in_static != 1 && *in_static != *out_static {
+                return Err(GraphError::ShapeInferenceFailed {
+                    reason: format!(
+                        "Expand dimension {} mismatch: input {} can only expand if it's 1, but new_shape specifies {}, input shape: {:?}, new_shape: {:?}",
+                        i, in_static, out_static, input_shape, new_shape
+                    ),
+                });
+            }
+        }
+
+        if matches!(target_dim, Dimension::Static(1)) {
+            output[offset + i] = input_dim.clone();
+            continue;
         }
 
         if let (Dimension::Static(in_static), Dimension::Dynamic(_)) = (input_dim, target_dim)
@@ -1950,9 +1965,9 @@ pub fn infer_unsqueeze_shape(input_shape: &[u32], axes: &[u32]) -> Result<Vec<u3
     let input_rank = input_shape.len();
     let output_rank = input_rank + axes.len();
 
-    // Validate axes: must be in range [0, output_rank]
+    // Validate axes: must be in range [0, output_rank)
     for &axis in axes {
-        if axis > output_rank as u32 {
+        if axis >= output_rank as u32 {
             return Err(GraphError::ShapeInferenceFailed {
                 reason: format!(
                     "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
@@ -1998,7 +2013,7 @@ pub fn infer_unsqueeze_shape_dimensions(
     let output_rank = input_rank + axes.len();
 
     for &axis in axes {
-        if axis > output_rank as u32 {
+        if axis >= output_rank as u32 {
             return Err(GraphError::ShapeInferenceFailed {
                 reason: format!(
                     "Unsqueeze axis {} out of bounds for output rank {}, input shape: {:?}",
@@ -3336,6 +3351,15 @@ mod tests {
     }
 
     #[test]
+    fn test_expand_new_shape_one_keeps_input_dimension() {
+        assert_eq!(infer_expand_shape(&[2, 3], &[1, 3]).unwrap(), vec![2, 3]);
+        assert_eq!(
+            infer_expand_shape(&[4, 1, 8], &[1, 5, 1]).unwrap(),
+            vec![4, 5, 8]
+        );
+    }
+
+    #[test]
     fn test_expand_scalar() {
         // 0D (scalar) to various shapes
         assert_eq!(infer_expand_shape(&[], &[24]).unwrap(), vec![24]);
@@ -3383,6 +3407,16 @@ mod tests {
         .unwrap();
         assert_eq!(output[0], d("seq", 128));
         assert_eq!(output[1], Dimension::Static(32));
+    }
+
+    #[test]
+    fn test_expand_shape_dimensions_new_shape_one_keeps_dynamic_input() {
+        let output = infer_expand_shape_dimensions(
+            &[d("batch", 16), Dimension::Static(64)],
+            &[Dimension::Static(1), Dimension::Static(1)],
+        )
+        .unwrap();
+        assert_eq!(output, vec![d("batch", 16), Dimension::Static(64)]);
     }
 
     // Gather tests
