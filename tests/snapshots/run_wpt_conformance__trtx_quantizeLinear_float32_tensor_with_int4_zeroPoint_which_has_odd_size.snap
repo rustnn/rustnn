@@ -13,7 +13,7 @@ webnn_graph "graph" v2 {
 
   consts {
     operand_1: f32[] @bytes([42, 101, 143, 63]);
-    operand_2: i4[] @bytes([192]);
+    operand_2: i4[] @bytes([12]);
   }
 
   nodes {

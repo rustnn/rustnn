@@ -123,15 +123,16 @@ impl DataType {
     }
 }
 
-/// Packed int4/uint4 layout: even logical indices in the high nibble, odd in the low.
+/// Packed int4/uint4 layout: even logical indices in the low nibble, odd in the high (ONNX/WebNN
+/// convention, i.e. element `2*i` occupies the least-significant 4 bits of byte `i`).
 pub fn unpack_int4(data: &[u8], element_count: usize) -> Vec<i32> {
     let mut out = Vec::with_capacity(element_count);
     for i in 0..element_count {
         let byte = data[i / 2];
         let nibble = if i % 2 == 0 {
-            (byte >> 4) & 0x0F
-        } else {
             byte & 0x0F
+        } else {
+            (byte >> 4) & 0x0F
         };
         out.push(if nibble >= 8 {
             nibble as i32 - 16
@@ -150,9 +151,9 @@ pub fn pack_int4(values: &[i32]) -> Vec<u8> {
     for (i, &v) in values.iter().enumerate() {
         let nibble = ((v.clamp(-8, 7) as i8) as u8) & 0x0F;
         if i % 2 == 0 {
-            out[i / 2] = nibble << 4;
+            out[i / 2] = nibble;
         } else {
-            out[i / 2] |= nibble;
+            out[i / 2] |= nibble << 4;
         }
     }
     out
@@ -163,9 +164,9 @@ pub fn unpack_uint4(data: &[u8], element_count: usize) -> Vec<u8> {
     for i in 0..element_count {
         let byte = data[i / 2];
         let nibble = if i % 2 == 0 {
-            (byte >> 4) & 0x0F
-        } else {
             byte & 0x0F
+        } else {
+            (byte >> 4) & 0x0F
         };
         out.push(nibble);
     }
@@ -180,9 +181,9 @@ pub fn pack_uint4(values: &[u8]) -> Vec<u8> {
     for (i, &v) in values.iter().enumerate() {
         let nibble = v & 0x0F;
         if i % 2 == 0 {
-            out[i / 2] = nibble << 4;
+            out[i / 2] = nibble;
         } else {
-            out[i / 2] |= nibble;
+            out[i / 2] |= nibble << 4;
         }
     }
     out
@@ -449,7 +450,8 @@ mod tests {
     fn test_pack_unpack_int4() {
         let values = vec![-8_i32, 7, 0, -1];
         let packed = pack_int4(&values);
-        assert_eq!(packed, vec![0x87, 0x0F]);
+        // Low-nibble-first: byte0 = 0x8 | (0x7 << 4), byte1 = 0x0 | (0xF << 4).
+        assert_eq!(packed, vec![0x78, 0xF0]);
         assert_eq!(unpack_int4(&packed, values.len()), values);
     }
 
@@ -457,7 +459,8 @@ mod tests {
     fn test_pack_unpack_uint4() {
         let values = vec![0_u8, 15, 7, 1];
         let packed = pack_uint4(&values);
-        assert_eq!(packed, vec![0x0F, 0x71]);
+        // Low-nibble-first: byte0 = 0x0 | (0xF << 4), byte1 = 0x7 | (0x1 << 4).
+        assert_eq!(packed, vec![0xF0, 0x17]);
         assert_eq!(unpack_uint4(&packed, values.len()), values);
     }
 

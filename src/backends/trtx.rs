@@ -33,27 +33,6 @@ use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
-/// Swap the two nibbles of every byte for packed int4/uint4 tensors, else return `None`.
-///
-/// RustNN packs sub-byte element 0 into the high nibble; TensorRT's kINT4 storage (ONNX convention)
-/// uses the low nibble. A per-byte swap `(b << 4) | (b >> 4)` reconciles the two orderings and is
-/// its own inverse, so it works for both upload and download and for odd element counts (the trailing
-/// zero-padding nibble simply moves to the opposite half-byte).
-fn trtx_swap_int4_nibbles_if_needed(
-    data_type: crate::operator_enums::MLOperandDataType,
-    bytes: &[u8],
-) -> Option<Vec<u8>> {
-    use crate::operator_enums::MLOperandDataType;
-    if matches!(
-        data_type,
-        MLOperandDataType::Int4 | MLOperandDataType::Uint4
-    ) {
-        Some(bytes.iter().map(|&b| (b << 4) | (b >> 4)).collect())
-    } else {
-        None
-    }
-}
-
 // TODO: also used in trtexec-rs. Should be part of trtx API?
 enum HostMemoryOrVec<'memory> {
     HostMemory(HostMemory<'memory>),
@@ -579,10 +558,6 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         stream
             .synchronize()
             .to_read_tensor_result(|| tensor.clone())?;
-        // Reverse the int4/uint4 nibble swap applied on upload so readers see RustNN packing again.
-        if let Some(swapped) = trtx_swap_int4_nibbles_if_needed(tensor.data_type(), array) {
-            array.copy_from_slice(&swapped);
-        }
         Ok(())
     }
 
@@ -591,20 +566,15 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         array: &[u8],
     ) -> crate::error::Result<()> {
-        // RustNN packs int4/uint4 with element 0 in the high nibble, but TensorRT's kINT4 storage
-        // (ONNX convention) puts element 0 in the low nibble. Swap nibbles per byte so packed
-        // sub-byte inputs land in the order TensorRT expects.
-        let swapped = trtx_swap_int4_nibbles_if_needed(tensor.data_type(), array);
-        let bytes: &[u8] = swapped.as_deref().unwrap_or(array);
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            bytes.as_ptr(),
-            bytes.len(),
+            array.as_ptr(),
+            array.len(),
         );
         stream
-            .memcpy_htod(bytes, &mut cuda_tensor.memory)
+            .memcpy_htod(array, &mut cuda_tensor.memory)
             .to_write_tensor_result(|| tensor.clone())?;
         stream
             .synchronize()
