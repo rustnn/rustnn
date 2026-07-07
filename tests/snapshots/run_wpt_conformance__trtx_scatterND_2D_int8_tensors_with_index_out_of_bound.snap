@@ -1,32 +1,11 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+assertion_line: 42
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-scatterND.https.any.js scatterND 2D int8 tensors with index out of bound, trtx
- scatterND :: scatterND 2D int8 tensors with index out of bound: index 1: actual=0 expected=1 tolerance=0
-  inputs: indices: [2147483647]; input: [0, 0]; updates: [1]
-  expected output: [0, 1]
-  actual output: [0, 0]
-  expected output full nd:
-(shape [2, 1])
-  [0]
-  [1]
-  actual output full nd:
-(shape [2, 1])
-  [0]
-  [0]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    indices: i32[1, 1];
-    input: i8[2, 1];
-    updates: i8[1, 1];
-  }
-
-  nodes {
-    [output] = scatterND(input, indices, updates, label="");
-  }
-
-  outputs { output; }
-}
+(
+    "scatterND.https.any.js",
+    "scatterND 2D int8 tensors with index out of bound",
+    "trtx",
+    "PASS",
+)

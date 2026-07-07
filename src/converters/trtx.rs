@@ -736,6 +736,46 @@ impl TrtxConverter {
                 _ => {}
             }
         }
+
+        // TensorRT constant-folds the entire subgraph that computes Gather indices (an integer
+        // index/shape computation), so every constant transitively feeding those indices is baked and
+        // cannot be refitted. Walk backwards from each gather's indices input across producing
+        // operations, collecting the constants encountered.
+        let mut worklist: Vec<u32> = Vec::new();
+        for op in &graph.operations {
+            if matches!(
+                op,
+                Operation::Gather { .. }
+                    | Operation::GatherND { .. }
+                    | Operation::GatherElements { .. }
+            ) {
+                let ins = op.input_operands();
+                if ins.len() >= 2 {
+                    worklist.push(ins[1]);
+                }
+            }
+        }
+        let mut visited: HashSet<u32> = HashSet::new();
+        while let Some(oid) = worklist.pop() {
+            if !visited.insert(oid) {
+                continue;
+            }
+            if graph
+                .operand(oid)
+                .is_some_and(|o| o.kind == OperandKind::Constant)
+            {
+                ids.insert(oid);
+            }
+            for op in &graph.operations {
+                if op.output_operands_slice().contains(&oid) {
+                    for &in_id in op.input_operands().iter() {
+                        if !visited.contains(&in_id) {
+                            worklist.push(in_id);
+                        }
+                    }
+                }
+            }
+        }
         ids
     }
 
@@ -6779,21 +6819,6 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let exp_layer = network
-            .add_unary(input, UnaryOperation::kEXP)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add exp for LogSumExp: {}", e),
-            })?;
-
-        let exp_output =
-            exp_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get exp output: {}", e),
-                })?;
-
         let input_dims = input
             .dimensions(&*network)
             .map_err(|e| GraphError::ConversionFailed {
@@ -6835,40 +6860,114 @@ impl TrtxConverter {
 
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
-        let sum_layer = network
+        // Numerically stable log-sum-exp: log(sum(exp(x))) = m + log(sum(exp(x - m))) where
+        // m = max(x). Computing exp(x) directly overflows to +inf for large x and underflows for very
+        // negative x. The max is reduced with keep_dims=true so it broadcasts back over the input.
+        let max_keep = network
+            .add_reduce(
+                input,
+                ReduceOperation::kMAX,
+                Axes::from_bits(axes_mask),
+                true,
+            )
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp reduce max: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp reduce max output: {e}"),
+            })?;
+
+        let shifted = network
+            .add_elementwise(input, &max_keep, ElementWiseOperation::kSUB)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp subtract max: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp subtract max output: {e}"),
+            })?;
+
+        let exp_output = network
+            .add_unary(&shifted, UnaryOperation::kEXP)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp exp: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp exp output: {e}"),
+            })?;
+
+        let sum_keep = network
             .add_reduce(
                 &exp_output,
                 ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
-                keep_dims,
+                true,
             )
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add reduce for LogSumExp: {}", e),
-            })?;
-
-        let sum_output =
-            sum_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get sum output: {}", e),
-                })?;
-
-        // Finally log
-        let log_layer = network
-            .add_unary(&sum_output, UnaryOperation::kLOG)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add log for LogSumExp: {}", e),
-            })?;
-
-        let output = log_layer
+                reason: format!("LogSumExp reduce sum: {e}"),
+            })?
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
+                reason: format!("LogSumExp reduce sum output: {e}"),
             })?;
+
+        let log_sum = network
+            .add_unary(&sum_keep, UnaryOperation::kLOG)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp log: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp log output: {e}"),
+            })?;
+
+        // Re-add the subtracted max (both operands keep the reduced axes as size 1).
+        let result_keep = network
+            .add_elementwise(&log_sum, &max_keep, ElementWiseOperation::kSUM)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp add max back: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("LogSumExp add max back output: {e}"),
+            })?;
+
+        // Everything above keeps the reduced axes (size 1). When keep_dims is false, collapse them:
+        // a kSUM over size-1 axes is the identity value but drops the dimensions.
+        let output = if keep_dims {
+            result_keep
+        } else {
+            network
+                .add_reduce(
+                    &result_keep,
+                    ReduceOperation::kSUM,
+                    Axes::from_bits(axes_mask),
+                    false,
+                )
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("LogSumExp squeeze reduced axes: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("LogSumExp squeeze output: {e}"),
+                })?
+        };
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -8444,9 +8543,102 @@ impl TrtxConverter {
                 ),
             })?;
 
+        // WebNN clamps out-of-range scatterND indices to [0, dim-1] per indexed dimension, but
+        // TensorRT's IScatterLayer silently ignores out-of-bound writes. Clamp the indices first:
+        // index component j addresses data dimension j, so its valid maximum is data_dims[j] - 1.
+        let data_dims = data
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("scatterND data dimensions: {e}"),
+            })?;
+        let idx_dims = indices
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("scatterND indices dimensions: {e}"),
+            })?;
+        let idx_type = indices.get_type(&*network);
+        let clamped_indices: Option<trtx::Tensor<'a>> = match idx_dims.last().copied() {
+            Some(k) if k > 0 && matches!(idx_type, TrtDataType::kINT32 | TrtDataType::kINT64) => {
+                let k = k as usize;
+                let idx_rank = idx_dims.len().max(1);
+                let bound_vals: Vec<i64> = (0..k)
+                    .map(|j| (data_dims.get(j).copied().unwrap_or(1) - 1).max(0))
+                    .collect();
+                let mut bound_shape: Vec<i64> = vec![1i64; idx_rank];
+                if let Some(last) = bound_shape.last_mut() {
+                    *last = k as i64;
+                }
+                let zero_shape: Vec<i64> = vec![1i64; idx_rank];
+                let (bound_bytes, zero_bytes): (Vec<u8>, Vec<u8>) =
+                    if idx_type == TrtDataType::kINT64 {
+                        (
+                            bound_vals.iter().flat_map(|&v| v.to_le_bytes()).collect(),
+                            0i64.to_le_bytes().to_vec(),
+                        )
+                    } else {
+                        (
+                            bound_vals
+                                .iter()
+                                .flat_map(|&v| (v as i32).to_le_bytes())
+                                .collect(),
+                            0i32.to_le_bytes().to_vec(),
+                        )
+                    };
+                let bound_t = network
+                    .add_small_constant_copied(&bound_shape, &bound_bytes, idx_type, None)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index bound constant: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index bound output: {e}"),
+                    })?;
+                let zero_t = network
+                    .add_small_constant_copied(&zero_shape, &zero_bytes, idx_type, None)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index zero constant: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index zero output: {e}"),
+                    })?;
+                let maxed = network
+                    .add_elementwise(indices, &zero_t, ElementWiseOperation::kMAX)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index max(0): {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index max output: {e}"),
+                    })?;
+                let clamped = network
+                    .add_elementwise(&maxed, &bound_t, ElementWiseOperation::kMIN)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index min(bound): {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index min output: {e}"),
+                    })?;
+                Some(clamped)
+            }
+            _ => None,
+        };
+        let indices_for_scatter = clamped_indices.as_ref().unwrap_or(indices);
+
         // Create scatter layer with mode kND for N-dimensional scatter
         let layer = network
-            .add_scatter(data, indices, updates, ScatterMode::kND)
+            .add_scatter(data, indices_for_scatter, updates, ScatterMode::kND)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add scatterND layer: {}", e),
@@ -9578,9 +9770,30 @@ impl TrtxConverter {
         let true_in: Vec<i64> = shape_t.iter().map(|&x| x as i64).collect();
         let false_in: Vec<i64> = shape_f.iter().map(|&x| x as i64).collect();
 
-        let cond_promoted =
-            Self::promote_mask_for_trt_broadcast(graph, cond_id, network, condition)?;
-        let cond_for_broadcast = cond_promoted.as_ref().unwrap_or(condition);
+        // A Uint8/Int8 condition *constant* is a quantized constant to TensorRT; feeding it to the
+        // broadcast Shuffle trips QuantizedConstantValidator ("only allowed before DQ"). Materialize it
+        // as a kBOOL constant up front (bool constants broadcast freely and need no later cast).
+        let cond_const_bool = if graph.constant_operand_ids_to_handles.contains_key(&cond_id)
+            && matches!(
+                graph.operand(cond_id).map(|o| o.descriptor.data_type),
+                Some(DataType::Uint8) | Some(DataType::Int8)
+            ) {
+            Some(Self::bool_constant_from_int8_uint8_operand(
+                graph, network, cond_id,
+            )?)
+        } else {
+            None
+        };
+
+        let cond_promoted = if cond_const_bool.is_some() {
+            None
+        } else {
+            Self::promote_mask_for_trt_broadcast(graph, cond_id, network, condition)?
+        };
+        let cond_for_broadcast = cond_const_bool
+            .as_ref()
+            .or(cond_promoted.as_ref())
+            .unwrap_or(condition);
 
         let cond_bc = Self::broadcast_trtx_tensor_to_dims(
             network,
@@ -9604,7 +9817,11 @@ impl TrtxConverter {
             "where_false",
         )?;
 
-        let condition_bool = Self::cast_to_bool(network, &cond_bc)?;
+        let condition_bool = if cond_bc.get_type(&*network) == TrtDataType::kBOOL {
+            cond_bc
+        } else {
+            Self::cast_to_bool(network, &cond_bc)?
+        };
 
         let layer = network
             .add_select(&condition_bool, &true_bc, &false_bc)
@@ -13253,13 +13470,7 @@ impl TrtxConverter {
                 });
             }
         };
-        if new_shape.is_empty() {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "reshape operation missing 'newShape'".to_string(),
-            });
-        }
-
+        // An empty newShape is a valid reshape to a rank-0 scalar (e.g. squeezing [1,1,1,1] -> []).
         let dims: Vec<i64> = crate::operator_options::mldimensions_static_or_max(new_shape)
             .into_iter()
             .map(|u| u as i64)
@@ -14266,7 +14477,8 @@ impl TrtxConverter {
         }
 
         let input_dtype = input_operand.descriptor.data_type;
-        // Elementwise PROD requires matching types; mask must match input (e.g. Half for float16).
+        // Elementwise PROD requires matching input types; the mask must match the input dtype
+        // (e.g. kHALF for float16, kINT32 for int32/uint32, kINT64 for int64/uint64).
         let (mask_bytes, mask_trt_ty) = match input_dtype {
             DataType::Float16 => {
                 let mut bytes = Vec::with_capacity(total_elements * 2);
@@ -14275,6 +14487,20 @@ impl TrtxConverter {
                     bytes.extend_from_slice(&f16::from_f32(v).to_bits().to_le_bytes());
                 }
                 (bytes, TrtDataType::kHALF)
+            }
+            DataType::Int32 | DataType::Uint32 => {
+                let bytes: Vec<u8> = mask_data
+                    .iter()
+                    .flat_map(|&f| (if f == 1.0 { 1i32 } else { 0i32 }).to_le_bytes())
+                    .collect();
+                (bytes, TrtDataType::kINT32)
+            }
+            DataType::Int64 | DataType::Uint64 => {
+                let bytes: Vec<u8> = mask_data
+                    .iter()
+                    .flat_map(|&f| (if f == 1.0 { 1i64 } else { 0i64 }).to_le_bytes())
+                    .collect();
+                (bytes, TrtDataType::kINT64)
             }
             _ => {
                 let mask_bytes: Vec<u8> = mask_data.iter().flat_map(|&f| f.to_le_bytes()).collect();

@@ -1,22 +1,11 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+assertion_line: 42
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-reduce_log_sum_exp.https.any.js reduceLogSumExp avoids underflows caused by taking the log of small inputs, trtx
- reduce_log_sum_exp :: reduceLogSumExp avoids underflows caused by taking the log of small inputs: index 0: actual=-99.98309 expected=-100 ulp=2216 tolerance=32
-  inputs: reduceLogSumExpInput: [-100]
-  expected reduceLogSumExpOutput: [-100]
-  actual reduceLogSumExpOutput: [-99.98309]
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    reduceLogSumExpInput: f32[1];
-  }
-
-  nodes {
-    [reduceLogSumExpOutput] = reduceLogSumExp(reduceLogSumExpInput, axes=[0], keepDimensions=false, label="");
-  }
-
-  outputs { reduceLogSumExpOutput; }
-}
+(
+    "reduce_log_sum_exp.https.any.js",
+    "reduceLogSumExp avoids underflows caused by taking the log of small inputs",
+    "trtx",
+    "PASS",
+)

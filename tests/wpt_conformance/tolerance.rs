@@ -190,7 +190,15 @@ pub fn get_operation_tolerance(
     default_tolerances()
         .get(operation)
         .copied()
-        .unwrap_or((ToleranceKind::Ulp, 100u64))
+        .unwrap_or_else(|| {
+            // Aggregate / unknown operation (e.g. "subgraph") has no tuned per-op default: merge the
+            // ULP minima across every operator in the graph (mirrors pywebnn merged_float_tolerance),
+            // so a chain like conv_transpose2d + softmax is not held to the bare 100-ULP fallback.
+            (
+                ToleranceKind::Ulp,
+                100u64.max(merged_ulp_minimum(operation, graph_operator_names)),
+            )
+        })
 }
 
 /// ULP distance between two f32 values (matches Python/ WPT).

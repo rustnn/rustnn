@@ -1,29 +1,11 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+assertion_line: 42
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-subgraph.https.any.js add + sub + mul + gather default, trtx
- An error in the Trtx: Runtime error: setNamedWeights (with location) rejected
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    subB: i32[];
-  }
-
-  consts {
-    operand_0: i32[] @bytes([10, 0, 0, 0]);
-    operand_1: i32[] @bytes([20, 0, 0, 0]);
-    operand_2: i32[] @bytes([236, 255, 255, 255]);
-    operand_3: f32[3, 4] @bytes([205, 204, 204, 61, 205, 204, 76, 62, 154, 153, 153, 62, 205, 204, 204, 62, 0, 0, 0, 63, 154, 153, 25, 63, 51, 51, 51, 63, 205, 204, 76, 63, 102, 102, 102, 63, 0, 0, 128, 63, 205, 204, 140, 63, 154, 153, 153, 63]);
-  }
-
-  nodes {
-    [operand_5] = add(operand_0, operand_1, label="");
-    [operand_6] = sub(operand_5, subB, label="");
-    [operand_7] = div(operand_2, operand_6, label="");
-    [output] = gather(operand_3, operand_7, axis=0, label="");
-  }
-
-  outputs { output; }
-}
+(
+    "subgraph.https.any.js",
+    "add + sub + mul + gather default",
+    "trtx",
+    "PASS",
+)

@@ -1,19 +1,11 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+assertion_line: 42
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-reshape.https.any.js reshape (squeeze) float16 4D tensor by eliminating all dimensions, trtx
- Failed to convert graph: graph conversion failed for trtx: reshape operation missing 'newShape'
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    reshapeInput: f16[1, 1, 1, 1];
-  }
-
-  nodes {
-    [reshapeOutput] = reshape(reshapeInput, label="");
-  }
-
-  outputs { reshapeOutput; }
-}
+(
+    "reshape.https.any.js",
+    "reshape (squeeze) float16 4D tensor by eliminating all dimensions",
+    "trtx",
+    "PASS",
+)
