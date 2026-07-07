@@ -33,6 +33,8 @@ use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 
+const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
+
 // TODO: also used in trtexec-rs. Should be part of trtx API?
 enum HostMemoryOrVec<'memory> {
     HostMemory(HostMemory<'memory>),
@@ -274,6 +276,9 @@ impl<'context> TrtxContext<'context> {
         // (mostly scalars)
         config.set_flag(trtx::trtx_sys::BuilderFlag::kREFIT_INDIVIDUAL);
         config.set_flag(trtx::trtx_sys::BuilderFlag::kSTRIP_PLAN);
+        if std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR).is_ok() {
+            config.set_profiling_verbosity(trtx::ProfilingVerbosity::kDETAILED);
+        }
         let config = Arc::new(config.into());
         let runtime = Arc::new(trtx::Runtime::new(&LOGGER)?.into());
         debug!("Created new TrtxContext");
@@ -383,6 +388,20 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             .unwrap()
             .deserialize_cuda_engine(&engine_bytes)
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+
+        if let Ok(dump_dir) = std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR) {
+            let mut key = graph.hash_identifier_without_weights(&TRTX_SUFFIX);
+            key.push_str(".json");
+            let inspector = engine.create_engine_inspector()?;
+            let engine_layer_info_json =
+                inspector.engine_information(trtx::LayerInformationFormat::kJSON)?;
+            let path = std::path::PathBuf::from(dump_dir).join(key);
+            if let Err(err) = std::fs::write(&path, engine_layer_info_json) {
+                warn!("Failed to create file {path:?} for engine dump: {err}");
+            } else {
+                info!("Wrote trtx engine dump: {path:?}");
+            }
+        }
 
         // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
         let mut refitter = Refitter::new(&engine, &LOGGER)?;
