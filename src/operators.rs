@@ -2657,9 +2657,21 @@ impl Operation {
                 })
             }
             "layerNormalization" if !input_operands.is_empty() => {
+                let base_opts = attributes.as_layer_normalization().cloned();
+                // Positional args: (input, scale?, bias?) — merge into options.
+                let options = Some({
+                    let mut opts = base_opts.unwrap_or_default();
+                    if opts.scale.is_none() && input_operands.len() > 1 {
+                        opts.scale = Some(input_operands[1]);
+                    }
+                    if opts.bias.is_none() && input_operands.len() > 2 {
+                        opts.bias = Some(input_operands[2]);
+                    }
+                    opts
+                });
                 Some(Operation::LayerNormalization {
                     input: at(input_operands, 0)?,
-                    options: attributes.as_layer_normalization().cloned(),
+                    options,
                     outputs: outputs.to_vec(),
                 })
             }
@@ -2962,5 +2974,64 @@ impl Operation {
             &[],
             OperationExtras::default(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_normalization_uses_positional_scale_and_bias() {
+        let op = Operation::from_json_attributes(
+            "layerNormalization",
+            &[0, 1, 2],
+            &[3],
+            &serde_json::json!({
+                "axes": [1],
+                "epsilon": 0.00001
+            }),
+        )
+        .expect("layerNormalization from JSON");
+
+        match op {
+            Operation::LayerNormalization {
+                input,
+                options: Some(options),
+                outputs,
+            } => {
+                assert_eq!(input, 0);
+                assert_eq!(options.scale, Some(1));
+                assert_eq!(options.bias, Some(2));
+                assert_eq!(options.axes, Some(vec![1]));
+                assert_eq!(outputs, vec![3]);
+            }
+            other => panic!("expected layerNormalization, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layer_normalization_keeps_explicit_scale_and_bias_options() {
+        let op = Operation::from_json_attributes(
+            "layerNormalization",
+            &[0, 1, 2],
+            &[3],
+            &serde_json::json!({
+                "scale": 7,
+                "bias": 8
+            }),
+        )
+        .expect("layerNormalization from JSON");
+
+        match op {
+            Operation::LayerNormalization {
+                options: Some(options),
+                ..
+            } => {
+                assert_eq!(options.scale, Some(7));
+                assert_eq!(options.bias, Some(8));
+            }
+            other => panic!("expected layerNormalization, got {other:?}"),
+        }
     }
 }

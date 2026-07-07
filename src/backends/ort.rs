@@ -97,7 +97,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("session builder failed: {e}"),
             })?
-            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("set opt level failed: {e}"),
             })?;
@@ -114,7 +114,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
 
         ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
         let session = builder
-            .with_optimization_level(GraphOptimizationLevel::Disable)
+            .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?
             .commit_from_memory(&converted.data)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
