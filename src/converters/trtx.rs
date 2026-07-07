@@ -3646,6 +3646,232 @@ impl TrtxConverter {
             })
     }
 
+    /// Inverse of `trtx_uint4_signed_fp_to_unsigned`: map WebNN uint4 logical values 0..15 to the
+    /// signed nibble representation −8..7 (subtract 16 where value >= 8) so a subsequent kINT4
+    /// quantize stores 4-bit patterns that readers unpack back to the original uint4 value.
+    fn trtx_uint4_unsigned_fp_to_signed<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input: &trtx::Tensor<'a>,
+        fp_ty: TrtDataType,
+        label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let dims = input
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed fix dimensions: {e}"),
+            })?;
+        let bshape: Vec<i64> = if dims.is_empty() {
+            vec![]
+        } else {
+            vec![1_i64; dims.len()]
+        };
+        // Threshold 7.5 distinguishes integer-valued 0..7 from 8..15 without exact-equality issues.
+        let (thresh_bytes, c16_bytes) = match fp_ty {
+            TrtDataType::kFLOAT => (
+                7.5f32.to_le_bytes().to_vec(),
+                16.0f32.to_le_bytes().to_vec(),
+            ),
+            TrtDataType::kHALF => (
+                f16::from_f32(7.5f32).to_le_bytes().to_vec(),
+                f16::from_f32(16.0f32).to_le_bytes().to_vec(),
+            ),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} uint4 signed fix: expected float dtype"),
+                });
+            }
+        };
+        let thresh_t = network
+            .add_small_constant_copied(&bshape, &thresh_bytes, fp_ty, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed thresh: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed thresh out: {e}"),
+            })?;
+        let c16_t = network
+            .add_small_constant_copied(&bshape, &c16_bytes, fp_ty, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed -16: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed -16 out: {e}"),
+            })?;
+        let is_high = network
+            .add_elementwise(input, &thresh_t, ElementWiseOperation::kGREATER)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 is_high: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 is_high out: {e}"),
+            })?;
+        let is_high_bool = Self::cast_to_bool(network, &is_high)?;
+        let minus16 = network
+            .add_elementwise(input, &c16_t, ElementWiseOperation::kSUB)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 minus16: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 minus16 out: {e}"),
+            })?;
+        network
+            .add_select(&is_high_bool, &minus16, input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed select: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} uint4 signed select out: {e}"),
+            })
+    }
+
+    /// Pack a float tensor of already-clamped logical quantized values into a native **kINT4** tensor.
+    ///
+    /// int4 values are already in [−8,7]; uint4 values in [0,15] are remapped to the signed nibble
+    /// representation first (so the stored bits match the WebNN uint4 value on readback). A final
+    /// `IQuantizeLayer` with a scalar scale = 1 performs the float->kINT4 packing (a `Cast` to a
+    /// sub-byte type is illegal in TensorRT). Because the block/per-channel scale was already applied
+    /// while computing the logical values, this quantize is always per-tensor, so it only has to
+    /// satisfy TensorRT's even-volume rule for sub-byte quantize. Odd-volume tensors are padded to the
+    /// next even volume; the trailing nibble is ignored by readers that unpack exactly N elements.
+    fn trtx_pack_float_logical_to_kint4<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        clamped: &trtx::Tensor<'a>,
+        out_dtype: DataType,
+        in_shape_web: &[u32],
+        fp_trt: TrtDataType,
+        label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let logical = if out_dtype == DataType::Uint4 {
+            Self::trtx_uint4_unsigned_fp_to_signed(network, clamped, fp_trt, label)?
+        } else {
+            network
+                .add_identity(clamped)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} int4 identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} int4 identity out: {e}"),
+                })?
+        };
+
+        let volume: i64 = in_shape_web
+            .iter()
+            .map(|&d| d as i64)
+            .product::<i64>()
+            .max(1);
+        let odd = volume % 2 == 1;
+
+        // Always flatten the (float) logical values to 1D before the sub-byte quantize: producing a
+        // multi-dim kINT4 tensor trips a Myelin check, and a 1D packed tensor is byte-identical to the
+        // row-major multi-dim packing the reader expects. Odd volumes are padded by one element to
+        // reach an even volume (TensorRT rejects odd-volume sub-byte quantize).
+        let mut flat_sh =
+            network
+                .add_shuffle(&logical)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} pack flatten shuffle: {e}"),
+                })?;
+        flat_sh
+            .set_reshape_dimensions(network, &[volume])
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack flatten reshape: {e}"),
+            })?;
+        let flat = flat_sh
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack flatten output: {e}"),
+            })?;
+
+        let to_quant = if odd {
+            // Pad by one element (duplicate the first) to reach an even volume.
+            let pad = network
+                .add_slice(&flat, &[0_i64], &[1_i64], &[1_i64])
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} pack pad slice: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} pack pad slice out: {e}"),
+                })?;
+            let parts: Vec<&trtx::Tensor<'a>> = vec![&flat, &pad];
+            let mut cat =
+                network
+                    .add_concatenation(&parts)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{label} pack pad concat: {e}"),
+                    })?;
+            cat.set_axis(network, 0);
+            cat.output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} pack pad concat out: {e}"),
+                })?
+        } else {
+            flat
+        };
+
+        let scale_bytes: Vec<u8> = match fp_trt {
+            TrtDataType::kFLOAT => 1.0f32.to_le_bytes().to_vec(),
+            TrtDataType::kHALF => f16::from_f32(1.0f32).to_le_bytes().to_vec(),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{label} pack expects float compute type, got {fp_trt:?}"),
+                });
+            }
+        };
+        let scale1 = network
+            .add_small_constant_copied(&[], &scale_bytes, fp_trt, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack scale=1 constant: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack scale=1 output: {e}"),
+            })?;
+        // Output is 1D: [volume] for even, [volume + 1] for odd. The packed byte count equals the
+        // reader's expected ceil(volume/2), and any padding nibble is never read.
+        network
+            .add_quantize(&to_quant, &scale1, TrtDataType::kINT4)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack quantize kINT4: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label} pack quantize output: {e}"),
+            })
+    }
+
     /// Expand `scale` / `zero_point` from WebNN **block** shapes (e.g. `[1,2]` vs input `[3,4]`) so
     /// TensorRT elementwise `x / scale` sees ordinary broadcast rules. Matches ONNX converter
     /// `align_param_with_input` (reshape + tile) using concatenation along each axis.
@@ -3813,47 +4039,6 @@ impl TrtxConverter {
     ) -> Result<bool, GraphError> {
         let dims = Self::trtx_tensor_dims_or_static(network, graph, operand_id, tensor, "operand")?;
         Ok(dims.is_empty())
-    }
-
-    /// Expand 0D tensors to `[1]` using a known WebNN shape (intermediate tensors without operand ids).
-    fn trtx_qdq_ensure_rank1_for_shape<'a>(
-        network: &mut trtx::NetworkDefinition<'a>,
-        tensor: &trtx::Tensor<'a>,
-        label: &str,
-        shape: &[u32],
-    ) -> Result<trtx::Tensor<'a>, GraphError> {
-        let dims: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
-        if dims.is_empty() {
-            let mut sh = network
-                .add_shuffle(tensor)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label}: rank-1 shuffle: {e}"),
-                })?;
-            sh.set_reshape_dimensions(network, &[1i64]).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label}: reshape [1]: {e}"),
-                }
-            })?;
-            sh.output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label}: shuffle output: {e}"),
-                })
-        } else {
-            let id = network
-                .add_identity(tensor)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label}: identity: {e}"),
-                })?;
-            id.output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label}: identity output: {e}"),
-                })
-        }
     }
 
     /// `quantizeLinear` via elementwise ops (ONNX: `clip(round(x / scale) + zero_point, qmin, qmax)`).
@@ -4050,6 +4235,25 @@ impl TrtxConverter {
                 reason: format!("quantizeLinear manual clamp hi output: {e}"),
             })?;
 
+        // int4/uint4 outputs must be packed into a native kINT4 tensor (a Cast to a sub-byte type is
+        // illegal in TensorRT, and a byte-per-element kUINT8/kINT8 output would mismatch the packed
+        // output buffer). The block/per-channel scale is already applied in `clamped`, so packing uses
+        // a per-tensor scale = 1 quantize.
+        if matches!(out_dtype, DataType::Int4 | DataType::Uint4) {
+            let in_shape = graph
+                .operand(in_id)
+                .map(|o| o.descriptor.static_or_max_shape())
+                .unwrap_or_default();
+            return Self::trtx_pack_float_logical_to_kint4(
+                network,
+                &clamped,
+                out_dtype,
+                &in_shape,
+                compute_fp,
+                "quantizeLinear pack",
+            );
+        }
+
         let out = network
             .add_cast(&clamped, out_trt)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4063,140 +4267,6 @@ impl TrtxConverter {
             })?;
 
         Ok(out)
-    }
-
-    fn trtx_cast_or_identity_to_fp<'a>(
-        network: &mut trtx::NetworkDefinition<'a>,
-        tensor: &trtx::Tensor<'a>,
-        fp_trt: TrtDataType,
-        label: &str,
-    ) -> Result<trtx::Tensor<'a>, GraphError> {
-        if tensor.get_type(&*network) == fp_trt {
-            network
-                .add_identity(tensor)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label} identity: {e}"),
-                })?
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label} identity output: {e}"),
-                })
-        } else {
-            network
-                .add_cast(tensor, fp_trt)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label} cast: {e}"),
-                })?
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{label} cast output: {e}"),
-                })
-        }
-    }
-
-    /// `quantizeLinear` → **int4** via `IQuantizeLayer` on `(input + scale * zero_point)` so zero-point
-    /// is folded before quantize. Avoids `Cast` → `kINT4` from elementwise (invalid in TensorRT).
-    fn add_quantize_linear_int4_via_trt_quantize<'a>(
-        graph: &GraphInfo,
-        network: &mut trtx::NetworkDefinition<'a>,
-        in_id: u32,
-        sc_id: u32,
-        zp_id: u32,
-        input: &trtx::Tensor<'a>,
-        scale: &trtx::Tensor<'a>,
-        zero_point: &trtx::Tensor<'a>,
-        fp_trt: TrtDataType,
-    ) -> Result<trtx::Tensor<'a>, GraphError> {
-        let in_shape = graph
-            .operand(in_id)
-            .map(|o| o.descriptor.static_or_max_shape())
-            .unwrap_or_default();
-        let input_r =
-            Self::trtx_qdq_ensure_rank1(network, graph, in_id, input, "quantizeLinear int4 input")?;
-        let scale_r =
-            Self::trtx_qdq_ensure_rank1(network, graph, sc_id, scale, "quantizeLinear int4 scale")?;
-        let zp_r = Self::trtx_qdq_ensure_rank1(
-            network,
-            graph,
-            zp_id,
-            zero_point,
-            "quantizeLinear int4 zero_point",
-        )?;
-
-        let input_e = Self::trtx_cast_or_identity_to_fp(
-            network,
-            &input_r,
-            fp_trt,
-            "quantizeLinear int4 input",
-        )?;
-        let scale_e = Self::trtx_cast_or_identity_to_fp(
-            network,
-            &scale_r,
-            fp_trt,
-            "quantizeLinear int4 scale",
-        )?;
-        let zp_e = Self::trtx_cast_or_identity_to_fp(
-            network,
-            &zp_r,
-            fp_trt,
-            "quantizeLinear int4 zero_point",
-        )?;
-
-        let scale_zp = network
-            .add_elementwise(&scale_e, &zp_e, ElementWiseOperation::kPROD)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 scale*zero_point: {e}"),
-            })?
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 scale*zero_point output: {e}"),
-            })?;
-
-        let adjusted = network
-            .add_elementwise(&input_e, &scale_zp, ElementWiseOperation::kSUM)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 input+scale*zp: {e}"),
-            })?
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 input+scale*zp output: {e}"),
-            })?;
-
-        let input_q = Self::trtx_qdq_ensure_rank1_for_shape(
-            network,
-            &adjusted,
-            "quantizeLinear int4 quantize input",
-            &in_shape,
-        )?;
-        let scale_q = Self::trtx_qdq_ensure_rank1(
-            network,
-            graph,
-            sc_id,
-            &scale_r,
-            "quantizeLinear int4 quantize scale",
-        )?;
-
-        let layer = network
-            .add_quantize(&input_q, &scale_q, TrtDataType::kINT4)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 quantize layer: {e}"),
-            })?;
-
-        layer
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("quantizeLinear int4 quantize output: {e}"),
-            })
     }
 
     /// Add quantizeLinear operation (float to quantized integer)
@@ -4346,16 +4416,10 @@ impl TrtxConverter {
                     Some(fp_trt),
                     Some(z_operand.descriptor.data_type),
                 )?;
-                if out_dtype == DataType::Int4 {
-                    Self::add_quantize_linear_int4_via_trt_quantize(
-                        graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt,
-                    )?
-                } else {
-                    Self::add_quantize_linear_elementwise_manual(
-                        graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt, out_trt,
-                        out_dtype,
-                    )?
-                }
+                Self::add_quantize_linear_elementwise_manual(
+                    graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt, out_trt,
+                    out_dtype,
+                )?
             } else {
                 let (zdt, zp_bytes): (TrtDataType, &[u8]) = match out_dtype {
                     DataType::Int8 => (TrtDataType::kINT8, &[0u8][..]),
@@ -4432,16 +4496,10 @@ impl TrtxConverter {
                     Some(fp_trt),
                     Some(out_dtype),
                 )?;
-                if out_dtype == DataType::Int4 {
-                    Self::add_quantize_linear_int4_via_trt_quantize(
-                        graph, network, in_id, sc_id, in_id, input, &scale_a, &zp_a, fp_trt,
-                    )?
-                } else {
-                    Self::add_quantize_linear_elementwise_manual(
-                        graph, network, in_id, sc_id, in_id, input, &scale_a, &zp_a, fp_trt,
-                        out_trt, out_dtype,
-                    )?
-                }
+                Self::add_quantize_linear_elementwise_manual(
+                    graph, network, in_id, sc_id, in_id, input, &scale_a, &zp_a, fp_trt, out_trt,
+                    out_dtype,
+                )?
             };
             tensor_map.insert(output_id, out);
             return Ok(());
