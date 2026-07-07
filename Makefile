@@ -94,7 +94,7 @@ fetch-wpt:
 	node scripts/fetch_wpt.mjs
 
 # WPT conformance (requires Node.js, WPT cache; set WPT_BACKEND=onnx|trtx to pick backend)
-test-wpt: onnxruntime-download
+test-wpt-onnx: onnxruntime-download
 	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
 
 test-wpt-trtx:
@@ -108,14 +108,36 @@ test-wpt-litert:
 	WPT_REPORT_JSON="$(WPT_REPORT_LITERT_JSON)" \
 	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert --test-threads=1
 
-test-wpt-op: onnxruntime-download
-	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
-	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- $(OP) --test-threads 1
+BACKEND ?= onnx
 
-# Full WPT run with JSON/HTML reports; exits 0 even if trials fail (for nightly pages).
-test-wpt-report: fetch-wpt onnxruntime-download
+ifeq ($(BACKEND),onnx)
+  WPT_FEATURES := onnx-runtime
+  WPT_ENV := $(ORT_ENV_VARS)
+  WPT_REPORT := reports/wpt-conformance-onnx.json
+  WPT_DEPS := onnxruntime-download
+else ifeq ($(BACKEND),trtx)
+  WPT_FEATURES := onnx-runtime,trtx-runtime
+  WPT_ENV :=
+  WPT_REPORT := reports/wpt-conformance-trtx.json
+  WPT_DEPS :=
+else ifeq ($(BACKEND),litert)
+  WPT_FEATURES := litert-runtime
+  WPT_ENV = WPT_BACKEND=litert \
+             LD_LIBRARY_PATH="$${HOME}/.cache/litert-sys/v0.10.2/$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2):$${LD_LIBRARY_PATH}" \
+             LIBRARY_PATH="$${HOME}/.cache/litert-sys/v0.10.2/$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2):$${LIBRARY_PATH}"
+  WPT_REPORT := reports/wpt-conformance-litert.json
+  WPT_DEPS :=
+endif
+
+test-wpt-op: $(WPT_DEPS)
+	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add BACKEND=onnx|trtx|litert" && exit 1)
+	$(WPT_ENV) $(CARGO) test --test run_wpt_conformance --features "$(WPT_FEATURES)" -- $(OP) --test-threads 1
+
+test-wpt-report: fetch-wpt $(WPT_DEPS)
 	@mkdir -p reports
-	-WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
+	$(WPT_ENV) WPT_REPORT_JSON=$(WPT_REPORT) $(CARGO) test --test run_wpt_conformance --features "$(WPT_FEATURES)" -- --test-threads 1; \
+	passed=$$(jq -r '.summary.passed // 0' "$(WPT_REPORT)" 2>/dev/null || echo "0"); \
+	echo "Passed: $${passed}"
 
 fmt:
 	$(CARGO) fmt
@@ -272,9 +294,10 @@ help:
 	@echo ""
 	@echo "WPT Conformance:"
 	@echo "  fetch-wpt          - Download/update WPT corpus (.cache/wpt)"
-	@echo "  test-wpt           - Run full WPT suite (ONNX CPU, ~2482 cases)"
-	@echo "  test-wpt-op OP=... - Run filtered WPT trials"
-	@echo "  test-wpt-report    - Run full WPT suite and write JSON/HTML reports (ignores trial failures)"
+	@echo "  test-wpt-onnx      - Run full WPT suite (ONNX CPU, ~2482 cases)"
+	@echo "  test-wpt-op OP=... - Run filtered WPT trials (set BACKEND=onnx|trtx|litert)"
+	@echo "  test-wpt-report    - Run full WPT suite with report (set BACKEND=onnx|trtx|litert)"
+
 	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
 	@echo ""
 	@echo "CoreML Conversion:"

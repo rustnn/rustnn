@@ -1,0 +1,89 @@
+# Legacy rustnnpt gate: keeps branch protection happy until "RustNNPT Conformance Gate"
+# is replaced with "WPT Conformance" in repo settings. Remove once admins update checks.
+name: RustNNPT Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  rustnnpt-gate:
+    name: RustNNPT Conformance Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout rustnn
+        uses: actions/checkout@v4
+        with:
+          path: rustnn
+
+      - name: Checkout rustnnpt
+        uses: actions/checkout@v4
+        with:
+          repository: rustnn/rustnnpt
+          ref: main
+          path: rustnnpt
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Refresh WPT cache
+        working-directory: rustnnpt
+        run: npm run test:wpt:fetch
+
+      - name: Pin rustnnpt to this PR rustnn SHA
+        working-directory: rustnnpt
+        run: |
+          cargo update -p rustnn --precise "${{ github.event.pull_request.head.sha }}"
+
+      - name: Download ONNX Runtime shared libraries
+        working-directory: rustnn
+        run: |
+          make onnxruntime-download
+          ORT_LIB="$(find target/onnxruntime -type f \( -name 'libonnxruntime.so' -o -name 'libonnxruntime.so.*' -o -name 'libonnxruntime.dylib' -o -name 'onnxruntime.dll' \) | head -n 1)"
+          if [ -z "$ORT_LIB" ]; then
+            echo "Failed to locate ONNX Runtime dynamic library under rustnn/target/onnxruntime."
+            exit 1
+          fi
+          ORT_LIB="$(realpath "$ORT_LIB")"
+          ORT_DIR="$(dirname "$ORT_LIB")"
+          echo "ORT_DYLIB_PATH=$ORT_LIB" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$ORT_DIR:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "DYLD_LIBRARY_PATH=$ORT_DIR:${DYLD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "PATH=$ORT_DIR:$PATH" >> "$GITHUB_ENV"
+
+      - name: Run rustnnpt conformance (cpu)
+        continue-on-error: true
+        working-directory: rustnnpt
+        run: npm run test:wpt:report -- --variants cpu
+
+      - name: Enforce minimum pass rate
+        working-directory: rustnnpt
+        run: |
+          if [ ! -f reports/conformance.json ]; then
+            echo "reports/conformance.json missing after conformance run; rerunning with explicit report paths"
+            npm run test:wpt:report -- --variants cpu --report-json reports/conformance.json --report-html reports/conformance.html || true
+          fi
+          if [ ! -f reports/conformance.json ]; then
+            echo "Conformance report is still missing after rerun."
+            exit 1
+          fi
+          PASS_RATE="$(jq -r '.summary.passRatePct // (if .summary.total > 0 then (.summary.passed * 100 / .summary.total) else 0 end)' reports/conformance.json)"
+          echo "rustnnpt pass rate: ${PASS_RATE}%"
+          awk -v p="$PASS_RATE" 'BEGIN { if (p + 0 < 90) { exit 1 } }'
+
+      - name: Upload rustnnpt conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustnnpt-conformance-report
+          path: rustnnpt/reports/conformance.json

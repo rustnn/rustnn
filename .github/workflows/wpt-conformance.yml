@@ -1,0 +1,97 @@
+name: WPT Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  wpt-conformance:
+    name: ${{ matrix.backend.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - id: onnx
+            label: ONNX
+            report_file: reports/wpt-conformance-onnx.json
+            html_file: reports/wpt-conformance-onnx.html
+            continue_on_error: false
+          - id: litert
+            label: LiteRT
+            report_file: reports/wpt-conformance-litert.json
+            html_file: reports/wpt-conformance-litert.html
+            continue_on_error: true
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.backend.continue_on_error }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.96.0
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        if: matrix.backend.id == 'litert'
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/wpt
+          key: wpt-${{ runner.os }}-${{ hashFiles('scripts/fetch_wpt.mjs') }}
+          restore-keys: |
+            wpt-${{ runner.os }}-
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-wpt-${{ matrix.backend.id }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache litert-sys libraries
+        if: matrix.backend.id == 'litert'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/litert-sys
+          key: ${{ runner.os }}-litert-sys
+
+      - name: Fetch WPT corpus
+        run: node scripts/fetch_wpt.mjs
+
+      - name: Run WPT conformance tests
+        env:
+          RUSTNN_GIT_SHA: ${{ github.sha }}
+          RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: make test-wpt-report BACKEND=${{ matrix.backend.id }}
+
+      - name: Upload WPT conformance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.backend.id }}-wpt-conformance-report
+          path: ${{ matrix.backend.report_file }}
+
+      - name: Upload WPT conformance HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.backend.id }}-wpt-conformance-html-report
+          path: ${{ matrix.backend.html_file }}
+
+

@@ -70,7 +70,7 @@ jobs:
           WPT_REPORT_JSON: reports/wpt-conformance.json
           RUSTNN_GIT_SHA: ${{ github.sha }}
           RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-        run: make test-wpt-report
+        run: make test-wpt-report || true
 
       - name: Save WPT conformance report for doc deploys
         uses: actions/cache/save@v4
