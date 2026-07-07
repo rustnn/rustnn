@@ -1,19 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-mlNumber.https.any.js cast BigInt to uint64 underflow, trtx
- An error in the Trtx: Runtime error: setNamedWeights (with location) rejected
-
---- built graph ---
-webnn_graph "graph" v2 {
-  consts {
-    operand_0: u64[4] @bytes([246, 255, 255, 255, 9, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-  }
-
-  nodes {
-    [clampOutput] = clamp(operand_0, label="", maxValue="-1", minValue=null);
-  }
-
-  outputs { clampOutput; }
-}
+(
+    "mlNumber.https.any.js",
+    "cast BigInt to uint64 underflow",
+    "trtx",
+    "PASS",
+)

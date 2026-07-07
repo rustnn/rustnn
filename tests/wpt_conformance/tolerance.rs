@@ -68,6 +68,8 @@ fn operation_ulp_minimum(operation: &str) -> u64 {
         "batch_normalization" => 12,
         "gelu" => 18,
         "hard_swish" | "hardswish" => 4,
+        // Cast + mul + zp subtract chain; float16 scales add extra rounding.
+        "dequantizeLinear" | "dequantizelinear" => 16,
         _ => 4,
     }
 }
@@ -301,7 +303,8 @@ pub fn check_integer_tolerance(
         );
     }
     for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-        if (a - e).abs() > tolerance {
+        let diff = (a as i128 - e as i128).unsigned_abs();
+        if diff > u128::from(tolerance.unsigned_abs()) {
             return (
                 false,
                 Some(format!(

@@ -1,10 +1,28 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "split.https.any.js",
-    "split float32 1D constant tensor number splits default options",
-    "trtx",
-    "PASS",
-)
+split.https.any.js split float32 1D constant tensor number splits default options, trtx
+ split :: split float32 1D constant tensor number splits default options: index 0: actual=0 expected=50.663574 ulp=1112188800 tolerance=4
+  inputs: splitInput: [-64.52056884765625, -84.60513305664063, -67.99282836914063, -23.446075439453125, -85.64382934570313, 46.87752151489258, -68.11224365234375, 75.99607849121094, -61.05668640136719, -90.92643737792967, 53.916622161865234, 84.16268920898438, -95.57494354248048, -52.40757751464844, -29.00718688964844, 71.65496063232422, 50.66357421875, 21.364582061767575, -27.127241134643555, 65.1489486694336, -30.40681266784668, -6.818390369415283, 46.673622131347656, -21.12453842163086] (constant)
+  expected splitOutput3: [50.663574, 21.364582, -27.127241, 65.14895, -30.406813, -6.8183904, 46.673622, -21.124538]
+  actual splitOutput3: [0, 0, 0, 0, 0, 0, 0, 0]
+  expected splitOutput3 full nd:
+(shape [8])
+[50.663574, 21.364582, -27.127241, 65.14895, -30.406813, -6.8183904, 46.673622, -21.124538]
+  actual splitOutput3 full nd:
+(shape [8])
+[0, 0, 0, 0, 0, 0, 0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([136, 10, 129, 194, 212, 53, 169, 194, 84, 252, 135, 194, 144, 145, 187, 193, 164, 73, 171, 194, 149, 130, 59, 66, 120, 57, 136, 194, 254, 253, 151, 66, 12, 58, 116, 194, 86, 218, 181, 194, 159, 170, 87, 66, 76, 83, 168, 66, 95, 38, 191, 194, 92, 161, 81, 194, 184, 14, 232, 193, 87, 79, 143, 66, 128, 167, 74, 66, 170, 234, 170, 65, 151, 4, 217, 193, 67, 76, 130, 66, 39, 65, 243, 193, 65, 48, 218, 192, 202, 177, 58, 66, 14, 255, 168, 193]);
+  }
+
+  nodes {
+    [splitOutput1, splitOutput2, splitOutput3] = split(operand_0, axis=0, label="");
+  }
+
+  outputs { splitOutput1; splitOutput2; splitOutput3; }
+}

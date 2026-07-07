@@ -3,16 +3,16 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 quantizeLinear.https.any.js quantizeLinear float32 1D tensor with uint4 zeroPoint with block_size = 3, trtx
- quantizeLinear :: quantizeLinear float32 1D tensor with uint4 zeroPoint with block_size = 3: index 0: actual=0 expected=5 tolerance=1
+ quantizeLinear :: quantizeLinear float32 1D tensor with uint4 zeroPoint with block_size = 3: index 1: actual=0 expected=4 tolerance=1
   inputs: quantizeLinearInput: [4.794857501983643, 3.23434354545, 1.794857501983643, 2.23434354545, 4.794857501983643, 3.23434354545]; quantizeLinearScale: [1.120274782180786, 1.120274782180786] (constant); quantizeLinearZeroPoint: [1, 5] (constant)
   expected quantizeLinearOutput: [5, 4, 3, 7, 9, 8]
-  actual quantizeLinearOutput: [0, 5, 0, 4, 0, 3]
+  actual quantizeLinearOutput: [5, 0, 4, 0, 3, 0]
   expected quantizeLinearOutput full nd:
 (shape [6])
 [5, 4, 3, 7, 9, 8]
   actual quantizeLinearOutput full nd:
 (shape [6])
-[0, 5, 0, 4, 0, 3]
+[5, 0, 4, 0, 3, 0]
 
 --- built graph ---
 webnn_graph "graph" v2 {
