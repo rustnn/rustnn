@@ -1,0 +1,21 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+quantizeLinear.https.any.js quantizeLinear float16 0D constant tensor with int8 0D zeroPoint, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 0, scale: 1, zero_point: Some(2), options: Some(MLOperatorOptions { label: "" }), outputs: [3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[] @bytes([102, 73]);
+    operand_1: f16[] @bytes([123, 60]);
+    operand_2: i8[] @bytes([1]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(operand_0, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

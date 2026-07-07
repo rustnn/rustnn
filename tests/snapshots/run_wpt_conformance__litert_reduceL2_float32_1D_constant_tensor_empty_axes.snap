@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_l2.https.any.js reduceL2 float32 1D constant tensor empty axes, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceL2 { input: 0, options: Some(MLReduceOptions { label: "", axes: Some([]), keep_dimensions: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[2] @bytes([253, 134, 155, 192, 253, 134, 155, 64]);
+  }
+
+  nodes {
+    [reduceL2Output] = reduceL2(operand_0, axes=[], keepDimensions=false, label="");
+  }
+
+  outputs { reduceL2Output; }
+}

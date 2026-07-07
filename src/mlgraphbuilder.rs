@@ -3064,6 +3064,13 @@ mod test {
         };
 
         let mut context = context.unwrap();
+        if context.rustnn_backend() == Backend::Trtx || context.rustnn_backend() == Backend::Litert
+        {
+            warn!(
+                "quantize_dequantize_linear_output_dtype unsupported by Trtx and Litert at the moment! Skipping..."
+            );
+            return;
+        }
         let mat_desc = MLOperandDescriptor::new(
             crate::operator_enums::MLOperandDataType::Float32,
             [2, 2].to_vec(),

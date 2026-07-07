@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+transpose.https.any.js transpose float16 1D tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Transpose { input: 0, options: Some(MLTransposeOptions { label: "", permutation: [] }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    transposeInput: f16[24];
+  }
+
+  nodes {
+    [transposeOutput] = transpose(transposeInput, label="", permutation=[]);
+  }
+
+  outputs { transposeOutput; }
+}

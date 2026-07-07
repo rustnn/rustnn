@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_log_sum.https.any.js reduceLogSum float16 1D constant tensor all non-negative default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceLogSum { input: 0, options: Some(MLReduceOptions { label: "", axes: None, keep_dimensions: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[24] @bytes([9, 84, 30, 86, 162, 78, 253, 84, 77, 82, 74, 75, 55, 77, 14, 80, 15, 84, 121, 84, 146, 73, 227, 82, 121, 81, 234, 74, 22, 86, 112, 80, 137, 82, 45, 85, 73, 72, 171, 58, 84, 84, 181, 67, 105, 84, 128, 84]);
+  }
+
+  nodes {
+    [reduceLogSumOutput] = reduceLogSum(operand_0, axes=null, keepDimensions=false, label="");
+  }
+
+  outputs { reduceLogSumOutput; }
+}

@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+triangular.https.any.js triangular float16 2D tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Triangular { input: 0, options: Some(MLTriangularOptions { label: "", upper: Some(true), diagonal: 0 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    triangularInput: f16[4, 6];
+  }
+
+  nodes {
+    [triangularOutput] = triangular(triangularInput, diagonal=0, label="", upper=true);
+  }
+
+  outputs { triangularOutput; }
+}

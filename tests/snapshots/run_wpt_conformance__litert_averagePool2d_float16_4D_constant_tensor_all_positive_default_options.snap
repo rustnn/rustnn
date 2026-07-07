@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+averagePool2d.https.any.js averagePool2d float16 4D constant tensor all positive default options, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[1, 2, 5, 5] @bytes([190, 77, 226, 84, 216, 72, 106, 82, 6, 80, 122, 85, 116, 85, 240, 80, 2, 85, 28, 73, 147, 82, 167, 61, 250, 73, 80, 85, 13, 84, 129, 85, 171, 73, 106, 84, 78, 85, 241, 84, 84, 71, 127, 80, 23, 73, 168, 61, 226, 84, 186, 85, 26, 84, 229, 82, 156, 76, 43, 82, 211, 75, 64, 84, 22, 77, 175, 78, 14, 84, 210, 81, 249, 84, 87, 68, 198, 80, 168, 81, 16, 85, 57, 84, 7, 70, 114, 79, 83, 83, 122, 64, 65, 75, 76, 84, 199, 84, 226, 77]);
+  }
+
+  nodes {
+    [averagePool2dOutput] = averagePool2d(operand_0, dilations=[], label="", layout="", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+  }
+
+  outputs { averagePool2dOutput; }
+}

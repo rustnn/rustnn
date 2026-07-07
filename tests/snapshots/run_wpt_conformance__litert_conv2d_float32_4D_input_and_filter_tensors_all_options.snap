@@ -1,0 +1,25 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+conv2d.https.any.js conv2d float32 4D input and filter tensors all options, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    conv2dInput: f32[1, 2, 5, 5];
+  }
+
+  consts {
+    operand_0: f32[2] @bytes([29, 217, 10, 63, 87, 50, 87, 63]);
+    operand_1: f32[2, 2, 1, 2] @bytes([52, 121, 35, 63, 148, 2, 159, 61, 77, 67, 4, 62, 65, 165, 233, 62, 153, 11, 207, 62, 39, 40, 24, 63, 159, 212, 17, 62, 235, 86, 103, 63]);
+  }
+
+  nodes {
+    [conv2dOutput] = conv2d(conv2dInput, operand_1, operand_0, bias=0, dilations=[1, 1], filterLayout="hwio", groups=2, inputLayout="nchw", label="", padding=[1, 0, 0, 1], strides=[1, 1]);
+  }
+
+  outputs { conv2dOutput; }
+}

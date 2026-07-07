@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_product.https.any.js reduceProduct float32 1D tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceProduct { input: 0, options: Some(MLReduceOptions { label: "", axes: None, keep_dimensions: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    reduceProductInput: f32[24];
+  }
+
+  nodes {
+    [reduceProductOutput] = reduceProduct(reduceProductInput, axes=null, keepDimensions=false, label="");
+  }
+
+  outputs { reduceProductOutput; }
+}

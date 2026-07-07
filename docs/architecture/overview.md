@@ -40,9 +40,9 @@
 Following the [W3C WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md):
 
 - Backend selection happens at **context creation** via `accelerated` and `power_preference` hints
-- `accelerated=False` → ONNX Runtime CPU
-- `accelerated=True` + `power="high-performance"` → GPU preferred (ONNX or CoreML)
-- `accelerated=True` + `power="low-power"` → NPU preferred (CoreML Neural Engine on Apple Silicon)
+- `accelerated=False` → ORT/LiteRT CPU
+- `accelerated=True` + `power="high-performance"` → GPU preferred (TRTX, CoreML, LiteRT, ORT)
+- `accelerated=True` + `power="low-power"` → NPU preferred (CoreML Neural Engine, LiteRT NPU)
 - Platform autonomously selects actual device based on availability and runtime conditions
 - Selection logic in `PyMLContext::select_backend()`
 
@@ -177,7 +177,14 @@ src/
 ├── converters/
 │   ├── mod.rs          # Registry and trait
 │   ├── onnx.rs         # ONNX converter
-│   └── coreml.rs       # CoreML converter
+│   ├── coreml_mlprogram.rs  # CoreML converter (MIL)
+│   └── litert.rs       # LiteRT converter (TFLite flatbuffer)
+├── backends/
+│   ├── mod.rs          # DisabledContext + module registry
+│   ├── ort.rs          # ONNX Runtime backend
+│   ├── trtx.rs         # TensorRT backend (CUDA)
+│   ├── coreml.rs       # CoreML backend (macOS)
+│   └── litert.rs       # LiteRT backend (TFLite)
 ├── executors/
 │   ├── mod.rs          # Conditional compilation
 │   ├── onnx.rs         # ONNX runtime
@@ -243,6 +250,8 @@ examples/
 ## Platform Support
 
 - **Validation & Conversion**: Cross-platform (Linux, macOS, Windows)
+- **TRTX Execution**: Linux/Windows with `trtx-runtime` feature (NVIDIA GPU)
+- **LiteRT Execution**: Cross-platform with `litert-runtime` feature (CPU/GPU/NPU)
 - **ONNX Execution**: Cross-platform with `onnx-runtime` feature (CPU/GPU)
 - **CoreML Execution**: macOS only with `coreml-runtime` feature (GPU/Neural Engine)
 - **Neural Engine**: macOS with Apple Silicon (via CoreML)
@@ -256,5 +265,7 @@ examples/
 - Python API: 85/85 (100%)
 - ONNX Backend: 85/85 (100%)
 - CoreML MLProgram: 85/85 (100%)
+- LiteRT Backend: 56/85
+- TRTX Backend: 85/85 (100%)
 
 See [implementation-status.md](../development/implementation-status.md) for complete details.

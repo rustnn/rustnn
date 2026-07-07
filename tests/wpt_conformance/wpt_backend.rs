@@ -44,6 +44,11 @@ impl WptBackend {
                 MLContextOptions::new(MLPowerPreference::HighPerformance, true)
                     .with_rustnn_backend_hint(Backend::Trtx),
             ),
+            Self::new(
+                "litert",
+                MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::Litert),
+            ),
         ]
     }
 
@@ -59,6 +64,7 @@ impl WptBackend {
             .or_else(|| match s.trim().to_ascii_lowercase().as_str() {
                 "ort" | "cpu" | "onnx-cpu" | "ort-cpu" => Self::all().into_iter().next(),
                 "tensorrt" | "trt" => Self::all().into_iter().find(|b| b.prefix == "trtx"),
+                "litert" | "tflite" => Self::all().into_iter().find(|b| b.prefix == "litert"),
                 _ => None,
             })
     }
@@ -71,7 +77,7 @@ impl WptBackend {
                 Some(backend) => vec![backend],
                 None => {
                     eprintln!(
-                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx or trtx); using all backends"
+                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, or litert); using all backends"
                     );
                     Self::all()
                 }

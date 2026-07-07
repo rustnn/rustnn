@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+leaky_relu.https.any.js leakyRelu float32 0D tensor default options, litert
+ leaky_relu :: leakyRelu float32 0D tensor default options: index 0: actual=-0 expected=-0.19053641 ulp=1044585466 tolerance=4
+  inputs: leakyReluInput: [-19.053640365600582]
+  expected leakyReluOutput: [-0.19053641]
+  actual leakyReluOutput: [-0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    leakyReluInput: f32[];
+  }
+
+  nodes {
+    [leakyReluOutput] = leakyRelu(leakyReluInput, alpha=0.01, label="");
+  }
+
+  outputs { leakyReluOutput; }
+}

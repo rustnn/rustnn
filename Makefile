@@ -6,6 +6,7 @@ PNG_PATH ?= target/graph.png
 ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
+LITERT_PATH ?= target/graph.tflite
 ORT_VERSION ?= 1.24.3
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
@@ -64,7 +65,7 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 endif
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate validate-all-env \
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -98,6 +99,14 @@ test-wpt: onnxruntime-download
 
 test-wpt-trtx:
 	$(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
+
+test-wpt-litert:
+	@HOST_TRIPLE=$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2); \
+	LITERT_LIB_DIR="$${HOME}/.cache/litert-sys/v0.10.2/$${HOST_TRIPLE}"; \
+	LD_LIBRARY_PATH="$$LITERT_LIB_DIR:$$LD_LIBRARY_PATH" \
+	LIBRARY_PATH="$$LITERT_LIB_DIR:$$LIBRARY_PATH" \
+	WPT_REPORT_JSON="$(WPT_REPORT_LITERT_JSON)" \
+	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert --test-threads=1
 
 test-wpt-op: onnxruntime-download
 	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
@@ -182,6 +191,9 @@ coreml:
 
 coreml-validate: coreml
 	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
+
+litert:
+	$(CARGO) run --features litert-runtime -- $(GRAPH_FILE) --convert litert --convert-output $(LITERT_PATH)
 
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
@@ -268,6 +280,9 @@ help:
 	@echo "CoreML Conversion:"
 	@echo "  coreml             - Convert graph to CoreML format"
 	@echo "  coreml-validate    - Convert and validate CoreML graph"
+	@echo ""
+	@echo "LiteRT Conversion:"
+	@echo "  litert             - Convert graph to LiteRT/TFLite format"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"

@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+elu.https.any.js elu float16 3D tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Elu { input: 0, options: Some(MLEluOptions { label: "", alpha: 1.0 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    eluInput: f16[2, 3, 4];
+  }
+
+  nodes {
+    [eluOutput] = elu(eluInput, alpha=1.0, label="");
+  }
+
+  outputs { eluOutput; }
+}

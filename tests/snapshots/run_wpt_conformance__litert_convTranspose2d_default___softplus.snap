@@ -1,0 +1,21 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+subgraph.https.any.js convTranspose2d default + softplus, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ConvTranspose2d { input: 1, filter: 0, options: Some(MLConvTranspose2dOptions { label: "", padding: [], strides: [], dilations: [], output_padding: [], output_sizes: None, groups: 1, input_layout: "", filter_layout: "", bias: None }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    convTranspose2dFilter: f32[1, 1, 2, 2];
+    convTranspose2dInput: f32[1, 1, 2, 2];
+  }
+
+  nodes {
+    [operand_2] = convTranspose2d(convTranspose2dInput, convTranspose2dFilter, bias=null, dilations=[], filterLayout="", groups=1, inputLayout="", label="", outputPadding=[], outputSizes=null, padding=[], strides=[]);
+    [output] = softplus(operand_2, label="");
+  }
+
+  outputs { output; }
+}

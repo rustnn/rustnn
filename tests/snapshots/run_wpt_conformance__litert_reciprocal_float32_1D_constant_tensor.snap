@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reciprocal.https.any.js reciprocal float32 1D constant tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Reciprocal { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([70, 107, 129, 191, 165, 227, 147, 64, 77, 182, 26, 64, 60, 245, 14, 193, 200, 78, 86, 192, 84, 218, 12, 193, 157, 56, 13, 65, 157, 84, 210, 64, 190, 118, 212, 64, 22, 203, 43, 64, 179, 17, 148, 192, 248, 244, 219, 192, 150, 187, 151, 191, 97, 16, 117, 63, 112, 168, 174, 60, 187, 129, 182, 62, 45, 125, 154, 64, 25, 10, 168, 63, 193, 240, 3, 65, 157, 207, 80, 190, 149, 163, 16, 193, 191, 21, 31, 65, 77, 164, 24, 193, 219, 77, 164, 189]);
+  }
+
+  nodes {
+    [reciprocalOutput] = reciprocal(operand_0, label="");
+  }
+
+  outputs { reciprocalOutput; }
+}

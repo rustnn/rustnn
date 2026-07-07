@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+clamp.https.any.js clamp float32 5D tensor specified both negative options.minValue and options.maxValue, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Clamp { input: 0, options: Some(MLClampOptions { label: "", min_value: Some(Number(-8)), max_value: Some(Number(-1)) }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    clampInput: f32[3, 2, 1, 1, 4];
+  }
+
+  nodes {
+    [clampOutput] = clamp(clampInput, label="", maxValue=-1, minValue=-8);
+  }
+
+  outputs { clampOutput; }
+}

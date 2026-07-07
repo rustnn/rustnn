@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+hard_sigmoid.https.any.js hardSigmoid float32 positive 2D tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: HardSigmoid { input: 0, options: Some(MLHardSigmoidOptions { label: "", alpha: 0.2, beta: 0.5 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    hardSigmoidInput: f32[4, 6];
+  }
+
+  nodes {
+    [hardSigmoidOutput] = hardSigmoid(hardSigmoidInput, alpha=0.2, beta=0.5, label="");
+  }
+
+  outputs { hardSigmoidOutput; }
+}

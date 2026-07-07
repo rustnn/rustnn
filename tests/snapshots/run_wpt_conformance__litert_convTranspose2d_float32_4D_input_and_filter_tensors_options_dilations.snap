@@ -1,0 +1,24 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+conv_transpose2d.https.any.js convTranspose2d float32 4D input and filter tensors options.dilations, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ConvTranspose2d { input: 1, filter: 0, options: Some(MLConvTranspose2dOptions { label: "", padding: [], strides: [], dilations: [2, 2], output_padding: [], output_sizes: None, groups: 1, input_layout: "", filter_layout: "", bias: None }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    convTranspose2dInput: f32[1, 1, 3, 3];
+  }
+
+  consts {
+    operand_0: f32[1, 1, 2, 2] @bytes([165, 252, 46, 63, 170, 208, 118, 63, 221, 200, 83, 63, 73, 190, 19, 63]);
+  }
+
+  nodes {
+    [convTranspose2dOutput] = convTranspose2d(convTranspose2dInput, operand_0, bias=null, dilations=[2, 2], filterLayout="", groups=1, inputLayout="", label="", outputPadding=[], outputSizes=null, padding=[], strides=[]);
+  }
+
+  outputs { convTranspose2dOutput; }
+}

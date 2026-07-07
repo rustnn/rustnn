@@ -1,0 +1,25 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+dequantizeLinear.https.any.js dequantizeLinear uint8 1D tensor with float16 1D scale, implicit block_size = 2, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: DequantizeLinear { input: 0, scale: 1, zero_point: Some(2), options: Some(MLOperatorOptions { label: "" }), outputs: [3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    dequantizeLinearInput: u8[4];
+  }
+
+  consts {
+    operand_1: f16[2] @bytes([172, 72, 158, 68]);
+    operand_2: u8[2] @bytes([128, 110]);
+  }
+
+  nodes {
+    [dequantizeLinearOutput] = dequantizeLinear(dequantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { dequantizeLinearOutput; }
+}

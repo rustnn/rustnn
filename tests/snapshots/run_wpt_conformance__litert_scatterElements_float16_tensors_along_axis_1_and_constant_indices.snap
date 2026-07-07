@@ -1,0 +1,24 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+scatterElements.https.any.js scatterElements float16 tensors along axis 1 and constant indices, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ScatterElements { input: 1, indices: 0, updates: 2, options: Some(MLScatterOptions { label: "", axis: 1 }), outputs: [3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f16[1, 5];
+    updates: f16[1, 2];
+  }
+
+  consts {
+    operand_0: i32[1, 2] @bytes([1, 0, 0, 0, 3, 0, 0, 0]);
+  }
+
+  nodes {
+    [output] = scatterElements(input, operand_0, updates, axis=1, label="");
+  }
+
+  outputs { output; }
+}

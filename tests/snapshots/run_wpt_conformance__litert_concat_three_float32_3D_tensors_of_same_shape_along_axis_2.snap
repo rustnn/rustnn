@@ -1,0 +1,29 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+concat.https.any.js concat three float32 3D tensors of same shape along axis 2, litert
+ concat :: concat three float32 3D tensors of same shape along axis 2: index 2: actual=0.33799624 expected=-0.5945113 ulp=2110078908 tolerance=4
+  inputs: concatInput1: [-0.3944413363933563, 0.861982524394989, 0.337996244430542, -0.990639865398407, 0.576785683631897, 0.32276400923728943, -0.44735023379325867, 0.11028251051902772]; concatInput2: [-0.5945112705230713, -0.402848482131958, -0.9531654119491576, -0.6731740236282349, 0.49189892411231995, -0.15864109992980957, -0.3418811559677124, -0.9158143401145936]; concatInput3: [-0.7206121683120728, -0.7993468642234802, 0.6653800010681152, 0.03886038810014725, 0.5182055234909058, -0.8742017149925232, -0.4790218770503998, 0.1211843192577362]
+  expected concatOutput: [-0.39444134, 0.8619825, -0.5945113, -0.40284848, -0.72061217, -0.79934686, 0.33799624, -0.99063987, -0.9531654, -0.673174 ...] (len=24)
+  actual concatOutput: [-0.39444134, 0.8619825, 0.33799624, -0.99063987, 0.5767857, 0.322764, -0.44735023, 0.11028251, -0.5945113, -0.40284848 ...] (len=24)
+  expected concatOutput full nd:
+[-0.39444134, 0.8619825, -0.5945113, -0.40284848, -0.72061217, -0.79934686, 0.33799624, -0.99063987, -0.9531654, -0.673174, ...] (len=24, shape=[2, 2, 6])
+  actual concatOutput full nd:
+[-0.39444134, 0.8619825, 0.33799624, -0.99063987, 0.5767857, 0.322764, -0.44735023, 0.11028251, -0.5945113, -0.40284848, ...] (len=24, shape=[2, 2, 6])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    concatInput1: f32[2, 2, 2];
+    concatInput2: f32[2, 2, 2];
+    concatInput3: f32[2, 2, 2];
+  }
+
+  nodes {
+    [concatOutput] = concat(concatInput1, concatInput2, concatInput3, label="");
+  }
+
+  outputs { concatOutput; }
+}

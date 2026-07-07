@@ -9,7 +9,9 @@ use wpt_conformance::wpt_js_loader::{
 };
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_types::WptLoadedCase;
-use wpt_conformance::{run_one_test_case, should_skip_test, wpt_types::WptTestCase};
+use wpt_conformance::{
+    run_one_test_case, should_skip_backend_test, should_skip_test, wpt_types::WptTestCase,
+};
 
 fn run_trial(
     backend: &WptBackend,
@@ -17,6 +19,9 @@ fn run_trial(
     test_case: &WptTestCase,
 ) -> Result<Completion, Failed> {
     if let Some(reason) = should_skip_test(&test_case.graph) {
+        return Ok(Completion::ignored_with(reason));
+    }
+    if let Some(reason) = should_skip_backend_test(backend.trial_prefix(), operation) {
         return Ok(Completion::ignored_with(reason));
     }
 

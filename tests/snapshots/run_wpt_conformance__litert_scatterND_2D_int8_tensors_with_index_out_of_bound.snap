@@ -1,0 +1,21 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+scatterND.https.any.js scatterND 2D int8 tensors with index out of bound, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ScatterND { input: 1, indices: 0, updates: 2, options: Some(MLOperatorOptions { label: "" }), outputs: [3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    indices: i32[1, 1];
+    input: i8[2, 1];
+    updates: i8[1, 1];
+  }
+
+  nodes {
+    [output] = scatterND(input, indices, updates, label="");
+  }
+
+  outputs { output; }
+}

@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reduce_max.https.any.js reduceMax float32 1D constant tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceMax { input: 0, options: Some(MLReduceOptions { label: "", axes: None, keep_dimensions: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([149, 170, 0, 66, 132, 216, 180, 66, 255, 187, 210, 193, 21, 188, 228, 192, 190, 206, 151, 66, 29, 209, 64, 194, 132, 96, 84, 194, 110, 82, 133, 66, 75, 86, 192, 194, 100, 156, 176, 194, 47, 254, 189, 66, 197, 35, 21, 66, 230, 214, 40, 194, 162, 27, 193, 66, 16, 119, 97, 63, 193, 4, 122, 66, 64, 154, 18, 66, 216, 139, 199, 66, 206, 186, 145, 194, 199, 32, 56, 194, 176, 7, 162, 65, 134, 117, 172, 193, 43, 38, 77, 194, 115, 90, 42, 194]);
+  }
+
+  nodes {
+    [reduceMaxOutput] = reduceMax(operand_0, axes=null, keepDimensions=false, label="");
+  }
+
+  outputs { reduceMaxOutput; }
+}

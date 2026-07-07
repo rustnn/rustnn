@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 69
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+reshape.https.any.js reshape (squeeze) float16 4D tensor by eliminating two dimensions, litert
+ Failed to dispatch graph: LiteRT status error: code=3
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    reshapeInput: f16[1, 4, 1, 6];
+  }
+
+  nodes {
+    [reshapeOutput] = reshape(reshapeInput, label="");
+  }
+
+  outputs { reshapeOutput; }
+}

@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+clamp.https.any.js minValue == maxValue, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Clamp { input: 0, options: Some(MLClampOptions { label: "", min_value: Some(Number(0.5)), max_value: Some(Number(0.5)) }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[7] @bytes([0, 0, 128, 255, 0, 0, 128, 127, 145, 28, 103, 250, 0, 0, 0, 79, 0, 0, 0, 192, 0, 0, 128, 63, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [clampOutput] = clamp(operand_0, label="", maxValue=0.5, minValue=0.5);
+  }
+
+  outputs { clampOutput; }
+}

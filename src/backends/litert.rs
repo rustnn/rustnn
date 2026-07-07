@@ -1,22 +1,271 @@
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::fmt;
+use std::ptr::NonNull;
+use std::sync::OnceLock;
 
-use crate::GraphInfo;
+use litert_sys as sys;
+
 use crate::backend_selection::DeviceType;
+use crate::converters::{GraphConverter, LiteRtConverter};
 use crate::error::{Error, Result};
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
 };
 
-pub(crate) struct LiteRtTensor {
-    memory: Vec<u8>,
+use crate::operator_enums::MLOperandDataType;
+use crate::{GraphError, GraphInfo};
+
+/// WebNN operations not (yet) supported by the LiteRT backend (crash, wrong results, or layout-dependent).
+const LITERT_UNSUPPORTED_OPS: &[&str] = &[
+    "averagePool2d",
+    "conv2d",
+    "equal",
+    "gemm",
+    "greater",
+    "greater_or_equal",
+    "identity",
+    "lesser",
+    "lesser_or_equal",
+    "logical_and",
+    "logical_or",
+    "matmul",
+    "maxPool2d",
+    "not_equal",
+    "pow",
+    "slice",
+    "split",
+    "sub",
+];
+
+/// Returns the list of WebNN operations not supported by this backend.
+pub fn unsupported_ops() -> &'static [&'static str] {
+    LITERT_UNSUPPORTED_OPS
 }
 
-pub(crate) struct LiteRtGraph;
+struct LiteRt;
+
+impl LiteRt {
+    fn env() -> sys::LiteRtEnvironment {
+        static ENV: OnceLock<usize> = OnceLock::new();
+        *ENV.get_or_init(|| {
+            let mut env = std::ptr::null_mut();
+            check(unsafe { sys::LiteRtCreateEnvironment(0, std::ptr::null(), &mut env) })
+                .expect("LiteRtCreateEnvironment failed");
+            env as usize
+        }) as *mut _
+    }
+}
+
+fn check(status: sys::LiteRtStatus) -> Result<()> {
+    if status == sys::kLiteRtStatusOk {
+        Ok(())
+    } else {
+        Err(Error::GraphDispatchError {
+            source: format!("LiteRT status error: code={}", status).into(),
+        })
+    }
+}
+
+fn ml_operand_to_litert_element_type(dt: MLOperandDataType) -> Result<litert::ElementType> {
+    use litert::ElementType;
+    Ok(match dt {
+        MLOperandDataType::Float32 => ElementType::Float32,
+        MLOperandDataType::Float16 => ElementType::Float16,
+        MLOperandDataType::Int32 => ElementType::Int32,
+        MLOperandDataType::Uint32 => ElementType::UInt32,
+        MLOperandDataType::Int64 => ElementType::Int64,
+        MLOperandDataType::Uint64 => ElementType::UInt64,
+        MLOperandDataType::Int8 => ElementType::Int8,
+        MLOperandDataType::Uint8 => ElementType::UInt8,
+        MLOperandDataType::Int4 => ElementType::Int4,
+        _ => {
+            return Err(Error::GraphBuildError {
+                source: format!("unsupported ML data type for litert: {:?}", dt).into(),
+            });
+        }
+    })
+}
+
+pub(crate) struct LiteRtGraph {
+    compiled: NonNull<sys::LiteRtCompiledModelT>,
+    model: NonNull<sys::LiteRtModelT>,
+    _model_bytes: Box<[u8]>,
+}
+
+unsafe impl Send for LiteRtGraph {}
+unsafe impl Sync for LiteRtGraph {}
+
+impl LiteRtGraph {
+    fn new(model_bytes: Vec<u8>, accelerator_bits: sys::LiteRtHwAcceleratorSet) -> Result<Self> {
+        let owned = model_bytes.into_boxed_slice();
+        unsafe {
+            let mut model = std::ptr::null_mut();
+            check(sys::LiteRtCreateModelFromBuffer(
+                owned.as_ptr() as *const c_void,
+                owned.len(),
+                &mut model,
+            ))?;
+            let model = NonNull::new(model).ok_or_else(|| Error::GraphBuildError {
+                source: "LiteRT: null model handle".into(),
+            })?;
+
+            let mut options = std::ptr::null_mut();
+            check(sys::LiteRtCreateOptions(&mut options))?;
+            check(sys::LiteRtSetOptionsHardwareAccelerators(
+                options,
+                accelerator_bits,
+            ))?;
+
+            let mut compiled = std::ptr::null_mut();
+            let status = sys::LiteRtCreateCompiledModel(
+                LiteRt::env(),
+                model.as_ptr(),
+                options,
+                &mut compiled,
+            );
+            sys::LiteRtDestroyOptions(options);
+            check(status)?;
+            let compiled = NonNull::new(compiled).ok_or_else(|| Error::GraphBuildError {
+                source: "LiteRT: null compiled model handle".into(),
+            })?;
+
+            Ok(Self {
+                compiled,
+                model,
+                _model_bytes: owned,
+            })
+        }
+    }
+
+    fn run(
+        &self,
+        in_raw: &[sys::LiteRtTensorBuffer],
+        out_raw: &mut [sys::LiteRtTensorBuffer],
+    ) -> Result<()> {
+        check(unsafe {
+            sys::LiteRtRunCompiledModel(
+                self.compiled.as_ptr(),
+                0,
+                in_raw.len(),
+                in_raw.as_ptr() as *mut sys::LiteRtTensorBuffer,
+                out_raw.len(),
+                out_raw.as_mut_ptr(),
+            )
+        })
+    }
+}
 
 impl fmt::Debug for LiteRtGraph {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LiteRtGraph").finish()
+    }
+}
+
+impl Drop for LiteRtGraph {
+    fn drop(&mut self) {
+        unsafe {
+            sys::LiteRtDestroyCompiledModel(self.compiled.as_ptr());
+            sys::LiteRtDestroyModel(self.model.as_ptr());
+        }
+    }
+}
+
+// Host tensor storage for LiteRT backend.
+pub(crate) struct LiteRtTensor {
+    handle: sys::LiteRtTensorBuffer,
+}
+
+impl fmt::Debug for LiteRtTensor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LiteRtTensor").finish()
+    }
+}
+
+unsafe impl Send for LiteRtTensor {}
+unsafe impl Sync for LiteRtTensor {}
+
+impl LiteRtTensor {
+    fn new(descriptor: &MLTensorDescriptor) -> Result<Self> {
+        let element_type = ml_operand_to_litert_element_type(descriptor.data_type())?;
+        let shape = litert::TensorShape {
+            element_type,
+            dims: descriptor.shape().iter().map(|&d| d as i32).collect(),
+        };
+        let element_size = match shape.element_type {
+            litert::ElementType::Float32 => 4,
+            litert::ElementType::Float16 => 2,
+            litert::ElementType::Int32 => 4,
+            litert::ElementType::UInt32 => 4,
+            litert::ElementType::Int64 => 8,
+            litert::ElementType::UInt64 => 8,
+            litert::ElementType::Int16 => 2,
+            litert::ElementType::UInt16 => 2,
+            litert::ElementType::Int8 => 1,
+            litert::ElementType::UInt8 => 1,
+            litert::ElementType::Bool => 1,
+            _ => {
+                return Err(Error::GraphBuildError {
+                    source: format!("unsupported element type: {:?}", shape.element_type).into(),
+                });
+            }
+        };
+        let size_bytes = shape.num_elements() * element_size;
+
+        let mut layout = sys::LiteRtLayout::default();
+        layout.set_rank(u32::try_from(shape.dims.len()).expect("rank fits in u32"));
+        layout.set_has_strides(false);
+        for (slot, &d) in layout.dimensions.iter_mut().zip(shape.dims.iter()) {
+            *slot = d;
+        }
+        let tensor_type = sys::LiteRtRankedTensorType {
+            element_type: shape.element_type as sys::LiteRtElementType,
+            layout,
+        };
+
+        let mut handle = std::ptr::null_mut();
+        check(unsafe {
+            sys::LiteRtCreateManagedTensorBuffer(
+                LiteRt::env(),
+                sys::kLiteRtTensorBufferTypeHostMemory,
+                &tensor_type,
+                size_bytes,
+                &mut handle,
+            )
+        })?;
+        Ok(Self { handle })
+    }
+
+    fn lock(&self, mode: sys::LiteRtTensorBufferLockMode) -> Result<*mut u8> {
+        let mut addr: *mut c_void = std::ptr::null_mut();
+        check(unsafe { sys::LiteRtLockTensorBuffer(self.handle, &mut addr, mode) })?;
+        Ok(addr as *mut u8)
+    }
+
+    fn unlock(&self) -> Result<()> {
+        check(unsafe { sys::LiteRtUnlockTensorBuffer(self.handle) })
+    }
+
+    fn write(&self, data: &[u8]) -> Result<()> {
+        let ptr = self.lock(sys::kLiteRtTensorBufferLockModeWrite)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len());
+        }
+        self.unlock()
+    }
+
+    fn read(&self, buf: &mut [u8]) -> Result<()> {
+        let ptr = self.lock(sys::kLiteRtTensorBufferLockModeRead)?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), buf.len());
+        }
+        self.unlock()
+    }
+}
+
+impl Drop for LiteRtTensor {
+    fn drop(&mut self) {
+        unsafe { sys::LiteRtDestroyTensorBuffer(self.handle) };
     }
 }
 
@@ -36,28 +285,40 @@ impl fmt::Debug for LiteRtContext {
 
 impl LiteRtContext {
     pub(crate) fn new_from_device_type(device_type: DeviceType) -> Result<Self> {
+        let _ = litert::set_global_log_severity(litert::LogSeverity::Warning);
+        LiteRt::env();
         Ok(Self {
             tensors: Vec::new(),
-            device_type: device_type,
+            device_type,
         })
+    }
+
+    fn accelerator_bits(&self) -> sys::LiteRtHwAcceleratorSet {
+        match self.device_type {
+            DeviceType::Cpu => sys::kLiteRtHwAcceleratorCpu as _,
+            DeviceType::Gpu => (sys::kLiteRtHwAcceleratorGpu | sys::kLiteRtHwAcceleratorCpu) as _,
+            DeviceType::Npu => (sys::kLiteRtHwAcceleratorNpu | sys::kLiteRtHwAcceleratorCpu) as _,
+        }
     }
 }
 
-fn tensor_byte_len(descriptor: &MLTensorDescriptor) -> Result<usize> {
-    let bits = descriptor.data_type().rustnn_element_size_bits();
-    let elements: usize = descriptor
-        .shape()
-        .iter()
-        .try_fold(1u64, |acc, &d| acc.checked_mul(d))
-        .ok_or_else(|| Error::GraphDispatchError {
-            source: "tensor element count overflow".into(),
-        })? as usize;
-    Ok(bits * elements / 8)
-}
-
+// Impls for Backend Trait
 impl ListDevices for LiteRtContext {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
-        Vec::new()
+        if LiteRt::env().is_null() {
+            return vec![];
+        }
+        vec![
+            crate::backend_selection::BackendDevice::LiteRt {
+                device_type: DeviceType::Cpu,
+            },
+            crate::backend_selection::BackendDevice::LiteRt {
+                device_type: DeviceType::Gpu,
+            },
+            crate::backend_selection::BackendDevice::LiteRt {
+                device_type: DeviceType::Npu,
+            },
+        ]
     }
 }
 
@@ -72,13 +333,14 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
     where
         'context: 'builder,
     {
-        Ok(Box::new(LiteRtBuilder))
+        Ok(Box::new(LiteRtBuilder {
+            accelerator_bits: self.accelerator_bits(),
+        }))
     }
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
-        let n = tensor_byte_len(descriptor)?.max(1);
-        let memory = vec![0u8; n];
-        self.tensors.push(LiteRtTensor { memory });
+        let tensor = LiteRtTensor::new(descriptor)?;
+        self.tensors.push(tensor);
         Ok(MLTensor {
             id: self.tensors.len() - 1,
             constant: false,
@@ -114,8 +376,7 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()> {
-        let host = &self.tensors[tensor.id].memory;
-        let logical = tensor_byte_len(tensor.descriptor())?;
+        let logical = tensor.descriptor().rustnn_required_bytes();
         if array.len() < logical {
             return Err(Error::TensorReadError {
                 source: format!(
@@ -127,44 +388,70 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
                 tensor: tensor.clone(),
             });
         }
-        let slice = host.get(..logical).ok_or_else(|| Error::TensorReadError {
-            source: format!("tensor storage shorter than logical size ({logical} bytes)").into(),
-            tensor: tensor.clone(),
-        })?;
-        array[..logical].copy_from_slice(slice);
+        self.tensors[tensor.id].read(&mut array[..logical])?;
         Ok(())
     }
 
     fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> Result<()> {
-        let host = &mut self.tensors[tensor.id].memory;
-        if array.len() > host.len() {
+        let logical = tensor.descriptor().rustnn_required_bytes();
+        if array.len() < logical {
             return Err(Error::TensorWriteError {
                 source: format!(
-                    "write exceeds tensor storage: {} bytes > {}",
+                    "write too small for tensor: {} bytes < {} logical bytes",
                     array.len(),
-                    host.len()
+                    logical,
                 )
                 .into(),
                 tensor: tensor.clone(),
             });
         }
-        host[..array.len()].copy_from_slice(array);
+        self.tensors[tensor.id].write(&array[..logical])?;
         Ok(())
     }
 
     fn dispatch(
         &mut self,
-        _graph: &mut MLGraph,
-        _inputs: &HashMap<&str, &MLTensor>,
-        _outputs: &HashMap<&str, &MLTensor>,
+        graph: &mut MLGraph,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
     ) -> Result<()> {
-        Err(Error::GraphDispatchError {
-            source: "LiteRT dispatch not yet implemented".into(),
-        })
+        let lite_graph = match &graph.backend {
+            crate::mlcontext::MLBackendGraph::LiteRtGraph(graph) => graph,
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "litert".to_string(),
+                    reason: "expected LiteRtGraph in dispatch".to_string(),
+                }
+                .into());
+            }
+        };
+
+        let mut sorted_inputs: Vec<(&str, &MLTensor)> =
+            inputs.iter().map(|(k, v)| (*k, *v)).collect();
+        sorted_inputs.sort_by_key(|(name, _)| *name);
+
+        let mut sorted_outputs: Vec<(&str, &MLTensor)> =
+            outputs.iter().map(|(k, v)| (*k, *v)).collect();
+        sorted_outputs.sort_by_key(|(name, _)| *name);
+
+        let in_raw: Vec<sys::LiteRtTensorBuffer> = sorted_inputs
+            .iter()
+            .map(|(_, t)| self.tensors[t.id].handle)
+            .collect();
+        let mut out_raw: Vec<sys::LiteRtTensorBuffer> = sorted_outputs
+            .iter()
+            .map(|(_, t)| self.tensors[t.id].handle)
+            .collect();
+
+        lite_graph.run(&in_raw, &mut out_raw)?;
+
+        Ok(())
     }
 }
 
-pub(crate) struct LiteRtBuilder;
+pub(crate) struct LiteRtBuilder {
+    accelerator_bits: sys::LiteRtHwAcceleratorSet,
+}
 
 impl fmt::Debug for LiteRtBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -173,10 +460,20 @@ impl fmt::Debug for LiteRtBuilder {
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder {
-    fn build(&mut self, _graph_info: GraphInfo) -> Result<MLGraph<'context>> {
-        Err(Error::GraphBuildError {
-            source: "LiteRT builder not yet implemented".into(),
-        })
+    fn build(&mut self, graph_info: GraphInfo) -> Result<MLGraph<'context>> {
+        let converted = LiteRtConverter.convert(&graph_info)?;
+        let tflite_bytes = converted.data;
+
+        let graph = LiteRtGraph::new(tflite_bytes, self.accelerator_bits).map_err(|e| {
+            Error::GraphBuildError {
+                source: format!("failed to compile model: {e}").into(),
+            }
+        })?;
+
+        MLGraph::new(
+            crate::mlcontext::MLBackendGraph::LiteRtGraph(graph),
+            &graph_info,
+        )
     }
 }
 
@@ -203,7 +500,6 @@ mod tests {
         assert_eq!(tensor.id, 0);
         assert!(!tensor.constant);
         assert_eq!(ctx.tensors.len(), 1);
-        assert_eq!(ctx.tensors[0].memory.len(), 16);
     }
 
     #[test]

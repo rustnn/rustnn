@@ -1,0 +1,23 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+layer_normalization.https.any.js layerNormalization float32 4D tensor options.bias, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: LayerNormalization { input: 1, options: Some(MLLayerNormalizationOptions { label: "", scale: None, bias: Some(0), axes: None, epsilon: 1e-5 }), outputs: [2] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    layerNormInput: f32[2, 1, 4, 3];
+  }
+
+  consts {
+    operand_0: f32[1, 4, 3] @bytes([142, 157, 251, 64, 111, 66, 106, 192, 168, 147, 222, 192, 222, 182, 204, 192, 158, 54, 81, 64, 219, 252, 47, 192, 20, 151, 130, 192, 110, 106, 228, 192, 81, 115, 7, 65, 138, 205, 48, 64, 7, 179, 82, 63, 196, 246, 116, 192]);
+  }
+
+  nodes {
+    [layerNormOutput] = layerNormalization(layerNormInput, axes=null, bias=0, epsilon=0.00001, label="", scale=null);
+  }
+
+  outputs { layerNormOutput; }
+}

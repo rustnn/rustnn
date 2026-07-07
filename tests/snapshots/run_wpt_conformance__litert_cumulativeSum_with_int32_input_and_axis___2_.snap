@@ -1,0 +1,20 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+cumulative_sum.https.any.js cumulativeSum with int32 input and axis = 2., litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: CumulativeSum { input: 0, axis: 2, options: Some(MLCumulativeSumOptions { label: "", exclusive: false, reversed: false }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    cumulativeSumInput: i32[1, 1, 3, 4];
+  }
+
+  nodes {
+    [cumulativeSumOutput] = cumulativeSum(cumulativeSumInput, exclusive=false, label="", reversed=false);
+  }
+
+  outputs { cumulativeSumOutput; }
+}

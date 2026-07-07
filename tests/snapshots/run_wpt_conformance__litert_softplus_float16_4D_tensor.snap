@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+softplus.https.any.js softplus float16 4D tensor, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Softplus { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    softplusInput: f16[1, 2, 3, 4];
+  }
+
+  nodes {
+    [softplusOutput] = softplus(softplusInput, label="");
+  }
+
+  outputs { softplusOutput; }
+}

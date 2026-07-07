@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+linear.https.any.js linear float32 1D constant tensor default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Linear { input: 0, options: Some(MLLinearOptions { label: "", alpha: 1.0, beta: 0.0 }), outputs: [1] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([156, 174, 143, 191, 253, 93, 211, 192, 151, 79, 250, 191, 79, 39, 147, 192, 162, 126, 135, 64, 33, 62, 70, 64, 43, 200, 111, 64, 191, 149, 143, 192, 112, 9, 205, 64, 109, 88, 139, 192, 2, 54, 186, 192, 252, 43, 110, 64, 75, 144, 202, 192, 30, 74, 9, 65, 62, 122, 216, 192, 197, 223, 205, 64, 199, 86, 27, 193, 44, 41, 41, 64, 209, 217, 166, 64, 178, 137, 26, 65, 73, 140, 11, 193, 34, 28, 232, 190, 197, 225, 31, 65, 148, 7, 207, 192]);
+  }
+
+  nodes {
+    [linearOutput] = linear(operand_0, alpha=1.0, beta=0.0, label="");
+  }
+
+  outputs { linearOutput; }
+}

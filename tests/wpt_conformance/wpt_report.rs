@@ -240,6 +240,25 @@ impl WptReportCollector {
             error,
             duration_ms: duration.as_millis() as u64,
         });
+        // Write incremental JSON report so partial results survive SIGABRT mid-suite.
+        drop(state);
+        self.write_json_incremental();
+    }
+
+    fn write_json_incremental(&self) {
+        let path = match report_output_path() {
+            Some(p) => p,
+            None => return,
+        };
+        let report = self.build_report();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&report) {
+            let _ = fs::write(&path, format!("{json}\n"));
+        }
     }
 
     pub fn write_json(&self) -> Result<Option<PathBuf>, String> {

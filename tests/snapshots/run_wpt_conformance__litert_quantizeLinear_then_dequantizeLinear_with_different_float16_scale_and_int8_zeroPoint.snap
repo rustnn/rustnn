@@ -1,0 +1,28 @@
+---
+source: tests/run_wpt_conformance.rs
+assertion_line: 64
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+dequantizeLinear.https.any.js quantizeLinear then dequantizeLinear with different float16 scale and int8 zeroPoint, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 2, scale: 3, zero_point: Some(4), options: Some(MLOperatorOptions { label: "" }), outputs: [5] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    quantizeLinearInput: f16[2];
+  }
+
+  consts {
+    operand_0: f16[2] @bytes([123, 60, 123, 52]);
+    operand_1: i8[2] @bytes([35, 232]);
+    operand_3: f16[2] @bytes([179, 47, 31, 61]);
+    operand_4: i8[2] @bytes([12, 235]);
+  }
+
+  nodes {
+    [operand_5] = quantizeLinear(quantizeLinearInput, operand_3, operand_4, label="");
+    [dequantizeLinearOutput] = dequantizeLinear(operand_5, operand_0, operand_1, label="");
+  }
+
+  outputs { dequantizeLinearOutput; }
+}
