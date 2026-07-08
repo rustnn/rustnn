@@ -1040,7 +1040,7 @@ impl TrtxConverter {
                 operation,
                 ElementWiseOperation::kSUM,
             )?,
-            "sub" => Self::add_elementwise_op(
+            "sub" => Self::add_uint8_or_elementwise_op(
                 graph,
                 network,
                 tensor_map,
@@ -2351,6 +2351,81 @@ impl TrtxConverter {
             &slope_dims,
             "prelu_slope",
         )?;
+
+        // TensorRT's Parametric ReLU layer only accepts floating-point inputs. For integer tensors,
+        // compute prelu(x, slope) = max(x, 0) + slope * min(x, 0) with integer elementwise ops.
+        let in_ty = input_bc.get_type(&*network);
+        if matches!(in_ty, TrtDataType::kINT32 | TrtDataType::kINT64) {
+            let rank = input_bc
+                .dimensions(&*network)
+                .map(|d| d.len())
+                .unwrap_or(in_dims.len());
+            let zero_shape: Vec<i64> = vec![1i64; rank];
+            let zero_bytes: Vec<u8> = if in_ty == TrtDataType::kINT64 {
+                0i64.to_le_bytes().to_vec()
+            } else {
+                0i32.to_le_bytes().to_vec()
+            };
+            let zero = network
+                .add_small_constant_copied(&zero_shape, &zero_bytes, in_ty, None)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int zero constant: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int zero output: {e}"),
+                })?;
+            let pos = network
+                .add_elementwise(&input_bc, &zero, ElementWiseOperation::kMAX)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int max(x,0): {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int max output: {e}"),
+                })?;
+            let neg = network
+                .add_elementwise(&input_bc, &zero, ElementWiseOperation::kMIN)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int min(x,0): {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int min output: {e}"),
+                })?;
+            let slope_neg = network
+                .add_elementwise(&slope_bc, &neg, ElementWiseOperation::kPROD)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int slope*neg: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int slope*neg output: {e}"),
+                })?;
+            let out = network
+                .add_elementwise(&pos, &slope_neg, ElementWiseOperation::kSUM)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int pos+slope*neg: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("prelu int output: {e}"),
+                })?;
+            let output_id = operation.output_operands_slice()[0];
+            tensor_map.insert(output_id, out);
+            return Ok(());
+        }
+
         let layer = network
             .add_parametric_relu(&input_bc, &slope_bc)
             .map_err(|e| GraphError::ConversionFailed {
@@ -3781,6 +3856,237 @@ impl TrtxConverter {
             })
     }
 
+    /// Map every flat (row-major) element of an input of shape `in_shape` to the flat index of the
+    /// block/per-channel quantization parameter (scale or zero-point) of shape `param_shape` that
+    /// applies to it. Mirrors WebNN block quantization: `block_size[d] = in_shape[d] / param_shape[d]`,
+    /// with `param_shape` left-padded with 1s to the input rank. Used to pre-expand constant scale /
+    /// zero-point tensors to one value per element so a sub-byte quantize can run fully in 1D.
+    fn trtx_expand_block_param_indices(in_shape: &[u32], param_shape: &[u32]) -> Vec<usize> {
+        let r = in_shape.len();
+        let volume: usize = in_shape
+            .iter()
+            .map(|&d| d as usize)
+            .product::<usize>()
+            .max(1);
+        if r == 0 {
+            return vec![0usize; volume];
+        }
+        // Left-pad param_shape with 1s to the input rank (NumPy-style trailing alignment).
+        let mut ps = vec![1u32; r];
+        let off = r.saturating_sub(param_shape.len());
+        for (k, &d) in param_shape.iter().enumerate() {
+            if off + k < r {
+                ps[off + k] = d;
+            }
+        }
+        let mut in_strides = vec![1usize; r];
+        for d in (0..r.saturating_sub(1)).rev() {
+            in_strides[d] = in_strides[d + 1] * in_shape[d + 1] as usize;
+        }
+        let mut p_strides = vec![1usize; r];
+        for d in (0..r.saturating_sub(1)).rev() {
+            p_strides[d] = p_strides[d + 1] * ps[d + 1] as usize;
+        }
+        let block: Vec<usize> = (0..r)
+            .map(|d| {
+                let s = in_shape[d] as usize;
+                let p = ps[d] as usize;
+                if p == 0 { 1 } else { (s / p).max(1) }
+            })
+            .collect();
+        let mut out = Vec::with_capacity(volume);
+        for i in 0..volume {
+            let mut pidx = 0usize;
+            for d in 0..r {
+                let c = (i / in_strides[d]) % in_shape[d].max(1) as usize;
+                let pc = if ps[d] <= 1 {
+                    0
+                } else {
+                    (c / block[d]).min(ps[d] as usize - 1)
+                };
+                pidx += pc * p_strides[d];
+            }
+            out.push(pidx);
+        }
+        out
+    }
+
+    /// Sub-byte (int4/uint4) quantize with a block/per-channel scale on a rank>=2 input trips a
+    /// Myelin `CHECK(is_tensor())` assertion when TensorRT tries to fuse the multi-dim block-scaled
+    /// chain into the sub-byte `IQuantizeLayer`. When scale (and zero-point) are graph constants we
+    /// sidestep it by pre-expanding both to one value per element, flattening the input to 1D, and
+    /// running the entire quantize chain in 1D (structurally identical to the passing 1D-block case).
+    #[allow(clippy::too_many_arguments)]
+    fn add_quantize_linear_int4_block_1d<'a>(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        in_id: u32,
+        sc_id: u32,
+        zp_id: Option<u32>,
+        input: &trtx::Tensor<'a>,
+        out_dtype: DataType,
+        fp_trt: TrtDataType,
+        out_trt: TrtDataType,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let in_operand = graph
+            .operand(in_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear input operand {in_id} not found"),
+            })?;
+        let in_shape = in_operand.descriptor.static_or_max_shape();
+        let volume: i64 = in_shape.iter().map(|&d| d as i64).product::<i64>().max(1);
+
+        // Expand the constant scale to one value per element.
+        let sc_operand = graph
+            .operand(sc_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear scale operand {sc_id} not found"),
+            })?;
+        let sc_shape = sc_operand.descriptor.static_or_max_shape();
+        let sc_data = Self::get_constant_data(graph, sc_id)?;
+        let sc_f32: Vec<f32> = match sc_operand.descriptor.data_type {
+            DataType::Float32 => sc_data
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect(),
+            DataType::Float16 => sc_data
+                .chunks_exact(2)
+                .map(|c| f16::from_le_bytes(c.try_into().unwrap()).to_f32())
+                .collect(),
+            other => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("quantizeLinear int4 1D scale unsupported dtype {other:?}"),
+                });
+            }
+        };
+        let sc_idx = Self::trtx_expand_block_param_indices(&in_shape, &sc_shape);
+        let scale_per_elem: Vec<f32> = sc_idx
+            .iter()
+            .map(|&i| sc_f32.get(i).copied().unwrap_or(1.0))
+            .collect();
+
+        // Expand the (optional) constant zero-point to one float value per element.
+        let zp_per_elem: Vec<f32> = match zp_id {
+            Some(zid) => {
+                let z_operand = graph
+                    .operand(zid)
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("quantizeLinear zero_point operand {zid} not found"),
+                    })?;
+                let z_shape = z_operand.descriptor.static_or_max_shape();
+                let z_count: usize = z_shape
+                    .iter()
+                    .map(|&d| d as usize)
+                    .product::<usize>()
+                    .max(1);
+                let z_data = Self::get_constant_data(graph, zid)?;
+                let z_vals_f32: Vec<f32> = match z_operand.descriptor.data_type {
+                    DataType::Int4 => crate::graph::unpack_int4(z_data, z_count)
+                        .into_iter()
+                        .map(|v| v as f32)
+                        .collect(),
+                    DataType::Uint4 => crate::graph::unpack_uint4(z_data, z_count)
+                        .into_iter()
+                        .map(|v| v as f32)
+                        .collect(),
+                    DataType::Int8 => z_data.iter().map(|&b| (b as i8) as f32).collect(),
+                    DataType::Uint8 => z_data.iter().map(|&b| b as f32).collect(),
+                    DataType::Int32 | DataType::Uint32 => z_data
+                        .chunks_exact(4)
+                        .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as f32)
+                        .collect(),
+                    other => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!(
+                                "quantizeLinear int4 1D zero_point unsupported dtype {other:?}"
+                            ),
+                        });
+                    }
+                };
+                let z_idx = Self::trtx_expand_block_param_indices(&in_shape, &z_shape);
+                z_idx
+                    .iter()
+                    .map(|&i| z_vals_f32.get(i).copied().unwrap_or(0.0))
+                    .collect()
+            }
+            None => vec![0.0f32; volume as usize],
+        };
+
+        let to_bytes = |vals: &[f32]| -> Vec<u8> {
+            match fp_trt {
+                TrtDataType::kHALF => vals
+                    .iter()
+                    .flat_map(|&v| f16::from_f32(v).to_le_bytes())
+                    .collect(),
+                _ => vals.iter().flat_map(|&v| v.to_le_bytes()).collect(),
+            }
+        };
+        let scale_const = network
+            .add_small_constant_copied(&[volume], &to_bytes(&scale_per_elem), fp_trt, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D scale constant: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D scale output: {e}"),
+            })?;
+        let zp_const = network
+            .add_small_constant_copied(&[volume], &to_bytes(&zp_per_elem), fp_trt, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D zero_point constant: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D zero_point output: {e}"),
+            })?;
+
+        // Flatten the runtime input to 1D so no multi-dim tensor ever feeds the sub-byte quantize.
+        let mut flat_sh = network
+            .add_shuffle(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D flatten shuffle: {e}"),
+            })?;
+        flat_sh
+            .set_reshape_dimensions(network, &[volume])
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("quantizeLinear int4 1D flatten reshape: {e}"),
+            })?;
+        let flat_input =
+            flat_sh
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("quantizeLinear int4 1D flatten output: {e}"),
+                })?;
+
+        // The elementwise manual path applies round(x/scale)+zp, clamps to the int4/uint4 range, and
+        // packs to kINT4. All operands are 1D here. `zp_id` is only used for labels/rank fallback.
+        Self::add_quantize_linear_elementwise_manual(
+            graph,
+            network,
+            in_id,
+            sc_id,
+            zp_id.unwrap_or(in_id),
+            &flat_input,
+            &scale_const,
+            &zp_const,
+            fp_trt,
+            out_trt,
+            out_dtype,
+        )
+    }
+
     /// Pack a float tensor of already-clamped logical quantized values into a native **kINT4** tensor.
     ///
     /// int4 values are already in [−8,7]; uint4 values in [0,15] are remapped to the signed nibble
@@ -4393,6 +4699,35 @@ impl TrtxConverter {
                     | DataType::Uint32
             );
 
+        // Sub-byte block/per-channel quantize on rank>=2 inputs hits a Myelin sub-byte block-quantize
+        // assertion. When the params are constants, run it fully in 1D with pre-expanded scale/zp.
+        if matches!(out_dtype, DataType::Int4 | DataType::Uint4)
+            && in_operand.descriptor.shape.len() >= 2
+            && !sc_rank0
+            && Self::is_graph_constant(graph, sc_id)
+            && (ins.len() == 2 || Self::is_graph_constant(graph, ins[2]))
+        {
+            let input = tensor_map
+                .get(&in_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Input operand {in_id} not found"),
+                })?;
+            let out = Self::add_quantize_linear_int4_block_1d(
+                graph,
+                network,
+                in_id,
+                sc_id,
+                if ins.len() > 2 { Some(ins[2]) } else { None },
+                input,
+                out_dtype,
+                fp_trt,
+                out_trt,
+            )?;
+            tensor_map.insert(output_id, out);
+            return Ok(());
+        }
+
         if use_manual {
             let in_shape = in_operand.descriptor.static_or_max_shape();
             let out = if ins.len() > 2 {
@@ -4678,12 +5013,18 @@ impl TrtxConverter {
         // TensorRT may report scalars as rank-1 while WebNN uses `[]`, so trust graph shapes too.
         let scalar_dq = (in_shape_web.is_empty() && sc_shape_web.is_empty())
             || (input_dims.is_empty() && scale_dims.is_empty());
+        // IDequantizeLayer has no axis setter in the binding, so per-channel/block scales must be
+        // expressed purely via scale rank/shape. TensorRT's block-dequant interpretation of a
+        // same-rank scale (e.g. [1,2] on a [5,2] weight) miscomputes elements outside the first
+        // block, so restrict IDequantizeLayer to per-tensor scales and route per-channel/block
+        // scales through the deterministic manual elementwise (cast * broadcast-scale) path.
         let use_idq = Self::trtx_input_supports_idq_dequantize(&*network, input)
             && !matches!(
                 input_operand.descriptor.data_type,
                 DataType::Int32 | DataType::Uint32 | DataType::Int4 | DataType::Uint4
             )
-            && Self::trtx_dq_scale_idq_compatible(&in_shape_web, &sc_shape_web);
+            && Self::trtx_dq_scale_idq_compatible(&in_shape_web, &sc_shape_web)
+            && Self::trtx_scale_is_per_tensor_broadcast(&sc_shape_web);
 
         let scale_dq_holder;
         let scale_rank_holder;
@@ -7403,49 +7744,8 @@ impl TrtxConverter {
             }
         };
 
-        let num_elements: usize = new_shape
-            .iter()
-            .map(|d: &i32| (*d).max(0) as usize)
-            .product::<usize>()
-            .max(1);
-
-        let input_operand = graph
-            .operand(operation.input_operands()[0])
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!(
-                    "Input operand {} not found in graph",
-                    operation.input_operands()[0]
-                ),
-            })?;
-        let (ones_data, trt_dtype) = match input_operand.descriptor.data_type {
-            DataType::Float16 => {
-                let data: Vec<u8> = (0..num_elements)
-                    .flat_map(|_| f16::from_f32(1.0).to_bits().to_le_bytes())
-                    .collect();
-                (data, trtx::DataType::kHALF)
-            }
-            _ => {
-                let data: Vec<u8> = (0..num_elements)
-                    .flat_map(|_| 1.0f32.to_le_bytes())
-                    .collect();
-                (data, trtx::DataType::kFLOAT)
-            }
-        };
         let new_shape_i64: Vec<i64> = new_shape.iter().map(|&d| d as i64).collect();
-        let ones_const = network
-            .add_small_constant_copied(&new_shape_i64, &ones_data, trt_dtype, None)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to create ones constant for expand: {}", e),
-            })?;
-        let ones_tensor =
-            ones_const
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get ones constant output: {}", e),
-                })?;
+        let target_rank = new_shape_i64.len();
 
         let in_id = operation.input_operands()[0];
         let fb_in = graph
@@ -7453,27 +7753,84 @@ impl TrtxConverter {
             .map(|o| o.descriptor.static_or_max_shape())
             .unwrap_or_default();
         let in_dims = Self::trtx_dims_or_fallback(&*network, input, &fb_in, "expand")?;
-        let ones_dims: Vec<i64> = new_shape_i64.clone();
-        let (bc_input, bc_ones) = Self::ensure_broadcast_compatible_dims(
-            network,
-            input,
-            &in_dims,
-            &ones_tensor,
-            &ones_dims,
-            "expand",
-        )?;
+        if in_dims.len() > target_rank {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!(
+                    "expand: input rank {} exceeds target rank {}",
+                    in_dims.len(),
+                    target_rank
+                ),
+            });
+        }
 
-        let mul_layer = network
-            .add_elementwise(&bc_input, &bc_ones, ElementWiseOperation::kPROD)
+        // Broadcast via a stride-0 Slice rather than a float multiply: ISliceLayer preserves the input
+        // element type (works for int32/int64), whereas the Resize used by the elementwise broadcast
+        // path and IElementWise PROD both reject integer inputs.
+        let mut aligned_dims = in_dims.clone();
+        let aligned_input: trtx::Tensor<'a> = if in_dims.len() < target_rank {
+            let rank_diff = target_rank - in_dims.len();
+            let mut reshaped: Vec<i64> = vec![1i64; rank_diff];
+            reshaped.extend_from_slice(&in_dims);
+            let mut sh = network
+                .add_shuffle(input)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand rank-align shuffle: {e}"),
+                })?;
+            sh.set_reshape_dimensions(network, &reshaped).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand rank-align reshape: {e}"),
+                }
+            })?;
+            aligned_dims = reshaped;
+            sh.output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand rank-align output: {e}"),
+                })?
+        } else {
+            network
+                .add_identity(input)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand identity output: {e}"),
+                })?
+        };
+
+        // stride 0 on axes that must broadcast (input size 1, target > 1), stride 1 otherwise.
+        let mut stride: Vec<i64> = Vec::with_capacity(target_rank);
+        for (i, &t) in new_shape_i64.iter().enumerate() {
+            let d = aligned_dims.get(i).copied().unwrap_or(1);
+            if d == t {
+                stride.push(1);
+            } else if d == 1 {
+                stride.push(0);
+            } else {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand: cannot broadcast dim {d} to {t}"),
+                });
+            }
+        }
+        let start: Vec<i64> = vec![0i64; target_rank];
+
+        let output = network
+            .add_slice(&aligned_input, &start, &new_shape_i64, &stride)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add multiply for expand: {}", e),
-            })?;
-        let output = mul_layer
+                reason: format!("expand slice broadcast: {e}"),
+            })?
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get expand output: {}", e),
+                reason: format!("expand slice output: {e}"),
             })?;
 
         let output_ids = operation.output_operands_slice();
@@ -9162,13 +9519,23 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("clamp u64 input operand {input_id} not found"),
             })?;
-        // Runtime uint64 clamp: reinterpret as signed i64, bias negatives by 2^64 into i128 space is
-        // unavailable in TRT; use float64 only when values fit exactly (not used by WPT mlNumber).
-        let _ = (input, broadcast_shape);
-        Err(GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: "clamp uint64 on non-constant input is not supported in trtx".to_string(),
-        })
+        // TensorRT has no unsigned 64-bit type. Reinterpret the uint64 bit pattern as kINT64 and clamp
+        // with signed MIN/MAX. For any uint64 value in [0, 2^63) this signed ordering matches unsigned
+        // ordering, so the clamp is exact. Values >= 2^63 cannot be represented by TensorRT's 64-bit
+        // signed type at all; a sign-bit-bias round-trip is defeated by Myelin's integer simplifier
+        // (it cancels the pre/post shifts around the clamp), so we bound the clamp limits to i64::MAX
+        // and rely on the signed path (matching add_clamp_int64_op).
+        let i64_in = if input.get_type(&*network) == TrtDataType::kINT32 {
+            Self::cast_int32_to_int64(network, input)?
+        } else {
+            input.clone()
+        };
+        let min_i = min_u.min(i64::MAX as u64) as i64;
+        let max_i = max_u.min(i64::MAX as u64) as i64;
+        let output = Self::trtx_clamp_i64_tensor(network, &i64_in, broadcast_shape, min_i, max_i)?;
+        let output_id = operation.output_operands_slice()[0];
+        tensor_map.insert(output_id, output);
+        Ok(())
     }
 
     /// Clamp int8/uint8 via INT32 (TRT rejects UINT8/kINT8 constants on elementwise MIN/MAX).
@@ -11250,12 +11617,15 @@ impl TrtxConverter {
             })
             .unwrap_or([1, 1]);
         let groups = conv_opts.map(|o| o.groups as i32).unwrap_or(1);
+        // WebNN padding is [beginningHeight, endingHeight, beginningWidth, endingWidth].
+        // TensorRT add_padding takes pre=[top, left] and post=[bottom, right], so beginning/ending
+        // height and width must be interleaved (not split as [0,1] / [2,3]).
         let (pre_padding, post_padding) = conv_opts
             .map(|o| {
                 if o.padding.len() >= 4 {
                     (
-                        vec![o.padding[0] as i32, o.padding[1] as i32],
-                        vec![o.padding[2] as i32, o.padding[3] as i32],
+                        vec![o.padding[0] as i32, o.padding[2] as i32],
+                        vec![o.padding[1] as i32, o.padding[3] as i32],
                     )
                 } else {
                     (vec![0, 0], vec![0, 0])

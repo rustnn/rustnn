@@ -1,19 +1,11 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+assertion_line: 42
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-expand.https.any.js expand int32 2D tensor to 2D, trtx
- Failed to build graph: Runtime error: Failed to build serialized network
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    expandInput: i32[1, 3];
-  }
-
-  nodes {
-    [expandOutput] = expand(expandInput, label="");
-  }
-
-  outputs { expandOutput; }
-}
+(
+    "expand.https.any.js",
+    "expand int32 2D tensor to 2D",
+    "trtx",
+    "PASS",
+)

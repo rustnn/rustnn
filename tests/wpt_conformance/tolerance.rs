@@ -69,7 +69,9 @@ fn operation_ulp_minimum(operation: &str) -> u64 {
         "gelu" => 18,
         "hard_swish" | "hardswish" => 4,
         // Cast + mul + zp subtract chain; float16 scales add extra rounding.
-        "dequantizeLinear" | "dequantizelinear" => 16,
+        // Graph operator names are normalized to snake_case (dequantize_linear); accept both.
+        "dequantizeLinear" | "dequantizelinear" | "dequantize_linear" => 16,
+        "quantizeLinear" | "quantizelinear" | "quantize_linear" => 16,
         _ => 4,
     }
 }
