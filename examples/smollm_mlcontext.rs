@@ -76,6 +76,15 @@ fn argmax(values: &[f32]) -> usize {
     best_idx
 }
 
+fn boxed_result<T>(
+    result: Result<T, Box<dyn std::error::Error + Send + Sync>>,
+) -> anyhow::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(anyhow::Error::from_boxed(error)),
+    }
+}
+
 fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
     let mut num_layers = 0usize;
     let mut num_heads = None;
@@ -159,7 +168,7 @@ fn make_tensor<'context>(
     td.set_readable(readable);
     context
         .create_tensor(&td)
-        .map_err(move |e| anyhow!("create tensor: {e:?}"))
+        .context("Failed to create tensor")
 }
 
 fn init_step_tensors<'context>(
@@ -178,7 +187,7 @@ fn init_step_tensors<'context>(
         make_tensor(context, MLOperandDataType::Int64, vec![1, 1], true, false)?;
     context
         .rustnn_set_tensor_capacity(&mut attention_mask, &[1, max_seq])
-        .map_err(|e| anyhow!("set_tensor_capacity attention_mask: {e:?}"))?;
+        .context("set_tensor_capacity attention_mask")?;
 
     let mut past_k = Vec::with_capacity(layout.num_layers);
     let mut past_v = Vec::with_capacity(layout.num_layers);
@@ -195,7 +204,7 @@ fn init_step_tensors<'context>(
         )?;
         context
             .rustnn_set_tensor_capacity(&mut pk, &[1, h, max_past, d])
-            .map_err(|e| anyhow!("set_tensor_capacity past_key: {e:?}"))?;
+            .context("set_tensor_capacity past_key")?;
         past_k.push(pk);
 
         let mut pv = make_tensor(
@@ -207,7 +216,7 @@ fn init_step_tensors<'context>(
         )?;
         context
             .rustnn_set_tensor_capacity(&mut pv, &[1, h, max_past, d])
-            .map_err(|e| anyhow!("set_tensor_capacity past_value: {e:?}"))?;
+            .context("set_tensor_capacity past_value")?;
         past_v.push(pv);
 
         let mut prk = make_tensor(
@@ -219,7 +228,7 @@ fn init_step_tensors<'context>(
         )?;
         context
             .rustnn_set_tensor_capacity(&mut prk, &[1, h, max_seq, d])
-            .map_err(|e| anyhow!("set_tensor_capacity present_key: {e:?}"))?;
+            .context("set_tensor_capacity present_key")?;
         present_k.push(prk);
 
         let mut prv = make_tensor(
@@ -231,7 +240,7 @@ fn init_step_tensors<'context>(
         )?;
         context
             .rustnn_set_tensor_capacity(&mut prv, &[1, h, max_seq, d])
-            .map_err(|e| anyhow!("set_tensor_capacity present_value: {e:?}"))?;
+            .context("set_tensor_capacity present_value")?;
         present_v.push(prv);
     }
 
@@ -321,48 +330,48 @@ fn run_step<'context>(
 
     context
         .rustnn_resize_tensor(&mut tensors.attention_mask, &[1, seq_len as u64])
-        .map_err(|e| anyhow!("resize attention_mask: {e:?}"))?;
+        .context("resize attention_mask")?;
 
     for layer in 0..layout.num_layers {
         context
             .rustnn_resize_tensor(&mut tensors.past_k[layer], &[1, h, past_len as u64, d])
-            .map_err(|e| anyhow!("resize past_key layer {layer}: {e:?}"))?;
+            .with_context(|| format!("resize past_key layer {layer}"))?;
         context
             .rustnn_resize_tensor(&mut tensors.past_v[layer], &[1, h, past_len as u64, d])
-            .map_err(|e| anyhow!("resize past_value layer {layer}: {e:?}"))?;
+            .with_context(|| format!("resize past_value layer {layer}"))?;
         context
             .rustnn_resize_tensor(&mut tensors.present_k[layer], &[1, h, seq_len as u64, d])
-            .map_err(|e| anyhow!("resize present_key layer {layer}: {e:?}"))?;
+            .with_context(|| format!("resize present_key layer {layer}"))?;
         context
             .rustnn_resize_tensor(&mut tensors.present_v[layer], &[1, h, seq_len as u64, d])
-            .map_err(|e| anyhow!("resize present_value layer {layer}: {e:?}"))?;
+            .with_context(|| format!("resize present_value layer {layer}"))?;
     }
 
     context
         .write_tensor(&tensors.input_ids, &[token_id])
-        .map_err(|e| anyhow!("write input_ids: {e:?}"))?;
+        .context("write input_ids")?;
 
     context
         .write_tensor(&tensors.position_ids, &[past_len as i64])
-        .map_err(|e| anyhow!("write position_ids: {e:?}"))?;
+        .context("write position_ids")?;
 
     context
         .write_tensor(&tensors.attention_mask, &vec![1i64; seq_len])
-        .map_err(|e| anyhow!("write attention_mask: {e:?}"))?;
+        .context("write attention_mask")?;
 
     for layer in 0..layout.num_layers {
         let k_data = compact_kv(state, layout, layer, "key", past_len);
         if !k_data.is_empty() {
             context
                 .write_tensor(&tensors.past_k[layer], &k_data)
-                .map_err(|e| anyhow!("write past_key {layer}: {e:?}"))?;
+                .with_context(|| format!("write past_key {layer}"))?;
         }
 
         let v_data = compact_kv(state, layout, layer, "value", past_len);
         if !v_data.is_empty() {
             context
                 .write_tensor(&tensors.past_v[layer], &v_data)
-                .map_err(|e| anyhow!("write past_val {layer}: {e:?}"))?;
+                .with_context(|| format!("write past_val {layer}"))?;
         }
     }
 
@@ -398,27 +407,27 @@ fn run_step<'context>(
 
     context
         .dispatch(graph, &inputs, &outputs)
-        .map_err(|e| anyhow!("dispatch at pos={}: {e:?}", state.current_pos))?;
+        .with_context(|| format!("dispatch at pos={}", state.current_pos))?;
 
     let kv_elems = layout.num_heads * seq_len * layout.head_dim;
     for layer in 0..layout.num_layers {
         let mut k = vec![0f32; kv_elems];
         context
             .read_tensor(&tensors.present_k[layer], &mut k)
-            .map_err(|e| anyhow!("read present_key {layer}: {e:?}"))?;
+            .with_context(|| format!("read present_key {layer}"))?;
         store_present(state, layout, layer, "key", &k, seq_len);
 
         let mut v = vec![0f32; kv_elems];
         context
             .read_tensor(&tensors.present_v[layer], &mut v)
-            .map_err(|e| anyhow!("read present_val {layer}: {e:?}"))?;
+            .with_context(|| format!("read present_val {layer}"))?;
         store_present(state, layout, layer, "value", &v, seq_len);
     }
 
     let mut logits = vec![0f32; layout.vocab_size];
     context
         .read_tensor(logits_tensor, &mut logits)
-        .map_err(|e| anyhow!("read logits: {e:?}"))?;
+        .context("read logits")?;
 
     state.current_pos += 1;
     Ok(argmax(&logits))
@@ -470,11 +479,10 @@ fn main() -> anyhow::Result<()> {
     let graph_info = load_graph_from_path(&model_path)
         .with_context(|| format!("Failed to load {model_path:?}"))?;
 
-    let tokenizer = Tokenizer::from_file(&tokenizer_path)
-        .map_err(|e| anyhow!("load tokenizer {}: {e}", tokenizer_path.display()))?;
-    let enc = tokenizer
-        .encode(args.prompt.clone(), false)
-        .map_err(|e| anyhow!("tokenize prompt: {e}"))?;
+    let tokenizer = boxed_result(Tokenizer::from_file(&tokenizer_path))
+        .with_context(|| format!("load tokenizer {}", tokenizer_path.display()))?;
+    let enc =
+        boxed_result(tokenizer.encode(args.prompt.clone(), false)).context("tokenize prompt")?;
     let prompt_ids = enc.get_ids().to_vec();
     if prompt_ids.is_empty() {
         bail!("prompt produced zero tokens");
@@ -486,7 +494,7 @@ fn main() -> anyhow::Result<()> {
     };
     let artifacts = GraphValidator::new(&graph_info, context_properties)
         .validate()
-        .map_err(|e| anyhow!("validate graph: {e}"))?;
+        .context("validate graph")?;
     let layout = detect_layout(&artifacts)?;
     info!(
         "Layout: {} layers, {} heads, cache_len={}, head_dim={}, vocab={}",
@@ -506,14 +514,14 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true))
-        .map_err(|e| anyhow!("Failed to create MLContext: {e:?}"))?;
+        .context("Failed to create MLContext")?;
 
-    let mut builder = MLGraphBuilder::new(&mut context)
-        .map_err(|e| anyhow!("Failed to create MLGraphBuilder:\n{e}"))?;
+    let mut builder =
+        MLGraphBuilder::new(&mut context).context("Failed to create MLGraphBuilder")?;
     info!("Building graph...");
     let mut graph = builder
         .build_graph_info(graph_info)
-        .map_err(|e| anyhow!("Failed to build graph:\n{e}"))?;
+        .context("Failed to build graph")?;
     info!("Graph built");
 
     // Logits output is always [1, 1, vocab_size] — create it once and reuse across all steps.
@@ -535,7 +543,7 @@ fn main() -> anyhow::Result<()> {
     logits_td.set_readable(true);
     let logits_tensor = context
         .create_tensor(&logits_td)
-        .map_err(|e| anyhow!("create logits tensor: {e:?}"))?;
+        .context("create logits tensor")?;
 
     let mut step_tensors = init_step_tensors(&mut context, &layout)?;
 
@@ -578,9 +586,8 @@ fn main() -> anyhow::Result<()> {
         )?;
     }
 
-    let generated_text = tokenizer
-        .decode(&generated, false)
-        .map_err(|e| anyhow!("decode generated text: {e}"))?;
+    let generated_text =
+        boxed_result(tokenizer.decode(&generated, false)).context("decode generated text")?;
 
     println!("Prompt: {}", args.prompt);
     println!("Generated text: {}", generated_text);

@@ -191,33 +191,39 @@ pub enum Error {
     #[error("Failed to build graph: {source}")]
     GraphBuildError {
         #[from]
-        source: Box<dyn std::error::Error>,
+        source: Box<dyn std::error::Error + Sync + Send>,
     },
 
     #[error("Failed to run inference: {source}")]
-    InferenceError { source: Box<dyn std::error::Error> },
+    InferenceError {
+        source: Box<dyn std::error::Error + Sync + Send>,
+    },
 
     #[error("Failed to create context: {source}")]
-    ContextCreationError { source: Box<dyn std::error::Error> },
+    ContextCreationError {
+        source: Box<dyn std::error::Error + Sync + Send>,
+    },
 
     #[error("Failed to create builder: {source}")]
-    BuilderCreationError { source: Box<dyn std::error::Error> },
+    BuilderCreationError {
+        source: Box<dyn std::error::Error + Sync + Send>,
+    },
 
-    #[error("Failed to tensor: {source}")]
+    #[error("Failed to create tensor: {source}")]
     TensorCreationError {
-        source: Box<dyn std::error::Error>,
+        source: Box<dyn std::error::Error + Sync + Send>,
         descriptor: MLTensorDescriptor,
     },
 
     #[error("Failed to write tensor: {source}")]
     TensorWriteError {
-        source: Box<dyn std::error::Error>,
+        source: Box<dyn std::error::Error + Sync + Send>,
         tensor: MLTensor,
     },
 
     #[error("Failed to read tensor: {source}")]
     TensorReadError {
-        source: Box<dyn std::error::Error>,
+        source: Box<dyn std::error::Error + Sync + Send>,
         tensor: MLTensor,
     },
 
@@ -265,7 +271,9 @@ pub enum Error {
     ReadToNonReadableTensor { tensor: MLTensor },
 
     #[error("Failed to dispatch graph: {source}")]
-    GraphDispatchError { source: Box<dyn std::error::Error> },
+    GraphDispatchError {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     #[error("An error in the Trtx: {source}")]
