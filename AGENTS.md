@@ -389,7 +389,7 @@ tests/
    - Tests are loaded from upstream WPT `.https.any.js` files (not checked-in JSON)
    - Fetch corpus: `node scripts/fetch_wpt.mjs`
    - Run: `make test-wpt` or `make test-wpt-op OP=<operation>`
-   - See: `docs/testing/wpt-test-guide.md` and `docs/testing/wpt-harness-todos.md`
+   - See: `docs/testing/wpt-test-guide.md` and `docs/testing/wpt-harness-todos.mdx`
 
 7. **Documentation** (`docs/api-reference.md`):
    - Add operation to appropriate section

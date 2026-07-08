@@ -425,6 +425,56 @@ pub fn check_atol_tolerance(
     (true, None)
 }
 
+/// Per-element float error summary for audit reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FloatErrorMetrics {
+    pub max_ulp: u32,
+    pub max_abs: f32,
+    pub max_rtol: f32,
+}
+
+/// Compute max ULP / absolute / relative error across a float tensor pair.
+pub fn float_error_metrics(actual: &[f32], expected: &[f32], float16: bool) -> FloatErrorMetrics {
+    let mut metrics = FloatErrorMetrics::default();
+    if actual.len() != expected.len() {
+        return metrics;
+    }
+    let eps = 1e-6_f32;
+    for (&a, &e) in actual.iter().zip(expected.iter()) {
+        let ulp = if float16 {
+            ulp_distance_f16(a, e)
+        } else {
+            ulp_distance_f32(a, e)
+        };
+        metrics.max_ulp = metrics.max_ulp.max(ulp);
+        if !(e.is_nan() || e.is_infinite()) {
+            let abs = (a - e).abs();
+            metrics.max_abs = metrics.max_abs.max(abs);
+            let denom = e.abs().max(eps);
+            metrics.max_rtol = metrics.max_rtol.max(abs / denom);
+        }
+    }
+    metrics
+}
+
+/// Per-element integer error summary for audit reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IntegerErrorMetrics {
+    pub max_abs_diff: u64,
+}
+
+pub fn integer_error_metrics(actual: &[i64], expected: &[i64]) -> IntegerErrorMetrics {
+    let mut metrics = IntegerErrorMetrics::default();
+    if actual.len() != expected.len() {
+        return metrics;
+    }
+    for (&a, &e) in actual.iter().zip(expected.iter()) {
+        let diff = (a as i128 - e as i128).unsigned_abs();
+        metrics.max_abs_diff = metrics.max_abs_diff.max(diff.min(u64::MAX as u128) as u64);
+    }
+    metrics
+}
+
 /// Validate actual vs expected; returns (pass, error message if failed).
 pub fn validate_result(
     actual: &[f32],

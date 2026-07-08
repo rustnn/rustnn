@@ -3,6 +3,7 @@ mod wpt_conformance;
 use std::time::Instant;
 
 use libtest_mimic::{Arguments, Completion, Failed, Trial};
+use wpt_conformance::wpt_audit::WptAuditCollector;
 use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{
     default_wpt_dir, load_wpt_corpus, sanitize_test_id, trial_name,
@@ -10,13 +11,16 @@ use wpt_conformance::wpt_js_loader::{
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_types::WptLoadedCase;
 use wpt_conformance::{
-    run_one_test_case, should_skip_backend_test, should_skip_test, wpt_types::WptTestCase,
+    run_one_test_case_with_audit, should_skip_backend_test, should_skip_test,
+    wpt_types::WptTestCase,
 };
 
 fn run_trial(
     backend: &WptBackend,
     operation: &str,
+    file_name: &str,
     test_case: &WptTestCase,
+    audit: Option<&WptAuditCollector>,
 ) -> Result<Completion, Failed> {
     if let Some(reason) = should_skip_test(&test_case.graph) {
         return Ok(Completion::ignored_with(reason));
@@ -25,7 +29,7 @@ fn run_trial(
         return Ok(Completion::ignored_with(reason));
     }
 
-    run_one_test_case(backend, operation, test_case)
+    run_one_test_case_with_audit(backend, operation, file_name, test_case, audit)
         .map(|()| Completion::Completed)
         .map_err(Failed::from)
 }
@@ -35,6 +39,7 @@ fn push_backend_trials(
     backend: WptBackend,
     cases: &[WptLoadedCase],
     report: &WptReportCollector,
+    audit: Option<WptAuditCollector>,
 ) {
     let prefix = backend.trial_prefix();
     for case in cases {
@@ -47,9 +52,16 @@ fn push_backend_trials(
         let snapshot_name = format!("{backend_prefix}_{}", sanitize_test_id(&test_name));
         let report = report.clone();
         let backend = backend.clone();
+        let audit = audit.clone();
         trials.push(Trial::ignorable_test(name, move || {
             let started = Instant::now();
-            let result = run_trial(&backend, &operation, &test_case);
+            let result = run_trial(
+                &backend,
+                &operation,
+                &file_name,
+                &test_case,
+                audit.as_ref(),
+            );
             let duration = started.elapsed();
 
             match &result {
@@ -142,9 +154,27 @@ fn main() {
         report_output_path(),
     );
 
+    let audit_enabled = WptAuditCollector::enabled();
+    let audit = if audit_enabled {
+        let collector = WptAuditCollector::new(
+            backend_prefixes
+                .first()
+                .copied()
+                .unwrap_or("unknown"),
+        );
+        eprintln!(
+            "[WPT audit] enabled -> {}",
+            WptAuditCollector::output_path().display()
+        );
+        Some(collector)
+    } else {
+        None
+    };
+
     let mut trials = Vec::new();
     for backend in backends {
-        push_backend_trials(&mut trials, backend, &corpus.cases, &report);
+        let backend_audit = audit.clone();
+        push_backend_trials(&mut trials, backend, &corpus.cases, &report, backend_audit);
     }
 
     let conclusion = libtest_mimic::run(&args, trials);
@@ -158,6 +188,12 @@ fn main() {
 
     if let Err(e) = report.write_json() {
         eprintln!("[WPT] warning: failed to write JSON report: {e}");
+    }
+
+    if let Some(audit) = audit {
+        if let Err(e) = audit.write_json() {
+            eprintln!("[WPT] warning: failed to write audit report: {e}");
+        }
     }
 
     conclusion.exit();

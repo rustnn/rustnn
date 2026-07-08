@@ -9,6 +9,7 @@
 //! - Filter trials by name prefix: `cargo test --test run_wpt_conformance -- onnx::relu`
 
 pub mod tolerance;
+pub mod wpt_audit;
 pub mod wpt_backend;
 pub mod wpt_config;
 pub mod wpt_context_pool;
@@ -18,7 +19,11 @@ pub mod wpt_report;
 pub mod wpt_tensor;
 pub mod wpt_types;
 
-use tolerance::{check_integer_tolerance, get_operation_tolerance, validate_result};
+use tolerance::{
+    FloatErrorMetrics, IntegerErrorMetrics, check_integer_tolerance, float_error_metrics,
+    get_operation_tolerance, integer_error_metrics, validate_result,
+};
+use wpt_audit::WptAuditCollector;
 use wpt_backend::WptBackend;
 use wpt_tensor::{
     expected_output_to_f32, expected_output_to_i32, expected_output_to_i64, expected_output_to_u64,
@@ -358,6 +363,17 @@ pub fn run_one_test_case(
     operation: &str,
     test_case: &wpt_types::WptTestCase,
 ) -> Result<(), String> {
+    run_one_test_case_with_audit(backend, operation, "", test_case, None)
+}
+
+/// Like [`run_one_test_case`], but records per-output error metrics on pass when `audit` is set.
+pub fn run_one_test_case_with_audit(
+    backend: &WptBackend,
+    operation: &str,
+    file_name: &str,
+    test_case: &wpt_types::WptTestCase,
+    audit: Option<&WptAuditCollector>,
+) -> Result<(), String> {
     let graph = &test_case.graph;
     let graph_op_names = graph_operator_names(graph);
     let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
@@ -373,6 +389,10 @@ pub fn run_one_test_case(
         let webnn_text = artifacts.webnn_text.as_deref();
         let outputs = artifacts.outputs;
         let input_names = runtime_input_names(graph);
+        let mut float_metrics = FloatErrorMetrics::default();
+        let mut int_metrics = IntegerErrorMetrics::default();
+        let mut saw_float = false;
+        let mut saw_int = false;
 
         for (out_name, expected_spec) in &graph.expected_outputs {
             let actual = outputs
@@ -399,6 +419,9 @@ pub fn run_one_test_case(
                         })
                         .unwrap_or(0) as i64;
                     let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
+                    let im = integer_error_metrics(actual_i64, &expected);
+                    int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
+                    saw_int = true;
                     let expected_str =
                         format_int_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
                     let actual_str =
@@ -418,6 +441,10 @@ pub fn run_one_test_case(
                             .iter()
                             .zip(expected.iter())
                             .all(|(&a, &e)| a as u64 == e);
+                    let expected_i64: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
+                    let im = integer_error_metrics(actual_i64, &expected_i64);
+                    int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
+                    saw_int = true;
                     let msg = if pass {
                         None
                     } else {
@@ -450,6 +477,9 @@ pub fn run_one_test_case(
                     let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
                     let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
                     let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
+                    let im = integer_error_metrics(&actual_i64, &expected_i64);
+                    int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
+                    saw_int = true;
                     let expected_str =
                         format_i32_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
                     let actual_str =
@@ -473,6 +503,11 @@ pub fn run_one_test_case(
                         float16,
                         wpt_ulp_only,
                     );
+                    let fm = float_error_metrics(actual_f32, &expected, float16);
+                    float_metrics.max_ulp = float_metrics.max_ulp.max(fm.max_ulp);
+                    float_metrics.max_abs = float_metrics.max_abs.max(fm.max_abs);
+                    float_metrics.max_rtol = float_metrics.max_rtol.max(fm.max_rtol);
+                    saw_float = true;
                     let expected_str =
                         format_f32_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
                     let actual_str =
@@ -530,6 +565,18 @@ pub fn run_one_test_case(
                     webnn_text,
                 ));
             }
+        }
+
+        if let Some(audit) = audit {
+            audit.record_pass(
+                file_name,
+                &test_case.name,
+                operation,
+                &graph_op_refs,
+                test_case.tolerance.as_ref(),
+                saw_float.then_some(float_metrics),
+                saw_int.then_some(int_metrics),
+            );
         }
         Ok(())
     })
