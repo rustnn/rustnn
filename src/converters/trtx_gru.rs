@@ -406,6 +406,7 @@ fn gru_parse_activations(names: Option<&[String]>) -> GruActivations {
     acts
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gru_slice_weights<'a>(
     network: &mut trtx::NetworkDefinition<'a>,
     tensor: &trtx::Tensor<'a>,
@@ -475,10 +476,11 @@ fn gru_maybe_reorder_gates<'a>(
     if layout_rzn {
         gru_reorder_gates_rzn_to_zrn(network, tensor, gate_axis, hidden_size, label)
     } else {
-        Ok(tensor.clone())
+        Ok(*tensor)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gru_prepare_weights<'a>(
     graph: &GraphInfo,
     network: &mut trtx::NetworkDefinition<'a>,

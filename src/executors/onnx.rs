@@ -718,9 +718,7 @@ mod tests {
     fn test_ort_device_tensor_lifecycle() {
         // This test requires ONNX Runtime to be initialized
         // Skip if initialization fails
-        if ensure_ort_initialized().is_err() {
-            return;
-        }
+        if ensure_ort_initialized().is_err() {}
 
         // Create a simple ONNX model (add operation: y = x + 1)
         // For now, we'll skip this test as it requires a real ONNX model

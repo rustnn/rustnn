@@ -77,6 +77,7 @@ impl WptAuditCollector {
             .unwrap_or_else(|_| PathBuf::from("reports/wpt-trtx-audit.json"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_pass(
         &self,
         file_name: &str,
@@ -94,36 +95,44 @@ impl WptAuditCollector {
         let tolerance_kind = format!("{kind:?}");
 
         let (max_ulp, max_abs, max_rtol, slack_ratio) = match kind {
-                ToleranceKind::Ulp => {
-                    let fm = float_metrics.unwrap_or_default();
-                    let slack = if value > 0 {
-                        Some(fm.max_ulp as f64 / value as f64)
+            ToleranceKind::Ulp => {
+                let fm = float_metrics.unwrap_or_default();
+                let slack = if value > 0 {
+                    Some(fm.max_ulp as f64 / value as f64)
+                } else {
+                    Some(if fm.max_ulp == 0 { 0.0 } else { f64::INFINITY })
+                };
+                (Some(fm.max_ulp), Some(fm.max_abs), Some(fm.max_rtol), slack)
+            }
+            ToleranceKind::Atol => {
+                let fm = float_metrics.unwrap_or_default();
+                let atol = f64::from_bits(value) as f32;
+                let slack = if atol > 0.0 {
+                    Some((fm.max_abs / atol) as f64)
+                } else {
+                    Some(if fm.max_abs == 0.0 {
+                        0.0
                     } else {
-                        Some(if fm.max_ulp == 0 { 0.0 } else { f64::INFINITY })
-                    };
-                    (Some(fm.max_ulp), Some(fm.max_abs), Some(fm.max_rtol), slack)
-                }
-                ToleranceKind::Atol => {
-                    let fm = float_metrics.unwrap_or_default();
-                    let atol = f64::from_bits(value) as f32;
-                    let slack = if atol > 0.0 {
-                        Some((fm.max_abs / atol) as f64)
+                        f64::INFINITY
+                    })
+                };
+                (None, Some(fm.max_abs), Some(fm.max_rtol), slack)
+            }
+            ToleranceKind::Rtol => {
+                let fm = float_metrics.unwrap_or_default();
+                let rtol = f64::from_bits(value) as f32;
+                let slack = if rtol > 0.0 {
+                    Some((fm.max_rtol / rtol) as f64)
+                } else {
+                    Some(if fm.max_rtol == 0.0 {
+                        0.0
                     } else {
-                        Some(if fm.max_abs == 0.0 { 0.0 } else { f64::INFINITY })
-                    };
-                    (None, Some(fm.max_abs), Some(fm.max_rtol), slack)
-                }
-                ToleranceKind::Rtol => {
-                    let fm = float_metrics.unwrap_or_default();
-                    let rtol = f64::from_bits(value) as f32;
-                    let slack = if rtol > 0.0 {
-                        Some((fm.max_rtol / rtol) as f64)
-                    } else {
-                        Some(if fm.max_rtol == 0.0 { 0.0 } else { f64::INFINITY })
-                    };
-                    (None, Some(fm.max_abs), Some(fm.max_rtol), slack)
-                }
-            };
+                        f64::INFINITY
+                    })
+                };
+                (None, Some(fm.max_abs), Some(fm.max_rtol), slack)
+            }
+        };
 
         let max_int_diff = int_metrics.map(|im| im.max_abs_diff);
 
@@ -142,21 +151,23 @@ impl WptAuditCollector {
                 ));
             }
         }
-        if let Some(im) = int_metrics {
-            if im.max_abs_diff > 0 && tolerance_value == 0.0 {
-                flag_reasons.push(format!(
-                    "integer diff {} with zero tolerance (unexpected pass)",
-                    im.max_abs_diff
-                ));
-            }
+        if let Some(im) = int_metrics
+            && im.max_abs_diff > 0
+            && tolerance_value == 0.0
+        {
+            flag_reasons.push(format!(
+                "integer diff {} with zero tolerance (unexpected pass)",
+                im.max_abs_diff
+            ));
         }
-        if let Some(slack) = slack_ratio {
-            if slack.is_finite() && slack >= 0.5 {
-                flag_reasons.push(format!(
-                    "uses {:.0}% of tolerance budget (close to edge)",
-                    slack * 100.0
-                ));
-            }
+        if let Some(slack) = slack_ratio
+            && slack.is_finite()
+            && slack >= 0.5
+        {
+            flag_reasons.push(format!(
+                "uses {:.0}% of tolerance budget (close to edge)",
+                slack * 100.0
+            ));
         }
 
         let flagged = !flag_reasons.is_empty();

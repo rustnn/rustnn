@@ -55,13 +55,7 @@ fn push_backend_trials(
         let audit = audit.clone();
         trials.push(Trial::ignorable_test(name, move || {
             let started = Instant::now();
-            let result = run_trial(
-                &backend,
-                &operation,
-                &file_name,
-                &test_case,
-                audit.as_ref(),
-            );
+            let result = run_trial(&backend, &operation, &file_name, &test_case, audit.as_ref());
             let duration = started.elapsed();
 
             match &result {
@@ -156,12 +150,8 @@ fn main() {
 
     let audit_enabled = WptAuditCollector::enabled();
     let audit = if audit_enabled {
-        let collector = WptAuditCollector::new(
-            backend_prefixes
-                .first()
-                .copied()
-                .unwrap_or("unknown"),
-        );
+        let collector =
+            WptAuditCollector::new(backend_prefixes.first().copied().unwrap_or("unknown"));
         eprintln!(
             "[WPT audit] enabled -> {}",
             WptAuditCollector::output_path().display()
@@ -190,10 +180,10 @@ fn main() {
         eprintln!("[WPT] warning: failed to write JSON report: {e}");
     }
 
-    if let Some(audit) = audit {
-        if let Err(e) = audit.write_json() {
-            eprintln!("[WPT] warning: failed to write audit report: {e}");
-        }
+    if let Some(audit) = audit
+        && let Err(e) = audit.write_json()
+    {
+        eprintln!("[WPT] warning: failed to write audit report: {e}");
     }
 
     conclusion.exit();

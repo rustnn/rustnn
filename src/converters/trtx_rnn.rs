@@ -110,12 +110,12 @@ pub(crate) fn rnn_check_bidirectional_activations(
     max_len: usize,
     label: &str,
 ) -> Result<(), GraphError> {
-    if let Some(list) = names {
-        if list.len() > max_len {
-            return Err(rnn_err_fmt(format!(
-                "bidirectional {label} requires the same activations for forward and reverse passes"
-            )));
-        }
+    if let Some(list) = names
+        && list.len() > max_len
+    {
+        return Err(rnn_err_fmt(format!(
+            "bidirectional {label} requires the same activations for forward and reverse passes"
+        )));
     }
     Ok(())
 }
@@ -234,7 +234,7 @@ pub(crate) fn rnn_normalize_gate_tensor_2d<'a>(
                 )))
             }
         }
-        2 | 3 => Ok(tensor.clone()),
+        2 | 3 => Ok(*tensor),
         n => Err(rnn_err_fmt(format!("{label}: expected rank 1-3, got {n}D"))),
     }
 }
@@ -251,7 +251,7 @@ pub(crate) fn rnn_to_3d<'a>(
         .dimensions(&*network)
         .map_err(|e| rnn_err_fmt(e.to_string()))?;
     if dims.len() == 3 {
-        return Ok(tensor.clone());
+        return Ok(*tensor);
     }
     if dims.len() == 2 {
         return rnn_reshape(
@@ -474,6 +474,7 @@ pub(crate) fn rnn_zeros<'a>(
         .map_err(|e| rnn_err_fmt(format!("{label} output: {e}")))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn rnn_concat_loop_outputs<'a>(
     network: &mut trtx::NetworkDefinition<'a>,
     loop_body: &mut trtx::network::Loop<'a>,
@@ -585,7 +586,7 @@ pub(crate) fn rnn_fit_sequence_output<'a>(
             );
         }
     }
-    Ok(tensor.clone())
+    Ok(*tensor)
 }
 
 pub(crate) fn rnn_fit_hidden_output<'a>(
@@ -610,7 +611,7 @@ pub(crate) fn rnn_fit_hidden_output<'a>(
             &format!("{label} unsqueeze hidden to 4d"),
         );
     }
-    Ok(tensor.clone())
+    Ok(*tensor)
 }
 
 pub(crate) fn rnn_fit_cell_output<'a>(

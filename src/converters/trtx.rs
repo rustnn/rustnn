@@ -715,10 +715,10 @@ impl TrtxConverter {
                 }
                 Operation::DequantizeLinear { .. } => {
                     let ins = op.input_operands();
-                    if let Some(&in_id) = ins.first() {
-                        if Self::is_graph_constant(graph, in_id) {
-                            ids.insert(in_id);
-                        }
+                    if let Some(&in_id) = ins.first()
+                        && Self::is_graph_constant(graph, in_id)
+                    {
+                        ids.insert(in_id);
                     }
                     if ins.len() >= 2 {
                         let scale_id = ins[1];
@@ -3223,6 +3223,7 @@ impl TrtxConverter {
     }
 
     /// Elementwise `(cast(input) * scale)` dequantize for int32/uint32 and blockwise scales.
+    #[allow(clippy::too_many_arguments)]
     fn trtx_dequantize_manual_mul<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         graph: &GraphInfo,
@@ -3891,6 +3892,7 @@ impl TrtxConverter {
             .map(|d| {
                 let s = in_shape[d] as usize;
                 let p = ps[d] as usize;
+                #[allow(clippy::manual_checked_ops)]
                 if p == 0 { 1 } else { (s / p).max(1) }
             })
             .collect();
@@ -4228,6 +4230,7 @@ impl TrtxConverter {
     ///
     /// `identity_dq_webnn_dtype`: WebNN dtype of the **integer** param (zero_point). Uint8 zp is stored
     /// as `kINT8` in TRT; pass `DataType::Uint8` so bytes 128..255 map correctly.
+    #[allow(clippy::too_many_arguments)]
     fn trtx_align_quantize_param_for_elementwise<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         graph: &GraphInfo,
@@ -4390,6 +4393,7 @@ impl TrtxConverter {
     /// `quantizeLinear` via elementwise ops (ONNX: `clip(round(x / scale) + zero_point, qmin, qmax)`).
     /// Used when any tensor is rank-0: `IQuantizeLayer` plus shuffles can hit a Myelin assert, and this
     /// path wires `zero_point` so no 0D network input stays unused.
+    #[allow(clippy::too_many_arguments)]
     fn add_quantize_linear_elementwise_manual<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -5092,7 +5096,7 @@ impl TrtxConverter {
             scale_zp_holder =
                 if scalar_dq && Self::trtx_scale_is_per_tensor_broadcast(&sc_shape_web) {
                     if sc_shape_web.is_empty() {
-                        scale.clone()
+                        *scale
                     } else {
                         Self::trtx_collapse_per_tensor_scale_for_dq(
                             network,
@@ -9019,6 +9023,7 @@ impl TrtxConverter {
     /// TensorRT `ITopKLayer` for rank &gt;= 5 only allows reduction on one of the **last four**
     /// dimensions. When WebNN `axis` lies outside that set, swap that axis with the last axis,
     /// run TopK on the last axis, then apply the same transpose to the index tensor (swap is self-inverse).
+    #[allow(clippy::too_many_arguments)]
     fn add_arg_reduce_common<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -9449,7 +9454,7 @@ impl TrtxConverter {
         let i64_in = if input.get_type(&*network) == TrtDataType::kINT32 {
             Self::cast_int32_to_int64(network, input)?
         } else {
-            input.clone()
+            *input
         };
         let output = Self::trtx_clamp_i64_tensor(network, &i64_in, broadcast_shape, min_v, max_v)?;
         let output_id = operation.output_operands_slice()[0];
@@ -9459,6 +9464,7 @@ impl TrtxConverter {
 
     /// Clamp uint64 (stored as kINT64 bit pattern) using unsigned ordering.
     /// When the input is a graph constant, clamp is folded at compile time (TensorRT has no integer XOR).
+    #[allow(clippy::too_many_arguments)]
     fn add_clamp_uint64_op<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -9528,7 +9534,7 @@ impl TrtxConverter {
         let i64_in = if input.get_type(&*network) == TrtDataType::kINT32 {
             Self::cast_int32_to_int64(network, input)?
         } else {
-            input.clone()
+            *input
         };
         let min_i = min_u.min(i64::MAX as u64) as i64;
         let max_i = max_u.min(i64::MAX as u64) as i64;
@@ -9539,6 +9545,7 @@ impl TrtxConverter {
     }
 
     /// Clamp int8/uint8 via INT32 (TRT rejects UINT8/kINT8 constants on elementwise MIN/MAX).
+    #[allow(clippy::too_many_arguments)]
     fn add_clamp_int8_uint8_op<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
@@ -13946,10 +13953,10 @@ impl TrtxConverter {
         }
 
         let mut input_shape = vec![1_i64; rank];
-        for i in 0..rank {
+        for (i, slot) in input_shape.iter_mut().enumerate() {
             let from_trt = dims_trt.get(i).copied().unwrap_or(0);
             let from_desc = desc_shape.get(i).copied().unwrap_or(1);
-            input_shape[i] = if from_trt > 0 {
+            *slot = if from_trt > 0 {
                 from_trt
             } else {
                 from_desc.max(1)

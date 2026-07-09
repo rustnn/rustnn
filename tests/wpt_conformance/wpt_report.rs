@@ -209,6 +209,7 @@ impl WptReportCollector {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_case(
         &self,
         file_name: &str,

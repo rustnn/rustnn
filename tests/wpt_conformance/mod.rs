@@ -358,15 +358,8 @@ fn format_inputs_for_failure(graph: &WptGraph, input_names: &[String]) -> String
 }
 
 /// Run a single WPT test case: build graph via MLGraphBuilder, dispatch, validate outputs.
-pub fn run_one_test_case(
-    backend: &WptBackend,
-    operation: &str,
-    test_case: &wpt_types::WptTestCase,
-) -> Result<(), String> {
-    run_one_test_case_with_audit(backend, operation, "", test_case, None)
-}
-
-/// Like [`run_one_test_case`], but records per-output error metrics on pass when `audit` is set.
+///
+/// Records per-output error metrics on pass when `audit` is set.
 pub fn run_one_test_case_with_audit(
     backend: &WptBackend,
     operation: &str,

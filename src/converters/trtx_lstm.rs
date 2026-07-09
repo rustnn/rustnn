@@ -417,31 +417,29 @@ fn lstm_run_loop<'a>(
                 tensor_map.insert(cell_id, yc_final);
             }
 
-            if return_sequence {
-                if let Some(seq_output_id) = seq_id {
-                    let single_pass_shape =
-                        [1_i64, params.batch_size as i64, params.hidden_size as i64];
-                    let reverse = params.direction == RnnDirection::Reverse;
-                    let seq_tensor = rnn_concat_loop_outputs(
-                        network,
-                        &mut loop_body,
-                        &ht,
-                        num_directions,
-                        &single_pass_shape,
-                        params.seq_steps,
-                        reverse,
-                        "lstm",
-                    )?;
-                    let seq_final = rnn_fit_sequence_output(
-                        graph,
-                        network,
-                        seq_output_id,
-                        &seq_tensor,
-                        params.direction,
-                        "lstm",
-                    )?;
-                    tensor_map.insert(seq_output_id, seq_final);
-                }
+            if return_sequence && let Some(seq_output_id) = seq_id {
+                let single_pass_shape =
+                    [1_i64, params.batch_size as i64, params.hidden_size as i64];
+                let reverse = params.direction == RnnDirection::Reverse;
+                let seq_tensor = rnn_concat_loop_outputs(
+                    network,
+                    &mut loop_body,
+                    &ht,
+                    num_directions,
+                    &single_pass_shape,
+                    params.seq_steps,
+                    reverse,
+                    "lstm",
+                )?;
+                let seq_final = rnn_fit_sequence_output(
+                    graph,
+                    network,
+                    seq_output_id,
+                    &seq_tensor,
+                    params.direction,
+                    "lstm",
+                )?;
+                tensor_map.insert(seq_output_id, seq_final);
             }
         }
     }
@@ -509,10 +507,11 @@ fn lstm_maybe_reorder_gates<'a>(
     if layout_ifgo {
         rnn_reorder_gates_ifgo_to_iofc(network, tensor, gate_axis, hidden_size, label)
     } else {
-        Ok(tensor.clone())
+        Ok(*tensor)
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lstm_prepare_weights<'a>(
     graph: &GraphInfo,
     network: &mut trtx::NetworkDefinition<'a>,
@@ -741,6 +740,7 @@ fn lstm_prepare_peephole<'a>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lstm_add_peephole<'a>(
     network: &mut trtx::NetworkDefinition<'a>,
     gate: &trtx::Tensor<'a>,
