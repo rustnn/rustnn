@@ -5,8 +5,6 @@ The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.c
 **Entry point:** `tests/run_wpt_conformance.rs`  
 **Harness modules:** `tests/wpt_conformance/`
 
-For evaluation backlog and known gaps, see [wpt-harness-todos.mdx](wpt-harness-todos.mdx).
-
 ## Prerequisites
 
 - **Node.js** on `PATH` (used by `scripts/wpt_bridge/dump_corpus.mjs`)
