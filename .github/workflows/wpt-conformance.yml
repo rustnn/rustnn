@@ -54,8 +54,7 @@ jobs:
       - name: Install protobuf/flatbuffer compiler
         if: runner.os == 'macOS'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler flatbuffers
+          brew install protobuf flatbuffers
           protoc --version
 
 
