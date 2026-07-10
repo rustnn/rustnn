@@ -30,7 +30,7 @@ jobs:
             report_file: reports/wpt-conformance-litert.json
             html_file: reports/wpt-conformance-litert.html
             continue_on_error: false
-            os: macos-latest
+            os: macos-26
     runs-on: ${{ matrix.backend.os }}
     continue-on-error: ${{ matrix.backend.continue_on_error }}
     steps:
