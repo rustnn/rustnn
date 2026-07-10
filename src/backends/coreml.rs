@@ -19,9 +19,11 @@ use crate::error::Error;
 use crate::executors::coreml::{
     CompiledCoremlModel, CoremlByteInput, compile_model, run_coreml_bytes,
 };
+use crate::graph::DataType;
 use crate::mlcontext::{
     MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLTensor, MLTensorDescriptor,
 };
+use crate::operators::Operation;
 
 /// Number of bytes required to store a tensor described by `descriptor`.
 fn tensor_byte_len(descriptor: &MLTensorDescriptor) -> usize {
@@ -68,6 +70,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             &converted.data,
             converted.weights_data.as_deref(),
             self.device_type,
+            supports_in_memory_asset(&graph_info),
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         MLGraph::new(
@@ -75,6 +78,26 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             &graph_info,
         )
     }
+}
+
+/// CoreML's in-memory model compiler does not currently behave identically to
+/// URL compilation for every MIL program. Keep the memory path as the default,
+/// but use the established URL path for graphs with demonstrated correctness
+/// differences.
+fn supports_in_memory_asset(graph: &GraphInfo) -> bool {
+    !graph.operations.iter().any(|operation| match operation {
+        // MLModelAsset reports an invalid output feature shape when MIL gather
+        // consumes a rank-0 index, although the URL compiler accepts it.
+        Operation::Gather { indices, .. } => graph
+            .operand(*indices)
+            .is_some_and(|operand| operand.descriptor.shape.is_empty()),
+        // The in-memory execution path loses int32 precision around 2^31 when
+        // evaluating the typed `mul(x, -1)` used to lower WebNN neg.
+        Operation::Neg { input, .. } => graph
+            .operand(*input)
+            .is_some_and(|operand| operand.descriptor.data_type == DataType::Int32),
+        _ => false,
+    })
 }
 
 #[derive(Debug)]

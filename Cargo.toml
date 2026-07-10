@@ -29,7 +29,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 [features]
 default = []
 dynamic-inputs = []
-coreml-runtime = ["objc"]
+coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
 trtx-runtime = ["trtx", "cudarc"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
@@ -71,6 +71,7 @@ dirs = "6.0.0"
 
 # The exception feature is needed to avoid undefined behavior when objc throws exceptions
 objc = { version = "0.2", optional = true, features = [] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
+block = { version = "0.1", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # For macOS, explicitly enable the "exception" feature
 objc = { version = "0.2", optional = true, features = ["exception"] }
