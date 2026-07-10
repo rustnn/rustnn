@@ -64,7 +64,7 @@ fn push_backend_trials(
                     let msg = err.message().unwrap_or("test failed");
                     eprintln!("[WPT] expected failure: {trial_id}: {msg}");
                     Ok(Completion::ignored_with(format!(
-                        "expected CoreML failure: {msg}"
+                        "expected {backend_prefix} failure: {msg}"
                     )))
                 }
                 result => result,

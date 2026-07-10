@@ -12,6 +12,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind};
+use crate::mlcontext::Backend;
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -122,8 +123,8 @@ impl<'a> TfliteContext<'a> {
     }
 }
 
-fn datatype_to_tflite(dt: DataType) -> tflite::TensorType {
-    match dt {
+fn datatype_to_tflite(dt: DataType) -> Result<tflite::TensorType, GraphError> {
+    Ok(match dt {
         DataType::Float32 => tflite::TensorType::FLOAT32,
         DataType::Float16 => tflite::TensorType::FLOAT16,
         DataType::Int32 => tflite::TensorType::INT32,
@@ -133,8 +134,11 @@ fn datatype_to_tflite(dt: DataType) -> tflite::TensorType {
         DataType::Int8 => tflite::TensorType::INT8,
         DataType::Uint8 => tflite::TensorType::UINT8,
         DataType::Int4 => tflite::TensorType::INT4,
-        DataType::Uint4 => panic!("Uint4 not supported in TFLite"),
-    }
+        DataType::Uint4 => Err(GraphError::UnsupportedDataType {
+            data_type: DataType::Uint4,
+            backend: Backend::Litert,
+        })?,
+    })
 }
 
 fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
@@ -247,7 +251,7 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         let id = i as u32;
         let shape = dimensions_to_i32(&operand.descriptor.shape);
-        let tfl_type = datatype_to_tflite(operand.descriptor.data_type);
+        let tfl_type = datatype_to_tflite(operand.descriptor.data_type)?;
         let name = operand
             .name
             .clone()

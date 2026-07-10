@@ -347,6 +347,11 @@ pub enum GraphError {
     DuplicateOutputName { name: String },
     #[error("operand {operand} uses unsupported IO data type {data_type:?}")]
     UnsupportedIoDataType { operand: u32, data_type: DataType },
+    #[error("Backend {backend:?} does not support data type {data_type:?}")]
+    UnsupportedDataType {
+        data_type: DataType,
+        backend: Backend,
+    },
     #[error("constant operand {operand} does not have data associated with it")]
     MissingConstantData { operand: u32 },
     #[error("constant operand {operand} byte mismatch (expected {expected}, got {actual})")]
