@@ -77,6 +77,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "litert-runtime")]
     build_tflite_schema();
 
+    // On macOS with the CoreML runtime, compile the Objective-C++ exception
+    // firewall (see src/executors/coreml_shim.mm). It catches Objective-C and
+    // C++ exceptions raised by CoreML before they can unwind across the
+    // `extern "C"` objc_msgSend boundary and abort the process.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let coreml_enabled = std::env::var("CARGO_FEATURE_COREML_RUNTIME").is_ok();
+    if target_os == "macos" && coreml_enabled {
+        let shim = "src/executors/coreml_shim.mm";
+        println!("cargo:rerun-if-changed={shim}");
+        cc::Build::new()
+            .file(shim)
+            .flag("-fobjc-arc")
+            .compile("rustnn_coreml_shim");
+        // The shim's `@catch (...)` pulls in the C++ runtime (__cxa_begin_catch,
+        // std::terminate); Rust links with -nodefaultlibs, so request libc++.
+        println!("cargo:rustc-link-lib=dylib=c++");
+    }
+
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=OUT_DIR");
