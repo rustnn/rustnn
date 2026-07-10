@@ -262,9 +262,11 @@ coreml::expand::expand_float32_0D_scalar_to_0D
 coreml::floor::floor_float16_1D_constant_tensor
 coreml::gather::gather_float16_1D_tensor_and_int64_0D_scalar_indices_default_options
 coreml::gather::gather_float16_1D_tensor_and_uint32_0D_scalar_indices_default_options
+coreml::gather::gather_float16_5D_tensor_and_0D_scalar_indices_options_axis_4
 coreml::gather::gather_float32_1D_tensor_and_int64_0D_scalar_indices_default_options
 coreml::gather::gather_float32_1D_tensor_and_uint32_0D_scalar_indices_default_options
 coreml::gather::gather_float32_2D_tensor_and_int32_0D_out-of-bound_positive_indices_default_options
+coreml::gather::gather_float32_5D_tensor_and_0D_scalar_indices_options_axis_4
 coreml::gatherElements::gatherElements_float16_2D_input_and_uint32_indices_options_axis_1
 coreml::gatherElements::gatherElements_float16_3D_input_and_int32_negative_indices
 coreml::gatherElements::gatherElements_float32_1D_input_and_int32_out-of-bounds_indices
@@ -738,6 +740,7 @@ coreml::mlNumber::cast_fractional_float_to_integer
 coreml::mul::mul_float16_1D_constant_tensors
 coreml::mul::mul_uint32_4D_tensors
 coreml::neg::neg_float16_1D_constant_tensor
+coreml::neg::neg_int32_4D_tensor
 coreml::neg::neg_int64_4D_tensor
 coreml::neg::neg_int8_4D_tensor
 coreml::not_equal::notEqual_float16_0D_scalar
