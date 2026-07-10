@@ -119,10 +119,14 @@ test-wpt-op: onnxruntime-download
 	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
 	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- $(OP) --test-threads 1
 
+WPT_BACKEND ?= onnx
 # Full WPT run with JSON/HTML reports; exits 0 even if trials fail (for nightly pages).
 test-wpt-report: fetch-wpt onnxruntime-download
 	@mkdir -p reports
-	-WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
+	LITERT_LIB_DIR="$${HOME}/.cache/litert-sys/v0.10.2/$${HOST_TRIPLE}"; \
+	LD_LIBRARY_PATH="$$LITERT_LIB_DIR:$$LD_LIBRARY_PATH" \
+	LIBRARY_PATH="$$LITERT_LIB_DIR:$$LIBRARY_PATH" \
+	WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features $(WPT_BACKEND)-runtime -- --test-threads 1
 
 fmt:
 	$(CARGO) fmt

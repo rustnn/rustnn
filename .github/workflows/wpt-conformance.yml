@@ -94,7 +94,7 @@ jobs:
         env:
           RUSTNN_GIT_SHA: ${{ github.sha }}
           RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
-        run: make test-wpt-report BACKEND=${{ matrix.backend.id }}
+        run: make test-wpt-report WPT_BACKEND=${{ matrix.backend.id }}
 
       - name: Upload WPT conformance report
         if: always()
