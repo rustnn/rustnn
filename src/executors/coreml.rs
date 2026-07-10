@@ -9,10 +9,12 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::mpsc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use block::ConcreteBlock;
 use objc::rc::autoreleasepool;
-use objc::runtime::Object;
+use objc::runtime::{Class, Object};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::error::GraphError;
@@ -135,7 +137,7 @@ pub fn run_coreml_with_inputs_checked(
 
 /// A CoreML model that has been compiled and loaded once, ready for repeated dispatch.
 ///
-/// Owns a retained `MLModel` plus the on-disk artifacts backing it; both are
+/// Owns a retained `MLModel` and the in-memory CoreML asset backing it. All are
 /// released when the value is dropped. This type is intentionally not `Send`/`Sync`:
 /// `MLGraph`/`MLContext` are single-threaded, matching CoreML's usage model.
 pub(crate) struct CompiledCoremlModel {
@@ -143,17 +145,28 @@ pub(crate) struct CompiledCoremlModel {
     model: *mut Object,
     /// Compute unit the model was successfully loaded with (diagnostic only).
     compute_unit: &'static str,
-    /// Compiled `.mlmodelc` directory to clean up on drop.
-    compiled_dir: PathBuf,
-    /// Temporary `.mlmodel`/`.mlpackage` source to clean up on drop.
-    temp_model: Option<PathBuf>,
+    backing: CoremlModelBacking,
+}
+
+enum CoremlModelBacking {
+    InMemory {
+        /// Retained `MLModelAsset`. CoreML may refer to it after loading.
+        asset: *mut Object,
+        /// Retained model specification data backing `asset`.
+        specification_data: *mut Object,
+        /// Retained external weights data backing `asset`, if any.
+        weights_data: Option<*mut Object>,
+    },
+    OnDisk {
+        compiled_dir: PathBuf,
+        temp_model: Option<PathBuf>,
+    },
 }
 
 impl std::fmt::Debug for CompiledCoremlModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompiledCoremlModel")
             .field("compute_unit", &self.compute_unit)
-            .field("compiled_dir", &self.compiled_dir)
             .finish()
     }
 }
@@ -165,11 +178,28 @@ impl Drop for CompiledCoremlModel {
                 let _: () = msg_send![self.model, release];
             }
         }
-        let _ = std::fs::remove_dir_all(&self.compiled_dir);
-        if let Some(path) = &self.temp_model {
-            // .mlmodel is a file, .mlpackage is a directory; try both.
-            let _ = std::fs::remove_file(path);
-            let _ = std::fs::remove_dir_all(path);
+        match &self.backing {
+            CoremlModelBacking::InMemory {
+                asset,
+                specification_data,
+                weights_data,
+            } => unsafe {
+                let _: () = msg_send![*asset, release];
+                let _: () = msg_send![*specification_data, release];
+                if let Some(weights_data) = weights_data {
+                    let _: () = msg_send![*weights_data, release];
+                }
+            },
+            CoremlModelBacking::OnDisk {
+                compiled_dir,
+                temp_model,
+            } => {
+                let _ = std::fs::remove_dir_all(compiled_dir);
+                if let Some(path) = temp_model {
+                    let _ = std::fs::remove_file(path);
+                    let _ = std::fs::remove_dir_all(path);
+                }
+            }
         }
     }
 }
@@ -193,16 +223,20 @@ fn compute_unit_for_device(
     }
 }
 
-/// Compile a CoreML model from protobuf bytes and load it once with the preferred
-/// compute units, falling back to CPU-only if the preferred load fails.
+/// Load a CoreML model directly from protobuf bytes and retain it for repeated
+/// dispatch, falling back to CPU-only if the preferred compute units fail.
 pub(crate) fn compile_model(
     model_bytes: &[u8],
     weights_data: Option<&[u8]>,
     device_type: crate::backend_selection::DeviceType,
+    use_in_memory_asset: bool,
 ) -> Result<CompiledCoremlModel, GraphError> {
-    autoreleasepool(|| unsafe {
-        let (compiled_url, compiled_dir, temp_model) =
-            prepare_compiled_model_with_weights(model_bytes, weights_data, None)?;
+    if !use_in_memory_asset {
+        return compile_model_from_url(model_bytes, weights_data, device_type);
+    }
+    let memory_result = autoreleasepool(|| unsafe {
+        let (asset, specification_data, retained_weights_data) =
+            create_in_memory_model_asset(model_bytes, weights_data)?;
 
         let (preferred_code, preferred_name) = compute_unit_for_device(device_type);
         let mut candidates: Vec<(i64, &'static str)> = vec![(preferred_code, preferred_name)];
@@ -214,23 +248,78 @@ pub(crate) fn compile_model(
         for (code, name) in candidates {
             let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
             let () = msg_send![config, setComputeUnits: code];
+            match load_model_asset(asset, config) {
+                Ok(model) => {
+                    return Ok(CompiledCoremlModel {
+                        model,
+                        compute_unit: name,
+                        backing: CoremlModelBacking::InMemory {
+                            asset,
+                            specification_data,
+                            weights_data: retained_weights_data,
+                        },
+                    });
+                }
+                Err(reason) => last_error = reason,
+            }
+        }
+
+        let _: () = msg_send![asset, release];
+        let _: () = msg_send![specification_data, release];
+        if let Some(weights_data) = retained_weights_data {
+            let _: () = msg_send![weights_data, release];
+        }
+        Err(GraphError::CoremlRuntimeFailed { reason: last_error })
+    });
+    memory_result.or_else(|memory_error| {
+        compile_model_from_url(model_bytes, weights_data, device_type).map_err(|url_error| {
+            GraphError::CoremlRuntimeFailed {
+                reason: format!(
+                    "in-memory model load failed ({memory_error}); URL fallback failed ({url_error})"
+                ),
+            }
+        })
+    })
+}
+
+fn compile_model_from_url(
+    model_bytes: &[u8],
+    weights_data: Option<&[u8]>,
+    device_type: crate::backend_selection::DeviceType,
+) -> Result<CompiledCoremlModel, GraphError> {
+    autoreleasepool(|| unsafe {
+        let (compiled_url, compiled_dir, temp_model) =
+            prepare_compiled_model_with_weights(model_bytes, weights_data, None)?;
+        let (preferred_code, preferred_name) = compute_unit_for_device(device_type);
+        let mut candidates = vec![(preferred_code, preferred_name)];
+        if preferred_code != 0 {
+            candidates.push((0, "CPU_ONLY"));
+        }
+
+        let mut last_error = String::from("MLModel load failed");
+        for (code, name) in candidates {
+            let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let () = msg_send![config, setComputeUnits: code];
             let mut error: *mut Object = ptr::null_mut();
-            let model: *mut Object = msg_send![class!(MLModel), modelWithContentsOfURL: compiled_url configuration: config error: &mut error];
+            let model: *mut Object = msg_send![class!(MLModel),
+                modelWithContentsOfURL: compiled_url
+                configuration: config
+                error: &mut error];
             if model.is_null() {
                 last_error = ns_error_to_string(error, "MLModel load failed");
                 continue;
             }
-            // outlives this autoreleasepool.
             let _: *mut Object = msg_send![model, retain];
             return Ok(CompiledCoremlModel {
                 model,
                 compute_unit: name,
-                compiled_dir,
-                temp_model,
+                backing: CoremlModelBacking::OnDisk {
+                    compiled_dir,
+                    temp_model,
+                },
             });
         }
 
-        // No compute unit could load the model: clean up the on-disk artifacts.
         let _ = std::fs::remove_dir_all(&compiled_dir);
         if let Some(path) = &temp_model {
             let _ = std::fs::remove_file(path);
@@ -238,6 +327,105 @@ pub(crate) fn compile_model(
         }
         Err(GraphError::CoremlRuntimeFailed { reason: last_error })
     })
+}
+
+/// Create an `MLModelAsset` whose specification and optional external weight blob
+/// are entirely memory-backed. The returned Objective-C objects are retained and
+/// must remain alive for at least as long as the loaded `MLModel`.
+unsafe fn create_in_memory_model_asset(
+    model_bytes: &[u8],
+    weights: Option<&[u8]>,
+) -> Result<(*mut Object, *mut Object, Option<*mut Object>), GraphError> {
+    let Some(asset_class) = Class::get("MLModelAsset") else {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: "in-memory CoreML model loading requires macOS 15 or newer".to_string(),
+        });
+    };
+
+    let specification_data: *mut Object =
+        msg_send![class!(NSData), dataWithBytes: model_bytes.as_ptr() length: model_bytes.len()];
+    if specification_data.is_null() {
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: "failed to create NSData for CoreML model specification".to_string(),
+        });
+    }
+    let _: *mut Object = msg_send![specification_data, retain];
+
+    let mut error: *mut Object = ptr::null_mut();
+    let (asset, weights_data): (*mut Object, Option<*mut Object>) = match weights {
+        Some(weights) => {
+            let weights_data: *mut Object =
+                msg_send![class!(NSData), dataWithBytes: weights.as_ptr() length: weights.len()];
+            if weights_data.is_null() {
+                let _: () = msg_send![specification_data, release];
+                return Err(GraphError::CoremlRuntimeFailed {
+                    reason: "failed to create NSData for CoreML model weights".to_string(),
+                });
+            }
+            let _: *mut Object = msg_send![weights_data, retain];
+
+            // BlobFileValue stores `@model_path/weights/weights.bin`. For an
+            // in-memory asset CoreML expects the path relative to `@model_path`.
+            let relative_path = unsafe { nsstring_from_str("weights/weights.bin")? };
+            let blob_url: *mut Object = msg_send![class!(NSURL), fileURLWithPath: relative_path];
+            let mapping: *mut Object = msg_send![class!(NSDictionary),
+                dictionaryWithObject: weights_data forKey: blob_url];
+            let asset: *mut Object = msg_send![asset_class,
+                modelAssetWithSpecificationData: specification_data
+                blobMapping: mapping
+                error: &mut error];
+            (asset, Some(weights_data))
+        }
+        None => {
+            let asset: *mut Object = msg_send![asset_class,
+                modelAssetWithSpecificationData: specification_data
+                error: &mut error];
+            (asset, None)
+        }
+    };
+
+    if asset.is_null() {
+        let reason = unsafe { ns_error_to_string(error, "MLModelAsset creation failed") };
+        let _: () = msg_send![specification_data, release];
+        if let Some(weights_data) = weights_data {
+            let _: () = msg_send![weights_data, release];
+        }
+        return Err(GraphError::CoremlRuntimeFailed { reason });
+    }
+    let _: *mut Object = msg_send![asset, retain];
+    Ok((asset, specification_data, weights_data))
+}
+
+/// Bridge CoreML's completion-handler API to this backend's synchronous graph
+/// compilation contract. The callback retains the model before its autorelease
+/// scope ends and transfers that ownership to the caller.
+unsafe fn load_model_asset(
+    asset: *mut Object,
+    configuration: *mut Object,
+) -> Result<*mut Object, String> {
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let completion = ConcreteBlock::new(move |model: *mut Object, error: *mut Object| {
+        let result = if model.is_null() {
+            Err(unsafe { ns_error_to_string(error, "MLModelAsset load failed") })
+        } else {
+            unsafe {
+                let _: *mut Object = msg_send![model, retain];
+            }
+            Ok(model as usize)
+        };
+        let _ = sender.send(result);
+    })
+    .copy();
+
+    let (): () = msg_send![class!(MLModel),
+        loadModelAsset: asset
+        configuration: configuration
+        completionHandler: &*completion];
+
+    receiver
+        .recv()
+        .map_err(|_| "MLModelAsset load callback was dropped".to_string())?
+        .map(|model| model as *mut Object)
 }
 
 /// Run a compiled CoreML model with raw-byte inputs, returning raw-byte outputs by name.
