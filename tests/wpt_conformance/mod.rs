@@ -8,6 +8,7 @@
 //! - Backends without a working [`MLContext`] are omitted at startup (not registered as trials).
 //! - Filter trials by name prefix: `cargo test --test run_wpt_conformance -- onnx::relu`
 
+pub mod expected_failures;
 pub mod tolerance;
 pub mod wpt_audit;
 pub mod wpt_backend;
