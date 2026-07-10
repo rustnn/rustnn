@@ -91,6 +91,7 @@ pub struct OnnxOutputWithData {
     pub shape: Vec<usize>,
     pub data: Vec<f64>,
     pub float32_data: Option<Vec<f32>>,
+    pub bool_data: Option<Vec<bool>>,
     pub int64_data: Option<Vec<i64>>,
     pub uint64_data: Option<Vec<u64>>,
 }
@@ -365,15 +366,32 @@ fn run_onnx_with_inputs_impl(
             }
             TensorData::Uint8(data) => {
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
-                let value = Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
-                    GraphError::OnnxRuntimeFailed {
-                        reason: format!(
-                            "failed to create uint8 input tensor for {}: {e}",
-                            input.name
-                        ),
+                match input_info.dtype() {
+                    ort::value::ValueType::Tensor {
+                        ty: ort::value::TensorElementType::Bool,
+                        ..
+                    } => {
+                        let bool_data: Vec<bool> = data.iter().map(|&v| v != 0).collect();
+                        Value::from_array((shape_i64.clone(), bool_data)).map_err(|e| {
+                            GraphError::OnnxRuntimeFailed {
+                                reason: format!(
+                                    "failed to create bool input tensor for {}: {e}",
+                                    input.name
+                                ),
+                            }
+                        })?
+                        .into()
                     }
-                })?;
-                SessionInputValue::from(value)
+                    _ => Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
+                        GraphError::OnnxRuntimeFailed {
+                            reason: format!(
+                                "failed to create uint8 input tensor for {}: {e}",
+                                input.name
+                            ),
+                        }
+                    })?
+                    .into(),
+                }
             }
             TensorData::Int32(data) => {
                 let shape_i64: Vec<i64> = input.shape.iter().map(|&d| d as i64).collect();
@@ -445,39 +463,43 @@ fn run_onnx_with_inputs_impl(
 
         // Try to extract tensor with different types
         // The order matches most common types first for performance
-        let (shape_vec, data_vec, float32_data, int64_data, uint64_data) =
+        let (shape_vec, data_vec, float32_data, bool_data, int64_data, uint64_data) =
             if let Ok((shape, data)) = value.try_extract_tensor::<f32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, Some(data.to_vec()), None, None)
+                (shape_vec, data_vec, Some(data.to_vec()), None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<half::f16>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x.to_f32() as f64).collect();
-                (shape_vec, data_vec, None, None, None)
+                (shape_vec, data_vec, None, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None, None)
+                (shape_vec, data_vec, None, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u32>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None, None)
+                (shape_vec, data_vec, None, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i8>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None, None)
+                (shape_vec, data_vec, None, None, None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u8>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None, None)
+                (shape_vec, data_vec, None, None, None, None)
+            } else if let Ok((shape, data)) = value.try_extract_tensor::<bool>() {
+                let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
+                let data_vec: Vec<f64> = data.iter().map(|&x| if x { 1.0 } else { 0.0 }).collect();
+                (shape_vec, data_vec, None, Some(data.to_vec()), None, None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<i64>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, Some(data.to_vec()), None)
+                (shape_vec, data_vec, None, None, Some(data.to_vec()), None)
             } else if let Ok((shape, data)) = value.try_extract_tensor::<u64>() {
                 let shape_vec: Vec<usize> = shape.iter().map(|d| *d as usize).collect();
                 let data_vec: Vec<f64> = data.iter().map(|&x| x as f64).collect();
-                (shape_vec, data_vec, None, None, Some(data.to_vec()))
+                (shape_vec, data_vec, None, None, None, Some(data.to_vec()))
             } else {
                 return Err(GraphError::OnnxRuntimeFailed {
                     reason: "failed to extract output tensor: unsupported data type".to_string(),
@@ -489,6 +511,7 @@ fn run_onnx_with_inputs_impl(
             shape: shape_vec,
             data: data_vec,
             float32_data,
+            bool_data,
             int64_data,
             uint64_data,
         });
