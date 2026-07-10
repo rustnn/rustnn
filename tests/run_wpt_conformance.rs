@@ -3,6 +3,7 @@ mod wpt_conformance;
 use std::time::Instant;
 
 use libtest_mimic::{Arguments, Completion, Failed, Trial};
+use wpt_conformance::expected_failures::is_expected_failure;
 use wpt_conformance::wpt_audit::WptAuditCollector;
 use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{
@@ -14,7 +15,6 @@ use wpt_conformance::{
     run_one_test_case_with_audit, should_skip_backend_test, should_skip_test,
     wpt_types::WptTestCase,
 };
-
 
 fn run_trial(
     backend: &WptBackend,
@@ -47,6 +47,8 @@ fn push_backend_trials(
         let operation = case.operation.clone();
         let test_case = case.as_test_case();
         let name = trial_name(prefix, case);
+        let expected_failure = is_expected_failure(prefix, &name);
+        let trial_id = name.clone();
         let file_name = case.file_name.clone();
         let test_name = case.name.clone();
         let backend_prefix = prefix.to_string();
@@ -57,6 +59,16 @@ fn push_backend_trials(
         trials.push(Trial::ignorable_test(name, move || {
             let started = Instant::now();
             let result = run_trial(&backend, &operation, &file_name, &test_case, audit.as_ref());
+            let result = match result {
+                Err(err) if expected_failure => {
+                    let msg = err.message().unwrap_or("test failed");
+                    eprintln!("[WPT] expected failure: {trial_id}: {msg}");
+                    Ok(Completion::ignored_with(format!(
+                        "expected CoreML failure: {msg}"
+                    )))
+                }
+                result => result,
+            };
             let duration = started.elapsed();
 
             match &result {
@@ -132,9 +144,21 @@ fn main() {
         .filter(|c| should_skip_test(&c.graph).is_some())
         .count()
         * backends.len();
+    let expected_failure_eligible = backends
+        .iter()
+        .flat_map(|backend| {
+            corpus.cases.iter().filter(move |case| {
+                is_expected_failure(
+                    backend.trial_prefix(),
+                    &trial_name(backend.trial_prefix(), case),
+                )
+            })
+        })
+        .count();
     let trial_count = corpus.cases.len() * backends.len();
     eprintln!(
-        "[WPT] registering {trial_count} trial(s) ({skip_eligible} dtype-skipped, {} executed)",
+        "[WPT] registering {trial_count} trial(s) ({skip_eligible} dtype-skipped, \
+         {expected_failure_eligible} expected failures still executed, {} executed)",
         trial_count.saturating_sub(skip_eligible)
     );
     if wpt_conformance::wpt_config::REUSE_ML_CONTEXT {
