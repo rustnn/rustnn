@@ -1,10 +1,27 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "dequantizeLinear.https.any.js",
-    "dequantizeLinear int8 0D tensor with float16 0D scale",
-    "trtx",
-    "PASS",
-)
+dequantizeLinear.https.any.js dequantizeLinear int8 0D tensor with float16 0D scale, trtx
+ dequantizeLinear :: dequantizeLinear int8 0D tensor with float16 0D scale: index 0: actual=0 expected=134.375 ulp=22579 tolerance=16
+  inputs: dequantizeLinearInput: [123]; dequantizeLinearScale: [1.1201171875] (constant); dequantizeLinearZeroPoint: [3] (constant)
+  expected dequantizeLinearOutput: [134.375]
+  actual dequantizeLinearOutput: [0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    dequantizeLinearInput: i8[];
+  }
+
+  consts {
+    operand_1: f16[] @bytes([123, 60]);
+    operand_2: i8[] @bytes([3]);
+  }
+
+  nodes {
+    [dequantizeLinearOutput] = dequantizeLinear(dequantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { dequantizeLinearOutput; }
+}

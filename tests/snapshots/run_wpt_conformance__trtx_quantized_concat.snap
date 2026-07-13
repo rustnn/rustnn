@@ -1,10 +1,47 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized concat",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized concat, trtx
+ qdq_subgraph :: quantized concat: index 0: actual=0 expected=-0.9921569 ulp=1065221631 tolerance=16
+  inputs: inputA: [-0.990639865398407, -0.576785683631897, -0.32276400923728943, -0.44735023379325867, -0.11028251051902772, -0.5945112705230713]; inputAScale: [0.003921568859368563] (constant); inputAZeroPoint: [127] (constant); inputB: [2, 27, 38] (constant); inputBScale: [0.003921568859368563] (constant); inputBZeroPoint: [127] (constant); outputScale: [0.003921568859368563] (constant); outputZeroPoint: [127] (constant)
+  expected output: [-0.9921569, -0.5764706, -0.4901961, -0.32156864, -0.44705886, -0.3921569, -0.10980393, -0.59607846, -0.34901962]
+  actual output: [0, 0, 0, 0, 0, 0, 0, 0, 0]
+  expected output full nd:
+(shape [3, 3])
+  [-0.9921569, -0.5764706, -0.4901961]
+  [-0.32156864, -0.44705886, -0.3921569]
+  [-0.10980393, -0.59607846, -0.34901962]
+  actual output full nd:
+(shape [3, 3])
+  [0, 0, 0]
+  [0, 0, 0]
+  [0, 0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[3, 2];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_2: i8[1, 1] @bytes([127]);
+    operand_3: i8[3, 1] @bytes([2, 27, 38]);
+    operand_4: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_5: i8[1, 1] @bytes([127]);
+    operand_6: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_7: i8[1, 1] @bytes([127]);
+  }
+
+  nodes {
+    [operand_8] = quantizeLinear(inputA, operand_1, operand_2, label="");
+    [operand_9] = dequantizeLinear(operand_8, operand_1, operand_2, label="");
+    [operand_10] = dequantizeLinear(operand_3, operand_4, operand_5, label="");
+    [operand_11] = concat(operand_9, operand_10, label="");
+    [operand_12] = quantizeLinear(operand_11, operand_6, operand_7, label="");
+    [output] = dequantizeLinear(operand_12, operand_6, operand_7, label="");
+  }
+
+  outputs { output; }
+}

@@ -1,10 +1,39 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized clamp",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized clamp, trtx
+ qdq_subgraph :: quantized clamp: index 0: actual=0 expected=5.8325796 ulp=1085973630 tolerance=16
+  inputs: input: [8.413617134094238, 6.108623504638672, 3.549168109893799, 1.6811466217041016, -0.1988269537687301, -8.413617134094238]; scale: [0.343092918395996] (constant); zeroPoint: [0] (constant)
+  expected output: [5.8325796, 5.8325796, 3.4309292, 1.7154646, 0, 0]
+  actual output: [0, 0, 0, 0, 0, 0]
+  expected output full nd:
+(shape [2, 3])
+  [5.8325796, 5.8325796, 3.4309292]
+  [1.7154646, 0, 0]
+  actual output full nd:
+(shape [2, 3])
+  [0, 0, 0]
+  [0, 0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[2, 3];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_2: i8[1, 1] @bytes([0]);
+  }
+
+  nodes {
+    [operand_3] = quantizeLinear(input, operand_1, operand_2, label="");
+    [operand_4] = dequantizeLinear(operand_3, operand_1, operand_2, label="");
+    [operand_5] = clamp(operand_4, label="", maxValue=6, minValue=0);
+    [operand_6] = quantizeLinear(operand_5, operand_1, operand_2, label="");
+    [output] = dequantizeLinear(operand_6, operand_1, operand_2, label="");
+  }
+
+  outputs { output; }
+}

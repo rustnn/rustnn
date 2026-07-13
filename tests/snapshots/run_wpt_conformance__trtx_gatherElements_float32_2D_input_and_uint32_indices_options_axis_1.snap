@@ -1,10 +1,36 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherElements.https.any.js",
-    "gatherElements float32 2D input and uint32 indices options.axis=1",
-    "trtx",
-    "PASS",
-)
+gatherElements.https.any.js gatherElements float32 2D input and uint32 indices options.axis=1, trtx
+ gatherElements :: gatherElements float32 2D input and uint32 indices options.axis=1: index 0: actual=-66.05901 expected=-68.9197 ulp=374956 tolerance=4
+  inputs: gatherElementsInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969]; gatherElementsIndices: [1, 0, 2, 2, 1, 0] (constant)
+  expected gatherElementsOutput: [-68.9197, -66.05901, -45.896534, -45.896534, 48.81807, 43.848038]
+  actual gatherElementsOutput: [-66.05901, -66.05901, -26.158037, -26.158037, 43.848038, 43.848038]
+  expected gatherElementsOutput full nd:
+(shape [3, 2])
+  [-68.9197, -66.05901]
+  [-45.896534, -45.896534]
+  [48.81807, 43.848038]
+  actual gatherElementsOutput full nd:
+(shape [3, 2])
+  [-66.05901, -66.05901]
+  [-26.158037, -26.158037]
+  [43.848038, 43.848038]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f32[3, 3];
+  }
+
+  consts {
+    operand_0: u32[3, 2] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_0, axis=1, label="");
+  }
+
+  outputs { gatherElementsOutput; }
+}

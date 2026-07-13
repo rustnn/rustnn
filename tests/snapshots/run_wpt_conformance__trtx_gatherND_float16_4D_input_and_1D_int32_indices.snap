@@ -1,10 +1,32 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherND.https.any.js",
-    "gatherND float16 4D input and 1D int32 indices",
-    "trtx",
-    "PASS",
-)
+gatherND.https.any.js gatherND float16 4D input and 1D int32 indices, trtx
+ gatherND :: gatherND float16 4D input and 1D int32 indices: index 0: actual=-66.0625 expected=51.8125 ulp=42651 tolerance=4
+  inputs: gatherNDInput: [-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, 51.8125, 41.9375, -1.1298828125, -50.40625, 90.3125, 55.625, 44.90625, 56.84375]; gatherNDIndices: [1, 0, 0] (constant)
+  expected gatherNDOutput: [51.8125, 41.9375]
+  actual gatherNDOutput: [-66.0625, -68.9375]
+  expected gatherNDOutput full nd:
+(shape [2])
+[51.8125, 41.9375]
+  actual gatherNDOutput full nd:
+(shape [2])
+[-66.0625, -68.9375]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherNDInput: f16[2, 2, 2, 2];
+  }
+
+  consts {
+    operand_0: i32[3] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
+  }
+
+  outputs { gatherNDOutput; }
+}

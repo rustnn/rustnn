@@ -1,10 +1,39 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized averagePool2d",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized averagePool2d, trtx
+ qdq_subgraph :: quantized averagePool2d: index 0: actual=0 expected=3.774022 ulp=1081182612 tolerance=100
+  inputs: input: [-2.549168109893799, -4.794857501983643, 8.413617134094238, 6.108623504638672]; inputScale: [0.343092918395996] (constant); inputZeroPoint: [-128] (constant); outputScale: [0.343092918395996] (constant); outputZeroPoint: [-128] (constant)
+  expected output: [3.774022]
+  actual output: [0]
+  expected output full nd:
+(shape [1, 1, 1, 1])
+  [3.774022]
+  actual output full nd:
+(shape [1, 1, 1, 1])
+  [0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[1, 2, 2, 1];
+  }
+
+  consts {
+    operand_1: f32[1, 1, 1, 1] @bytes([224, 169, 175, 62]);
+    operand_2: i8[1, 1, 1, 1] @bytes([128]);
+    operand_3: f32[1, 1, 1, 1] @bytes([224, 169, 175, 62]);
+    operand_4: i8[1, 1, 1, 1] @bytes([128]);
+  }
+
+  nodes {
+    [operand_5] = quantizeLinear(input, operand_1, operand_2, label="");
+    [operand_6] = dequantizeLinear(operand_5, operand_1, operand_2, label="");
+    [operand_7] = averagePool2d(operand_6, dilations=[], label="", layout="nhwc", outputShapeRounding="", outputSizes=null, padding=[], strides=[], windowDimensions=null);
+    [operand_8] = quantizeLinear(operand_7, operand_3, operand_4, label="");
+    [output] = dequantizeLinear(operand_8, operand_3, operand_4, label="");
+  }
+
+  outputs { output; }
+}

@@ -1,10 +1,32 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherND.https.any.js",
-    "gatherND float32 1D input and 2D out-of-bounds indices",
-    "trtx",
-    "PASS",
-)
+gatherND.https.any.js gatherND float32 1D input and 2D out-of-bounds indices, trtx
+ gatherND :: gatherND float32 1D input and 2D out-of-bounds indices: index 0: actual=-66.05901 expected=56.828636 ulp=2229759677 tolerance=4
+  inputs: gatherNDInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969, 41.94132614135742, -1.1303654909133911, -50.42131042480469, 90.2870101928711, 55.62076568603515, 44.92119598388672, 56.828636169433594]; gatherNDIndices: [16, 20] (constant)
+  expected gatherNDOutput: [56.828636, 56.828636]
+  actual gatherNDOutput: [-66.05901, -66.05901]
+  expected gatherNDOutput full nd:
+(shape [2])
+[56.828636, 56.828636]
+  actual gatherNDOutput full nd:
+(shape [2])
+[-66.05901, -66.05901]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherNDInput: f32[16];
+  }
+
+  consts {
+    operand_0: i32[2, 1] @bytes([16, 0, 0, 0, 20, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
+  }
+
+  outputs { gatherNDOutput; }
+}

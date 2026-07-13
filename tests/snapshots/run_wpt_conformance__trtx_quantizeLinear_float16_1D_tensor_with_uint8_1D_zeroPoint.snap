@@ -1,10 +1,33 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "quantizeLinear.https.any.js",
-    "quantizeLinear float16 1D tensor with uint8 1D zeroPoint",
-    "trtx",
-    "PASS",
-)
+quantizeLinear.https.any.js quantizeLinear float16 1D tensor with uint8 1D zeroPoint, trtx
+ quantizeLinear :: quantizeLinear float16 1D tensor with uint8 1D zeroPoint: index 0: actual=0 expected=128 tolerance=1
+  inputs: quantizeLinearInput: [-2.548828125, -4.79296875, 8.4140625, 6.109375]; quantizeLinearScale: [9.34375, 0.280029296875, 4.6171875, 1.1201171875] (constant); quantizeLinearZeroPoint: [128, 128, 128, 128] (constant)
+  expected quantizeLinearOutput: [128, 111, 130, 133]
+  actual quantizeLinearOutput: [0, 0, 255, 255]
+  expected quantizeLinearOutput full nd:
+(shape [4])
+[128, 111, 130, 133]
+  actual quantizeLinearOutput full nd:
+(shape [4])
+[0, 0, 255, 255]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    quantizeLinearInput: f16[4];
+  }
+
+  consts {
+    operand_1: f16[4] @bytes([172, 72, 123, 52, 158, 68, 123, 60]);
+    operand_2: u8[4] @bytes([128, 128, 128, 128]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(quantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

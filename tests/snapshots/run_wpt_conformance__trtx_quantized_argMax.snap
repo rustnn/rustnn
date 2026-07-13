@@ -1,10 +1,37 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized argMax",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized argMax, trtx
+ qdq_subgraph :: quantized argMax: index 0: actual=0 expected=1 tolerance=0
+  inputs: input: [2.549168109893799, 4.794857501983643, 7.413617134094238, 8.413617134094238, 6.108623504638672, 3.549168109893799]; inputScale: [0.343092918395996] (constant); inputZeroPoint: [-128] (constant); outputScale: [0.343092918395996] (constant); outputZeroPoint: [-128] (constant)
+  expected output: [1, 1, 0]
+  actual output: [0, 0, 0]
+  expected output full nd:
+(shape [3])
+[1, 1, 0]
+  actual output full nd:
+(shape [3])
+[0, 0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[2, 3];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_2: i8[1, 1] @bytes([128]);
+    operand_3: f32[1] @bytes([224, 169, 175, 62]);
+    operand_4: i8[1] @bytes([128]);
+  }
+
+  nodes {
+    [operand_5] = quantizeLinear(input, operand_1, operand_2, label="");
+    [operand_6] = dequantizeLinear(operand_5, operand_1, operand_2, label="");
+    [output] = argMax(operand_6, keepDimensions=false, label="", outputDataType="int32");
+  }
+
+  outputs { output; }
+}

@@ -1,10 +1,36 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "subgraph.https.any.js",
-    "gatherElements + matmul",
-    "trtx",
-    "PASS",
-)
+subgraph.https.any.js gatherElements + matmul, trtx
+ subgraph :: gatherElements + matmul: index 0: actual=-9960.521 expected=-5477.463 ulp=7370338 tolerance=512
+  inputs: gatherElementsInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969]; matmulB: [56.46701431274414, 99.86045837402344, 71.054931640625, 32.454383850097656, 17.310747146606445, 2.586275100708008]; gatherElementsIndices: [1, 0, 2, 2, 1, 0] (constant)
+  expected matmulOutput: [-5477.463, -4714.932, 7468.97, 7069.023]
+  actual matmulOutput: [-9960.521, -9032.626, -9960.521, -9032.626]
+  expected matmulOutput full nd:
+(shape [2, 2])
+  [-5477.463, -4714.932]
+  [7468.97, 7069.023]
+  actual matmulOutput full nd:
+(shape [2, 2])
+  [-9960.521, -9032.626]
+  [-9960.521, -9032.626]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f32[3, 3];
+    matmulB: f32[3, 2];
+  }
+
+  consts {
+    operand_0: i32[2, 3] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [operand_3] = gatherElements(gatherElementsInput, operand_0, axis=0, label="");
+    [matmulOutput] = matmul(operand_3, matmulB, label="");
+  }
+
+  outputs { matmulOutput; }
+}
