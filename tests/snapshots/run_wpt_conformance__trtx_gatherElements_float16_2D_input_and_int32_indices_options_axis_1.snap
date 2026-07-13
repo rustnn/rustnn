@@ -1,10 +1,36 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherElements.https.any.js",
-    "gatherElements float16 2D input and int32 indices options.axis=1",
-    "trtx",
-    "PASS",
-)
+gatherElements.https.any.js gatherElements float16 2D input and int32 indices options.axis=1, trtx
+ gatherElements :: gatherElements float16 2D input and int32 indices options.axis=1: index 0: actual=-66.0625 expected=-68.9375 ulp=46 tolerance=4
+  inputs: gatherElementsInput: [-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, 51.8125]; gatherElementsIndices: [1, 0, 2, 2, 1, 0] (constant)
+  expected gatherElementsOutput: [-68.9375, -66.0625, -45.90625, -45.90625, 48.8125, 43.84375]
+  actual gatherElementsOutput: [-66.0625, -66.0625, -26.15625, -26.15625, 43.84375, 43.84375]
+  expected gatherElementsOutput full nd:
+(shape [3, 2])
+  [-68.9375, -66.0625]
+  [-45.90625, -45.90625]
+  [48.8125, 43.84375]
+  actual gatherElementsOutput full nd:
+(shape [3, 2])
+  [-66.0625, -66.0625]
+  [-26.15625, -26.15625]
+  [43.84375, 43.84375]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherElementsInput: f16[3, 3];
+  }
+
+  consts {
+    operand_0: i32[3, 2] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherElementsOutput] = gatherElements(gatherElementsInput, operand_0, axis=1, label="");
+  }
+
+  outputs { gatherElementsOutput; }
+}

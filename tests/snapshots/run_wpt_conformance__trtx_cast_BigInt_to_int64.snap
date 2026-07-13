@@ -1,10 +1,27 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "mlNumber.https.any.js",
-    "cast BigInt to int64",
-    "trtx",
-    "PASS",
-)
+mlNumber.https.any.js cast BigInt to int64, trtx
+ mlNumber :: cast BigInt to int64: index 0: actual=0 expected=-2 tolerance=0
+  inputs: clampInput: [-21474836470, 21474836470, -2, 1, 0] (constant)
+  expected clampOutput: [-2, 21474836470, -2, 1, 0]
+  actual clampOutput: [0, 0, 0, 0, 0]
+  expected clampOutput full nd:
+(shape [5])
+[-2, 21474836000, -2, 1, 0]
+  actual clampOutput full nd:
+[ ...] (len=0, shape=[5])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: i64[5] @bytes([10, 0, 0, 0, 251, 255, 255, 255, 246, 255, 255, 255, 4, 0, 0, 0, 254, 255, 255, 255, 255, 255, 255, 255, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [clampOutput] = clamp(operand_0, label="", maxValue=null, minValue="-2");
+  }
+
+  outputs { clampOutput; }
+}

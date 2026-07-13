@@ -156,11 +156,17 @@ impl<'a> GraphValidator<'a> {
                 }
                 OperandKind::Constant => {
                     if let Some(data) = constant_handles.remove(&operand_id) {
-                        if data.data.len() != byte_length {
-                            return Err(GraphError::ConstantLengthMismatch {
+                        if let Some(constant_data) = data.as_owned_data() {
+                            if constant_data.data.len() != byte_length {
+                                return Err(GraphError::ConstantLengthMismatch {
+                                    operand: operand_id,
+                                    expected: byte_length,
+                                    actual: constant_data.data.len(),
+                                });
+                            }
+                        } else if !tensor_constants.contains_key(&operand_id) {
+                            return Err(GraphError::MissingConstantData {
                                 operand: operand_id,
-                                expected: byte_length,
-                                actual: data.data.len(),
                             });
                         }
                     } else if !tensor_constants.contains_key(&operand_id) {
@@ -480,19 +486,19 @@ impl<'a> GraphValidator<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::{ConstantData, GraphInfo, Operand};
+    use crate::graph::{ConstantData, ConstantReference, GraphInfo, Operand};
     use crate::operators::Operation;
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)
     }
 
-    fn constant_data_for(descriptor: &OperandDescriptor) -> ConstantData {
+    fn constant_data_for(descriptor: &OperandDescriptor) -> ConstantReference {
         let len = descriptor.byte_length().expect("valid byte length");
-        ConstantData {
+        ConstantReference::OwnedData(ConstantData {
             data: vec![0u8; len],
             label: None,
-        }
+        })
     }
 
     fn build_quantize_graph(
@@ -1075,10 +1081,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             1,
-            ConstantData {
+            ConstantReference::OwnedData(ConstantData {
                 data: vec![0u8; 8], // Wrong size - should be 16 bytes (4 floats * 4 bytes)
                 label: None,
-            },
+            }),
         );
 
         let graph = GraphInfo {

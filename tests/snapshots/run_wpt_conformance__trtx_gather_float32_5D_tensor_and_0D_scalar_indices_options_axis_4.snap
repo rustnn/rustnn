@@ -1,10 +1,46 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gather.https.any.js",
-    "gather float32 5D tensor and 0D scalar indices options.axis=4",
-    "trtx",
-    "PASS",
-)
+gather.https.any.js gather float32 5D tensor and 0D scalar indices options.axis=4, trtx
+ gather :: gather float32 5D tensor and 0D scalar indices options.axis=4: index 0: actual=-66.05901 expected=-68.9197 ulp=374956 tolerance=4
+  inputs: gatherInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969, 41.94132614135742, -1.1303654909133911, -50.42131042480469, 90.2870101928711, 55.62076568603515, 44.92119598388672, 56.828636169433594, 10.829925537109377, -19.693084716796875, -37.696800231933594, 43.11057662963867, 0.9129875898361206, -7.699817180633545, 25.76774024963379, 73.60064697265625]; gatherIndices: [1] (constant)
+  expected gatherOutput: [-68.9197, 89.033714, 48.81807, -1.1303655, 55.620766, 10.829926, 43.110577, 25.76774]
+  actual gatherOutput: [-66.05901, -26.158037, 43.848038, 41.941326, 90.28701, 56.828636, -37.6968, -7.699817]
+  expected gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [-68.9197]
+  [89.033714]
+  [48.81807]
+  [-1.1303655]
+  [55.620766]
+  [10.829926]
+  [43.110577]
+  [25.76774]
+  actual gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [-66.05901]
+  [-26.158037]
+  [43.848038]
+  [41.941326]
+  [90.28701]
+  [56.828636]
+  [-37.6968]
+  [-7.699817]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherInput: f32[4, 2, 1, 1, 3];
+  }
+
+  consts {
+    operand_0: i32[] @bytes([1, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherOutput] = gather(gatherInput, operand_0, axis=4, label="");
+  }
+
+  outputs { gatherOutput; }
+}

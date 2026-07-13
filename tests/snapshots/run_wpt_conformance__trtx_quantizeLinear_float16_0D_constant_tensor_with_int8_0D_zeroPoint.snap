@@ -1,10 +1,24 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "quantizeLinear.https.any.js",
-    "quantizeLinear float16 0D constant tensor with int8 0D zeroPoint",
-    "trtx",
-    "PASS",
-)
+quantizeLinear.https.any.js quantizeLinear float16 0D constant tensor with int8 0D zeroPoint, trtx
+ quantizeLinear :: quantizeLinear float16 0D constant tensor with int8 0D zeroPoint: index 0: actual=-128 expected=11 tolerance=1
+  inputs: quantizeLinearInput: [10.796875] (constant); quantizeLinearScale: [1.1201171875] (constant); quantizeLinearZeroPoint: [1] (constant)
+  expected quantizeLinearOutput: [11]
+  actual quantizeLinearOutput: [-128]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f16[] @bytes([102, 73]);
+    operand_1: f16[] @bytes([123, 60]);
+    operand_2: i8[] @bytes([1]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(operand_0, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

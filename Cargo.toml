@@ -27,7 +27,7 @@ exclude = [
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
 
 [features]
-default = []
+default = ["trtx-runtime"]
 dynamic-inputs = []
 coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
@@ -75,6 +75,12 @@ block = { version = "0.1", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 # For macOS, explicitly enable the "exception" feature
 objc = { version = "0.2", optional = true, features = ["exception"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Memory"] }
 
 [build-dependencies]
 prost-build = "0.12"

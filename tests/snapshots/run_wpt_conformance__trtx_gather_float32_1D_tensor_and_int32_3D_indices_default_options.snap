@@ -1,10 +1,30 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gather.https.any.js",
-    "gather float32 1D tensor and int32 3D indices default options",
-    "trtx",
-    "PASS",
-)
+gather.https.any.js gather float32 1D tensor and int32 3D indices default options, trtx
+ gather :: gather float32 1D tensor and int32 3D indices default options: index 0: actual=-66.05901 expected=-19.693085 ulp=15110855 tolerance=4
+  inputs: gatherInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969, 41.94132614135742, -1.1303654909133911, -50.42131042480469, 90.2870101928711, 55.62076568603515, 44.92119598388672, 56.828636169433594, 10.829925537109377, -19.693084716796875, -37.696800231933594, 43.11057662963867, 0.9129875898361206, -7.699817180633545, 25.76774024963379, 73.60064697265625]; gatherIndices: [17, 19, 14, 16, 13, 0, 5, 15, 18, 18, 6, 20, 7, 22, 5, 1, 4, 19] (constant)
+  expected gatherOutput: [-19.693085, 43.110577, 44.921196, 10.829926, 55.620766, -66.05901, -45.896534, 56.828636, -37.6968, -37.6968 ...] (len=18)
+  actual gatherOutput: [-66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901 ...] (len=18)
+  expected gatherOutput full nd:
+[-19.693085, 43.110577, 44.921196, 10.829926, 55.620766, -66.05901, -45.896534, 56.828636, -37.6968, -37.6968, ...] (len=18, shape=[2, 3, 3])
+  actual gatherOutput full nd:
+[-66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, -66.05901, ...] (len=18, shape=[2, 3, 3])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherInput: f32[24];
+  }
+
+  consts {
+    operand_0: i32[2, 3, 3] @bytes([17, 0, 0, 0, 19, 0, 0, 0, 14, 0, 0, 0, 16, 0, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 15, 0, 0, 0, 18, 0, 0, 0, 18, 0, 0, 0, 6, 0, 0, 0, 20, 0, 0, 0, 7, 0, 0, 0, 22, 0, 0, 0, 5, 0, 0, 0, 1, 0, 0, 0, 4, 0, 0, 0, 19, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherOutput] = gather(gatherInput, operand_0, axis=0, label="");
+  }
+
+  outputs { gatherOutput; }
+}

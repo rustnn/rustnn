@@ -1,10 +1,45 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized element-wise binary max",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized element-wise binary max, trtx
+ qdq_subgraph :: quantized element-wise binary max: index 0: actual=0 expected=48.03301 ulp=1111499213 tolerance=16
+  inputs: inputA: [-2.549168109893799, -4.794857501983643, 8.413617134094238, 6.108623504638672]; inputAScale: [0.343092918395996] (constant); inputAZeroPoint: [-128] (constant); inputB: [12, 24, 35, 11] (constant); inputBScale: [0.343092918395996] (constant); inputBZeroPoint: [-128] (constant); outputScale: [0.343092918395996] (constant); outputZeroPoint: [-128] (constant)
+  expected output: [48.03301, 52.150124, 55.924145, 47.689915]
+  actual output: [0, 0, 0, 0]
+  expected output full nd:
+(shape [2, 2])
+  [48.03301, 52.150124]
+  [55.924145, 47.689915]
+  actual output full nd:
+(shape [2, 2])
+  [0, 0]
+  [0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    inputA: f32[2, 2];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_2: i8[1, 1] @bytes([128]);
+    operand_3: i8[2, 2] @bytes([12, 24, 35, 11]);
+    operand_4: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_5: i8[1, 1] @bytes([128]);
+    operand_6: f32[1, 1] @bytes([224, 169, 175, 62]);
+    operand_7: i8[1, 1] @bytes([128]);
+  }
+
+  nodes {
+    [operand_8] = quantizeLinear(inputA, operand_1, operand_2, label="");
+    [operand_9] = dequantizeLinear(operand_8, operand_1, operand_2, label="");
+    [operand_10] = dequantizeLinear(operand_3, operand_4, operand_5, label="");
+    [operand_11] = max(operand_9, operand_10, label="");
+    [operand_12] = quantizeLinear(operand_11, operand_6, operand_7, label="");
+    [output] = dequantizeLinear(operand_12, operand_6, operand_7, label="");
+  }
+
+  outputs { output; }
+}

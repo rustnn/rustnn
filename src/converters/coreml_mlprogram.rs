@@ -2632,13 +2632,20 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         // Add constant operands as const operations
-        for (operand_id, constant_data) in &graph_info.constant_operand_ids_to_handles {
+        for (operand_id, constant_ref) in &graph_info.constant_operand_ids_to_handles {
             let operand =
                 graph_info
                     .operand(*operand_id)
                     .ok_or_else(|| GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!("Constant operand {} not found", operand_id),
+                    })?;
+            let constant_data =
+                constant_ref
+                    .as_owned_data()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("Constant operand {} has no inline data", operand_id),
                     })?;
 
             let const_op = Self::create_const_operation(
@@ -3864,9 +3871,10 @@ mod tests {
         });
 
         // Add constant data
-        graph
-            .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            crate::graph::ConstantReference::OwnedData(ConstantData { data, label: None }),
+        );
 
         // Add a simple relu operation
         graph.operations.push(op_from_operator_options(
@@ -4055,10 +4063,10 @@ mod tests {
         });
         graph.constant_operand_ids_to_handles.insert(
             0,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: data1,
                 label: None,
-            },
+            }),
         );
 
         // Operand 1: Second Float16 constant [2]
@@ -4074,10 +4082,10 @@ mod tests {
         });
         graph.constant_operand_ids_to_handles.insert(
             1,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: data2,
                 label: None,
-            },
+            }),
         );
 
         // Operand 2: Output
@@ -4155,9 +4163,10 @@ mod tests {
                 pending_permutation: vec![],
             },
         });
-        graph
-            .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            crate::graph::ConstantReference::OwnedData(ConstantData { data, label: None }),
+        );
 
         // Output
         graph.operands.push(Operand {
@@ -4271,9 +4280,10 @@ mod tests {
                 pending_permutation: vec![],
             },
         });
-        graph
-            .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            crate::graph::ConstantReference::OwnedData(ConstantData { data, label: None }),
+        );
 
         // Output
         graph.operands.push(Operand {

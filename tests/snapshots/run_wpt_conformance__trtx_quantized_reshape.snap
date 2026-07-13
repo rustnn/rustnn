@@ -1,10 +1,43 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "qdq_subgraph.https.any.js",
-    "quantized reshape",
-    "trtx",
-    "PASS",
-)
+qdq_subgraph.https.any.js quantized reshape, trtx
+ qdq_subgraph :: quantized reshape: index 0: actual=0 expected=0.43529415 ulp=1054793440 tolerance=16
+  inputs: input: [1.6811466217041016, 0.0479511022567749, 0.33355462551116943, -0.1988269537687301, -0.0041167140007019, -0.0634240251779556]; inputScale: [0.003921568859368563] (constant); inputZeroPoint: [16] (constant); outputScale: [0.003921568859368563] (constant); outputZeroPoint: [16] (constant)
+  expected output: [0.43529415, 0.04705883, 0.33333334, -0.20000002, -0.003921569, -0.0627451]
+  actual output: [0, 0, 0, 0, 0, 0]
+  expected output full nd:
+(shape [3, 2])
+  [0.43529415, 0.04705883]
+  [0.33333334, -0.20000002]
+  [-0.003921569, -0.0627451]
+  actual output full nd:
+(shape [3, 2])
+  [0, 0]
+  [0, 0]
+  [0, 0]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    input: f32[2, 3];
+  }
+
+  consts {
+    operand_1: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_2: i8[1, 1] @bytes([16]);
+    operand_3: f32[1, 1] @bytes([129, 128, 128, 59]);
+    operand_4: i8[1, 1] @bytes([16]);
+  }
+
+  nodes {
+    [operand_5] = quantizeLinear(input, operand_1, operand_2, label="");
+    [operand_6] = dequantizeLinear(operand_5, operand_1, operand_2, label="");
+    [operand_7] = reshape(operand_6, label="");
+    [operand_8] = quantizeLinear(operand_7, operand_3, operand_4, label="");
+    [output] = dequantizeLinear(operand_8, operand_3, operand_4, label="");
+  }
+
+  outputs { output; }
+}

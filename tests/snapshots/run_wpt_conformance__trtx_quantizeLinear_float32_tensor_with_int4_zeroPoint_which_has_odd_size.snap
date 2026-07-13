@@ -1,11 +1,27 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 42
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "quantizeLinear.https.any.js",
-    "quantizeLinear float32 tensor with int4 zeroPoint which has odd size",
-    "trtx",
-    "PASS",
-)
+quantizeLinear.https.any.js quantizeLinear float32 tensor with int4 zeroPoint which has odd size, trtx
+ quantizeLinear :: quantizeLinear float32 tensor with int4 zeroPoint which has odd size: index 0: actual=7 expected=0 tolerance=1
+  inputs: quantizeLinearInput: [4.794857501983643]; quantizeLinearScale: [1.120274782180786] (constant); quantizeLinearZeroPoint: [-4] (constant)
+  expected quantizeLinearOutput: [0]
+  actual quantizeLinearOutput: [7]
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    quantizeLinearInput: f32[];
+  }
+
+  consts {
+    operand_1: f32[] @bytes([42, 101, 143, 63]);
+    operand_2: i4[] @bytes([12]);
+  }
+
+  nodes {
+    [quantizeLinearOutput] = quantizeLinear(quantizeLinearInput, operand_1, operand_2, label="");
+  }
+
+  outputs { quantizeLinearOutput; }
+}

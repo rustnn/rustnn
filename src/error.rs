@@ -2,8 +2,9 @@ use crate::backend_selection::Backend;
 use std::path::PathBuf;
 
 use crate::{
-    Operand, Operation,
+    Operand, OperandDescriptor, Operation,
     backends::caching::CacheError,
+    graph::ConstantReference,
     graph::DataType,
     mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
@@ -95,6 +96,32 @@ pub enum ShapeInferenceError {
 // TODO: use graph_operation_to_webnn_node for error reporting the problematic node?
 #[derive(Debug, Error)]
 pub enum GraphBuilderError {
+    #[error("Failed to constant for build with id {id}")]
+    MissingConstantId { id: u32 },
+
+    #[error(
+        "Tried to get constant data from constant {id} {constant_ref:?} which is not resolved yet"
+    )]
+    UnresolvedConstant {
+        id: u32,
+        constant_ref: ConstantReference,
+    },
+
+    #[error("Failed to get zeroed map memory (offset={offset}, len={len})")]
+    FailedToGetZeroMap { offset: usize, len: usize },
+
+    #[error(
+        "Requested memory for dynamically size constant. Dynamically shaped constants are invalid! id={id} descritpor={desc:?}"
+    )]
+    RequestedConstantDataForDynamicallyShapedConstant { id: u32, desc: OperandDescriptor },
+
+    #[error("Failed to get zeroed map memory (offset={offset}, len={len}, map_size={map_size})")]
+    ZeroMapTooBig {
+        offset: usize,
+        len: usize,
+        map_size: usize,
+    },
+
     #[error("Failed to build: requested MLGraphBuilder.build with an empty output map")]
     EmptyOutputHashMap,
 

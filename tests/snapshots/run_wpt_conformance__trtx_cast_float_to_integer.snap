@@ -1,10 +1,27 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "mlNumber.https.any.js",
-    "cast float to integer",
-    "trtx",
-    "PASS",
-)
+mlNumber.https.any.js cast float to integer, trtx
+ mlNumber :: cast float to integer: uint64 output mismatch
+  inputs: clampInput: [129, 4294967295, 127, 1, 0] (constant)
+  expected clampOutput: [128, 128, 127, 1, 0]
+  actual clampOutput: [0, 0, 0, 0, 0]
+  expected clampOutput full nd:
+(shape [5])
+[128, 128, 127, 1, 0]
+  actual clampOutput full nd:
+[ ...] (len=0, shape=[5])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: u64[5] @bytes([129, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 127, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+  }
+
+  nodes {
+    [clampOutput] = clamp(operand_0, label="", maxValue=128, minValue=null);
+  }
+
+  outputs { clampOutput; }
+}

@@ -1,10 +1,30 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
-(
-    "gatherND.https.any.js",
-    "gatherND float32 3D input and 2D indices",
-    "trtx",
-    "PASS",
-)
+gatherND.https.any.js gatherND float32 3D input and 2D indices, trtx
+ gatherND :: gatherND float32 3D input and 2D indices: index 0: actual=-66.05901 expected=51.799484 ulp=2228441315 tolerance=4
+  inputs: gatherNDInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969, 41.94132614135742, -1.1303654909133911, -50.42131042480469, 90.2870101928711, 55.62076568603515, 44.92119598388672, 56.828636169433594]; gatherNDIndices: [1, 0, 0, 1, 1, 1] (constant)
+  expected gatherNDOutput: [51.799484, 41.941326, -1.1303655, -50.42131, 89.033714, -45.896534, 43.848038, 48.81807, 90.28701, 55.620766 ...] (len=12)
+  actual gatherNDOutput: [-66.05901, -68.9197, -77.020454, -26.158037, -66.05901, -68.9197, -77.020454, -26.158037, -66.05901, -68.9197 ...] (len=12)
+  expected gatherNDOutput full nd:
+[51.799484, 41.941326, -1.1303655, -50.42131, 89.033714, -45.896534, 43.848038, 48.81807, 90.28701, 55.620766, ...] (len=12, shape=[3, 4])
+  actual gatherNDOutput full nd:
+[-66.05901, -68.9197, -77.020454, -26.158037, -66.05901, -68.9197, -77.020454, -26.158037, -66.05901, -68.9197, ...] (len=12, shape=[3, 4])
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  inputs {
+    gatherNDInput: f32[2, 2, 4];
+  }
+
+  consts {
+    operand_0: i32[3, 2] @bytes([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]);
+  }
+
+  nodes {
+    [gatherNDOutput] = gatherND(gatherNDInput, operand_0, label="");
+  }
+
+  outputs { gatherNDOutput; }
+}

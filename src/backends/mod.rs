@@ -50,14 +50,6 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
         panic!("RustNN is expected to never use a disabled backend")
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        _descriptor: &mlcontext::MLTensorDescriptor,
-        _input_data: &[u8],
-    ) -> crate::error::Result<mlcontext::MLTensor> {
-        panic!("RustNN is expected to never use a disabled backend")
-    }
-
     fn read_tensor(
         &mut self,
         _tensor: &mlcontext::MLTensor,
