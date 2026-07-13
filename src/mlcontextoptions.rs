@@ -99,7 +99,7 @@ impl Default for TrtxOptions {
             // maybe the build hash of certain trtx related files could be included in hash
             engine_caching: false,
             // Lower CPU overhead using CUDA graphs
-            cuda_graphs: false,
+            cuda_graphs: true,
         }
     }
 }

@@ -671,7 +671,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 }
                 let cuda_graph =
                     CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
-                // enqueue_v3 already ran during capture; only replay on later cache hits.
+                cuda_graph.launch().to_dispatch_result()?;
                 graph.cuda_graphs.insert(io_pointers, cuda_graph);
             }
         } else {
