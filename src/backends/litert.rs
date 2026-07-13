@@ -4,13 +4,14 @@ use std::fmt;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
-use litert_sys as sys;
+use litert_sys::{self as sys};
 
 use crate::backend_selection::DeviceType;
 use crate::converters::{GraphConverter, LiteRtConverter};
 use crate::error::{Error, Result};
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
+    RustNNOptions,
 };
 
 use crate::operator_enums::MLOperandDataType;
@@ -284,7 +285,10 @@ impl fmt::Debug for LiteRtContext {
 }
 
 impl LiteRtContext {
-    pub(crate) fn new_from_device_type(device_type: DeviceType) -> Result<Self> {
+    pub(crate) fn new_from_device_type(
+        device_type: DeviceType,
+        _rustnn_options: Option<&RustNNOptions>,
+    ) -> Result<Self> {
         let _ = litert::set_global_log_severity(litert::LogSeverity::Warning);
         LiteRt::env();
         Ok(Self {
@@ -488,13 +492,13 @@ mod tests {
 
     #[test]
     fn test_context_new() {
-        let ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu).unwrap();
+        let ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu, None).unwrap();
         assert_eq!(ctx.tensors.len(), 0);
     }
 
     #[test]
     fn test_create_tensor() {
-        let mut ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu).unwrap();
+        let mut ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu, None).unwrap();
         let desc = make_desc(MLOperandDataType::Float32, vec![1, 4]);
         let tensor = ctx.create_tensor(&desc).unwrap();
         assert_eq!(tensor.id, 0);
@@ -504,7 +508,7 @@ mod tests {
 
     #[test]
     fn test_write_and_read_tensor() {
-        let mut ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu).unwrap();
+        let mut ctx = LiteRtContext::new_from_device_type(DeviceType::Cpu, None).unwrap();
         let desc = make_desc(MLOperandDataType::Float32, vec![2]);
         let tensor = ctx.create_tensor(&desc).unwrap();
 

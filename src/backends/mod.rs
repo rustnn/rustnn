@@ -1,4 +1,4 @@
-use crate::mlcontext;
+use crate::mlcontext::{self, RustNNOptions};
 
 pub mod caching;
 
@@ -24,6 +24,7 @@ impl DisabledContext {
     #[allow(dead_code)]
     pub(crate) fn new_from_device_type(
         _device_type: crate::backend_selection::DeviceType,
+        _options: Option<&RustNNOptions>,
     ) -> crate::error::Result<Self> {
         panic!("Tried to create a disabled device-typed backend");
     }
@@ -104,9 +105,13 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
 pub mod ort {
 
     pub(crate) use crate::backends::DisabledContext as OrtContext;
+    use crate::mlcontext::RustNNOptions;
 
     impl OrtContext {
-        pub(crate) fn new_from_ep_idx(_device_idx: usize) -> crate::error::Result<Self> {
+        pub(crate) fn new_from_ep_idx(
+            _device_idx: usize,
+            _options: Option<&RustNNOptions>,
+        ) -> crate::error::Result<Self> {
             panic!("Tried to create disabled ONNX backend");
         }
     }
@@ -115,9 +120,13 @@ pub mod ort {
 #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
 pub mod trtx {
     pub(crate) use crate::backends::DisabledContext as TrtxContext;
+    use crate::mlcontext::RustNNOptions;
 
     impl TrtxContext {
-        pub(crate) fn new(_cuda_device_idx: u32) -> crate::error::Result<Self> {
+        pub(crate) fn new(
+            _cuda_device_idx: u32,
+            _options: Option<&RustNNOptions>,
+        ) -> crate::error::Result<Self> {
             panic!("Tried to create disabled Trtx backend");
         }
     }

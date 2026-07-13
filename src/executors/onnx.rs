@@ -39,9 +39,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
             result = Err(e);
             return;
         }
-        let env = env.unwrap();
-        env.set_log_level(ort::logging::LogLevel::Verbose);
-        info!("Loaded");
+        info!("Loaded ONNX runtime");
     });
     result
 }

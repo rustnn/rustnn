@@ -19,6 +19,10 @@ use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
+pub use crate::mlcontextoptions::{
+    CoremlOptions, LiteRtOptions, MLContextOptions, MLPowerPreference, OrtOptions, RustNNOptions,
+    TrtxOptions,
+};
 pub use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::{
     backend_selection::{select_backend, select_backend_by_gpu},
@@ -327,67 +331,6 @@ impl MLOperandDescriptor {
     }
 }
 
-#[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
-pub enum MLPowerPreference {
-    #[default]
-    Default,
-    HighPerformance,
-    LowPower,
-}
-
-/// https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions
-/// https://www.w3.org/TR/webnn/#api-ml
-///
-/// From specs: Note: MLContextOptions is under active development, and the design is expected to change,
-#[derive(Debug, Eq, PartialEq, Clone)]
-pub struct MLContextOptions {
-    pub(crate) power_preference: MLPowerPreference,
-    pub(crate) accelerated: bool,
-
-    // ideas for possible rustnn specific options
-    // - backend preference
-    // - device_type (CPU, NPU, GPU) like pywebnn
-    pub(crate) device_hint: Option<BackendDevice>,
-    pub(crate) backend_hint: Option<Backend>,
-}
-
-impl MLContextOptions {
-    pub fn new(power_preference: MLPowerPreference, accelerated: bool) -> Self {
-        Self {
-            power_preference,
-            accelerated,
-            device_hint: None,
-            backend_hint: None,
-        }
-    }
-
-    pub fn power_preference(&self) -> MLPowerPreference {
-        self.power_preference
-    }
-
-    pub fn set_power_preference(&mut self, power_preference: MLPowerPreference) {
-        self.power_preference = power_preference;
-    }
-
-    pub fn accelerated(&self) -> bool {
-        self.accelerated
-    }
-
-    pub fn set_accelerated(&mut self, accelerated: bool) {
-        self.accelerated = accelerated;
-    }
-
-    pub fn with_rustnn_backend_hint(mut self, backend: Backend) -> Self {
-        self.backend_hint = Some(backend);
-        self
-    }
-
-    pub fn with_rustnn_device_hint(mut self, device: BackendDevice) -> Self {
-        self.device_hint = Some(device);
-        self
-    }
-}
-
 /// https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLTensorDescriptor {
@@ -509,19 +452,19 @@ impl<'context> MLContext<'context> {
             .inspect_err(|e| log::warn!("Error selecting backend: {e:?}"))?;
         info!("Backend selected: {device:?}");
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match device {
-            crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => {
-                Box::new(OrtContext::new_from_ep_idx(ep_device_idx)?)
-            }
+            crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => Box::new(
+                OrtContext::new_from_ep_idx(ep_device_idx, Some(&options.rustnn_options))?,
+            ),
             crate::backend_selection::BackendDevice::Trtx { cuda_device_idx } => Box::new(
-                TrtxContext::new(cuda_device_idx)
+                TrtxContext::new(cuda_device_idx, Some(&options.rustnn_options))
                     .map_err(|e| Error::ContextCreationError { source: e.into() })?,
             ),
-            crate::backend_selection::BackendDevice::Coreml { device_type } => {
-                Box::new(CoremlContext::new_from_device_type(device_type)?)
-            }
-            crate::backend_selection::BackendDevice::LiteRt { device_type } => {
-                Box::new(LiteRtContext::new_from_device_type(device_type)?)
-            }
+            crate::backend_selection::BackendDevice::Coreml { device_type } => Box::new(
+                CoremlContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
+            ),
+            crate::backend_selection::BackendDevice::LiteRt { device_type } => Box::new(
+                LiteRtContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
+            ),
         };
         Ok(Self { backend, device })
     }

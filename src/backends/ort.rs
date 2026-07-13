@@ -19,6 +19,7 @@ use crate::executors::onnx::ensure_ort_initialized;
 use crate::graph::{pack_int4, pack_uint4_from_i32, unpack_int4, unpack_uint4};
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
+    RustNNOptions,
 };
 use crate::{GraphError, GraphInfo, ONNX_EXTERNAL_WEIGHTS_FILENAME};
 
@@ -572,7 +573,10 @@ pub(crate) struct OrtContext {
 }
 
 impl OrtContext {
-    pub(crate) fn new_from_ep_idx(device_idx: usize) -> crate::error::Result<Self> {
+    pub(crate) fn new_from_ep_idx(
+        device_idx: usize,
+        _options: Option<&RustNNOptions>,
+    ) -> crate::error::Result<Self> {
         ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
         let env =
             Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })?;
@@ -586,6 +590,7 @@ impl OrtContext {
     #[allow(dead_code)]
     pub(crate) fn new_from_ty(
         device_type: crate::backend_selection::DeviceType,
+        _options: Option<&RustNNOptions>,
     ) -> crate::error::Result<Self> {
         ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
         let env =

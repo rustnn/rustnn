@@ -14,7 +14,7 @@ use log::debug;
 use log::info;
 use log::trace;
 use log::warn;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
 use trtx::Refitter;
@@ -29,9 +29,11 @@ use crate::error::Error;
 
 use crate::error::GraphBuilderError;
 use crate::mlcontext::MLTensor;
+use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
+use crate::mlcontextoptions::TrtxOptions;
 
 const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
 
@@ -196,18 +198,6 @@ impl Drop for CapturedCudaGraph {
     }
 }
 
-/// CUDA graph capture/replay around `enqueue_v3`. Disabled by default.
-/// Set `RUSTNN_TRTX_CUDA_GRAPHS=1` or `true` to enable.
-static TRTX_CUDA_GRAPHS_ENABLED: OnceLock<bool> = OnceLock::new();
-
-fn trtx_cuda_graphs_enabled() -> bool {
-    *TRTX_CUDA_GRAPHS_ENABLED.get_or_init(|| {
-        std::env::var("RUSTNN_TRTX_CUDA_GRAPHS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
-
 fn enqueue_inference_v3(
     exec: &mut ExecutionContext<'_>,
     inference_stream: &CudaStream,
@@ -249,6 +239,7 @@ pub(crate) struct TrtxContext<'context> {
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
     builder: Arc<Mutex<trtx::Builder<'context>>>,
+    options: TrtxOptions,
 }
 
 impl std::fmt::Debug for TrtxContext<'_> {
@@ -267,7 +258,7 @@ static LOGGER: std::sync::LazyLock<trtx::Logger> =
     std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {
-    pub(crate) fn new(cuda_device_idx: u32) -> TrtxResult<Self> {
+    pub(crate) fn new(cuda_device_idx: u32, options: Option<&RustNNOptions>) -> TrtxResult<Self> {
         // this retains the primary context
         let cuda_ctx = CudaContext::new(cuda_device_idx as usize)?;
         let mut builder = trtx::Builder::new(&LOGGER)?;
@@ -289,6 +280,7 @@ impl<'context> TrtxContext<'context> {
             runtime,
             builder: Arc::new(builder.into()),
             config,
+            options: options.unwrap_or(&RustNNOptions::default()).trtx.clone(),
         })
     }
 }
@@ -519,7 +511,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             // can be enabled with more test coverage, but will remain a double-sided sword
             // e.g. if you change trtx converter, changes might not be visible, since cache skips conversion
             // maybe the build hash of certain trtx related files could be included in hash
-            caching_enabled: false,
+            caching_enabled: self.options.engine_caching,
         }))
     }
 
@@ -616,7 +608,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
         // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
-        let cuda_graphs_enabled = trtx_cuda_graphs_enabled();
+        let cuda_graphs_enabled = self.options.cuda_graphs;
         let mut io_pointers = if cuda_graphs_enabled {
             Vec::with_capacity(inputs.len() + outputs.len())
         } else {
@@ -808,7 +800,7 @@ mod tests {
         use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
         let devices = TrtxContext::list_devices();
         let context = if let [first, ..] = devices.as_slice() {
-            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+            TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
         } else {
             return;
         };
@@ -821,7 +813,7 @@ mod tests {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
-            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+            TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
         } else {
             return;
         };
@@ -834,7 +826,7 @@ mod tests {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
-            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+            TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
         } else {
             return;
         };
@@ -864,7 +856,7 @@ mod tests {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
         let mut context = if let [first, ..] = devices.as_slice() {
-            TrtxContext::new(*first.as_trtx_device().unwrap()).unwrap()
+            TrtxContext::new(*first.as_trtx_device().unwrap(), None).unwrap()
         } else {
             return;
         };

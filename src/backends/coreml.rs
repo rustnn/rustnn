@@ -20,6 +20,7 @@ use crate::executors::coreml::{
     CompiledCoremlModel, CoremlByteInput, compile_model, run_coreml_bytes,
 };
 use crate::graph::DataType;
+use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{
     MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLTensor, MLTensorDescriptor,
 };
@@ -107,7 +108,10 @@ pub(crate) struct CoremlContext {
 }
 
 impl CoremlContext {
-    pub(crate) fn new_from_device_type(device_type: DeviceType) -> crate::error::Result<Self> {
+    pub(crate) fn new_from_device_type(
+        device_type: DeviceType,
+        _options: Option<&RustNNOptions>,
+    ) -> crate::error::Result<Self> {
         Ok(Self {
             device_type,
             tensors: Vec::new(),
