@@ -372,25 +372,23 @@ fn run_onnx_with_inputs_impl(
                         ..
                     } => {
                         let bool_data: Vec<bool> = data.iter().map(|&v| v != 0).collect();
-                        Value::from_array((shape_i64.clone(), bool_data)).map_err(|e| {
-                            GraphError::OnnxRuntimeFailed {
+                        Value::from_array((shape_i64.clone(), bool_data))
+                            .map_err(|e| GraphError::OnnxRuntimeFailed {
                                 reason: format!(
                                     "failed to create bool input tensor for {}: {e}",
                                     input.name
                                 ),
-                            }
-                        })?
-                        .into()
+                            })?
+                            .into()
                     }
-                    _ => Value::from_array((shape_i64.clone(), data.clone())).map_err(|e| {
-                        GraphError::OnnxRuntimeFailed {
+                    _ => Value::from_array((shape_i64.clone(), data.clone()))
+                        .map_err(|e| GraphError::OnnxRuntimeFailed {
                             reason: format!(
                                 "failed to create uint8 input tensor for {}: {e}",
                                 input.name
                             ),
-                        }
-                    })?
-                    .into(),
+                        })?
+                        .into(),
                 }
             }
             TensorData::Int32(data) => {
