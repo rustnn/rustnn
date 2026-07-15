@@ -1,10 +1,9 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 constant-reshape-optimization.https.any.js reshape + reshape + reshape + instanceNormalization float32, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: InstanceNormalization { input: 3, options: Some(MLInstanceNormalizationOptions { label: "", scale: Some(4), bias: Some(5), epsilon: 1e-6, layout: "nchw" }), outputs: [6] }
+ Failed to dispatch graph: LiteRT status error: code=3
 
 --- built graph ---
 webnn_graph "graph" v2 {

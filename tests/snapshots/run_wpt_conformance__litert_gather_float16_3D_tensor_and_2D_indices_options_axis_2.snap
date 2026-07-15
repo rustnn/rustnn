@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 gather.https.any.js gather float16 3D tensor and 2D indices options.axis=2, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Gather { input: 1, indices: 0, batch_dimensions: None, options: Some(MLGatherOptions { label: "", axis: 2 }), outputs: [2] }
+ gather :: gather float16 3D tensor and 2D indices options.axis=2: index 1: actual=-68.9375 expected=-66.0625 ulp=46 tolerance=4
+  inputs: gatherInput: [-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, 51.8125, 41.9375, -1.1298828125, -50.40625, 90.3125, 55.625, 44.90625, 56.84375, 10.828125, -19.6875, -37.6875, 43.125, 0.9130859375, -7.69921875, 25.765625, 73.625]; gatherIndices: [0, 0, 0, 1] (constant)
+  expected gatherOutput: [-66.0625, -66.0625, -66.0625, -68.9375, -77, -77, -77, -26.15625, 89.0625, 89.0625 ...] (len=48)
+  actual gatherOutput: [-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, -66.0625, -68.9375 ...] (len=48)
+  expected gatherOutput full nd:
+[-66.0625, -66.0625, -66.0625, -68.9375, -77, -77, -77, -26.15625, 89.0625, 89.0625, ...] (len=48, shape=[3, 4, 2, 2])
+  actual gatherOutput full nd:
+[-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, -66.0625, -68.9375, ...] (len=48, shape=[3, 4, 2, 2])
 
 --- built graph ---
 webnn_graph "graph" v2 {

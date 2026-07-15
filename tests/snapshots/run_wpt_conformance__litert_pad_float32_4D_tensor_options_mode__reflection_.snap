@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 69
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 pad.https.any.js pad float32 4D tensor options.mode='reflection', litert
- Failed to dispatch graph: LiteRT status error: code=3
+ pad :: pad float32 4D tensor options.mode='reflection': index 0: actual=0 expected=68.72558 ulp=1116304255 tolerance=4
+  inputs: padInput: [22.76361846923828, -21.168529510498047, -91.66168975830078, 16.863798141479492, 60.51472091674805, -70.56755065917969, -60.643272399902344, -47.8821907043457, 68.72557830810547]
+  expected padOutput: [68.72558, -47.88219, -60.643272, -47.88219, 68.72558, -47.88219, -60.643272, -70.56755, 60.51472, 16.863798 ...] (len=49)
+  actual padOutput: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ...] (len=49)
+  expected padOutput full nd:
+[68.72558, -47.88219, -60.643272, -47.88219, 68.72558, -47.88219, -60.643272, -70.56755, 60.51472, 16.863798, ...] (len=49, shape=[1, 7, 7, 1])
+  actual padOutput full nd:
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...] (len=49, shape=[1, 7, 7, 1])
 
 --- built graph ---
 webnn_graph "graph" v2 {

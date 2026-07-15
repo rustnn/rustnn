@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reciprocal.https.any.js reciprocal float16 1D tensor, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Reciprocal { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+ reciprocal :: reciprocal float16 1D tensor: index 0: actual=-0 expected=-0.9892578 ulp=15338 tolerance=4
+  inputs: reciprocalInput: [-1.0107421875, 4.62109375, 2.41796875, -8.9375, -3.34765625, -8.8046875, 8.828125, 6.57421875, 6.640625, 2.68359375, -4.62890625, -6.875, -1.185546875, 0.95751953125, 0.0213165283203125, 0.3564453125, 4.828125, 1.3125, 8.25, -0.203857421875, -9.0390625, 9.9453125, -9.5390625, -0.0802001953125]
+  expected reciprocalOutput: [-0.9892578, 0.21643066, 0.41357422, -0.11187744, -0.29882813, -0.113586426, 0.11328125, 0.15209961, 0.15063477, 0.3725586 ...] (len=24)
+  actual reciprocalOutput: [-0, 0, 0, -0, -0, -0, 0, 0, 0, 0 ...] (len=24)
+  expected reciprocalOutput full nd:
+[-0.9892578, 0.21643066, 0.41357422, -0.11187744, -0.29882813, -0.113586426, 0.11328125, 0.15209961, 0.15063477, 0.3725586, ...] (len=24, shape=[24])
+  actual reciprocalOutput full nd:
+[-0, 0, 0, -0, -0, -0, 0, 0, 0, 0, ...] (len=24, shape=[24])
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 69
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 pad.https.any.js pad float32 2D tensor with options.value as NaN, litert
- Failed to dispatch graph: LiteRT status error: code=3
+ pad :: pad float32 2D tensor with options.value as NaN: index 0: actual=0 expected=NaN ulp=4294967295 tolerance=4
+  inputs: padInput: [22.76361846923828, -21.168529510498047, -91.66168975830078, 16.863798141479492, 60.51472091674805, -70.56755065917969, -60.643272399902344, -47.8821907043457, 68.72557830810547]
+  expected padOutput: [NaN, NaN, NaN, NaN, NaN, NaN, 22.763618, -21.16853, -91.66169, NaN ...] (len=25)
+  actual padOutput: [0, 0, 0, 0, 0, 0, 22.763618, -21.16853, -91.66169, 0 ...] (len=25)
+  expected padOutput full nd:
+[NaN, NaN, NaN, NaN, NaN, NaN, 22.763618, -21.16853, -91.66169, NaN, ...] (len=25, shape=[5, 5])
+  actual padOutput full nd:
+[0, 0, 0, 0, 0, 0, 22.763618, -21.16853, -91.66169, 0, ...] (len=25, shape=[5, 5])
 
 --- built graph ---
 webnn_graph "graph" v2 {

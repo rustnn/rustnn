@@ -3,7 +3,30 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 gather.https.any.js gather float32 5D tensor and 0D scalar indices options.axis=4, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Gather { input: 1, indices: 0, batch_dimensions: None, options: Some(MLGatherOptions { label: "", axis: 4 }), outputs: [2] }
+ gather :: gather float32 5D tensor and 0D scalar indices options.axis=4: index 0: actual=43.848038 expected=-68.9197 ulp=2226731847 tolerance=4
+  inputs: gatherInput: [-66.05901336669922, -68.9197006225586, -77.02045440673828, -26.158037185668945, 89.0337142944336, -45.89653396606445, 43.84803771972656, 48.81806945800781, 51.79948425292969, 41.94132614135742, -1.1303654909133911, -50.42131042480469, 90.2870101928711, 55.62076568603515, 44.92119598388672, 56.828636169433594, 10.829925537109377, -19.693084716796875, -37.696800231933594, 43.11057662963867, 0.9129875898361206, -7.699817180633545, 25.76774024963379, 73.60064697265625]; gatherIndices: [1] (constant)
+  expected gatherOutput: [-68.9197, 89.033714, 48.81807, -1.1303655, 55.620766, 10.829926, 43.110577, 25.76774]
+  actual gatherOutput: [43.848038, 48.81807, 51.799484, 41.941326, -1.1303655, -50.42131, 0.22950405, 0.000000000000000000000002361126]
+  expected gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [-68.9197]
+  [89.033714]
+  [48.81807]
+  [-1.1303655]
+  [55.620766]
+  [10.829926]
+  [43.110577]
+  [25.76774]
+  actual gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [43.848038]
+  [48.81807]
+  [51.799484]
+  [41.941326]
+  [-1.1303655]
+  [-50.42131]
+  [0.22950405]
+  [0.000000000000000000000002361126]
 
 --- built graph ---
 webnn_graph "graph" v2 {

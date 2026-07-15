@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 hard_sigmoid.https.any.js hardSigmoid float16 positive 1D tensor default options, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: HardSigmoid { input: 0, options: Some(MLHardSigmoidOptions { label: "", alpha: 0.2, beta: 0.5 }), outputs: [1] }
+ hard_sigmoid :: hardSigmoid float16 positive 1D tensor default options: index 0: actual=0 expected=0.51171875 ulp=14360 tolerance=4
+  inputs: hardSigmoidInput: [0.05908203125, 0.70751953125, 0.52294921875, 0.423095703125, 0.66455078125, 0.9501953125, 0.10919189453125, 0.01297760009765625, 0.4755859375, 0.5322265625, 0.68408203125, 0.46630859375, 0.304931640625, 0.802734375, 0.2486572265625, 0.66357421875, 0.5546875, 0.55419921875, 0.73095703125, 0.488037109375, 0.77685546875, 0.845703125, 0.55517578125, 0.560546875]
+  expected hardSigmoidOutput: [0.51171875, 0.64160156, 0.6044922, 0.58447266, 0.6328125, 0.6899414, 0.52197266, 0.5024414, 0.59521484, 0.6064453 ...] (len=24)
+  actual hardSigmoidOutput: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ...] (len=24)
+  expected hardSigmoidOutput full nd:
+[0.51171875, 0.64160156, 0.6044922, 0.58447266, 0.6328125, 0.6899414, 0.52197266, 0.5024414, 0.59521484, 0.6064453, ...] (len=24, shape=[24])
+  actual hardSigmoidOutput full nd:
+[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ...] (len=24, shape=[24])
 
 --- built graph ---
 webnn_graph "graph" v2 {

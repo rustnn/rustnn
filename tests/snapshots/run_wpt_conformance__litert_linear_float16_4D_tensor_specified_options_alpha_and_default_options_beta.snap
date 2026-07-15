@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 linear.https.any.js linear float16 4D tensor specified options.alpha and default options.beta, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Linear { input: 0, options: Some(MLLinearOptions { label: "", alpha: 7.398793812746618, beta: 0.0 }), outputs: [1] }
+ linear :: linear float16 4D tensor specified options.alpha and default options.beta: index 0: actual=3.8808594 expected=-8.3046875 ulp=35818 tolerance=4
+  inputs: linearInput: [-1.1220703125, -6.60546875, -1.955078125, -4.59765625, 4.234375, 3.09765625, 3.74609375, -4.48828125, 6.40625, -4.35546875, -5.8203125, 3.720703125, -6.33203125, 8.578125, -6.765625, 6.43359375, -9.7109375, 2.642578125, 5.21484375, 9.65625, -8.71875, -0.453369140625, 9.9921875, -6.46875]
+  expected linearOutput: [-8.3046875, -48.875, -14.46875, -34.03125, 31.328125, 22.921875, 27.71875, -33.21875, 47.40625, -32.21875 ...] (len=24)
+  actual linearOutput: [3.8808594, 22.84375, 6.7617188, 15.90625, -14.6484375, -10.7109375, -12.9609375, 15.5234375, -22.15625, 15.0625 ...] (len=24)
+  expected linearOutput full nd:
+[-8.3046875, -48.875, -14.46875, -34.03125, 31.328125, 22.921875, 27.71875, -33.21875, 47.40625, -32.21875, ...] (len=24, shape=[2, 2, 2, 3])
+  actual linearOutput full nd:
+[3.8808594, 22.84375, 6.7617188, 15.90625, -14.6484375, -10.7109375, -12.9609375, 15.5234375, -22.15625, 15.0625, ...] (len=24, shape=[2, 2, 2, 3])
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 batch_normalization_constant.https.any.js batchNormalization float16 2D constant tensors default options, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: BatchNormalization { input: 0, mean: 1, variance: 2, options: Some(MLBatchNormalizationOptions { label: "", scale: None, bias: None, axis: 1, epsilon: 1e-5 }), outputs: [3] }
+ batch_normalization_constant :: batchNormalization float16 2D constant tensors default options: index 0: actual=-4.53125 expected=-4.3125 ulp=56 tolerance=12
+  inputs: bnInput: [-41.3125, 64.0625, -63.375, -46.78125, 83, -80.0625, -62.15625, -0.10009765625, -40.90625, 56.96875, 37.375, 57.03125, 82.0625, -86.125, 76.875, 97.0625, -21.34375, -96.9375, -9.359375, 80.1875, -85.375, 62.34375, -68.5, -12.109375] (constant); bnMean: [-7.8125, -95.625, 38.15625, -55.9375, -87.875, -41.625] (constant); bnVariance: [60.3125, 26.4375, 53.28125, 40.15625, 59.40625, 36] (constant)
+  expected bnOutput: [-4.3125, 31.0625, -13.90625, 1.4453125, 22.171875, -6.40625, -6.9960938, 18.578125, -10.828125, 17.8125 ...] (len=24)
+  actual bnOutput: [-4.53125, 35.0625, -14.7109375, 1.5595703, 23.3125, -6.9804688, -7.3515625, 20.96875, -11.4609375, 19.21875 ...] (len=24)
+  expected bnOutput full nd:
+[-4.3125, 31.0625, -13.90625, 1.4453125, 22.171875, -6.40625, -6.9960938, 18.578125, -10.828125, 17.8125, ...] (len=24, shape=[4, 6])
+  actual bnOutput full nd:
+[-4.53125, 35.0625, -14.7109375, 1.5595703, 23.3125, -6.9804688, -7.3515625, 20.96875, -11.4609375, 19.21875, ...] (len=24, shape=[4, 6])
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reverse.https.any.js reverse float32 4D input options.axes=[], litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Reverse { input: 0, options: Some(MLReverseOptions { label: "", axes: Some([]) }), outputs: [1] }
+ reverse :: reverse float32 4D input options.axes=[]: index 0: actual=-63.152046 expected=-30.056147 ulp=9185461 tolerance=4
+  inputs: reverseInput: [-30.0561466217041, 99.56941986083984, 88.04620361328125, -91.87507629394533, -23.7972354888916, -91.28665161132813, -63.15204620361328, 12.0669527053833, -96.1172866821289, -44.77365493774414, -80.08650970458984, -64.43756866455078]
+  expected reverseOutput: [-30.056147, 99.56942, 88.0462, -91.87508, -23.797235, -91.28665, -63.152046, 12.066953, -96.11729, -44.773655 ...] (len=12)
+  actual reverseOutput: [-63.152046, 12.066953, -96.11729, -44.773655, -80.08651, -64.43757, -30.056147, 99.56942, 88.0462, -91.87508 ...] (len=12)
+  expected reverseOutput full nd:
+[-30.056147, 99.56942, 88.0462, -91.87508, -23.797235, -91.28665, -63.152046, 12.066953, -96.11729, -44.773655, ...] (len=12, shape=[2, 1, 2, 3])
+  actual reverseOutput full nd:
+[-63.152046, 12.066953, -96.11729, -44.773655, -80.08651, -64.43757, -30.056147, 99.56942, 88.0462, -91.87508, ...] (len=12, shape=[2, 1, 2, 3])
 
 --- built graph ---
 webnn_graph "graph" v2 {

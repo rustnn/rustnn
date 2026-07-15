@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 averagePool2d.https.any.js averagePool2d float32 4D tensor options.dilations with options.strides, litert
- Failed to dispatch graph: LiteRT status error: code=3
+ average_pool2d :: averagePool2d float32 4D tensor options.dilations with options.strides: index 0: actual=28.626827 expected=42.940243 ulp=4636433 tolerance=11
+  inputs: averagePool2dInput: [70.71148681640625, 99.33489990234376, 76.41767883300781, 39.40980911254883, 38.16328811645508, 45.97125625610352, 65.3527603149414, 64.51607513427734, 7.725966930389404, 41.7672004699707, 94.92633819580078, 53.475772857666016, 95.46460723876952, 58.461795806884766, 15.831390380859377, 78.41020202636719, 24.454092025756836, 20.630916595458984, 32.06352233886719, 47.85192108154297, 91.60813903808594, 72.3534927368164, 74.69429779052734, 28.86021423339844 ...] (len=98)
+  expected averagePool2dOutput: [42.940243, 55.268166, 51.60133, 50.220028, 72.13363, 41.5422, 48.916042, 38.775963, 61.2133, 49.504154 ...] (len=18)
+  actual averagePool2dOutput: [28.626827, 36.845448, 34.400887, 33.48002, 48.08909, 27.6948, 48.916042, 38.775967, 61.2133, 49.504154 ...] (len=18)
+  expected averagePool2dOutput full nd:
+[42.940243, 55.268166, 51.60133, 50.220028, 72.13363, 41.5422, 48.916042, 38.775963, 61.2133, 49.504154, ...] (len=18, shape=[1, 3, 3, 2])
+  actual averagePool2dOutput full nd:
+[28.626827, 36.845448, 34.400887, 33.48002, 48.08909, 27.6948, 48.916042, 38.775967, 61.2133, 49.504154, ...] (len=18, shape=[1, 3, 3, 2])
 
 --- built graph ---
 webnn_graph "graph" v2 {

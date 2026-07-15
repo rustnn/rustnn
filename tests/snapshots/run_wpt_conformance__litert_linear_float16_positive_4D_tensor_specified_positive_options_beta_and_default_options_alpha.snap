@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 linear.https.any.js linear float16 positive 4D tensor specified positive options.beta and default options.alpha, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Linear { input: 0, options: Some(MLLinearOptions { label: "", alpha: 1.0, beta: 5.919095653700928 }), outputs: [1] }
+ linear :: linear float16 positive 4D tensor specified positive options.beta and default options.alpha: index 0: actual=2678 expected=11.015625 ulp=8121 tolerance=4
+  inputs: linearInput: [5.09765625, 3.380859375, 8.0546875, 8.078125, 0.470703125, 5.2421875, 3.828125, 5.37109375, 6.1015625, 3.75, 0.748046875, 1.8935546875, 1.9052734375, 7.86328125, 4.58203125, 9.375, 6.5859375, 9.34375, 5.16015625, 0.80615234375, 9.1328125, 3.193359375, 5.75, 4.11328125]
+  expected linearOutput: [11.015625, 9.296875, 13.9765625, 14, 6.390625, 11.1640625, 9.75, 11.2890625, 12.0234375, 9.671875 ...] (len=24)
+  actual linearOutput: [2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678 ...] (len=24)
+  expected linearOutput full nd:
+[11.015625, 9.296875, 13.9765625, 14, 6.390625, 11.1640625, 9.75, 11.2890625, 12.0234375, 9.671875, ...] (len=24, shape=[2, 2, 2, 3])
+  actual linearOutput full nd:
+[2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678, 2678, ...] (len=24, shape=[2, 2, 2, 3])
 
 --- built graph ---
 webnn_graph "graph" v2 {

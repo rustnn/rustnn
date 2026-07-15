@@ -3,7 +3,30 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 gather.https.any.js gather float16 5D tensor and 0D scalar indices options.axis=4, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Gather { input: 1, indices: 0, batch_dimensions: None, options: Some(MLGatherOptions { label: "", axis: 4 }), outputs: [2] }
+ gather :: gather float16 5D tensor and 0D scalar indices options.axis=4: index 0: actual=43.84375 expected=-68.9375 ulp=42442 tolerance=4
+  inputs: gatherInput: [-66.0625, -68.9375, -77, -26.15625, 89.0625, -45.90625, 43.84375, 48.8125, 51.8125, 41.9375, -1.1298828125, -50.40625, 90.3125, 55.625, 44.90625, 56.84375, 10.828125, -19.6875, -37.6875, 43.125, 0.9130859375, -7.69921875, 25.765625, 73.625]; gatherIndices: [1] (constant)
+  expected gatherOutput: [-68.9375, 89.0625, 48.8125, -1.1298828, 55.625, 10.828125, 43.125, 25.765625]
+  actual gatherOutput: [43.84375, 48.8125, 51.8125, 41.9375, -1.1298828, -50.40625, 0, 0]
+  expected gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [-68.9375]
+  [89.0625]
+  [48.8125]
+  [-1.1298828]
+  [55.625]
+  [10.828125]
+  [43.125]
+  [25.765625]
+  actual gatherOutput full nd:
+(shape [4, 2, 1, 1])
+  [43.84375]
+  [48.8125]
+  [51.8125]
+  [41.9375]
+  [-1.1298828]
+  [-50.40625]
+  [0]
+  [0]
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -1,10 +1,18 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 clamp.https.any.js clamp float16 1D tensor, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Clamp { input: 0, options: Some(MLClampOptions { label: "", min_value: Some(Number(-2)), max_value: None }), outputs: [1] }
+ clamp :: clamp float16 1D tensor: index 0: actual=0 expected=-2 ulp=16384 tolerance=4
+  inputs: clampInput: [-64000, 64000, -2, 1, 0]
+  expected clampOutput: [-2, 64000, -2, 1, 0]
+  actual clampOutput: [0, 64000, 0, 1, 0]
+  expected clampOutput full nd:
+(shape [5])
+[-2, 64000, -2, 1, 0]
+  actual clampOutput full nd:
+(shape [5])
+[0, 64000, 0, 1, 0]
 
 --- built graph ---
 webnn_graph "graph" v2 {

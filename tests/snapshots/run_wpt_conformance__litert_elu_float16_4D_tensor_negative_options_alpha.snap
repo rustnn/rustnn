@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 elu.https.any.js elu float16 4D tensor negative options.alpha, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Elu { input: 0, options: Some(MLEluOptions { label: "", alpha: -3.468180406374035 }), outputs: [1] }
+ elu :: elu float16 4D tensor negative options.alpha: index 0: actual=-27312 expected=4.7226563 ulp=47972 tolerance=18
+  inputs: eluInput: [4.72265625, 0.376953125, 1.4189453125, -3.8671875, 1.359375, -3.86328125, 7.83984375, -6.69140625, 0.54541015625, 5.77734375, 7.26171875, -7.421875, 5.6640625, -6.71484375, -3.333984375, -1.2099609375, 7.25390625, 8.90625, -4.01953125, 7.11328125, -0.11212158203125, -3.689453125, 6.13671875, -9.8984375]
+  expected eluOutput: [4.7226563, 0.37695313, 1.4189453, 3.3964844, 1.359375, 3.3945313, 7.8398438, 3.4648438, 0.54541016, 5.7773438 ...] (len=24)
+  actual eluOutput: [-27312, -27312, -27312, -572, -27312, -573.5, -27312, -34.03125, -27312, -27312 ...] (len=24)
+  expected eluOutput full nd:
+[4.7226563, 0.37695313, 1.4189453, 3.3964844, 1.359375, 3.3945313, 7.8398438, 3.4648438, 0.54541016, 5.7773438, ...] (len=24, shape=[1, 2, 3, 4])
+  actual eluOutput full nd:
+[-27312, -27312, -27312, -572, -27312, -573.5, -27312, -34.03125, -27312, -27312, ...] (len=24, shape=[1, 2, 3, 4])
 
 --- built graph ---
 webnn_graph "graph" v2 {

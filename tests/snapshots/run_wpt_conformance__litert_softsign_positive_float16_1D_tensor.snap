@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 softsign.https.any.js softsign positive float16 1D tensor, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Softsign { input: 0, options: Some(MLOperatorOptions { label: "" }), outputs: [1] }
+ softsign :: softsign positive float16 1D tensor: index 0: actual=1 expected=0.61279297 ulp=793 tolerance=4
+  inputs: softsignInput: [1.5830078125, 4.078125, 8.8828125, 8.0703125, 8.2109375, 2.455078125, 0.6533203125, 7.8671875, 3.123046875, 8.015625, 3.94140625, 1.8134765625, 2.390625, 1.3359375, 9.4140625, 0.443359375, 5.23828125, 9.421875, 7.81640625, 5.84765625, 8.78125, 5.12109375, 7.1171875, 4.59765625]
+  expected softsignOutput: [0.61279297, 0.80322266, 0.8989258, 0.88964844, 0.89160156, 0.7104492, 0.39526367, 0.88720703, 0.7573242, 0.88916016 ...] (len=24)
+  actual softsignOutput: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1 ...] (len=24)
+  expected softsignOutput full nd:
+[0.61279297, 0.80322266, 0.8989258, 0.88964844, 0.89160156, 0.7104492, 0.39526367, 0.88720703, 0.7573242, 0.88916016, ...] (len=24, shape=[24])
+  actual softsignOutput full nd:
+[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, ...] (len=24, shape=[24])
 
 --- built graph ---
 webnn_graph "graph" v2 {
