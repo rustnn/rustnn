@@ -2039,6 +2039,68 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         .ok()
     }
 
+    /// Save the in-progress graph (with `outputs` marked) as a rustnn `.webnn` text file plus a
+    /// sibling `.safetensors` weights file.
+    ///
+    /// This is a **rustnn-specific** extension (not part of the W3C WebNN API). Constants are
+    /// written to `<stem>.safetensors` next to `path` and referenced from the `.webnn` file via
+    /// `@weights(...)`, so the pair round-trips through [`crate::load_graph_from_path`].
+    ///
+    /// Like [`Self::build`], this takes the graph's `outputs` to finalize which operands are graph
+    /// outputs, but it borrows the builder read-only: the output names are handed to the exporter
+    /// as an override, so neither the graph nor its constant weight bytes are copied or mutated, and
+    /// the builder can still be built afterwards.
+    pub fn rustnn_save_webnn(
+        &self,
+        outputs: &HashMap<&str, MLOperand>,
+        path: impl AsRef<std::path::Path>,
+    ) -> crate::error::Result<()> {
+        if outputs.is_empty() {
+            return Err(GraphBuilderError::EmptyOutputHashMap.into());
+        }
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+
+        // Build the operand-id -> output-name override for the exporter, validating as we go.
+        // Two names for the same operand (aliasing) would collide here, so we reject it like
+        // `build()` does. Output names are unique by construction (they are the `outputs` map keys).
+        let mut output_names = HashMap::<u32, String>::with_capacity(outputs.len());
+        for (name, operand) in outputs {
+            let op = graph.operands.get(operand.id).ok_or(
+                GraphBuilderError::BuildWithInvalidOperand {
+                    operand: *operand,
+                    name: name.to_string(),
+                },
+            )?;
+            if op.kind == OperandKind::Input {
+                return Err(GraphBuilderError::RequestedInputAsOutput {
+                    operand: op.clone(),
+                    id: operand.id,
+                }
+                .into());
+            } else if op.kind == OperandKind::Constant {
+                return Err(GraphBuilderError::RequestedConstantAsOutput {
+                    operand: op.clone(),
+                    id: operand.id,
+                }
+                .into());
+            }
+            if let Some(first_name) = output_names.insert(operand.id as u32, name.to_string()) {
+                return Err(GraphBuilderError::DuplicateOutput {
+                    operand: *operand,
+                    first_name,
+                    second_name: name.to_string(),
+                }
+                .into());
+            }
+        }
+
+        crate::webnn_save::validate_save_output_names(graph, &output_names)?;
+        crate::webnn_save::write_webnn_and_safetensors(graph, &output_names, path.as_ref())
+    }
+
     /*async*/
     pub fn build(
         &mut self,
@@ -3284,5 +3346,177 @@ mod test {
         let mut outputs = HashMap::new();
         outputs.insert("out", dq);
         builder.build(&outputs).unwrap();
+    }
+
+    #[test]
+    fn rustnn_save_webnn_round_trips_through_loader() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        };
+        let mut context = context.unwrap();
+
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &mat_desc).unwrap();
+        let b = builder
+            .constant_from_slice(&mat_desc, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let sum = builder.add(a, b).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("sum", sum);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("model.webnn");
+        builder.rustnn_save_webnn(&outputs, &webnn_path).unwrap();
+
+        let webnn_text = std::fs::read_to_string(&webnn_path).unwrap();
+        assert!(webnn_text.contains("@weights("));
+        assert!(!webnn_text.contains("@bytes("));
+
+        let st_path = webnn_path.with_extension("safetensors");
+        assert!(st_path.exists());
+
+        // Saving does not consume the builder: it can still be built.
+        builder.build(&outputs).unwrap();
+
+        let loaded = crate::load_graph_from_path(&webnn_path).expect("reload saved graph");
+        assert_eq!(loaded.input_operands.len(), 1);
+        assert_eq!(loaded.output_operands.len(), 1);
+        assert_eq!(loaded.constant_operand_ids_to_handles.len(), 1);
+
+        let constant = loaded
+            .constant_operand_ids_to_handles
+            .values()
+            .next()
+            .unwrap();
+        let expected: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        assert_eq!(constant.data, expected);
+    }
+
+    #[test]
+    fn rustnn_save_webnn_emits_named_constant_weight_ref() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        };
+        let mut context = context.unwrap();
+
+        let scalar_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [].to_vec(),
+        );
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &mat_desc).unwrap();
+        let scale = builder
+            .constant_from_slice(&scalar_desc, &[0.5f32])
+            .unwrap();
+        let out = builder.mul(a, scale).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("out", out);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("scaled.webnn");
+        builder.rustnn_save_webnn(&outputs, &webnn_path).unwrap();
+
+        let text = std::fs::read_to_string(&webnn_path).unwrap();
+        // unnamed constants get operand_<id> names
+        assert!(text.contains("@weights(\"operand_"));
+    }
+
+    #[test]
+    fn rustnn_save_webnn_rejects_output_name_colliding_with_input() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        };
+        let mut context = context.unwrap();
+
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &mat_desc).unwrap();
+        let b = builder
+            .constant_from_slice(&mat_desc, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let sum = builder.add(a, b).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("a", sum);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("collision.webnn");
+        let err = builder
+            .rustnn_save_webnn(&outputs, &webnn_path)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::Error::GraphBuilderError {
+                source: crate::error::GraphBuilderError::OutputNameConflictsWithOperand {
+                    name,
+                    operand_kind: "input",
+                }
+            } if name == "a"
+        ));
+        assert!(!webnn_path.exists());
+    }
+
+    #[test]
+    fn rustnn_save_webnn_rejects_duplicate_output_operand() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        };
+        let mut context = context.unwrap();
+
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("x", &mat_desc).unwrap();
+        let b = builder
+            .constant_from_slice(&mat_desc, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let sum = builder.add(a, b).unwrap();
+
+        let mut outputs = HashMap::new();
+        outputs.insert("out1", sum);
+        outputs.insert("out2", sum);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("dup.webnn");
+        let err = builder
+            .rustnn_save_webnn(&outputs, &webnn_path)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            crate::error::Error::GraphBuilderError {
+                source: crate::error::GraphBuilderError::DuplicateOutput { .. }
+            }
+        ));
+        assert!(!webnn_path.exists());
     }
 }

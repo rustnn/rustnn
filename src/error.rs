@@ -158,6 +158,14 @@ pub enum GraphBuilderError {
         source: CacheError,
     },
 
+    #[error(
+        "Failed to save: output name `{name}` conflicts with existing {operand_kind} operand (exported `.webnn` references operands by global name)"
+    )]
+    OutputNameConflictsWithOperand {
+        name: String,
+        operand_kind: &'static str,
+    },
+
     // TODO: this should not be needed, instead GraphInfo should ensure via methods to be always consistent
     // and impossible to construct invalid variants
     #[error("Internal error: inconsistent GraphInfo: {message}")]
@@ -294,6 +302,11 @@ pub enum Error {
 
     #[error("Failed to dispatch graph: {source}")]
     GraphDispatchError {
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    #[error("Failed to save graph: {source}")]
+    GraphSaveError {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 

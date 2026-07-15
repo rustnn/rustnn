@@ -27,6 +27,37 @@ use crate::operators::Operation;
 use std::collections::{BTreeMap, HashMap};
 use webnn_graph::ast::{ConstDecl, ConstInit, GraphJson, Node, OperandDesc};
 
+/// The name used for an operand in the exported AST (and, for constants, as the safetensors tensor
+/// key and `@weights(...)` reference). Falls back to `operand_<idx>` when the operand is unnamed.
+///
+/// Shared by the AST builder and the `.webnn`/`.safetensors` exporter so both agree on the scheme.
+pub(crate) fn operand_export_name(operand: &Operand, idx: usize) -> String {
+    operand
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("operand_{}", idx))
+}
+
+/// Maps operand id -> the name it should be exported under, overriding [`operand_export_name`].
+///
+/// Used by the builder's save path to name graph outputs without mutating the operands: the same
+/// override must apply everywhere the operand is referenced (node inputs, node outputs, and the
+/// graph `outputs` section) so all references stay consistent.
+pub(crate) type OutputNameOverrides = HashMap<u32, String>;
+
+/// Like [`operand_export_name`], but consults `overrides` first so callers can rename operands
+/// (e.g. mark them as named graph outputs) without touching the `GraphInfo`.
+fn operand_export_name_with_overrides(
+    operand: &Operand,
+    idx: usize,
+    overrides: Option<&OutputNameOverrides>,
+) -> String {
+    if let Some(name) = overrides.and_then(|o| o.get(&(idx as u32))) {
+        return name.clone();
+    }
+    operand_export_name(operand, idx)
+}
+
 /// Convert our DataType to webnn-graph DataType
 fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
     match dt {
@@ -88,6 +119,16 @@ pub fn graph_operation_to_webnn_node(
     graph: &GraphInfo,
     op_index: usize,
 ) -> Result<Node, GraphError> {
+    graph_operation_to_webnn_node_with_overrides(graph, op_index, None)
+}
+
+/// Same as [`graph_operation_to_webnn_node`], but operand names can be overridden (see
+/// [`OutputNameOverrides`]). Used by the save path to name graph outputs without mutating operands.
+fn graph_operation_to_webnn_node_with_overrides(
+    graph: &GraphInfo,
+    op_index: usize,
+    overrides: Option<&OutputNameOverrides>,
+) -> Result<Node, GraphError> {
     let operation = graph
         .operations
         .get(op_index)
@@ -101,10 +142,11 @@ pub fn graph_operation_to_webnn_node(
         .input_operands()
         .iter()
         .map(|&idx| {
-            graph.operands[idx as usize]
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("operand_{}", idx))
+            operand_export_name_with_overrides(
+                &graph.operands[idx as usize],
+                idx as usize,
+                overrides,
+            )
         })
         .collect();
 
@@ -116,10 +158,11 @@ pub fn graph_operation_to_webnn_node(
             output_operands
                 .iter()
                 .map(|&idx| {
-                    graph.operands[idx as usize]
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| format!("operand_{}", idx))
+                    operand_export_name_with_overrides(
+                        &graph.operands[idx as usize],
+                        idx as usize,
+                        overrides,
+                    )
                 })
                 .collect(),
         )
@@ -141,8 +184,37 @@ pub fn graph_operation_to_webnn_node(
     })
 }
 
-/// Convert GraphInfo to GraphJson
+/// Controls how constant operands are represented when building the AST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConstExport {
+    /// Embed constant bytes directly in the AST as `ConstInit::InlineBytes` (clones the data).
+    Inline,
+    /// Emit a `ConstInit::Weights { ref }` reference instead, leaving the bytes out of the AST.
+    /// Callers are responsible for writing the weights out (e.g. to a sidecar safetensors file).
+    ExternalWeights,
+}
+
+/// Convert GraphInfo to GraphJson, embedding constant data inline.
 pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, GraphError> {
+    to_graph_json_with_consts(graph, quantized, ConstExport::Inline, None)
+}
+
+/// Convert GraphInfo to GraphJson, choosing how constants are represented.
+///
+/// With [`ConstExport::ExternalWeights`] the constant bytes are not copied into the AST; each
+/// constant becomes a `@weights(...)` reference keyed by the same name used here (`operand.name`,
+/// else `operand_<idx>`). This is the zero-copy path used by the `.webnn`/`.safetensors` exporter.
+///
+/// When `output_override` is `Some`, the graph `outputs` section (and the corresponding operand
+/// names in nodes) is taken from the override map instead of `graph.output_operands`. This lets the
+/// builder export a graph's outputs without mutating operand kinds/names first. When `None`, outputs
+/// are read from `graph.output_operands` using each operand's own name.
+pub(crate) fn to_graph_json_with_consts(
+    graph: &GraphInfo,
+    quantized: bool,
+    const_export: ConstExport,
+    output_override: Option<&OutputNameOverrides>,
+) -> Result<GraphJson, GraphError> {
     let mut inputs = BTreeMap::new();
     let mut consts = BTreeMap::new();
     let mut nodes = Vec::new();
@@ -150,10 +222,7 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
 
     // Process operands - separate inputs and constants
     for (idx, operand) in graph.operands.iter().enumerate() {
-        let name = operand
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("operand_{}", idx));
+        let name = operand_export_name(operand, idx);
 
         match &operand.kind {
             OperandKind::Input => {
@@ -184,8 +253,13 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
                                     operand.name.as_deref().unwrap_or("unknown")
                                 ),
                             })?;
-                    let init = ConstInit::InlineBytes {
-                        bytes: constant.data.clone(),
+                    let init = match const_export {
+                        ConstExport::Inline => ConstInit::InlineBytes {
+                            bytes: constant.data.clone(),
+                        },
+                        ConstExport::ExternalWeights => ConstInit::Weights {
+                            r#ref: name.clone(),
+                        },
                     };
 
                     consts.insert(
@@ -209,17 +283,30 @@ pub fn to_graph_json(graph: &GraphInfo, quantized: bool) -> Result<GraphJson, Gr
 
     // Process operations
     for op_idx in 0..graph.operations.len() {
-        nodes.push(graph_operation_to_webnn_node(graph, op_idx)?);
+        nodes.push(graph_operation_to_webnn_node_with_overrides(
+            graph,
+            op_idx,
+            output_override,
+        )?);
     }
 
-    // Process outputs from graph.output_operands
-    for &operand_idx in &graph.output_operands {
-        if let Some(operand) = graph.operands.get(operand_idx as usize) {
-            let name = operand
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("operand_{}", operand_idx));
-            outputs.insert(name.clone(), name);
+    // Process outputs. Prefer the caller-supplied override (builder save path) so we don't need to
+    // mutate operands; otherwise read the finalized `graph.output_operands`.
+    match output_override {
+        Some(override_names) => {
+            for (&operand_idx, name) in override_names {
+                if graph.operands.get(operand_idx as usize).is_some() {
+                    outputs.insert(name.clone(), name.clone());
+                }
+            }
+        }
+        None => {
+            for &operand_idx in &graph.output_operands {
+                if let Some(operand) = graph.operands.get(operand_idx as usize) {
+                    let name = operand_export_name(operand, operand_idx as usize);
+                    outputs.insert(name.clone(), name);
+                }
+            }
         }
     }
 
