@@ -143,4 +143,8 @@ pub mod litert {
     pub fn unsupported_ops() -> &'static [&'static str] {
         &[]
     }
+
+    pub fn dtype_unsupported_for_op(_dtype: &str, _op: &str) -> bool {
+        false
+    }
 }

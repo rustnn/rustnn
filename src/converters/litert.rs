@@ -16,6 +16,9 @@ use crate::mlcontext::Backend;
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
+use crate::backends::litert::{
+    is_spatial_op, transpose_hwio_to_ohwi, transpose_ihwo_to_ohwi, transpose_oihw_to_ohwi,
+};
 
 pub struct LiteRtConverter;
 
@@ -43,6 +46,231 @@ impl GraphConverter for LiteRtConverter {
 
 // ---- Native TFLite conversion ----
 
+macro_rules! scalar_const {
+    ($ctx:expr, $name:expr, $val:expr, $tfl_type:expr) => {{
+        let bytes = match $tfl_type {
+            tflite::TensorType::FLOAT16 => ($val as f32).to_le_bytes().to_vec(),
+            _ => ($val as f32).to_le_bytes().to_vec(),
+        };
+        $ctx.add_constant($name, &[1], $tfl_type, &bytes) as i32
+    }};
+}
+
+macro_rules! emit_op {
+    ($ctx:expr, $ops:expr, $opcode:expr, $inp:expr, $name:expr, $shape:expr, $tfl_type:expr) => {{
+        let out_idx = $ctx.add_tensor($name, $shape, $tfl_type, 0);
+        let oc_idx = $ctx.add_opcode($opcode, 1);
+        let iv = $ctx.fbb.create_vector(&$inp[..]);
+        let ov = $ctx.fbb.create_vector(&[out_idx as i32]);
+        let tfl_op = tflite::Operator::create(
+            &mut $ctx.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc_idx,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                custom_options: None,
+                custom_options_format: tflite::CustomOptionsFormat::FLEXBUFFERS,
+                mutating_variable_inputs: None,
+                intermediates: None,
+                large_custom_options_offset: 0,
+                large_custom_options_size: 0,
+                builtin_options_2: None,
+                builtin_options_2_type: tflite::BuiltinOptions2::NONE,
+                debug_metadata_index: -1,
+            },
+        );
+        $ops.push(tfl_op);
+        out_idx as i32
+    }};
+}
+
+// emit a reduction operator with ReducerOptions (keep_dims = true)
+macro_rules! reduce_op {
+    ($ctx:expr, $ops:expr, $opcode:expr, $inp:expr, $name:expr, $shape:expr, $tfl_type:expr) => {{
+        let out_idx = $ctx.add_tensor($name, $shape, $tfl_type, 0);
+        let oc_idx = $ctx.add_opcode($opcode, 1);
+        let iv = $ctx.fbb.create_vector(&$inp[..]);
+        let ov = $ctx.fbb.create_vector(&[out_idx as i32]);
+        let ro = tflite::ReducerOptions::create(
+            &mut $ctx.fbb,
+            &tflite::ReducerOptionsArgs { keep_dims: true },
+        );
+        let tfl_op = tflite::Operator::create(
+            &mut $ctx.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc_idx,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(ro.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::ReducerOptions,
+                ..Default::default()
+            },
+        );
+        $ops.push(tfl_op);
+        out_idx as i32
+    }};
+}
+
+// Normalization: (input - mean) / sqrt(variance + epsilon) * scale + bias.
+macro_rules! normalize {
+    ($ctx:expr, $ops:expr, $in_t:expr, $m_t:expr, $v_t:expr, $scale:expr, $bias:expr,
+     $eps:expr, $out_shape:expr, $var_shape:expr, $type_:expr, $out_id:expr) => {{
+        let centered = emit_op!(
+            $ctx,
+            $ops,
+            std_op::SUB,
+            [$in_t, $m_t],
+            "n_centered",
+            $out_shape,
+            $type_
+        );
+        let eps_bytes = ($eps as f32).to_le_bytes().to_vec();
+        let eps_t = $ctx.add_constant("n_eps", &[], $type_, &eps_bytes) as i32;
+        let var_eps = emit_op!(
+            $ctx,
+            $ops,
+            std_op::ADD,
+            [$v_t, eps_t],
+            "n_var_eps",
+            $var_shape,
+            $type_
+        );
+        let stddev = emit_op!(
+            $ctx,
+            $ops,
+            std_op::SQRT,
+            [var_eps],
+            "n_stddev",
+            $var_shape,
+            $type_
+        );
+        let mut cur = emit_op!(
+            $ctx,
+            $ops,
+            std_op::DIV,
+            [centered, stddev],
+            "n_norm",
+            $out_shape,
+            $type_
+        );
+        if let Some(st) = $scale {
+            cur = emit_op!(
+                $ctx,
+                $ops,
+                std_op::MUL,
+                [cur, st],
+                "n_scaled",
+                $out_shape,
+                $type_
+            );
+        }
+        if let Some(bt) = $bias {
+            cur = emit_op!(
+                $ctx,
+                $ops,
+                std_op::ADD,
+                [cur, bt],
+                "n_out",
+                $out_shape,
+                $type_
+            );
+        }
+        cur
+    }};
+}
+
+// RESHAPE a 1D tensor [C] to [1,...,C,...,1] matching input rank at `axis`.
+macro_rules! reshape_1d_to_axis {
+    ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $in_shape:expr, $axis:expr, $type_:expr) => {{
+        let rank = $in_shape.len() as i32;
+        let ax = if $axis < 0 { rank + $axis } else { $axis };
+        let mut new_shape = vec![1i32; rank as usize];
+        if (ax as usize) < new_shape.len() {
+            new_shape[ax as usize] = $in_shape[ax as usize];
+        }
+        let rs_shape_bytes: Vec<u8> = new_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let rs_shape_t = $ctx.add_constant(
+            concat!($prefix, "_rs_sh"),
+            &[rank],
+            tflite::TensorType::INT32,
+            &rs_shape_bytes,
+        );
+        let rs_out = $ctx.add_tensor(concat!($prefix, "_r"), &new_shape, $type_, 0);
+        let rs_oc = $ctx.add_opcode(std_op::RESHAPE, 1);
+        {
+            let shape_vec = $ctx.fbb.create_vector(&new_shape);
+            let ro = tflite::ReshapeOptions::create(
+                &mut $ctx.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            let iv = $ctx.fbb.create_vector(&[$tensor as i32, rs_shape_t as i32]);
+            let ov = $ctx.fbb.create_vector(&[rs_out as i32]);
+            $ops.push(tflite::Operator::create(
+                &mut $ctx.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: rs_oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+        }
+        rs_out as i32
+    }};
+}
+
+// CAST uint8 tensor to BOOL for logical operations (Chromium pattern)
+macro_rules! cast_to_bool {
+    ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
+        let bool_name = concat!($prefix, "_bool");
+        let bool_t = $ctx.add_tensor(bool_name, $shape, tflite::TensorType::BOOL, 0);
+        let cast_oc = $ctx.add_opcode(53, 1);
+        let cast_iv = $ctx.fbb.create_vector(&[$tensor as i32]);
+        let cast_ov = $ctx.fbb.create_vector(&[bool_t as i32]);
+        $ops.push(tflite::Operator::create(
+            &mut $ctx.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: cast_oc,
+                inputs: Some(cast_iv),
+                outputs: Some(cast_ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        bool_t as i32
+    }};
+}
+
+// CAST BOOL tensor back to uint8 for logical operations (Chromium pattern)
+macro_rules! cast_from_bool {
+    ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
+        let uint8_name = concat!($prefix, "_u8");
+        let uint8_t = $ctx.add_tensor(uint8_name, $shape, tflite::TensorType::UINT8, 0);
+        let cast_oc = $ctx.add_opcode(53, 1);
+        let cast_iv = $ctx.fbb.create_vector(&[$tensor as i32]);
+        let cast_ov = $ctx.fbb.create_vector(&[uint8_t as i32]);
+        $ops.push(tflite::Operator::create(
+            &mut $ctx.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: cast_oc,
+                inputs: Some(cast_iv),
+                outputs: Some(cast_ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        uint8_t as i32
+    }};
+}
+
 struct TfliteContext<'a> {
     fbb: FlatBufferBuilder<'a>,
     tensor_offsets: Vec<WIPOffset<tflite::Tensor<'a>>>,
@@ -61,12 +289,10 @@ impl<'a> TfliteContext<'a> {
     }
 
     fn add_opcode(&mut self, code: i32, version: i32) -> u32 {
-        let deprecated: i8 = match code {
-            0 => 0, // ADD
-            3 => 3, // CONV_2D
-            9 => 9, // FULLY_CONNECTED
-            _ => 0,
-        };
+        // Chromium pattern: deprecated_code = min(code, 127).
+        // For codes <= 127, deprecated = code (backward compat).
+        // For codes > 127, deprecated = 127 (placeholder).
+        let deprecated: i8 = i8::try_from(code.min(127)).unwrap_or(0);
         let oc = tflite::OperatorCode::create(
             &mut self.fbb,
             &tflite::OperatorCodeArgs {
@@ -121,6 +347,1810 @@ impl<'a> TfliteContext<'a> {
         self.buffer_data.push(data.to_vec());
         self.add_tensor(name, shape, tfl_type, buf_idx)
     }
+    fn build_normalization_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        // BatchNormalization: reshape mean/var to broadcast axis, then normalize!
+        if let Operation::BatchNormalization {
+            input,
+            mean,
+            variance,
+            options,
+            ..
+        } = op
+        {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let eps = opts.epsilon as f32;
+            let axis = opts.axis as i32;
+            let out_id = op.outputs()[0];
+            let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
+            let mean_t = *tensor_map.get(mean).unwrap_or(mean) as i32;
+            let var_t = *tensor_map.get(variance).unwrap_or(variance) as i32;
+            let scale_id = opts
+                .scale
+                .map(|s| *tensor_map.get(&(s as u32)).unwrap_or(&(s as u32)) as i32);
+            let bias_id = opts
+                .bias
+                .map(|b| *tensor_map.get(&(b as u32)).unwrap_or(&(b as u32)) as i32);
+
+            let mean_r = reshape_1d_to_axis!(
+                self,
+                operator_offsets,
+                mean_t,
+                "bn_m",
+                in_shape,
+                axis,
+                in_type
+            );
+            let var_r = reshape_1d_to_axis!(
+                self,
+                operator_offsets,
+                var_t,
+                "bn_v",
+                in_shape,
+                axis,
+                in_type
+            );
+            let scale_r = scale_id.map(|st| {
+                reshape_1d_to_axis!(self, operator_offsets, st, "bn_sc", in_shape, axis, in_type)
+            });
+            let bias_r = bias_id.map(|bt| {
+                reshape_1d_to_axis!(self, operator_offsets, bt, "bn_bi", in_shape, axis, in_type)
+            });
+
+            let rank = in_shape.len() as i32;
+            let ax = if axis < 0 { rank + axis } else { axis };
+            let mut var_shape = vec![1i32; rank as usize];
+            if (ax as usize) < var_shape.len() {
+                var_shape[ax as usize] = in_shape[ax as usize];
+            }
+
+            let out = normalize!(
+                self,
+                operator_offsets,
+                in_t,
+                mean_r,
+                var_r,
+                scale_r,
+                bias_r,
+                eps,
+                in_shape,
+                &var_shape,
+                in_type,
+                out_id
+            );
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+
+        // InstanceNormalization: compute mean/var from input using MEAN, then normalize!
+        if let Operation::InstanceNormalization { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let eps = opts.epsilon as f32;
+            let out_id = op.outputs()[0];
+            let scale_t = opts
+                .scale
+                .map(|s| *tensor_map.get(&(s as u32)).unwrap_or(&(s as u32)) as i32);
+            let bias_t = opts
+                .bias
+                .map(|b| *tensor_map.get(&(b as u32)).unwrap_or(&(b as u32)) as i32);
+
+            let rank = in_shape.len() as i32;
+            // Channel axis is always the last dim: graph is already NHWC after
+            // modify_graph_for_nhwc ran in the backend before conversion.
+            let channel_axis: i32 = rank - 1;
+            let mut axes: Vec<i32> = (0..rank).filter(|&a| a != 0 && a != channel_axis).collect();
+            if axes.is_empty() {
+                axes.push(if rank > 1 { 1 } else { 0 });
+            }
+            let axes_buf: Vec<u8> = axes.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let axes_tensor = self.add_constant(
+                "in_axes",
+                &[axes.len() as i32],
+                tflite::TensorType::INT32,
+                &axes_buf,
+            );
+
+            let mut reduced_shape = in_shape.to_vec();
+            for &ax in &axes {
+                if (ax as usize) < reduced_shape.len() {
+                    reduced_shape[ax as usize] = 1;
+                }
+            }
+
+            let mean_val = reduce_op!(
+                self,
+                operator_offsets,
+                std_op::MEAN,
+                [in_tensor, axes_tensor as i32],
+                "in_mean",
+                &reduced_shape,
+                in_type
+            );
+            let centered = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SUB,
+                [in_tensor, mean_val],
+                "in_centered",
+                in_shape,
+                in_type
+            );
+            let squared = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [centered, centered],
+                "in_sq",
+                in_shape,
+                in_type
+            );
+            let variance = reduce_op!(
+                self,
+                operator_offsets,
+                std_op::MEAN,
+                [squared, axes_tensor as i32],
+                "in_var",
+                &reduced_shape,
+                in_type
+            );
+
+            let out = normalize!(
+                self,
+                operator_offsets,
+                in_tensor,
+                mean_val,
+                variance,
+                scale_t,
+                bias_t,
+                eps,
+                in_shape,
+                &reduced_shape,
+                in_type,
+                out_id
+            );
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+
+        // LayerNormalization: compute mean/var from input on specified axes, then normalize!
+        if let Operation::LayerNormalization { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let eps = opts.epsilon as f32;
+            let out_id = op.outputs()[0];
+            let scale_t = opts
+                .scale
+                .map(|s| *tensor_map.get(&(s as u32)).unwrap_or(&(s as u32)) as i32);
+            let bias_t = opts
+                .bias
+                .map(|b| *tensor_map.get(&(b as u32)).unwrap_or(&(b as u32)) as i32);
+
+            let norm_axes: Vec<i32> = if let Some(ref a) = opts.axes {
+                a.iter().map(|&ax| ax as i32).collect()
+            } else {
+                vec![(in_shape.len() as i32) - 1]
+            };
+            let axes_buf: Vec<u8> = norm_axes.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let axes_tensor = self.add_constant(
+                "ln_axes",
+                &[norm_axes.len() as i32],
+                tflite::TensorType::INT32,
+                &axes_buf,
+            );
+
+            let mut reduced_shape = in_shape.to_vec();
+            for &ax in &norm_axes {
+                if ax >= 0 && (ax as usize) < reduced_shape.len() {
+                    reduced_shape[ax as usize] = 1;
+                }
+            }
+
+            let mean_val = reduce_op!(
+                self,
+                operator_offsets,
+                std_op::MEAN,
+                [in_tensor, axes_tensor as i32],
+                "ln_mean",
+                &reduced_shape,
+                in_type
+            );
+            let centered = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SUB,
+                [in_tensor, mean_val],
+                "ln_centered",
+                in_shape,
+                in_type
+            );
+            let squared = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [centered, centered],
+                "ln_sq",
+                in_shape,
+                in_type
+            );
+            let variance = reduce_op!(
+                self,
+                operator_offsets,
+                std_op::MEAN,
+                [squared, axes_tensor as i32],
+                "ln_var",
+                &reduced_shape,
+                in_type
+            );
+
+            let out = normalize!(
+                self,
+                operator_offsets,
+                in_tensor,
+                mean_val,
+                variance,
+                scale_t,
+                bias_t,
+                eps,
+                in_shape,
+                &reduced_shape,
+                in_type,
+                out_id
+            );
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+
+        false
+    }
+
+    fn build_logical_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_shape: &[i32],
+    ) -> bool {
+        if let Operation::LogicalAnd { a, b, .. } = op {
+            let out_id = op.outputs()[0];
+            let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
+            let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "la", in_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lb", in_shape);
+            let res_bool = emit_op!(
+                self,
+                operator_offsets,
+                std_op::LOGICAL_AND,
+                [a_bool, b_bool],
+                "land_bool",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "land", in_shape);
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+        if let Operation::LogicalOr { a, b, .. } = op {
+            let out_id = op.outputs()[0];
+            let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
+            let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "loa", in_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lob", in_shape);
+            let res_bool = emit_op!(
+                self,
+                operator_offsets,
+                std_op::LOGICAL_OR,
+                [a_bool, b_bool],
+                "lor_bool",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "lor", in_shape);
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+        if let Operation::LogicalXor { a, b, .. } = op {
+            let out_id = op.outputs()[0];
+            let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
+            let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "lxoa", in_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lxob", in_shape);
+            let res_bool = emit_op!(
+                self,
+                operator_offsets,
+                std_op::NOT_EQUAL,
+                [a_bool, b_bool],
+                "lxor_bool",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "lxor", in_shape);
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+        if let Operation::LogicalNot { input, .. } = op {
+            let out_id = op.outputs()[0];
+            let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
+            let in_bool = cast_to_bool!(self, operator_offsets, in_t, "lna", in_shape);
+            let res_bool = emit_op!(
+                self,
+                operator_offsets,
+                std_op::LOGICAL_NOT,
+                [in_bool],
+                "lnot_bool",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "lnot", in_shape);
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+        false
+    }
+
+    fn build_activation_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        // Elu: for default alpha=1.0, falls through to TFLite ELU opcode.
+        // For custom alpha: decompose as RELU(x) + alpha * (EXP(MINIMUM(x, 0)) - 1)
+        if let Operation::Elu { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let alpha = opts.alpha as f32;
+            let out_id = op.outputs()[0];
+            if (alpha - 1.0).abs() > f32::EPSILON {
+                let zero = scalar_const!(self, "elu_zero", 0.0, in_type);
+                let one = scalar_const!(self, "elu_one", 1.0, in_type);
+                let min_out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MINIMUM,
+                    [in_tensor, zero],
+                    "elu_min",
+                    in_shape,
+                    in_type
+                );
+                let exp_out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::EXP,
+                    [min_out],
+                    "elu_exp",
+                    in_shape,
+                    in_type
+                );
+                let exp_sub1 = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUB,
+                    [exp_out, one],
+                    "elu_exp_sub1",
+                    in_shape,
+                    in_type
+                );
+                let alpha_t = scalar_const!(self, "elu_alpha", alpha, in_type);
+                let neg_part = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MUL,
+                    [exp_sub1, alpha_t],
+                    "elu_neg",
+                    in_shape,
+                    in_type
+                );
+                let relu_out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::RELU,
+                    [in_tensor],
+                    "elu_relu",
+                    in_shape,
+                    in_type
+                );
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ADD,
+                    [relu_out, neg_part],
+                    "elu_out",
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+                return true;
+            }
+        }
+
+        // HardSigmoid: MINIMUM(MAXIMUM(alpha*x + beta, 0), 1)
+        if let Operation::HardSigmoid { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let alpha_t = scalar_const!(self, "hs_alpha", opts.alpha, in_type);
+            let beta_t = scalar_const!(self, "hs_beta", opts.beta, in_type);
+            let zero_t = scalar_const!(self, "hs_zero", 0.0, in_type);
+            let one_t = scalar_const!(self, "hs_one", 1.0, in_type);
+            let mul_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [in_tensor, alpha_t],
+                "hs_mul",
+                in_shape,
+                in_type
+            );
+            let add_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [mul_out, beta_t],
+                "hs_add",
+                in_shape,
+                in_type
+            );
+            let max_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MAXIMUM,
+                [add_out, zero_t],
+                "hs_max",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MINIMUM,
+                [max_out, one_t],
+                "hs_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // Softplus: LOG(ADD(EXP(x), 1.0))
+        if let Operation::Softplus { .. } = op {
+            let exp_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::EXP,
+                [in_tensor],
+                "softplus_exp",
+                in_shape,
+                in_type
+            );
+            let one = scalar_const!(self, "softplus_one", 1.0, in_type);
+            let add_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [exp_out, one],
+                "softplus_add",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::LOG,
+                [add_out],
+                "softplus_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // Softsign: DIV(x, ADD(ABS(x), 1.0))
+        if let Operation::Softsign { .. } = op {
+            let abs_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ABS,
+                [in_tensor],
+                "softsign_abs",
+                in_shape,
+                in_type
+            );
+            let one = scalar_const!(self, "softsign_one", 1.0, in_type);
+            let add_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [abs_out, one],
+                "softsign_add",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::DIV,
+                [in_tensor, add_out],
+                "softsign_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // Linear: ADD(MUL(x, alpha), beta) — spec lists in both Mathematics and Activation
+        if let Operation::Linear { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let alpha_t = scalar_const!(self, "linear_alpha", opts.alpha, in_type);
+            let beta = opts.beta as f32;
+            let mul_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [in_tensor, alpha_t],
+                "linear_mul",
+                in_shape,
+                in_type
+            );
+            if beta != 0.0 {
+                let beta_t = scalar_const!(self, "linear_beta", beta, in_type);
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ADD,
+                    [mul_out, beta_t],
+                    "linear_out",
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(op.outputs()[0], out as u32);
+            } else {
+                tensor_map.insert(op.outputs()[0], mul_out as u32);
+            }
+            return true;
+        }
+
+        false
+    }
+
+    fn build_math_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        // Reciprocal: DIV(1.0, x)
+        if let Operation::Reciprocal { .. } = op {
+            let one = scalar_const!(self, "recip_one", 1.0, in_type);
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::DIV,
+                [one, in_tensor],
+                "reciprocal_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // Clamp: MINIMUM(MAXIMUM(x, min), max)
+        if let Operation::Clamp { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let has_min = opts.min_value.is_some();
+            let has_max = opts.max_value.is_some();
+            let out_id = op.outputs()[0];
+            if has_min && has_max {
+                let min_val = opts
+                    .min_value
+                    .as_ref()
+                    .and_then(|v| parse_mlnumber(Some(v)))
+                    .unwrap_or(f64::MIN) as f32;
+                let max_val = opts
+                    .max_value
+                    .as_ref()
+                    .and_then(|v| parse_mlnumber(Some(v)))
+                    .unwrap_or(f64::MAX) as f32;
+                let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
+                let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
+                let mid = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MAXIMUM,
+                    [in_tensor, min_t],
+                    "clamp_mid",
+                    in_shape,
+                    in_type
+                );
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MINIMUM,
+                    [mid, max_t],
+                    "clamp_out",
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+            } else if has_min {
+                let min_val = opts
+                    .min_value
+                    .as_ref()
+                    .and_then(|v| parse_mlnumber(Some(v)))
+                    .unwrap_or(f64::MIN) as f32;
+                let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MAXIMUM,
+                    [in_tensor, min_t],
+                    "clamp_out",
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+            } else if has_max {
+                let max_val = opts
+                    .max_value
+                    .as_ref()
+                    .and_then(|v| parse_mlnumber(Some(v)))
+                    .unwrap_or(f64::MAX) as f32;
+                let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MINIMUM,
+                    [in_tensor, max_t],
+                    "clamp_out",
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+            } else {
+                let out_tensor = self.add_tensor("clamp_out", in_shape, in_type, 0);
+                let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
+                let shape_tensor = self.add_constant(
+                    "clamp_shape",
+                    &[in_shape.len() as i32],
+                    tflite::TensorType::INT32,
+                    &shape_bytes,
+                );
+                let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
+                let iv = self.fbb.create_vector(&[in_tensor, shape_tensor as i32]);
+                let ov = self.fbb.create_vector(&[out_tensor as i32]);
+                let shape_vec = self.fbb.create_vector(in_shape);
+                let ro = tflite::ReshapeOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReshapeOptionsArgs {
+                        new_shape: Some(shape_vec),
+                    },
+                );
+                let tfl_op = tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_idx,
+                        inputs: Some(iv),
+                        outputs: Some(ov),
+                        builtin_options: Some(ro.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                        ..Default::default()
+                    },
+                );
+                operator_offsets.push(tfl_op);
+                tensor_map.insert(out_id, out_tensor as u32);
+            }
+            return true;
+        }
+
+        // Tan: DIV(SIN(x), COS(x))
+        if let Operation::Tan { .. } = op {
+            let sin_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SIN,
+                [in_tensor],
+                "tan_sin",
+                in_shape,
+                in_type
+            );
+            let cos_out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::COS,
+                [in_tensor],
+                "tan_cos",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::DIV,
+                [sin_out, cos_out],
+                "tan_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        false
+    }
+
+    fn build_matrix_ops(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_type: tflite::TensorType,
+    ) -> bool {
+        // GEMM: C = alpha * A * B + beta * C
+        if let Operation::Gemm { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let alpha = opts.alpha as f32;
+            let beta = opts.beta as f32;
+
+            let a_id = op.inputs().get(0).copied().unwrap_or(0);
+            let b_id = op.inputs().get(1).copied().unwrap_or(0);
+            let c_id = opts.c.map(|c| c as u32);
+            let a_tensor = *tensor_map.get(&a_id).unwrap_or(&a_id) as i32;
+            let b_tensor = *tensor_map.get(&b_id).unwrap_or(&b_id) as i32;
+
+            let a_shape = graph
+                .operand(a_id)
+                .map(|o| {
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => 1,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or(vec![1, 1]);
+            let b_shape = graph
+                .operand(b_id)
+                .map(|o| {
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => 1,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or(vec![1, 1]);
+
+            let mut a_cur_tensor = a_tensor;
+            let mut a_cur_shape = a_shape.clone();
+
+            if opts.a_transpose && a_cur_shape.len() >= 2 {
+                let m = a_cur_shape[a_cur_shape.len() - 2];
+                let k = a_cur_shape[a_cur_shape.len() - 1];
+                let r = a_cur_shape.len();
+                let mut perm: Vec<i32> = (0..r as i32).collect();
+                perm[r - 2] = (r - 1) as i32;
+                perm[r - 1] = (r - 2) as i32;
+                let mut transposed_shape = a_cur_shape.clone();
+                transposed_shape[r - 2] = k;
+                transposed_shape[r - 1] = m;
+                let perm_bytes: Vec<u8> = perm.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let perm_tensor = self.add_constant(
+                    "gemm_a_perm",
+                    &[perm.len() as i32],
+                    tflite::TensorType::INT32,
+                    &perm_bytes,
+                );
+                a_cur_tensor = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::TRANSPOSE,
+                    [a_cur_tensor, perm_tensor as i32],
+                    "gemm_a_t",
+                    &transposed_shape,
+                    in_type
+                );
+                a_cur_shape = transposed_shape;
+            }
+
+            let mut b_cur_tensor = b_tensor;
+            let mut b_cur_shape = b_shape.clone();
+
+            if opts.b_transpose && b_cur_shape.len() >= 2 {
+                let k = b_cur_shape[b_cur_shape.len() - 2];
+                let n = b_cur_shape[b_cur_shape.len() - 1];
+                let r = b_cur_shape.len();
+                let mut perm: Vec<i32> = (0..r as i32).collect();
+                perm[r - 2] = (r - 1) as i32;
+                perm[r - 1] = (r - 2) as i32;
+                let mut transposed_shape = b_cur_shape.clone();
+                transposed_shape[r - 2] = n;
+                transposed_shape[r - 1] = k;
+                let perm_bytes: Vec<u8> = perm.iter().flat_map(|v| v.to_le_bytes()).collect();
+                let perm_tensor = self.add_constant(
+                    "gemm_b_perm",
+                    &[perm.len() as i32],
+                    tflite::TensorType::INT32,
+                    &perm_bytes,
+                );
+                b_cur_tensor = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::TRANSPOSE,
+                    [b_cur_tensor, perm_tensor as i32],
+                    "gemm_b_t",
+                    &transposed_shape,
+                    in_type
+                );
+                b_cur_shape = transposed_shape;
+            }
+
+            let a_m = a_cur_shape[a_cur_shape.len() - 2];
+            let _a_k = a_cur_shape[a_cur_shape.len() - 1];
+            let _b_k = b_cur_shape[b_cur_shape.len() - 2];
+            let b_n = b_cur_shape[b_cur_shape.len() - 1];
+
+            let a_batch = if a_cur_shape.len() > 2 {
+                &a_cur_shape[..a_cur_shape.len() - 2]
+            } else {
+                &[]
+            };
+            let b_batch = if b_cur_shape.len() > 2 {
+                &b_cur_shape[..b_cur_shape.len() - 2]
+            } else {
+                &[]
+            };
+            let mut out_shape: Vec<i32> = Vec::new();
+            let max_batch = a_batch.len().max(b_batch.len());
+            for i in 0..max_batch {
+                let a_dim = if i < a_batch.len() {
+                    a_batch[a_batch.len() - 1 - i]
+                } else {
+                    1
+                };
+                let b_dim = if i < b_batch.len() {
+                    b_batch[b_batch.len() - 1 - i]
+                } else {
+                    1
+                };
+                out_shape.push(a_dim.max(b_dim));
+            }
+            out_shape.push(a_m);
+            out_shape.push(b_n);
+
+            let mut cur_tensor = emit_op!(
+                self,
+                operator_offsets,
+                std_op::BATCH_MATMUL,
+                [a_cur_tensor, b_cur_tensor],
+                "gemm_matmul",
+                &out_shape,
+                in_type
+            );
+
+            if (alpha - 1.0).abs() > f32::EPSILON {
+                let alpha_t = scalar_const!(self, "gemm_alpha", alpha, in_type);
+                cur_tensor = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MUL,
+                    [cur_tensor, alpha_t],
+                    "gemm_alpha_out",
+                    &out_shape,
+                    in_type
+                );
+            }
+
+            if beta != 0.0 && c_id.is_some() {
+                let c_tensor = *tensor_map.get(&c_id.unwrap()).unwrap_or(&c_id.unwrap()) as i32;
+                if (beta - 1.0).abs() > f32::EPSILON {
+                    let beta_t = scalar_const!(self, "gemm_beta", beta, in_type);
+                    let c_scaled = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::MUL,
+                        [c_tensor, beta_t],
+                        "gemm_c_scaled",
+                        &out_shape,
+                        in_type
+                    );
+                    cur_tensor = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::ADD,
+                        [cur_tensor, c_scaled],
+                        "gemm_out",
+                        &out_shape,
+                        in_type
+                    );
+                } else {
+                    cur_tensor = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::ADD,
+                        [cur_tensor, c_tensor],
+                        "gemm_out",
+                        &out_shape,
+                        in_type
+                    );
+                }
+            }
+
+            tensor_map.insert(op.outputs()[0], cur_tensor as u32);
+            return true;
+        }
+        false
+    }
+
+    /// Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+    fn build_identity_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        if let Operation::Identity { input, outputs, .. } = op {
+            let input_tensor = *tensor_map.get(input).unwrap_or(input);
+            for &out_id in outputs {
+                let (out_shape, out_type) = graph
+                    .operand(out_id)
+                    .map(|o| {
+                        let shape: Vec<i32> = o
+                            .descriptor
+                            .shape
+                            .iter()
+                            .map(|d| match d {
+                                crate::graph::Dimension::Static(v) => *v as i32,
+                                _ => -1,
+                            })
+                            .collect();
+                        (
+                            shape,
+                            datatype_to_tflite(o.descriptor.data_type).expect("unsupported dtype"),
+                        )
+                    })
+                    .unwrap_or((vec![], tflite::TensorType::FLOAT32));
+                let out_tensor =
+                    self.add_tensor(&format!("identity_out_{out_id}"), &out_shape, out_type, 0);
+                let shape_bytes: Vec<u8> =
+                    out_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
+                let shape_tensor = self.add_constant(
+                    "identity_shape",
+                    &[out_shape.len() as i32],
+                    tflite::TensorType::INT32,
+                    &shape_bytes,
+                );
+                let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
+                let iv = self
+                    .fbb
+                    .create_vector(&[input_tensor as i32, shape_tensor as i32]);
+                let ov = self.fbb.create_vector(&[out_tensor as i32]);
+                let shape_vec = self.fbb.create_vector(&out_shape);
+                let ro = tflite::ReshapeOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReshapeOptionsArgs {
+                        new_shape: Some(shape_vec),
+                    },
+                );
+                let tfl_op = tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_idx,
+                        inputs: Some(iv),
+                        outputs: Some(ov),
+                        builtin_options: Some(ro.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                        ..Default::default()
+                    },
+                );
+                operator_offsets.push(tfl_op);
+                tensor_map.insert(out_id, out_tensor);
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Softmax: TFLite only supports last-axis. TRANSPOSE workaround for non-last-axis.
+    fn build_softmax_op(
+        &mut self,
+        op: &Operation,
+        tensor_map: &HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        if let Operation::Softmax { axis, .. } = op {
+            let rank = in_shape.len() as i32;
+            if rank > 0 && *axis as i32 != rank - 1 {
+                let last = (rank - 1) as usize;
+                let mut perm: Vec<i32> = (0..rank).collect();
+                perm.swap(*axis as usize, last);
+                let mid_shape: Vec<i32> = perm.iter().map(|&p| in_shape[p as usize]).collect();
+                let mut inv_perm: Vec<i32> = vec![0; rank as usize];
+                for (i, &p) in perm.iter().enumerate() {
+                    inv_perm[p as usize] = i as i32;
+                }
+
+                let perm_b = perm
+                    .iter()
+                    .flat_map(|&v| v.to_le_bytes())
+                    .collect::<Vec<_>>();
+                let perm_t = self.add_constant(
+                    "sm_perm",
+                    &[rank as i32],
+                    tflite::TensorType::INT32,
+                    &perm_b,
+                );
+                let mid_t = self.add_tensor("sm_mid", &mid_shape, in_type, 0);
+                let oc_t = self.add_opcode(std_op::TRANSPOSE, 1);
+                let iv_t = self.fbb.create_vector(&[in_tensor, perm_t as i32]);
+                let ov_t = self.fbb.create_vector(&[mid_t as i32]);
+                operator_offsets.push(tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_t,
+                        inputs: Some(iv_t),
+                        outputs: Some(ov_t),
+                        builtin_options: None,
+                        builtin_options_type: tflite::BuiltinOptions::NONE,
+                        ..Default::default()
+                    },
+                ));
+
+                let mid2 = self.add_tensor("sm_mid2", &mid_shape, in_type, 0);
+                let oc_s = self.add_opcode(std_op::SOFTMAX, 1);
+                let iv_s = self.fbb.create_vector(&[mid_t as i32]);
+                let ov_s = self.fbb.create_vector(&[mid2 as i32]);
+                let so = tflite::SoftmaxOptions::create(
+                    &mut self.fbb,
+                    &tflite::SoftmaxOptionsArgs { beta: 1.0 },
+                );
+                operator_offsets.push(tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_s,
+                        inputs: Some(iv_s),
+                        outputs: Some(ov_s),
+                        builtin_options: Some(so.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::SoftmaxOptions,
+                        ..Default::default()
+                    },
+                ));
+
+                let inv_perm_b = inv_perm
+                    .iter()
+                    .flat_map(|&v| v.to_le_bytes())
+                    .collect::<Vec<_>>();
+                let inv_perm_t = self.add_constant(
+                    "sm_inv_perm",
+                    &[rank as i32],
+                    tflite::TensorType::INT32,
+                    &inv_perm_b,
+                );
+                let out_t = *tensor_map.get(&op.outputs()[0]).unwrap_or(&op.outputs()[0]) as i32;
+                let oc_i = self.add_opcode(std_op::TRANSPOSE, 1);
+                let iv_i = self.fbb.create_vector(&[mid2 as i32, inv_perm_t as i32]);
+                let ov_i = self.fbb.create_vector(&[out_t]);
+                operator_offsets.push(tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_i,
+                        inputs: Some(iv_i),
+                        outputs: Some(ov_i),
+                        builtin_options: None,
+                        builtin_options_type: tflite::BuiltinOptions::NONE,
+                        ..Default::default()
+                    },
+                ));
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Slice: use SLICE (no strides) or STRIDED_SLICE (with strides).
+    /// Returns Some(true) if op was fully handled (strided), Some(false) if inputs were added,
+    /// None if this is not a slice op.
+    fn build_slice_op(
+        &mut self,
+        op: &Operation,
+        tensor_map: &HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        inputs: &mut Vec<i32>,
+    ) -> Option<bool> {
+        if let Operation::Slice {
+            starts,
+            sizes,
+            options,
+            ..
+        } = op
+        {
+            let strides: Vec<u32> = options
+                .as_ref()
+                .map(|o| o.strides.clone())
+                .unwrap_or_default();
+            let has_strides = !strides.is_empty() && strides.iter().any(|&s| s != 1);
+            let begins_bytes: Vec<u8> = starts
+                .iter()
+                .flat_map(|&v| (v as i32).to_le_bytes())
+                .collect();
+            let begins_tensor = self.add_constant(
+                "slice_begins",
+                &[starts.len() as i32],
+                tflite::TensorType::INT32,
+                &begins_bytes,
+            );
+            let begins_idx = begins_tensor as i32;
+            if has_strides {
+                let ends: Vec<i32> = starts
+                    .iter()
+                    .zip(sizes.iter())
+                    .zip(strides.iter())
+                    .map(|((&s, sz), &stride)| {
+                        s as i32
+                            + crate::operator_options::MLDimension::static_or_max(sz) as i32
+                                * stride as i32
+                    })
+                    .collect();
+                let ends_tensor = self.add_constant(
+                    "slice_ends",
+                    &[ends.len() as i32],
+                    tflite::TensorType::INT32,
+                    &ends
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes())
+                        .collect::<Vec<_>>(),
+                );
+                let stride_tensor = self.add_constant(
+                    "slice_strides",
+                    &[strides.len() as i32],
+                    tflite::TensorType::INT32,
+                    &strides
+                        .iter()
+                        .flat_map(|&s| (s as i32).to_le_bytes())
+                        .collect::<Vec<_>>(),
+                );
+                let out_tensor =
+                    *tensor_map.get(&op.outputs()[0]).unwrap_or(&op.outputs()[0]) as i32;
+                let oc_idx = self.add_opcode(45, 1); // STRIDED_SLICE
+                let iv = self.fbb.create_vector(&[
+                    in_tensor,
+                    begins_idx,
+                    ends_tensor as i32,
+                    stride_tensor as i32,
+                ]);
+                let ov = self.fbb.create_vector(&[out_tensor]);
+                let sso = tflite::StridedSliceOptions::create(
+                    &mut self.fbb,
+                    &tflite::StridedSliceOptionsArgs {
+                        begin_mask: 0,
+                        end_mask: 0,
+                        ellipsis_mask: 0,
+                        new_axis_mask: 0,
+                        shrink_axis_mask: 0,
+                        offset: false,
+                    },
+                );
+                let tfl_op = tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_idx,
+                        inputs: Some(iv),
+                        outputs: Some(ov),
+                        builtin_options: Some(sso.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::StridedSliceOptions,
+                        ..Default::default()
+                    },
+                );
+                operator_offsets.push(tfl_op);
+                return Some(true); // handled, skip normal path
+            }
+            let size_vals: Vec<i32> = sizes
+                .iter()
+                .map(|d| crate::operator_options::MLDimension::static_or_max(d) as i32)
+                .collect();
+            let sizes_tensor = self.add_constant(
+                "slice_sizes",
+                &[size_vals.len() as i32],
+                tflite::TensorType::INT32,
+                &size_vals
+                    .iter()
+                    .flat_map(|v| v.to_le_bytes())
+                    .collect::<Vec<_>>(),
+            );
+            inputs.push(begins_idx);
+            inputs.push(sizes_tensor as i32);
+            return Some(false); // inputs added, continue normal path
+        }
+        None
+    }
+
+    fn create_builtin_options(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        input_id: u32,
+    ) -> Result<
+        (
+            Option<WIPOffset<flatbuffers::UnionWIPOffset>>,
+            tflite::BuiltinOptions,
+        ),
+        GraphError,
+    > {
+        let result = match op {
+            Operation::Conv2d { options, .. } => {
+                let o = options.as_ref().cloned().unwrap_or_default();
+                let (sh, sw) = if o.strides.len() >= 2 {
+                    (o.strides[0] as i32, o.strides[1] as i32)
+                } else {
+                    (1, 1)
+                };
+                let (dh, dw) = if o.dilations.len() >= 2 {
+                    (o.dilations[0] as i32, o.dilations[1] as i32)
+                } else {
+                    (1, 1)
+                };
+                let co = tflite::Conv2DOptions::create(
+                    &mut self.fbb,
+                    &tflite::Conv2DOptionsArgs {
+                        padding: tflite::Padding::VALID,
+                        stride_w: sw,
+                        stride_h: sh,
+                        fused_activation_function: tflite::ActivationFunctionType::NONE,
+                        dilation_w_factor: dw,
+                        dilation_h_factor: dh,
+                        ..Default::default()
+                    },
+                );
+                (
+                    Some(co.as_union_value()),
+                    tflite::BuiltinOptions::Conv2DOptions,
+                )
+            }
+            Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
+                let o = options.as_ref().cloned().unwrap_or_default();
+                let (sh, sw) = if o.strides.len() >= 2 {
+                    (o.strides[0] as i32, o.strides[1] as i32)
+                } else {
+                    (1, 1)
+                };
+                let (fh, fw) = if let Some(wd) = &o.window_dimensions {
+                    if wd.len() >= 2 {
+                        (wd[0] as i32, wd[1] as i32)
+                    } else {
+                        (0, 0)
+                    }
+                } else {
+                    (0, 0)
+                };
+                let po = tflite::Pool2DOptions::create(
+                    &mut self.fbb,
+                    &tflite::Pool2DOptionsArgs {
+                        padding: tflite::Padding::VALID,
+                        stride_w: sw,
+                        stride_h: sh,
+                        filter_width: fw,
+                        filter_height: fh,
+                        fused_activation_function: tflite::ActivationFunctionType::NONE,
+                    },
+                );
+                (
+                    Some(po.as_union_value()),
+                    tflite::BuiltinOptions::Pool2DOptions,
+                )
+            }
+            Operation::Reshape { new_shape, .. } => {
+                let shape_vec = self.fbb.create_vector(
+                    &new_shape
+                        .iter()
+                        .map(|d| crate::operator_options::MLDimension::static_or_max(d) as i32)
+                        .collect::<Vec<i32>>(),
+                );
+                let ro = tflite::ReshapeOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReshapeOptionsArgs {
+                        new_shape: Some(shape_vec),
+                    },
+                );
+                (
+                    Some(ro.as_union_value()),
+                    tflite::BuiltinOptions::ReshapeOptions,
+                )
+            }
+            Operation::ReduceSum { options, .. }
+            | Operation::ReduceMean { options, .. }
+            | Operation::ReduceMax { options, .. }
+            | Operation::ReduceMin { options, .. }
+            | Operation::ReduceProduct { options, .. } => {
+                let keep_dims = options.as_ref().map(|o| o.keep_dimensions).unwrap_or(true);
+                let ro = tflite::ReducerOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReducerOptionsArgs { keep_dims },
+                );
+                (
+                    Some(ro.as_union_value()),
+                    tflite::BuiltinOptions::ReducerOptions,
+                )
+            }
+            Operation::Concat { axis, .. } => {
+                let co = tflite::ConcatenationOptions::create(
+                    &mut self.fbb,
+                    &tflite::ConcatenationOptionsArgs {
+                        axis: *axis as i32,
+                        fused_activation_function: tflite::ActivationFunctionType::NONE,
+                    },
+                );
+                (
+                    Some(co.as_union_value()),
+                    tflite::BuiltinOptions::ConcatenationOptions,
+                )
+            }
+            Operation::LeakyRelu { options, .. } => {
+                let alpha = options.as_ref().map(|o| o.alpha as f32).unwrap_or(0.01);
+                let lo = tflite::LeakyReluOptions::create(
+                    &mut self.fbb,
+                    &tflite::LeakyReluOptionsArgs { alpha },
+                );
+                (
+                    Some(lo.as_union_value()),
+                    tflite::BuiltinOptions::LeakyReluOptions,
+                )
+            }
+            Operation::Gather { options, .. } => {
+                let axis = options.as_ref().map(|o| o.axis as i32).unwrap_or(0);
+                let go = tflite::GatherOptions::create(
+                    &mut self.fbb,
+                    &tflite::GatherOptionsArgs {
+                        axis,
+                        batch_dims: 0,
+                    },
+                );
+                (
+                    Some(go.as_union_value()),
+                    tflite::BuiltinOptions::GatherOptions,
+                )
+            }
+            Operation::ArgMax { options, .. } | Operation::ArgMin { options, .. } => {
+                let out_dt = options
+                    .as_ref()
+                    .map(|o| match o.output_data_type {
+                        crate::operator_enums::MLOperandDataType::Int32 => {
+                            tflite::TensorType::INT32
+                        }
+                        crate::operator_enums::MLOperandDataType::Int64 => {
+                            tflite::TensorType::INT64
+                        }
+                        _ => tflite::TensorType::INT32,
+                    })
+                    .unwrap_or(tflite::TensorType::INT32);
+                if matches!(op, Operation::ArgMax { .. }) {
+                    let ao = tflite::ArgMaxOptions::create(
+                        &mut self.fbb,
+                        &tflite::ArgMaxOptionsArgs {
+                            output_type: out_dt,
+                        },
+                    );
+                    (
+                        Some(ao.as_union_value()),
+                        tflite::BuiltinOptions::ArgMaxOptions,
+                    )
+                } else {
+                    let ao = tflite::ArgMinOptions::create(
+                        &mut self.fbb,
+                        &tflite::ArgMinOptionsArgs {
+                            output_type: out_dt,
+                        },
+                    );
+                    (
+                        Some(ao.as_union_value()),
+                        tflite::BuiltinOptions::ArgMinOptions,
+                    )
+                }
+            }
+            Operation::CumulativeSum { options, .. } => {
+                let _ = options;
+                (None, tflite::BuiltinOptions::NONE)
+            }
+            Operation::Resample2d { options, .. } => {
+                let _ = options;
+                (None, tflite::BuiltinOptions::NONE)
+            }
+            Operation::Cast { data_type, .. } => {
+                let out_dt = datatype_to_tflite(crate::graph::DataType::from(*data_type))?;
+                let in_dt = graph
+                    .operand(input_id)
+                    .map(|o| datatype_to_tflite(o.descriptor.data_type).expect("unsupported dtype"))
+                    .unwrap_or(tflite::TensorType::FLOAT32);
+                let co = tflite::CastOptions::create(
+                    &mut self.fbb,
+                    &tflite::CastOptionsArgs {
+                        in_data_type: in_dt,
+                        out_data_type: out_dt,
+                    },
+                );
+                (
+                    Some(co.as_union_value()),
+                    tflite::BuiltinOptions::CastOptions,
+                )
+            }
+            Operation::Softmax { .. } => {
+                let so = tflite::SoftmaxOptions::create(
+                    &mut self.fbb,
+                    &tflite::SoftmaxOptionsArgs { beta: 1.0 },
+                );
+                (
+                    Some(so.as_union_value()),
+                    tflite::BuiltinOptions::SoftmaxOptions,
+                )
+            }
+            Operation::Squeeze { options, .. } => {
+                let axes: Vec<i32> = if let Some(opts) = options {
+                    opts.axes.iter().map(|&v| v as i32).collect()
+                } else {
+                    vec![]
+                };
+                let axes_vec = self.fbb.create_vector(&axes);
+                let so = tflite::SqueezeOptions::create(
+                    &mut self.fbb,
+                    &tflite::SqueezeOptionsArgs {
+                        squeeze_dims: Some(axes_vec),
+                    },
+                );
+                (
+                    Some(so.as_union_value()),
+                    tflite::BuiltinOptions::SqueezeOptions,
+                )
+            }
+            _ => (None, tflite::BuiltinOptions::NONE),
+        };
+        Ok(result)
+    }
+}
+
+fn build_spatial_inputs<'a>(
+    ctx: &mut TfliteContext<'a>,
+    op: &Operation,
+    graph: &GraphInfo,
+    inputs: &mut Vec<i32>,
+    in_tensor: i32,
+    in_type: tflite::TensorType,
+    operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+) -> Result<(), GraphError> {
+    // TFLite Conv2D requires a bias tensor (3rd input). Add zero bias if missing.
+    if let Operation::Conv2d { options, .. } = op {
+        let input_ids = op.inputs();
+        if options.as_ref().and_then(|o| o.bias).is_none() && input_ids.len() >= 2 {
+            if let Some(fop) = graph.operand(input_ids[1]) {
+                let oc = fop
+                    .descriptor
+                    .shape
+                    .first()
+                    .and_then(|d| {
+                        if let crate::graph::Dimension::Static(v) = d {
+                            Some(*v as i32)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1);
+                let tt = datatype_to_tflite(fop.descriptor.data_type)?;
+                let esz = 4;
+                inputs.push(
+                    ctx.add_constant("bias", &[oc], tt, &vec![0u8; oc as usize * esz]) as i32,
+                );
+            }
+        }
+    }
+
+    // Handle explicit padding for Conv2d/Pool2d by inserting a PAD op before it.
+    let pad_opts: Option<(Vec<u32>, bool)> = match op {
+        Operation::Conv2d { options, .. } => options.as_ref().map(|o| (o.padding.clone(), false)),
+        Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
+            options.as_ref().map(|o| (o.padding.clone(), true))
+        }
+        _ => None,
+    };
+    if let Some((padding, _is_pool)) = pad_opts {
+        if padding.len() >= 4 {
+            let ph0 = padding[0] as i32;
+            let pw0 = padding[1] as i32;
+            let ph1 = padding[2] as i32;
+            let pw1 = padding[3] as i32;
+            let pad_vals: [i32; 8] = [0, 0, ph0, ph1, pw0, pw1, 0, 0];
+            let pad_buf: Vec<u8> = pad_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let pad_tensor = ctx.add_constant(
+                "conv2d_prepad",
+                &[4, 2],
+                tflite::TensorType::INT32,
+                &pad_buf,
+            );
+            let in_shape = &graph
+                .operand(op.inputs()[0])
+                .map(|op_info| {
+                    op_info
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => 1,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or(vec![1, 1, 1, 1]);
+            if in_shape.len() == 4 {
+                let padded_shape = vec![
+                    in_shape[0],
+                    in_shape[1] + ph0 + ph1,
+                    in_shape[2] + pw0 + pw1,
+                    in_shape[3],
+                ];
+                let padded_tensor = ctx.add_tensor("conv2d_padded", &padded_shape, in_type, 0);
+                let pad_oc = ctx.add_opcode(std_op::PAD, 1);
+                let pad_iv = ctx.fbb.create_vector(&[in_tensor, pad_tensor as i32]);
+                let pad_ov = ctx.fbb.create_vector(&[padded_tensor as i32]);
+                let pad_op = tflite::Operator::create(
+                    &mut ctx.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: pad_oc,
+                        inputs: Some(pad_iv),
+                        outputs: Some(pad_ov),
+                        builtin_options: None,
+                        builtin_options_type: tflite::BuiltinOptions::NONE,
+                        ..Default::default()
+                    },
+                );
+                operator_offsets.push(pad_op);
+                inputs[0] = padded_tensor as i32;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Add axes input for reduce ops. Returns Ok(true) if op was handled (empty axes = identity).
+fn build_reduce_inputs(
+    ctx: &mut TfliteContext<'_>,
+    op: &Operation,
+    tensor_map: &mut HashMap<u32, u32>,
+    input_id: u32,
+    in_shape: &[i32],
+    inputs: &mut Vec<i32>,
+) -> Result<bool, GraphError> {
+    let is_reduce = matches!(
+        op,
+        Operation::ReduceSum { .. }
+            | Operation::ReduceMean { .. }
+            | Operation::ReduceMax { .. }
+            | Operation::ReduceMin { .. }
+            | Operation::ReduceProduct { .. }
+    );
+    if !is_reduce {
+        return Ok(false);
+    }
+    let axes_opt: Option<Vec<u32>> = match op {
+        Operation::ReduceSum { options, .. }
+        | Operation::ReduceMean { options, .. }
+        | Operation::ReduceMax { options, .. }
+        | Operation::ReduceMin { options, .. }
+        | Operation::ReduceProduct { options, .. } => options.as_ref().and_then(|o| o.axes.clone()),
+        _ => None,
+    };
+    let axes: Vec<i32> = match axes_opt {
+        Some(ref a) if !a.is_empty() => a.iter().map(|&v| v as i32).collect(),
+        Some(ref a) if a.is_empty() => vec![],
+        None => (0..in_shape.len() as i32).collect(),
+        _ => (0..in_shape.len() as i32).collect(),
+    };
+    if axes.is_empty() {
+        let input_tensor = *tensor_map.get(&input_id).unwrap_or(&input_id);
+        for &out_id in op.outputs() {
+            tensor_map.insert(out_id, input_tensor);
+        }
+        return Ok(true); // skip this op
+    }
+    let axes_bytes: Vec<u8> = axes.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let ax_tensor = ctx.add_constant(
+        "reduce_axes",
+        &[axes.len() as i32],
+        tflite::TensorType::INT32,
+        &axes_bytes,
+    );
+    inputs.push(ax_tensor as i32);
+    Ok(false)
+}
+
+/// Add extra input tensors for shape ops. Returns Ok(true) if op fully handled.
+fn build_extra_inputs<'a>(
+    ctx: &mut TfliteContext<'a>,
+    op: &Operation,
+    in_shape: &[i32],
+    in_tensor: i32,
+    inputs: &mut Vec<i32>,
+    tensor_map: &HashMap<u32, u32>,
+    operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+) -> Result<bool, GraphError> {
+    // Expand: add shape tensor as input[1]
+    if let Operation::Expand { new_shape, .. } = op {
+        let shape_vals: Vec<i32> = new_shape
+            .iter()
+            .map(|d| crate::operator_options::MLDimension::static_or_max(d) as i32)
+            .collect();
+        let shape_bytes: Vec<u8> = shape_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let shape_tensor = ctx.add_constant(
+            "expand_shape",
+            &[shape_vals.len() as i32],
+            tflite::TensorType::INT32,
+            &shape_bytes,
+        );
+        inputs.push(shape_tensor as i32);
+        return Ok(false);
+    }
+
+    // Transpose: add perm tensor as input[1]
+    if let Operation::Transpose { options, .. } = op {
+        let perm: Vec<i32> = if let Some(opts) = options {
+            if opts.permutation.is_empty() {
+                (0..in_shape.len() as i32).rev().collect()
+            } else {
+                opts.permutation.iter().map(|&p| p as i32).collect()
+            }
+        } else {
+            (0..in_shape.len() as i32).rev().collect()
+        };
+        let perm_bytes: Vec<u8> = perm.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let perm_tensor = ctx.add_constant(
+            "transpose_perm",
+            &[perm.len() as i32],
+            tflite::TensorType::INT32,
+            &perm_bytes,
+        );
+        inputs.push(perm_tensor as i32);
+        return Ok(false);
+    }
+
+    // Slice: use SLICE (no strides) or STRIDED_SLICE (with strides)
+    if let Some(handled) = ctx.build_slice_op(op, tensor_map, operator_offsets, in_tensor, inputs) {
+        return Ok(handled);
+    }
+
+    // Pad: add paddings tensor as input[1]
+    if let Operation::Pad {
+        beginning_padding,
+        ending_padding,
+        ..
+    } = op
+    {
+        let rank = beginning_padding.len();
+        let mut pad_data = Vec::with_capacity(rank * 2 * 4);
+        for i in 0..rank {
+            pad_data.extend_from_slice(&(beginning_padding[i] as i32).to_le_bytes());
+            pad_data.extend_from_slice(&(ending_padding[i] as i32).to_le_bytes());
+        }
+        let pad_tensor = ctx.add_constant(
+            "pad_paddings",
+            &[rank as i32, 2],
+            tflite::TensorType::INT32,
+            &pad_data,
+        );
+        inputs.push(pad_tensor as i32);
+        return Ok(false);
+    }
+
+    // Reverse: add axis tensor as input[1]
+    if let Operation::Reverse { options, .. } = op {
+        let axes: Vec<i32> = if let Some(opts) = options {
+            opts.axes
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .map(|&a| a as i32)
+                .collect()
+        } else {
+            vec![]
+        };
+        let axes_data: Vec<u8> = if axes.is_empty() {
+            vec![0i32].iter().flat_map(|v| v.to_le_bytes()).collect()
+        } else {
+            axes.iter().flat_map(|v| v.to_le_bytes()).collect()
+        };
+        let ax_len = if axes.is_empty() { 1 } else { axes.len() };
+        let ax_tensor = ctx.add_constant(
+            "reverse_axes",
+            &[ax_len as i32],
+            tflite::TensorType::INT32,
+            &axes_data,
+        );
+        inputs.push(ax_tensor as i32);
+        return Ok(false);
+    }
+
+    // Tile: add multiples tensor as input[1]
+    if let Operation::Tile { repetitions, .. } = op {
+        let reps: Vec<i32> = repetitions.iter().map(|&r| r as i32).collect();
+        let reps_bytes: Vec<u8> = reps.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let reps_tensor = ctx.add_constant(
+            "tile_multiples",
+            &[reps.len() as i32],
+            tflite::TensorType::INT32,
+            &reps_bytes,
+        );
+        inputs.push(reps_tensor as i32);
+        return Ok(false);
+    }
+
+    // ArgMax/ArgMin: add axis tensor as input[1]
+    if let Operation::ArgMax { axis, .. } | Operation::ArgMin { axis, .. } = op {
+        let axis_bytes = (*axis as i32).to_le_bytes();
+        let axis_tensor =
+            ctx.add_constant("argmax_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
+        inputs.push(axis_tensor as i32);
+        return Ok(false);
+    }
+
+    // CumulativeSum: add axis tensor as input[1]
+    if let Operation::CumulativeSum { axis, .. } = op {
+        let axis_bytes = (*axis as i32).to_le_bytes();
+        let axis_tensor =
+            ctx.add_constant("cumsum_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
+        inputs.push(axis_tensor as i32);
+        return Ok(false);
+    }
+
+    // Resample2d: add size tensor as input[1]
+    if let Operation::Resample2d { options, .. } = op {
+        let opts = options.as_ref().cloned().unwrap_or_default();
+        let sizes: Vec<i32> = if let Some(ref s) = opts.sizes {
+            s.iter().map(|&v| v as i32).collect()
+        } else if !opts.scales.is_empty() {
+            let h = if in_shape.len() >= 2 {
+                (in_shape[in_shape.len() - 2] as f32 * opts.scales[0]) as i32
+            } else {
+                1
+            };
+            let w = if in_shape.len() >= 1 {
+                (in_shape[in_shape.len() - 1] as f32 * opts.scales[1]) as i32
+            } else {
+                1
+            };
+            vec![h, w]
+        } else {
+            vec![]
+        };
+        if !sizes.is_empty() {
+            let sizes_bytes: Vec<u8> = sizes.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let sizes_tensor = ctx.add_constant(
+                "resize_sizes",
+                &[sizes.len() as i32],
+                tflite::TensorType::INT32,
+                &sizes_bytes,
+            );
+            inputs.push(sizes_tensor as i32);
+        }
+        return Ok(false);
+    }
+
+    Ok(false)
 }
 
 fn datatype_to_tflite(dt: DataType) -> Result<tflite::TensorType, GraphError> {
@@ -141,6 +2171,21 @@ fn datatype_to_tflite(dt: DataType) -> Result<tflite::TensorType, GraphError> {
     })
 }
 
+/// Parse an MLNumber (JSON number or string like "Infinity", "NaN") as f64.
+fn parse_mlnumber(value: Option<&serde_json::Value>) -> Option<f64> {
+    let v = value?;
+    if let Some(n) = v.as_f64() {
+        return Some(n);
+    }
+    let s = v.as_str()?.trim().to_ascii_lowercase();
+    match s.as_str() {
+        "inf" | "+inf" | "infinity" | "+infinity" => Some(f64::INFINITY),
+        "-inf" | "-infinity" => Some(f64::NEG_INFINITY),
+        "nan" => Some(f64::NAN),
+        _ => s.parse::<f64>().ok(),
+    }
+}
+
 fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
     shape
         .iter()
@@ -154,17 +2199,31 @@ fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
 /// Standard TFLite op codes matching tensorflow/lite/schema/schema.fbs.
 mod std_op {
     pub const ADD: i32 = 0;
+    pub const AVERAGE_POOL_2D: i32 = 1;
+    pub const CONCATENATION: i32 = 2;
+    pub const CONV_2D: i32 = 3;
     pub const FLOOR: i32 = 8;
+    pub const LOGISTIC: i32 = 14;
+    pub const MAX_POOL_2D: i32 = 17;
+    pub const MUL: i32 = 18;
     pub const RELU: i32 = 19;
     pub const RESHAPE: i32 = 22;
     pub const SOFTMAX: i32 = 25;
     pub const TANH: i32 = 28;
-    pub const LOGISTIC: i32 = 14;
+    pub const TRANSPOSE: i32 = 39;
     pub const SUB: i32 = 41;
     pub const DIV: i32 = 42;
+    pub const EXP: i32 = 47;
+    pub const PRELU: i32 = 54;
+    pub const MAXIMUM: i32 = 55;
+
+    pub const MINIMUM: i32 = 57;
+    pub const LESS: i32 = 58;
     pub const NEG: i32 = 59;
+    pub const GREATER: i32 = 61;
+    pub const GREATER_EQUAL: i32 = 62;
+    pub const LESS_EQUAL: i32 = 63;
     pub const SIN: i32 = 66;
-    pub const COS: i32 = 108;
     pub const EQUAL: i32 = 71;
     pub const NOT_EQUAL: i32 = 72;
     pub const LOG: i32 = 73;
@@ -176,20 +2235,59 @@ mod std_op {
     pub const LEAKY_RELU: i32 = 98;
     pub const ABS: i32 = 101;
     pub const CEIL: i32 = 104;
-    pub const MAXIMUM: i32 = 55;
-    pub const MINIMUM: i32 = 57;
-    pub const LESS: i32 = 58;
-    pub const GREATER: i32 = 61;
-    pub const GREATER_EQUAL: i32 = 62;
-    pub const LESS_EQUAL: i32 = 63;
-    pub const PRELU: i32 = 54;
-    pub const EXP: i32 = 47;
-    pub const MUL: i32 = 18;
-    pub const CONV_2D: i32 = 3;
-    pub const MAX_POOL_2D: i32 = 17;
-    pub const AVERAGE_POOL_2D: i32 = 1;
-    pub const CONCATENATION: i32 = 2;
+    pub const COS: i32 = 108;
     pub const BATCH_MATMUL: i32 = 126;
+    pub const ELU: i32 = 111;
+    pub const GATHER: i32 = 36;
+    pub const GELU: i32 = 150;
+    pub const HARD_SWISH: i32 = 117;
+    pub const REVERSE_V2: i32 = 105;
+    pub const SCATTER_ND: i32 = 122;
+    pub const SIGN: i32 = 158;
+    pub const SQUEEZE: i32 = 43;
+    pub const TILE: i32 = 69;
+    pub const L2_POOL_2D: i32 = 12;
+    pub const SUM: i32 = 74;
+    pub const MEAN: i32 = 40;
+    pub const REDUCE_MAX: i32 = 82;
+    pub const REDUCE_MIN: i32 = 89;
+    pub const REDUCE_PROD: i32 = 81;
+    pub const SELECT: i32 = 64;
+    pub const GATHER_ND: i32 = 107;
+    pub const TRANSPOSE_CONV: i32 = 67;
+    pub const PAD: i32 = 34;
+    pub const BROADCAST_TO: i32 = 130;
+}
+
+/// Determine the depthwise status of a conv2d operation: groups == input_channels and groups > 1.
+/// Per WebNN spec, depthwise convolution is defined as groups equalling input channels.
+fn is_depthwise_conv2d(op: &Operation, graph: &GraphInfo) -> bool {
+    if let Operation::Conv2d { options, .. } = op {
+        let groups = options.as_ref().map(|o| o.groups).unwrap_or(1);
+        if groups <= 1 {
+            return false;
+        }
+        // Input channels from the INPUT tensor (not the filter)
+        if let Some(&iid) = op.inputs().get(0) {
+            if let Some(iop) = graph.operand(iid) {
+                let input_layout = options
+                    .as_ref()
+                    .map(|o| o.input_layout.as_str())
+                    .unwrap_or("");
+                let c_idx = if input_layout.eq_ignore_ascii_case("nhwc") {
+                    3
+                } else {
+                    1
+                };
+                let input_channels = match iop.descriptor.shape.get(c_idx) {
+                    Some(Dimension::Static(v)) => *v,
+                    _ => 1,
+                };
+                return groups == input_channels && groups > 1;
+            }
+        }
+    }
+    false
 }
 
 fn tflite_opcode(op: &Operation) -> Option<i32> {
@@ -223,7 +2321,6 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::Cast { .. } => Some(53),
         Operation::Pad { .. } => Some(34),
         Operation::Slice { .. } => Some(65),
-        Operation::Split { .. } => Some(49),
         Operation::LogicalNot { .. } => Some(std_op::LOGICAL_NOT),
         Operation::LogicalAnd { .. } => Some(std_op::LOGICAL_AND),
         Operation::LogicalOr { .. } => Some(std_op::LOGICAL_OR),
@@ -236,49 +2333,391 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::Concat { .. } => Some(std_op::CONCATENATION),
         Operation::Matmul { .. } => Some(std_op::BATCH_MATMUL),
         Operation::Gemm { .. } => Some(std_op::BATCH_MATMUL),
-        Operation::Identity { .. } => None,
+        Operation::Elu { .. } => Some(std_op::ELU),
+        Operation::Expand { .. } => Some(std_op::BROADCAST_TO),
+        Operation::Gather { .. } => Some(std_op::GATHER),
+        Operation::Gelu { .. } => Some(std_op::GELU),
+        Operation::HardSwish { .. } => Some(std_op::HARD_SWISH),
+        Operation::Reverse { .. } => Some(std_op::REVERSE_V2),
+        Operation::ScatterND { .. } => Some(std_op::SCATTER_ND),
+        Operation::Sign { .. } => Some(std_op::SIGN),
+        Operation::Squeeze { .. } => Some(std_op::SQUEEZE),
+        Operation::Tile { .. } => Some(std_op::TILE),
+        Operation::Where { .. } => Some(std_op::SELECT),
+        Operation::L2Pool2d { .. } => Some(std_op::L2_POOL_2D),
+        Operation::GatherND { .. } => Some(std_op::GATHER_ND),
+        Operation::ConvTranspose2d { .. } => Some(std_op::TRANSPOSE_CONV),
+        Operation::ReduceSum { .. } => Some(std_op::SUM),
+        Operation::ReduceMean { .. } => Some(std_op::MEAN),
+        Operation::ReduceMax { .. } => Some(std_op::REDUCE_MAX),
+        Operation::ReduceMin { .. } => Some(std_op::REDUCE_MIN),
+        Operation::ReduceProduct { .. } => Some(std_op::REDUCE_PROD),
+        Operation::Identity { .. } => Some(std_op::RESHAPE),
+        Operation::Transpose { .. } => Some(std_op::TRANSPOSE),
         _ => None,
     }
 }
 
-fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
-    let mut ctx = TfliteContext::new();
+fn is_comparison_op(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Equal { .. }
+            | Operation::Greater { .. }
+            | Operation::GreaterOrEqual { .. }
+            | Operation::Lesser { .. }
+            | Operation::LesserOrEqual { .. }
+            | Operation::NotEqual { .. }
+    )
+}
 
-    // Map operand IDs to TFLite tensor indices
-    let mut tensor_map: HashMap<u32, u32> = HashMap::new();
+/// Transpose weight data from OHWI [O,H,W,I] to HWIO [H,W,I,O].
+fn transpose_ohwi_to_hwio(data: &[u8], o: usize, h: usize, w: usize, i: usize) -> Vec<u8> {
+    let esz = data.len() / (o * h * w * i);
+    if esz == 0 || esz * o * h * w * i != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for hh in 0..h {
+        for ww in 0..w {
+            for ii in 0..i {
+                for oo in 0..o {
+                    let src = ((oo * h + hh) * w + ww) * i + ii;
+                    let dst = ((hh * w + ww) * i + ii) * o + oo;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
 
-    // Register all operands as TFLite tensors
+fn pre_scan_native(
+    graph: &GraphInfo,
+) -> (
+    std::collections::HashSet<u32>,
+    HashMap<u32, Vec<u8>>,
+    HashMap<u32, Vec<i32>>,
+) {
+    let mut weight_transpose: HashMap<u32, Vec<u8>> = HashMap::new();
+    let mut filter_shape_swap: HashMap<u32, Vec<i32>> = HashMap::new();
+    let mut bool_override: std::collections::HashSet<u32> = std::collections::HashSet::new();
+
+    // Pre-scan for WHERE condition and comparison op outputs (uint8 -> BOOL)
+    for op in &graph.operations {
+        if let Operation::Where { .. } = op {
+            if let Some(&cond_id) = op.inputs().get(0) {
+                bool_override.insert(cond_id);
+            }
+        }
+        let is_comparison = is_comparison_op(op);
+        if is_comparison {
+            for &out_id in op.outputs() {
+                bool_override.insert(out_id);
+            }
+        }
+    }
+
+    for op in &graph.operations {
+        if !is_spatial_op(op) {
+            continue;
+        }
+        // Conv2d: transpose filter to OHWI (TFLite native format)
+        if let Operation::Conv2d { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let mut filter_layout = opts.filter_layout.as_str();
+            if filter_layout.is_empty() {
+                filter_layout = "oihw";
+            }
+            let filter_id = op.inputs().get(1).copied();
+            if let Some(fid) = filter_id {
+                if let (Some(cd), Some(fop)) = (
+                    graph.constant_operand_ids_to_handles.get(&fid),
+                    graph.operand(fid),
+                ) {
+                    let dims: Vec<usize> = fop
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as usize,
+                            _ => 1,
+                        })
+                        .collect();
+                    if dims.len() == 4 {
+                        let esz = cd.data.len() / (dims[0] * dims[1] * dims[2] * dims[3]);
+                        if esz > 0 && esz * dims[0] * dims[1] * dims[2] * dims[3] == cd.data.len() {
+                            let depthwise = is_depthwise_conv2d(op, graph);
+                            match (depthwise, filter_layout) {
+                                (true, "ohwi") => {
+                                    let (o_val, h_val, w_val, i_val) =
+                                        (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose.insert(
+                                        fid,
+                                        transpose_ohwi_to_hwio(
+                                            &cd.data, o_val, h_val, w_val, i_val,
+                                        ),
+                                    );
+                                    filter_shape_swap.insert(
+                                        fid,
+                                        vec![
+                                            h_val as i32,
+                                            w_val as i32,
+                                            i_val as i32,
+                                            o_val as i32,
+                                        ],
+                                    );
+                                }
+                                (true, "hwio") => {}
+                                (false, "hwio") => {
+                                    let (h, w, i, o) = (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose
+                                        .insert(fid, transpose_hwio_to_ohwi(&cd.data, h, w, i, o));
+                                    filter_shape_swap
+                                        .insert(fid, vec![o as i32, h as i32, w as i32, i as i32]);
+                                }
+                                (true, "ihwo") => {
+                                    let (i_val, h_val, w_val, o_val) =
+                                        (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose.insert(
+                                        fid,
+                                        transpose_ihwo_to_ohwi(
+                                            &cd.data, i_val, h_val, w_val, o_val,
+                                        ),
+                                    );
+                                    filter_shape_swap.insert(
+                                        fid,
+                                        vec![
+                                            o_val as i32,
+                                            h_val as i32,
+                                            w_val as i32,
+                                            i_val as i32,
+                                        ],
+                                    );
+                                }
+                                (true, _) => {
+                                    let (o_dim, i_dim, h_dim, w_dim) =
+                                        (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose.insert(
+                                        fid,
+                                        transpose_oihw_to_ohwi(
+                                            &cd.data, o_dim, i_dim, h_dim, w_dim,
+                                        ),
+                                    );
+                                    filter_shape_swap.insert(
+                                        fid,
+                                        vec![
+                                            o_dim as i32,
+                                            h_dim as i32,
+                                            w_dim as i32,
+                                            i_dim as i32,
+                                        ],
+                                    );
+                                }
+                                (_, "ihwo") => {
+                                    let (i_val, h_val, w_val, o_val) =
+                                        (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose.insert(
+                                        fid,
+                                        transpose_ihwo_to_ohwi(
+                                            &cd.data, i_val, h_val, w_val, o_val,
+                                        ),
+                                    );
+                                    filter_shape_swap.insert(
+                                        fid,
+                                        vec![
+                                            o_val as i32,
+                                            h_val as i32,
+                                            w_val as i32,
+                                            i_val as i32,
+                                        ],
+                                    );
+                                }
+                                (_, "ohwi") => {}
+                                _ => {
+                                    let (o_dim, i_dim, h_dim, w_dim) =
+                                        (dims[0], dims[1], dims[2], dims[3]);
+                                    weight_transpose.insert(
+                                        fid,
+                                        transpose_oihw_to_ohwi(
+                                            &cd.data, o_dim, i_dim, h_dim, w_dim,
+                                        ),
+                                    );
+                                    filter_shape_swap.insert(
+                                        fid,
+                                        vec![
+                                            o_dim as i32,
+                                            h_dim as i32,
+                                            w_dim as i32,
+                                            i_dim as i32,
+                                        ],
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                if !graph.constant_operand_ids_to_handles.contains_key(&fid) {
+                    if let Some(fop) = graph.operand(fid) {
+                        let dims: Vec<i32> = dimensions_to_i32(&fop.descriptor.shape);
+                        if dims.len() == 4 && dims.iter().all(|&d| d > 0) && filter_layout != "ohwi"
+                        {
+                            let ohwi_shape = match filter_layout {
+                                "hwio" => {
+                                    let (h, w, i, o) = (dims[0], dims[1], dims[2], dims[3]);
+                                    vec![o, h, w, i]
+                                }
+                                "ihwo" => {
+                                    let (i, h, w, o) = (dims[0], dims[1], dims[2], dims[3]);
+                                    vec![o, h, w, i]
+                                }
+                                _ => {
+                                    let (o, i, h, w) = (dims[0], dims[1], dims[2], dims[3]);
+                                    vec![o, h, w, i]
+                                }
+                            };
+                            filter_shape_swap.insert(fid, ohwi_shape);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (bool_override, weight_transpose, filter_shape_swap)
+}
+
+fn register_native_tensors(
+    graph: &GraphInfo,
+    ctx: &mut TfliteContext<'_>,
+    tensor_map: &mut HashMap<u32, u32>,
+    bool_override: &std::collections::HashSet<u32>,
+    weight_transpose: &HashMap<u32, Vec<u8>>,
+    filter_shape_swap: &HashMap<u32, Vec<i32>>,
+) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         let id = i as u32;
-        let shape = dimensions_to_i32(&operand.descriptor.shape);
-        let tfl_type = datatype_to_tflite(operand.descriptor.data_type)?;
+        let orig_shape = dimensions_to_i32(&operand.descriptor.shape);
+        let shape = if let Some(ohwi) = filter_shape_swap.get(&id) {
+            ohwi.clone()
+        } else {
+            orig_shape
+        };
+        let tfl_type = if bool_override.contains(&id) {
+            tflite::TensorType::BOOL
+        } else {
+            datatype_to_tflite(operand.descriptor.data_type)?
+        };
         let name = operand
             .name
             .clone()
             .unwrap_or_else(|| format!("operand_{}", id));
 
-        let tensor_idx = if operand.kind == OperandKind::Constant {
-            if let Some(const_data) = graph.constant_operand_ids_to_handles.get(&id) {
-                ctx.add_constant(&name, &shape, tfl_type, &const_data.data)
+        let tensor_idx: u32 = if operand.kind == OperandKind::Constant {
+            let data: &[u8] = if let Some(td) = weight_transpose.get(&id) {
+                td.as_slice()
+            } else if let Some(cd) = graph.constant_operand_ids_to_handles.get(&id) {
+                cd.data.as_slice()
             } else {
-                ctx.add_tensor(&name, &shape, tfl_type, 0)
-            }
+                &[]
+            };
+            ctx.add_constant(&name, &shape, tfl_type, data)
         } else {
             ctx.add_tensor(&name, &shape, tfl_type, 0)
         };
         tensor_map.insert(id, tensor_idx);
     }
 
-    // Build operators
-    let mut operator_offsets: Vec<WIPOffset<tflite::Operator<'_>>> = Vec::new();
+    Ok(())
+}
 
+fn build_native_operators<'a>(
+    graph: &GraphInfo,
+    ctx: &mut TfliteContext<'a>,
+    mut tensor_map: &mut HashMap<u32, u32>,
+    mut operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+) -> Result<(), GraphError> {
     for op in &graph.operations {
-        // Identity is a no-op: alias output tensor to input tensor
-        if let Operation::Identity { input, outputs, .. } = op {
-            let input_tensor = *tensor_map.get(input).unwrap_or(input);
-            for out_id in outputs {
-                tensor_map.insert(*out_id, input_tensor);
-            }
+        // Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+        if ctx.build_identity_op(op, graph, &mut tensor_map, &mut operator_offsets) {
+            continue;
+        }
+
+        // --- Decomposable ops: emit multiple TFLite ops ---
+        let input_id = op.inputs().get(0).copied().unwrap_or(0);
+        let in_tensor = *tensor_map.get(&input_id).unwrap_or(&input_id) as i32;
+        let (in_shape, in_type) = graph
+            .operand(input_id)
+            .map(|o| {
+                (
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => -1,
+                        })
+                        .collect::<Vec<_>>(),
+                    datatype_to_tflite(o.descriptor.data_type).expect("unsupported dtype"),
+                )
+            })
+            .unwrap_or((vec![], tflite::TensorType::FLOAT32));
+
+        let mut decomposed = false;
+
+        // ---------------------------------------------------------------
+        // Family dispatch: one call per op family (return true if handled)
+        // ---------------------------------------------------------------
+
+        // math_ops: Reciprocal, Clamp, Tan (Mathematics per WebNN spec)
+        decomposed |= ctx.build_math_ops(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
+        // matrix_ops: Gemm (Matrix multiplication per WebNN spec)
+        decomposed |=
+            ctx.build_matrix_ops(op, graph, &mut tensor_map, &mut operator_offsets, in_type);
+
+        // normalization_ops: BatchNorm, InstanceNorm, LayerNorm
+        decomposed |= ctx.build_normalization_ops(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
+        // logical_ops: LogicalAnd, LogicalOr, LogicalXor, LogicalNot
+        decomposed |= ctx.build_logical_ops(op, &mut tensor_map, &mut operator_offsets, &in_shape);
+
+        // activation_ops: Elu, HardSigmoid, Softplus, Softsign
+        decomposed |= ctx.build_activation_ops(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
+        if decomposed {
+            continue;
+        }
+
+        // Softmax: TFLite only supports last-axis. TRANSPOSE workaround for non-last-axis.
+        if ctx.build_softmax_op(
+            op,
+            &tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        ) {
             continue;
         }
 
@@ -294,22 +2733,52 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
 
         let opcode_idx = ctx.add_opcode(tfl_opcode, 1);
 
-        // Collect input tensor indices
         let input_ids = op.inputs();
-        let inputs: Vec<i32> = input_ids
+        let output_ids = op.outputs();
+
+        let mut inputs: Vec<i32> = input_ids
             .iter()
             .map(|&id| *tensor_map.get(&id).unwrap_or(&id) as i32)
             .collect();
 
-        // Collect output tensor indices
-        let output_ids = op.outputs();
+        // Spatial ops: add Conv2d zero bias + explicit padding PAD.
+        build_spatial_inputs(
+            ctx,
+            op,
+            graph,
+            &mut inputs,
+            in_tensor,
+            in_type,
+            &mut operator_offsets,
+        )?;
+
+        // Reduce ops: add axes input, handle empty-axes identity.
+        if build_reduce_inputs(ctx, op, &mut tensor_map, input_id, &in_shape, &mut inputs)? {
+            continue;
+        }
+
+        // Shape ops: add extra input tensors (expand, transpose, slice, pad, etc.).
+        if build_extra_inputs(
+            ctx,
+            op,
+            &in_shape,
+            in_tensor,
+            &mut inputs,
+            &tensor_map,
+            &mut operator_offsets,
+        )? {
+            continue;
+        }
+
         let outputs: Vec<i32> = output_ids
             .iter()
             .map(|&id| *tensor_map.get(&id).unwrap_or(&id) as i32)
             .collect();
-
         let inputs_vec = ctx.fbb.create_vector(&inputs);
         let outputs_vec = ctx.fbb.create_vector(&outputs);
+
+        // Builtin options for the TFLite operator
+        let (builtin_opts, builtin_opts_type) = ctx.create_builtin_options(op, graph, input_id)?;
 
         let tfl_op = tflite::Operator::create(
             &mut ctx.fbb,
@@ -317,8 +2786,8 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
                 opcode_index: opcode_idx,
                 inputs: Some(inputs_vec),
                 outputs: Some(outputs_vec),
-                builtin_options: None,
-                builtin_options_type: tflite::BuiltinOptions::NONE,
+                builtin_options: builtin_opts,
+                builtin_options_type: builtin_opts_type,
                 custom_options: None,
                 custom_options_format: tflite::CustomOptionsFormat::FLEXBUFFERS,
                 mutating_variable_inputs: None,
@@ -333,11 +2802,36 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
         operator_offsets.push(tfl_op);
     }
 
-    // Build subgraph
+    Ok(())
+}
+
+fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
+    let mut ctx = TfliteContext::new();
+    let mut tensor_map: HashMap<u32, u32> = HashMap::new();
+    let mut operator_offsets: Vec<WIPOffset<tflite::Operator<'_>>> = Vec::new();
+
+    let (bool_override, weight_transpose, filter_shape_swap) = pre_scan_native(graph);
+    register_native_tensors(
+        graph,
+        &mut ctx,
+        &mut tensor_map,
+        &bool_override,
+        &weight_transpose,
+        &filter_shape_swap,
+    )?;
+    build_native_operators(graph, &mut ctx, &mut tensor_map, &mut operator_offsets)?;
+
+    // Build subgraph — only include runtime inputs (not constants) in subgraph input list.
     let inputs_vec = ctx.fbb.create_vector(
         &graph
             .input_operands
             .iter()
+            .filter(|&&id| {
+                graph
+                    .operand(id)
+                    .map(|o| o.kind != crate::graph::OperandKind::Constant)
+                    .unwrap_or(true)
+            })
             .map(|&id| *tensor_map.get(&id).unwrap_or(&id) as i32)
             .collect::<Vec<_>>(),
     );
@@ -477,7 +2971,6 @@ fn build_native(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
             signature_defs: Some(sig_defs),
         },
     );
-
     ctx.fbb.finish(model, Some("TFL3"));
     Ok(ctx.fbb.finished_data().to_vec())
 }

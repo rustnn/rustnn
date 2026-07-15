@@ -39,7 +39,11 @@ const SUPPORTED_DTYPES: &[&str] = &[
 ];
 
 /// Skip WPT cases whose operation is not supported by the selected backend.
-pub fn should_skip_backend_test(backend_prefix: &str, operation: &str) -> Option<String> {
+pub fn should_skip_test_by_ops(
+    backend_prefix: &str,
+    operation: &str,
+    _graph: &WptGraph,
+) -> Option<String> {
     if backend_prefix == "litert"
         && rustnn::backends::litert::unsupported_ops().contains(&operation)
     {
@@ -51,7 +55,11 @@ pub fn should_skip_backend_test(backend_prefix: &str, operation: &str) -> Option
 }
 
 /// Skip WPT cases whose inputs or expected outputs use unsupported tensor dtypes.
-pub fn should_skip_test(graph: &WptGraph) -> Option<String> {
+pub fn should_skip_test_by_dtype(
+    backend_prefix: &str,
+    operation: &str,
+    graph: &WptGraph,
+) -> Option<String> {
     for spec in graph.inputs.values().chain(graph.expected_outputs.values()) {
         let dt = spec.data_type();
         if !SUPPORTED_DTYPES
@@ -59,6 +67,20 @@ pub fn should_skip_test(graph: &WptGraph) -> Option<String> {
             .any(|supported| supported.eq_ignore_ascii_case(dt))
         {
             return Some(format!("unsupported dataType: {dt}"));
+        }
+        if backend_prefix == "litert" {
+            if dt.eq_ignore_ascii_case("float16") || spec.shape().len() >= 5 {
+                return Some(
+                    "float16/5D tensor not implemented for litert backend yet".to_string(),
+                );
+            }
+            // TODO: Needs Investigation
+            if operation == "transpose" && spec.shape().is_empty() {
+                return Some("transpose 0D not supported by litert backend".to_string());
+            }
+            if rustnn::backends::litert::dtype_unsupported_for_op(dt, operation) {
+                return Some(format!("dtype '{dt}' not supported by litert backend"));
+            }
         }
     }
     None

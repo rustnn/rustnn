@@ -10,9 +10,10 @@ use wpt_conformance::wpt_js_loader::{
     default_wpt_dir, load_wpt_corpus, sanitize_test_id, trial_name,
 };
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
+use wpt_conformance::wpt_tensor;
 use wpt_conformance::wpt_types::WptLoadedCase;
 use wpt_conformance::{
-    run_one_test_case_with_audit, should_skip_backend_test, should_skip_test,
+    run_one_test_case_with_audit, should_skip_test_by_dtype, should_skip_test_by_ops,
     wpt_types::WptTestCase,
 };
 
@@ -23,14 +24,24 @@ fn run_trial(
     test_case: &WptTestCase,
     audit: Option<&WptAuditCollector>,
 ) -> Result<Completion, Failed> {
-    if let Some(reason) = should_skip_test(&test_case.graph) {
+    let operation = if backend.trial_prefix() == "litert" {
+        wpt_tensor::normalize_wpt_op_name(operation)
+    } else {
+        operation.to_string()
+    };
+
+    if let Some(reason) =
+        should_skip_test_by_dtype(backend.trial_prefix(), &operation, &test_case.graph)
+    {
         return Ok(Completion::ignored_with(reason));
     }
-    if let Some(reason) = should_skip_backend_test(backend.trial_prefix(), operation) {
+    if let Some(reason) =
+        should_skip_test_by_ops(backend.trial_prefix(), &operation, &test_case.graph)
+    {
         return Ok(Completion::ignored_with(reason));
     }
 
-    run_one_test_case_with_audit(backend, operation, file_name, test_case, audit)
+    run_one_test_case_with_audit(backend, &operation, file_name, test_case, audit)
         .map(|()| Completion::Completed)
         .map_err(Failed::from)
 }
@@ -143,7 +154,7 @@ fn main() {
     let skip_eligible = corpus
         .cases
         .iter()
-        .filter(|c| should_skip_test(&c.graph).is_some())
+        .filter(|c| should_skip_test_by_dtype("", "", &c.graph).is_some())
         .count()
         * backends.len();
     let expected_failure_eligible = backends
