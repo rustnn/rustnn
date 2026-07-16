@@ -449,11 +449,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         }
         refitter.refit_cuda_engine()?;
 
-        let mut runtime_config = engine
+        let runtime_config = engine
             .create_runtime_config()
-            .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-        runtime_config
-            .set_cuda_graph_strategy(trtx::CudaGraphStrategy::kDISABLED)
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         let exec = engine
             .create_execution_context_with_config(Rc::new(runtime_config))

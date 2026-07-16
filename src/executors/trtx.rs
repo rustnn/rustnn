@@ -186,9 +186,7 @@ fn execute_trtx_engine(
 
     // Deserialize engine
     let mut engine = runtime.deserialize_cuda_engine(engine_bytes)?;
-    let mut runtime_config = engine.create_runtime_config()?;
-    // we do graph capturing ourself
-    runtime_config.set_cuda_graph_strategy(trtx::CudaGraphStrategy::kDISABLED)?;
+    let runtime_config = engine.create_runtime_config()?;
     let mut context = engine.create_execution_context_with_config(Rc::new(runtime_config))?;
 
     // Get tensor information
