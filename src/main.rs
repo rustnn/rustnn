@@ -1,25 +1,15 @@
 #[cfg(any(
     feature = "onnx-runtime",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use std::io::Write;
 use std::path::PathBuf;
 
 use clap::Parser;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-use rustnn::converters::TrtxConverter;
-#[cfg(any(
-    feature = "onnx-runtime",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
-))]
+#[cfg(feature = "onnx-runtime")]
 use rustnn::graph::get_static_or_max_size;
 #[cfg(any(
     feature = "onnx-runtime",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
@@ -53,15 +43,10 @@ struct Cli {
     #[cfg(feature = "onnx-runtime")]
     #[arg(long, requires = "convert")]
     run_onnx: bool,
-    #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-    #[arg(long, requires = "convert")]
-    run_trtx: bool,
 }
 
 #[cfg(any(
     feature = "onnx-runtime",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 fn run() -> Result<(), GraphError> {
@@ -136,8 +121,6 @@ fn run() -> Result<(), GraphError> {
             cli.run_coreml,
             #[cfg(feature = "onnx-runtime")]
             cli.run_onnx,
-            #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-            cli.run_trtx,
         ]
         .iter()
         .any(|x| *x);
@@ -225,79 +208,6 @@ fn run() -> Result<(), GraphError> {
                 println!("  - {}: shape={:?}", out.name, out.shape);
             }
         }
-
-        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-        if cli.run_trtx {
-            // Support both ONNX format (parsed by TensorRT) and native trtx format (pre-built engine)
-            if converted.format != "onnx" && converted.format != "trtx" {
-                return Err(GraphError::UnsupportedRuntimeFormat {
-                    format: converted.format.to_string(),
-                });
-            }
-            // Native WebNN->TRT engines use [`TrtxConverter::engine_io_tensor_name`] (operand names
-            // from the graph when set). ONNX models keep protobuf I/O names from `artifacts`.
-            let inputs: Vec<rustnn::TrtxInput> = if converted.format == "trtx" {
-                let mut v = Vec::with_capacity(graph.input_operands.len());
-                for &op_id in &graph.input_operands {
-                    let logical = graph
-                        .operand(op_id)
-                        .and_then(|o| o.name.as_deref())
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("input operand {op_id} has no name"),
-                        })?;
-                    let desc = artifacts
-                        .input_names_to_descriptors
-                        .get(logical)
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("missing descriptor for input `{logical}`"),
-                        })?;
-                    let total: usize = desc
-                        .shape
-                        .iter()
-                        .map(|dim| get_static_or_max_size(dim) as usize)
-                        .product::<usize>()
-                        .max(1);
-                    let byte_len = desc.byte_length().unwrap_or(total).max(1);
-                    v.push(rustnn::TrtxInput {
-                        name: TrtxConverter::engine_io_tensor_name(&graph, op_id),
-                        data: vec![0u8; byte_len],
-                    });
-                }
-                v
-            } else {
-                artifacts
-                    .input_names_to_descriptors
-                    .iter()
-                    .map(|(name, desc)| {
-                        let total: usize = desc
-                            .shape
-                            .iter()
-                            .map(|dim| get_static_or_max_size(dim) as usize)
-                            .product::<usize>()
-                            .max(1);
-                        let byte_len = desc.byte_length().unwrap_or(total).max(1);
-                        rustnn::TrtxInput {
-                            name: name.clone(),
-                            data: vec![0u8; byte_len],
-                        }
-                    })
-                    .collect()
-            };
-
-            let outputs = rustnn::run_trtx_with_inputs(&converted.data, inputs)?;
-
-            let model_type = if converted.format == "trtx" {
-                "TensorRT engine"
-            } else {
-                "ONNX model"
-            };
-            println!("Executed {} with zeroed inputs (TRT-RTX):", model_type);
-            for out in &outputs {
-                println!("  - {}: shape={:?}", out.name, out.shape);
-            }
-        }
     }
     Ok(())
 }
@@ -305,8 +215,6 @@ fn run() -> Result<(), GraphError> {
 fn main() {
     #[cfg(any(
         feature = "onnx-runtime",
-        feature = "trtx-runtime-mock",
-        feature = "trtx-runtime",
         all(target_os = "macos", feature = "coreml-runtime")
     ))]
     {
@@ -317,14 +225,12 @@ fn main() {
     }
     #[cfg(not(any(
         feature = "onnx-runtime",
-        feature = "trtx-runtime-mock",
-        feature = "trtx-runtime",
         all(target_os = "macos", feature = "coreml-runtime")
     )))]
     {
         eprintln!(
             "rustnn CLI requires a runtime feature. Build with --features onnx-runtime or \
-             --features trtx-runtime-mock (or trtx-runtime), or --features coreml-runtime on macOS."
+             or --features coreml-runtime on macOS."
         );
         std::process::exit(1);
     }

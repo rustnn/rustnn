@@ -36,10 +36,6 @@ pub use executors::onnx::{
     OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs,
     run_onnx_with_inputs_checked, run_onnx_zeroed,
 };
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
-pub use executors::trtx::{
-    TrtxInput, TrtxOutput, TrtxOutputWithData, run_trtx_with_inputs, run_trtx_zeroed,
-};
 pub use graph::{ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind};
 pub use graphviz::graph_to_dot;
 pub use loader::load_graph_from_path;

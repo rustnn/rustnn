@@ -254,7 +254,7 @@ impl std::fmt::Debug for TrtxContext<'_> {
 }
 
 // TODO: should make logger static or remove from API. It is anyway a global for TRT
-static LOGGER: std::sync::LazyLock<trtx::Logger> =
+pub(crate) static LOGGER: std::sync::LazyLock<trtx::Logger> =
     std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {
