@@ -335,9 +335,14 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let non_refittable_constants =
             crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
 
-        if self.caching_enabled {
+        // no caching for non_refittable_constants for now, non_refittable_constants will end up in
+        // the engine and potentially grow our cache to much. We should only consider including
+        // weights into engines for very small constants
+        if self.caching_enabled && non_refittable_constants.is_empty() {
             let key =
-                graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
+                // if deciding to do hashing for non_refittable_constants
+                //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
+                graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::None);
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
