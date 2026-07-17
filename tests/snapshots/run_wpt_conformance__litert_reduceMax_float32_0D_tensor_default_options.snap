@@ -3,7 +3,10 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_max.https.any.js reduceMax float32 0D tensor default options, litert
- Failed to dispatch graph: LiteRT status error: code=3
+ reduce_max :: reduceMax float32 0D tensor default options: index 0: actual=-0.00000000000000000000000016032561 expected=32.166584 ulp=1481057228 tolerance=0
+  inputs: reduceMaxInput: [32.16658401489258]
+  expected reduceMaxOutput: [32.166584]
+  actual reduceMaxOutput: [-0.00000000000000000000000016032561]
 
 --- built graph ---
 webnn_graph "graph" v2 {

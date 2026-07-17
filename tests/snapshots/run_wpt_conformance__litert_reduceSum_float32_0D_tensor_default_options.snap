@@ -3,7 +3,10 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_sum.https.any.js reduceSum float32 0D tensor default options, litert
- Failed to dispatch graph: LiteRT status error: code=3
+ reduce_sum :: reduceSum float32 0D tensor default options: index 0: actual=0.000000011189428 expected=69.60386 ulp=273349005 tolerance=8
+  inputs: reduceSumInput: [69.6038589477539]
+  expected reduceSumOutput: [69.60386]
+  actual reduceSumOutput: [0.000000011189428]
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -1,26 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-instance_normalization.https.any.js instanceNormalization float32 4D tensor options.layout='nhwc', litert
- instance_normalization :: instanceNormalization float32 4D tensor options.layout='nhwc': index 0: actual=-1.0295581 expected=-1.099529 ulp=586959 tolerance=840
-  inputs: instanceNormInput: [-97.949951171875, 41.33772659301758, 35.82481384277344, 29.44037628173828, -59.77853012084961, -6.948329448699951, -73.92131042480469, -74.66901397705078, 54.42462158203125, -38.11185836791992, -68.16508483886719, 47.53074645996094, 66.93562316894531, 37.37651062011719, 73.8739242553711, 76.74034881591797, 56.252689361572266, -99.00035095214844, 5.6758809089660645, -16.574905395507813, -33.11322784423828, 25.68659210205078, 42.949893951416016, -17.380685806274414]
-  expected instanceNormOutput: [-1.099529, 1.7212949, 0.13073227, 1.5525832, -0.41020718, -1.6633319, -0.59928185, -0.7240944, 0.91087717, 0.14622758 ...] (len=24)
-  actual instanceNormOutput: [-1.0295581, 1.0218104, 0.08782468, -0.22257178, -2.0793202, 0.21436414, -0.56114525, -0.42984334, 0.61191833, -1.2725734 ...] (len=24)
-  expected instanceNormOutput full nd:
-[-1.099529, 1.7212949, 0.13073227, 1.5525832, -0.41020718, -1.6633319, -0.59928185, -0.7240944, 0.91087717, 0.14622758, ...] (len=24, shape=[2, 2, 2, 3])
-  actual instanceNormOutput full nd:
-[-1.0295581, 1.0218104, 0.08782468, -0.22257178, -2.0793202, 0.21436414, -0.56114525, -0.42984334, 0.61191833, -1.2725734, ...] (len=24, shape=[2, 2, 2, 3])
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    instanceNormInput: f32[2, 2, 2, 3];
-  }
-
-  nodes {
-    [instanceNormOutput] = instanceNormalization(instanceNormInput, bias=null, epsilon=0.00001, label="", layout="nhwc", scale=null);
-  }
-
-  outputs { instanceNormOutput; }
-}
+(
+    "instance_normalization.https.any.js",
+    "instanceNormalization float32 4D tensor options.layout='nhwc'",
+    "litert",
+    "PASS",
+)

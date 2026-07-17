@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 instance_normalization.https.any.js instanceNormalization float32 4D tensor default options, litert
- Failed to dispatch graph: LiteRT status error: code=3
+ instance_normalization :: instanceNormalization float32 4D tensor default options: index 0: actual=-1.2359 expected=-1.099529 ulp=1143963 tolerance=840
+  inputs: instanceNormInput: [-97.949951171875, 29.44037628173828, -73.92131042480469, -38.11185836791992, 41.33772659301758, -59.77853012084961, -74.66901397705078, -68.16508483886719, 35.82481384277344, -6.948329448699951, 54.42462158203125, 47.53074645996094, 66.93562316894531, 76.74034881591797, 5.6758809089660645, 25.68659210205078, 37.37651062011719, 56.252689361572266, -16.574905395507813, 42.949893951416016, 73.8739242553711, -99.00035095214844, -33.11322784423828, -17.380685806274414]
+  expected instanceNormOutput: [-1.099529, 1.5525832, -0.59928185, 0.14622758, 1.7212949, -0.41020718, -0.7240944, -0.5869934, 0.13073227, -1.6633319 ...] (len=24)
+  actual instanceNormOutput: [-1.2359, 1.046757, -0.858992, -0.5091786, 0.9489361, -1.0082287, -0.87072027, -1.2013968, 0.8624618, 0.20861326 ...] (len=24)
+  expected instanceNormOutput full nd:
+[-1.099529, 1.5525832, -0.59928185, 0.14622758, 1.7212949, -0.41020718, -0.7240944, -0.5869934, 0.13073227, -1.6633319, ...] (len=24, shape=[2, 3, 2, 2])
+  actual instanceNormOutput full nd:
+[-1.2359, 1.046757, -0.858992, -0.5091786, 0.9489361, -1.0082287, -0.87072027, -1.2013968, 0.8624618, 0.20861326, ...] (len=24, shape=[2, 3, 2, 2])
 
 --- built graph ---
 webnn_graph "graph" v2 {

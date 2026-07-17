@@ -6,13 +6,13 @@ averagePool2d.https.any.js averagePool2d float32 4D tensor options.outputShapeRo
  average_pool2d :: averagePool2d float32 4D tensor options.outputShapeRounding=ceil with asymmetric window: index 2: actual=16.5 expected=10 ulp=6553600 tolerance=8
   inputs: averagePool2dInput: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 ...] (len=25)
   expected averagePool2dOutput: [6.5, 8.5, 10, 16.5, 18.5, 20]
-  actual averagePool2dOutput: [6.5, 8.5, 16.5, 18.5, 0.00000000000000000000000000000000000000000001, 0.000000000000000000000000000000000000000000004]
+  actual averagePool2dOutput: [6.5, 8.5, 16.5, 18.5, 0.000000000000000000000000000000000000000000038, 0.000000000000000000000000000000000000000000003]
   expected averagePool2dOutput full nd:
 (shape [1, 1, 2, 3])
   [6.5, 8.5, 10] [16.5, 18.5, 20]
   actual averagePool2dOutput full nd:
 (shape [1, 1, 2, 3])
-  [6.5, 8.5, 16.5] [18.5, 0.00000000000000000000000000000000000000000001, 0.000000000000000000000000000000000000000000004]
+  [6.5, 8.5, 16.5] [18.5, 0.000000000000000000000000000000000000000000038, 0.000000000000000000000000000000000000000000003]
 
 --- built graph ---
 webnn_graph "graph" v2 {

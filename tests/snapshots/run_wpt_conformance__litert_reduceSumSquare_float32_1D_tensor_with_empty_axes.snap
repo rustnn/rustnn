@@ -3,7 +3,16 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_sum_square.https.any.js reduceSumSquare float32 1D tensor with empty axes, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceSumSquare { input: 0, options: Some(MLReduceOptions { label: "", axes: Some([]), keep_dimensions: false }), outputs: [1] }
+ reduce_sum_square :: reduceSumSquare float32 1D tensor with empty axes: index 0: actual=2 expected=4 ulp=8388608 tolerance=16
+  inputs: reduceSumSquareInput: [2, 3]
+  expected reduceSumSquareOutput: [4, 9]
+  actual reduceSumSquareOutput: [2, 3]
+  expected reduceSumSquareOutput full nd:
+(shape [2])
+[4, 9]
+  actual reduceSumSquareOutput full nd:
+(shape [2])
+[2, 3]
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -3,7 +3,16 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_l2.https.any.js reduceL2 float32 1D constant tensor empty axes, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceL2 { input: 0, options: Some(MLReduceOptions { label: "", axes: Some([]), keep_dimensions: false }), outputs: [1] }
+ reduce_l2 :: reduceL2 float32 1D constant tensor empty axes: index 0: actual=-4.860228 expected=4.860228 ulp=2167868922 tolerance=16
+  inputs: reduceL2Input: [-4.860228061676025, 4.860228061676024] (constant)
+  expected reduceL2Output: [4.860228, 4.860228]
+  actual reduceL2Output: [-4.860228, 4.860228]
+  expected reduceL2Output full nd:
+(shape [2])
+[4.860228, 4.860228]
+  actual reduceL2Output full nd:
+(shape [2])
+[-4.860228, 4.860228]
 
 --- built graph ---
 webnn_graph "graph" v2 {

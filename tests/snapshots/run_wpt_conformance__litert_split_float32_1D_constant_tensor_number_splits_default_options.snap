@@ -1,0 +1,19 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+---
+split.https.any.js split float32 1D constant tensor number splits default options, litert
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: Split { input: 0, splits: [], split_equal_parts: Some(3), options: Some(MLSplitOptions { label: "", axis: 0 }), outputs: [1, 2, 3] }
+
+--- built graph ---
+webnn_graph "graph" v2 {
+  consts {
+    operand_0: f32[24] @bytes([136, 10, 129, 194, 212, 53, 169, 194, 84, 252, 135, 194, 144, 145, 187, 193, 164, 73, 171, 194, 149, 130, 59, 66, 120, 57, 136, 194, 254, 253, 151, 66, 12, 58, 116, 194, 86, 218, 181, 194, 159, 170, 87, 66, 76, 83, 168, 66, 95, 38, 191, 194, 92, 161, 81, 194, 184, 14, 232, 193, 87, 79, 143, 66, 128, 167, 74, 66, 170, 234, 170, 65, 151, 4, 217, 193, 67, 76, 130, 66, 39, 65, 243, 193, 65, 48, 218, 192, 202, 177, 58, 66, 14, 255, 168, 193]);
+  }
+
+  nodes {
+    [splitOutput1, splitOutput2, splitOutput3] = split(operand_0, axis=0, label="");
+  }
+
+  outputs { splitOutput1; splitOutput2; splitOutput3; }
+}

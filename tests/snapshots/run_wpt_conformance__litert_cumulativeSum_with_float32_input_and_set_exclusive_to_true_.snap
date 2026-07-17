@@ -3,14 +3,7 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 cumulative_sum.https.any.js cumulativeSum with float32 input and set exclusive to true., litert
- cumulative_sum :: cumulativeSum with float32 input and set exclusive to true.: index 0: actual=60.42374 expected=0 ulp=1114747369 tolerance=4
-  inputs: cumulativeSumInput: [60.42374038696289, -86.92247772216797, -19.496112823486328, -15.150615692138672, 13.455190658569336, 45.433597564697266, 61.082862854003906, 70.71882629394531, -31.278579711914063, 56.08354187011719, 38.992767333984375, -3.27536940574646]
-  expected cumulativeSumOutput: [0, 60.42374, -26.498737, -45.994854, 0, 13.455191, 58.888786, 119.97166, 0, -31.27858 ...] (len=12)
-  actual cumulativeSumOutput: [60.42374, -26.498737, -45.99485, -61.145466, 13.455191, 58.888786, 119.97165, 190.69048, -31.27858, 24.804962 ...] (len=12)
-  expected cumulativeSumOutput full nd:
-[0, 60.42374, -26.498737, -45.994854, 0, 13.455191, 58.888786, 119.97166, 0, -31.27858, ...] (len=12, shape=[1, 1, 3, 4])
-  actual cumulativeSumOutput full nd:
-[60.42374, -26.498737, -45.99485, -61.145466, 13.455191, 58.888786, 119.97165, 190.69048, -31.27858, 24.804962, ...] (len=12, shape=[1, 1, 3, 4])
+ Failed to convert graph: graph conversion failed for litert: unsupported operation: CumulativeSum { input: 0, axis: 3, options: Some(MLCumulativeSumOptions { label: "", exclusive: true, reversed: false }), outputs: [1] }
 
 --- built graph ---
 webnn_graph "graph" v2 {

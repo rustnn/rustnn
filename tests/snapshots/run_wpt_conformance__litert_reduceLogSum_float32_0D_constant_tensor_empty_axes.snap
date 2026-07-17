@@ -3,7 +3,10 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_log_sum.https.any.js reduceLogSum float32 0D constant tensor empty axes, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceLogSum { input: 0, options: Some(MLReduceOptions { label: "", axes: Some([]), keep_dimensions: false }), outputs: [1] }
+ reduce_log_sum :: reduceLogSum float32 0D constant tensor empty axes: index 0: actual=64.54827 expected=4.167413 ulp=33275204 tolerance=19
+  inputs: reduceLogSumInput: [64.54827117919922] (constant)
+  expected reduceLogSumOutput: [4.167413]
+  actual reduceLogSumOutput: [64.54827]
 
 --- built graph ---
 webnn_graph "graph" v2 {

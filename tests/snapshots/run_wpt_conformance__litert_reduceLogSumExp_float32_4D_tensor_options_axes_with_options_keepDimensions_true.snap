@@ -3,7 +3,18 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_log_sum_exp.https.any.js reduceLogSumExp float32 4D tensor options.axes with options.keepDimensions=true, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: ReduceLogSumExp { input: 0, options: Some(MLReduceOptions { label: "", axes: Some([1, 3]), keep_dimensions: true }), outputs: [1] }
+ reduce_log_sum_exp :: reduceLogSumExp float32 4D tensor options.axes with options.keepDimensions=true: index 1: actual=9.083482 expected=5.5006194 ulp=6377694 tolerance=32
+  inputs: reduceLogSumExpInput: [0.7974132895469666, 5.046889781951904, 8.520371437072754, 1.4063042402267456, 0.11882661283016203, 0.2858544886112213, 1.9325640201568604, 3.7939958572387695, 2.6040232181549072, 4.937509536743164, 4.571482181549072, 0.786512017250061, 0.210186704993248, 9.063042640686035, 4.099809646606445, 4.596248626708984, 0.2549232244491577, 1.159480094909668, 6.802876949310303, 5.234325408935547, 8.914905548095703, 9.166799545288086, 5.717507362365723, 0.3255050778388977]
+  expected reduceLogSumExpOutput: [8.563797, 5.5006194, 9.753945, 9.208645]
+  actual reduceLogSumExpOutput: [8.563797, 9.083482, 5.6284127, 4.9793544]
+  expected reduceLogSumExpOutput full nd:
+(shape [2, 1, 2, 1])
+  [8.563797] [5.5006194]
+  [9.753945] [9.208645]
+  actual reduceLogSumExpOutput full nd:
+(shape [2, 1, 2, 1])
+  [8.563797] [9.083482]
+  [5.6284127] [4.9793544]
 
 --- built graph ---
 webnn_graph "graph" v2 {
