@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
@@ -267,7 +267,7 @@ pub struct Operand {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct ConstantData {
     #[serde_as(as = "Base64")]
     pub data: Vec<u8>,
@@ -333,6 +333,12 @@ impl GraphInfo {
     }
 }
 
+pub enum WeightsToHash<'a> {
+    None,
+    All,
+    Some(&'a HashSet<u32>),
+}
+
 /// Named input/output operands for `MLGraph` dispatch.
 pub type IoBindingMaps = (
     HashMap<String, OperandDescriptor>,
@@ -392,12 +398,36 @@ impl GraphInfo {
         Ok((inputs, outputs))
     }
 
-    pub fn hash_identifier_without_weights(&self, suffix: &str) -> String {
+    pub fn hash_identifier<'a>(&self, suffix: &str, weights_to_hash: WeightsToHash<'a>) -> String {
         let mut hasher = seahash::SeaHasher::new();
         self.input_operands.hash(&mut hasher);
         self.output_operands.hash(&mut hasher);
         self.operands.hash(&mut hasher);
         self.operations.hash(&mut hasher);
+        match weights_to_hash {
+            WeightsToHash::None => (),
+            WeightsToHash::All => {
+                for (constant_id, _) in self
+                    .operands
+                    .iter()
+                    .enumerate()
+                    .filter(|(_id, op)| op.kind == OperandKind::Constant)
+                {
+                    self.constant_operand_ids_to_handles
+                        .get(&(constant_id as u32))
+                        .hash(&mut hasher);
+                }
+            }
+            WeightsToHash::Some(items) => {
+                let mut items: Vec<u32> = items.iter().copied().collect();
+                items.sort_unstable();
+                for constant_id in items.iter() {
+                    self.constant_operand_ids_to_handles
+                        .get(&constant_id)
+                        .hash(&mut hasher);
+                }
+            }
+        }
         let reproduciable_hash_64bit = hasher.finish();
         format!(
             "{reproduciable_hash_64bit:x}_{}_{suffix}",

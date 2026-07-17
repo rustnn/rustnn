@@ -85,7 +85,13 @@ pub struct RustNNOptions {
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct TrtxOptions {
+    /// Caches built engines from GraphInfos to skip compilation for already built engines
     pub engine_caching: bool,
+    /// Create a MLContext that does not build TRT engines and only uses already pre-built
+    /// AOT engines from cache or user provided. Useful for debugging cache or for AOT only
+    /// workflows
+    pub fail_on_cache_miss: bool,
+    /// Lower CPU overhead using CUDA graphs
     pub cuda_graphs: bool,
 }
 
@@ -93,13 +99,9 @@ pub struct TrtxOptions {
 impl Default for TrtxOptions {
     fn default() -> Self {
         Self {
-            // disabled for now, since feature experimental.
-            // can be enabled with more test coverage, but will remain a double-sided sword
-            // e.g. if you change trtx converter, changes might not be visible, since cache skips conversion
-            // maybe the build hash of certain trtx related files could be included in hash
-            engine_caching: false,
-            // Lower CPU overhead using CUDA graphs
+            engine_caching: true,
             cuda_graphs: true,
+            fail_on_cache_miss: false,
         }
     }
 }

@@ -343,6 +343,7 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
+    pretty_env_logger::init();
     if let Err(err) = run() {
         eprintln!("error: {err}");
         std::process::exit(1);

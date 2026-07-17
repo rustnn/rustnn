@@ -1,9 +1,11 @@
-#[cfg(feature = "litert-runtime")]
-use std::env;
-use std::fs;
-use std::path::Path;
+use std::hash::Hasher;
+use std::io::Read;
 #[cfg(feature = "litert-runtime")]
 use std::process::Command;
+use std::{env, fs};
+use std::{fs::File, path::Path};
+
+use seahash::SeaHasher;
 
 fn collect_protos(dir: &str) -> Vec<String> {
     let mut files = Vec::new();
@@ -69,6 +71,35 @@ fn build_coreml_protos() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn create_source_hash(source_files: &[&str]) {
+    let mut hasher = SeaHasher::new();
+    let mut buffer = Vec::new();
+
+    for file_path in source_files {
+        // Tell Cargo to rerun if ANY of these files change
+        println!("cargo:rerun-if-changed={}", file_path);
+
+        // Only hash the file if it actually exists (prevents crashing if a file is optional)
+        if Path::new(file_path).exists() {
+            let mut file = File::open(file_path).unwrap();
+            buffer.clear(); // Reuse the same buffer to save allocations
+            file.read_to_end(&mut buffer).unwrap();
+
+            // Feed this file's bytes into the running hash state
+            hasher.write(&buffer);
+        }
+    }
+
+    // 2. Finalize the combined hash
+    let total_hash = hasher.finish();
+    let hash_string = format!("{:016x}", total_hash);
+
+    // 3. Write the combined hash out
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("source_hash.txt");
+    fs::write(dest_path, hash_string).unwrap();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
     build_coreml_protos()?;
@@ -98,5 +129,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=OUT_DIR");
+
+    create_source_hash(&[
+        "src/converters/trtx.rs",
+        "src/converters/trtx_gru.rs",
+        "src/converters/trtx_lstm.rs",
+        "src/converters/trtx_rnn.rs",
+    ]);
     Ok(())
 }

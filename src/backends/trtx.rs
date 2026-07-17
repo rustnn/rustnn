@@ -28,6 +28,7 @@ use crate::converters::TrtxConverter;
 use crate::error::Error;
 
 use crate::error::GraphBuilderError;
+use crate::graph::WeightsToHash;
 use crate::mlcontext::MLTensor;
 use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{ListDevices, MLOperand};
@@ -83,6 +84,10 @@ pub enum TrtxError {
         #[from]
         source: trtx::Error,
     },
+    #[error(
+        "Engine cache miss: cache_key={cache_key:?}. Failed engine build because TrtxOptions::fail_on_cache_miss options was enabled"
+    )]
+    TrtxEngineCacheMiss { cache_key: Option<String> },
 }
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
 
@@ -295,6 +300,7 @@ pub(crate) struct TrtxBuilder<'builder> {
     operands: HashMap<String, MLOperand>,
     strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
+    fail_on_cache_miss: bool,
 }
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -303,14 +309,17 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
     }
 }
 
+const SOURCE_HASH: &str = include_str!(concat!(env!("OUT_DIR"), "/source_hash.txt"));
+
 static ENGINE_CACHE: LazyLock<CacheResult<DefaultCache>> =
     LazyLock::new(|| DefaultCache::new("trtx"));
 static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "trtx_{}.{}.{}",
+        "trtx_{}.{}.{}_{}",
         unsafe { trtx::trtx_sys::get_tensorrt_major_version() },
         unsafe { trtx::trtx_sys::get_tensorrt_minor_version() },
-        unsafe { trtx::trtx_sys::get_tensorrt_patch_version() }
+        unsafe { trtx::trtx_sys::get_tensorrt_patch_version() },
+        SOURCE_HASH
     )
 });
 
@@ -323,8 +332,12 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let mut engine_bytes: Option<HostMemoryOrVec> = None;
         let mut hash_key: Option<String> = None;
 
+        let non_refittable_constants =
+            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
+
         if self.caching_enabled {
-            let key = graph.hash_identifier_without_weights(&TRTX_SUFFIX);
+            let key =
+                graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
@@ -337,6 +350,12 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         }
 
         if engine_bytes.is_none() {
+            if self.fail_on_cache_miss && self.caching_enabled {
+                return Err(TrtxError::TrtxEngineCacheMiss {
+                    cache_key: hash_key,
+                }
+                .into());
+            }
             let mut network = self
                 .network
                 .lock()
@@ -370,9 +389,6 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let engine_bytes =
             engine_bytes.expect("already got cached engine or tried building engine");
 
-        let non_refittable_constants =
-            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
-
         self.cuda_context.bind_to_thread()?;
         let mut engine = self
             .runtime
@@ -382,7 +398,14 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
         if let Ok(dump_dir) = std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR) {
-            let mut key = graph.hash_identifier_without_weights(&TRTX_SUFFIX);
+            let mut key = graph.hash_identifier(
+                &format!(
+                    "{}_{:x}",
+                    TRTX_SUFFIX.as_str(),
+                    self.config.lock().unwrap().flags()
+                ),
+                WeightsToHash::Some(&non_refittable_constants),
+            );
             key.push_str(".json");
             let inspector = engine.create_engine_inspector()?;
             let engine_layer_info_json =
@@ -509,6 +532,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             // e.g. if you change trtx converter, changes might not be visible, since cache skips conversion
             // maybe the build hash of certain trtx related files could be included in hash
             caching_enabled: self.options.engine_caching,
+            fail_on_cache_miss: self.options.fail_on_cache_miss,
         }))
     }
 

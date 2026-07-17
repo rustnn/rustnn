@@ -305,6 +305,13 @@ pub enum Error {
     },
 
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[error("An error in the Trtx backend: {source}")]
+    TrtxBackendError {
+        #[from]
+        source: crate::backends::trtx::TrtxError,
+    },
+
+    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     #[error("An CUDA error occurred: {source}")]
     CudaError {
         #[from]
