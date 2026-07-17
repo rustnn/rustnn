@@ -29,23 +29,10 @@ const LITERT_UNSUPPORTED_OPS: &[&str] = &[
     "gatherElements",
     "gru",
     "gru_cell",
-    "instance_normalization",
-    "is_infinite",
-    "is_nan",
-    "layer_normalization",
-    "logical_and",
-    "logical_not",
-    "logical_or",
-    "logical_xor",
     "lstm",
     "lstm_cell",
     "max_pool2d",
     "quantize_linear",
-    "reduce_l1",
-    "reduce_l2",
-    "reduce_log_sum",
-    "reduce_log_sum_exp",
-    "reduce_sum_square",
     "resample2d",
     "round_even",
     "scatter_elements",
@@ -73,6 +60,10 @@ pub fn dtype_unsupported_for_op(dtype: &str, op: &str) -> bool {
                 | "logical_and"
                 | "logical_not"
                 | "logical_or"
+                | "isNaN"
+                | "isInfinite"
+                | "is_nan"
+                | "is_infinite"
                 | "not_equal"
                 | "scatter_elements"
                 | "where"
@@ -494,7 +485,9 @@ fn collect_bool_operand_names(graph: &GraphInfo) -> std::collections::HashSet<St
                     }
                 }
             }
-            Operation::Equal { .. }
+            Operation::IsNaN { .. }
+            | Operation::IsInfinite { .. }
+            | Operation::Equal { .. }
             | Operation::Greater { .. }
             | Operation::GreaterOrEqual { .. }
             | Operation::Lesser { .. }

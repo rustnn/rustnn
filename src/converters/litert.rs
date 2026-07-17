@@ -921,6 +921,58 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
+    fn build_compare_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        let out_id = op.outputs()[0];
+        match op {
+            Operation::IsNaN { .. } => {
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::NOT_EQUAL,
+                    [in_tensor, in_tensor],
+                    &format!("isnan_out_{out_id}"),
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+                true
+            }
+            Operation::IsInfinite { .. } => {
+                let abs_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ABS,
+                    [in_tensor],
+                    &format!("isinf_abs_{out_id}"),
+                    in_shape,
+                    in_type
+                );
+                let max_const =
+                    scalar_const!(self, &format!("isinf_max_{out_id}"), f32::MAX, in_type);
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::GREATER,
+                    [abs_val, max_const],
+                    &format!("isinf_out_{out_id}"),
+                    in_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn build_math_ops(
         &mut self,
         op: &Operation,
@@ -1296,6 +1348,330 @@ impl<'a> TfliteContext<'a> {
             return true;
         }
         false
+    }
+
+    fn build_reduce_ops(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        let (axes_opt, keep_dims) = match op {
+            Operation::ReduceL1 { options, .. }
+            | Operation::ReduceL2 { options, .. }
+            | Operation::ReduceLogSum { options, .. }
+            | Operation::ReduceLogSumExp { options, .. }
+            | Operation::ReduceSumSquare { options, .. } => {
+                let opts = options.as_ref();
+                let axes = opts.and_then(|o| o.axes.clone());
+                let kd = opts.map(|o| o.keep_dimensions).unwrap_or(true);
+                (axes, kd)
+            }
+            _ => return false,
+        };
+
+        let out_id = op.outputs()[0];
+        let rank = in_shape.len() as i32;
+        let axes: Vec<i32> = match &axes_opt {
+            Some(a) if !a.is_empty() => a.iter().map(|&v| v as i32).collect(),
+            Some(_) => {
+                // Empty axes = identity: emit RESHAPE to alias output to input.
+                let out_tensor =
+                    self.add_tensor(&format!("reduce_ident_{out_id}"), in_shape, in_type, 0);
+                let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
+                let shape_const = self.add_constant(
+                    "reduce_ident_shape",
+                    &[in_shape.len() as i32],
+                    tflite::TensorType::INT32,
+                    &shape_bytes,
+                );
+                let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
+                let iv = self.fbb.create_vector(&[in_tensor, shape_const as i32]);
+                let ov = self.fbb.create_vector(&[out_tensor as i32]);
+                let shape_vec = self.fbb.create_vector(in_shape);
+                let ro = tflite::ReshapeOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReshapeOptionsArgs {
+                        new_shape: Some(shape_vec),
+                    },
+                );
+                let tfl_op = tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_idx,
+                        inputs: Some(iv),
+                        outputs: Some(ov),
+                        builtin_options: Some(ro.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                        ..Default::default()
+                    },
+                );
+                operator_offsets.push(tfl_op);
+                tensor_map.insert(out_id, out_tensor);
+                return true;
+            }
+            None => (0..rank).collect(),
+        };
+        let axes_bytes: Vec<u8> = axes.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let axes_tensor = self.add_constant(
+            "reduce_r_axes",
+            &[axes.len() as i32],
+            tflite::TensorType::INT32,
+            &axes_bytes,
+        );
+
+        // Build the reduced shape for the intermediate output
+        let mut reduced_shape = in_shape.to_vec();
+        for &ax in &axes {
+            if (ax as usize) < reduced_shape.len() {
+                if keep_dims {
+                    reduced_shape[ax as usize] = 1;
+                } else {
+                    reduced_shape.remove(ax as usize);
+                }
+            }
+        }
+        if reduced_shape.is_empty() {
+            reduced_shape.push(1); // scalar result
+        }
+
+        let prefix = match op {
+            Operation::ReduceL1 { .. } => "rl1",
+            Operation::ReduceL2 { .. } => "rl2",
+            Operation::ReduceLogSum { .. } => "rls",
+            Operation::ReduceLogSumExp { .. } => "rlse",
+            Operation::ReduceSumSquare { .. } => "rss",
+            _ => "red",
+        };
+
+        let cur = match op {
+            Operation::ReduceL1 { .. } => {
+                let abs_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ABS,
+                    [in_tensor],
+                    &format!("{prefix}_abs"),
+                    in_shape,
+                    in_type
+                );
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUM,
+                    [abs_val, axes_tensor as i32],
+                    &format!("{prefix}_sum"),
+                    &reduced_shape,
+                    in_type
+                )
+            }
+            Operation::ReduceL2 { .. } => {
+                // rsqrt(x*x) or just one path: mul→sum→sqrt
+                // Actually: sqrt(sum(x*x)) — wait that's the Frobenius norm.
+                // Per WebNN: reduceL2 = sqrt(reduce_sum_square(x)).
+                // So: sum(x*x, axes) then sqrt.
+                // emit_op! / reduce_op! can't handle SUM with axes parameter,
+                // so we inline the reduction.
+                let squared = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MUL,
+                    [in_tensor, in_tensor],
+                    &format!("{prefix}_sq"),
+                    in_shape,
+                    in_type
+                );
+                let sum_tensor =
+                    self.add_tensor(&format!("{prefix}_sum"), &reduced_shape, in_type, 0);
+                let oc_sum = self.add_opcode(std_op::SUM, 1);
+                let iv_sum = self.fbb.create_vector(&[squared, axes_tensor as i32]);
+                let ov_sum = self.fbb.create_vector(&[sum_tensor as i32]);
+                let ro = tflite::ReducerOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReducerOptionsArgs { keep_dims },
+                );
+                operator_offsets.push(tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_sum,
+                        inputs: Some(iv_sum),
+                        outputs: Some(ov_sum),
+                        builtin_options: Some(ro.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::ReducerOptions,
+                        ..Default::default()
+                    },
+                ));
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SQRT,
+                    [sum_tensor as i32],
+                    &format!("{prefix}_sqrt"),
+                    &reduced_shape,
+                    in_type
+                )
+            }
+            Operation::ReduceLogSum { .. } => {
+                let sum_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUM,
+                    [in_tensor, axes_tensor as i32],
+                    &format!("{prefix}_sum"),
+                    &reduced_shape,
+                    in_type
+                );
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::LOG,
+                    [sum_val],
+                    &format!("{prefix}_log"),
+                    &reduced_shape,
+                    in_type
+                )
+            }
+            Operation::ReduceLogSumExp { .. } => {
+                // Stable: log(sum(exp(x - max))) + max to avoid overflow/underflow.
+                // Step 1: reduce_max to get max over reduction axes
+                let max_tensor =
+                    self.add_tensor(&format!("{prefix}_max"), &reduced_shape, in_type, 0);
+                let oc_max = self.add_opcode(std_op::REDUCE_MAX, 1);
+                let iv_max = self.fbb.create_vector(&[in_tensor, axes_tensor as i32]);
+                let ov_max = self.fbb.create_vector(&[max_tensor as i32]);
+                let ro = tflite::ReducerOptions::create(
+                    &mut self.fbb,
+                    &tflite::ReducerOptionsArgs { keep_dims },
+                );
+                operator_offsets.push(tflite::Operator::create(
+                    &mut self.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: oc_max,
+                        inputs: Some(iv_max),
+                        outputs: Some(ov_max),
+                        builtin_options: Some(ro.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::ReducerOptions,
+                        ..Default::default()
+                    },
+                ));
+
+                // x - max (with broadcast: if keep_dims, TFLite handles; else expand)
+                let stabilized = if keep_dims {
+                    emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::SUB,
+                        [in_tensor, max_tensor as i32],
+                        &format!("{prefix}_stab"),
+                        in_shape,
+                        in_type
+                    )
+                } else {
+                    // Expand max from reduced shape back to full input shape
+                    let expanded =
+                        self.add_tensor(&format!("{prefix}_max_expand"), in_shape, in_type, 0);
+                    let shape_bytes: Vec<u8> =
+                        in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
+                    let shape_const = self.add_constant(
+                        &format!("{prefix}_expand_shape"),
+                        &[in_shape.len() as i32],
+                        tflite::TensorType::INT32,
+                        &shape_bytes,
+                    );
+                    let oc_exp = self.add_opcode(std_op::BROADCAST_TO, 1);
+                    let iv_exp = self
+                        .fbb
+                        .create_vector(&[max_tensor as i32, shape_const as i32]);
+                    let ov_exp = self.fbb.create_vector(&[expanded as i32]);
+                    operator_offsets.push(tflite::Operator::create(
+                        &mut self.fbb,
+                        &tflite::OperatorArgs {
+                            opcode_index: oc_exp,
+                            inputs: Some(iv_exp),
+                            outputs: Some(ov_exp),
+                            builtin_options: None,
+                            builtin_options_type: tflite::BuiltinOptions::NONE,
+                            ..Default::default()
+                        },
+                    ));
+                    emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::SUB,
+                        [in_tensor, expanded as i32],
+                        &format!("{prefix}_stab"),
+                        in_shape,
+                        in_type
+                    )
+                };
+                // exp(x - max)
+                let exp_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::EXP,
+                    [stabilized],
+                    &format!("{prefix}_exp"),
+                    in_shape,
+                    in_type
+                );
+                // sum(exp(x - max))
+                let sum_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUM,
+                    [exp_val, axes_tensor as i32],
+                    &format!("{prefix}_sum"),
+                    &reduced_shape,
+                    in_type
+                );
+                // log(sum)
+                let log_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::LOG,
+                    [sum_val],
+                    &format!("{prefix}_log"),
+                    &reduced_shape,
+                    in_type
+                );
+                // + max
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ADD,
+                    [log_val, max_tensor as i32],
+                    &format!("{prefix}_out"),
+                    &reduced_shape,
+                    in_type
+                )
+            }
+            Operation::ReduceSumSquare { .. } => {
+                let squared = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MUL,
+                    [in_tensor, in_tensor],
+                    &format!("{prefix}_sq"),
+                    in_shape,
+                    in_type
+                );
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUM,
+                    [squared, axes_tensor as i32],
+                    &format!("{prefix}_sum"),
+                    &reduced_shape,
+                    in_type
+                )
+            }
+            _ => return false,
+        };
+        tensor_map.insert(out_id, cur as u32);
+        true
     }
 
     /// Identity: emit RESHAPE with same shape (Chromium/Servo approach).
@@ -2705,6 +3081,26 @@ fn build_native_operators<'a>(
             in_type,
         );
 
+        // compare_ops: isNaN, isInfinite (decomposed from notEqual / greater + abs)
+        decomposed |= ctx.build_compare_ops(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
+        // reduce_ops: reduceL1, reduceL2, reduceLogSum, reduceLogSumExp, reduceSumSquare
+        decomposed |= ctx.build_reduce_ops(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
         if decomposed {
             continue;
         }
@@ -2755,6 +3151,14 @@ fn build_native_operators<'a>(
         // Reduce ops: add axes input, handle empty-axes identity.
         if build_reduce_inputs(ctx, op, &mut tensor_map, input_id, &in_shape, &mut inputs)? {
             continue;
+        }
+
+        // Slice 0D no-op: empty starts/sizes on scalar = identity.
+        if let Operation::Slice { starts, sizes, .. } = op {
+            if in_shape.is_empty() && starts.is_empty() && sizes.is_empty() {
+                tensor_map.insert(op.outputs()[0], in_tensor as u32);
+                continue;
+            }
         }
 
         // Shape ops: add extra input tensors (expand, transpose, slice, pad, etc.).
