@@ -31,9 +31,10 @@ default = []
 dynamic-inputs = []
 coreml-runtime = ["objc", "block", "dep:tempfile"]
 onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
-trtx-runtime = ["trtx", "cudarc"]
+trtx-runtime = ["trtx", "cudarc", "zstd-cache-compression"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
+zstd-cache-compression = ["dep:zstd"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -68,6 +69,7 @@ log = "0.4.29"
 pretty_env_logger = "0.5.0"
 seahash = "4.1.0"
 dirs = "6.0.0"
+zstd = { version = "0.13", optional = true }
 
 # The exception feature is needed to avoid undefined behavior when objc throws exceptions
 objc = { version = "0.2", optional = true, features = [] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2

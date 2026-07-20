@@ -81,6 +81,56 @@ impl<'cache> PersistentCache<'cache> for SimpleFileCache {
 
 pub type DefaultCache = SimpleFileCache;
 
+#[cfg(feature = "zstd-cache-compression")]
+#[derive(Debug)]
+pub struct ZstdCompressedFileCache {
+    root_path: PathBuf,
+}
+
+#[cfg(feature = "zstd-cache-compression")]
+impl ZstdCompressedFileCache {
+    fn cache_path(&self, key: &str) -> PathBuf {
+        self.root_path.join(format!("{key}.zstd"))
+    }
+}
+
+#[cfg(feature = "zstd-cache-compression")]
+impl<'cache> PersistentCache<'cache> for ZstdCompressedFileCache {
+    fn new(category: &str) -> CacheResult<Self> {
+        let root_path = dirs::cache_dir()
+            .map(|dir| dir.join("rustnn").join(category))
+            .ok_or(CacheError::FailedToDetermineCachePath)?;
+        std::fs::create_dir_all(&root_path).map_err(|e| CacheError::FailedToCreateCachePath {
+            path: root_path.clone(),
+            source: e,
+        })?;
+        Ok(Self { root_path })
+    }
+
+    fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>> {
+        debug!("Looking up compressed cache key: {key}");
+        let cache_path = self.cache_path(key);
+        read_zstd_cache_file(&cache_path)
+            .map_err(|e| CacheError::FailedToReadCacheFile {
+                path: cache_path.clone(),
+                source: e,
+            })
+            .map(Cow::Owned)
+    }
+
+    fn set(&self, key: &str, data: &[u8]) -> CacheResult<()> {
+        debug!(
+            "Setting compressed cache key: {key} with {} bytes",
+            data.len()
+        );
+        let cache_path = self.cache_path(key);
+        write_zstd_cache_file(&cache_path, data).map_err(|e| CacheError::FailedToWriteCacheFile {
+            path: cache_path.clone(),
+            source: e,
+        })
+    }
+}
+
 pub(crate) fn read_cache_file(cache_path: &Path) -> std::io::Result<Vec<u8>> {
     debug!("Reading cache file {cache_path:?}");
     let mut file = File::open(cache_path)?;
@@ -98,4 +148,48 @@ pub(crate) fn write_cache_file(cache_path: &Path, content: &[u8]) -> std::io::Re
     file.lock()?;
     file.write_all(content)?;
     Ok(())
+}
+
+#[cfg(feature = "zstd-cache-compression")]
+pub(crate) fn read_zstd_cache_file(cache_path: &Path) -> std::io::Result<Vec<u8>> {
+    debug!("Reading compressed cache file {cache_path:?}");
+    let file = File::open(cache_path)?;
+    let mut decoder = zstd::stream::read::Decoder::new(file)?;
+    let mut buffer = Vec::new();
+    decoder.read_to_end(&mut buffer)?;
+    Ok(buffer)
+}
+
+#[cfg(feature = "zstd-cache-compression")]
+pub(crate) fn write_zstd_cache_file(cache_path: &Path, content: &[u8]) -> std::io::Result<()> {
+    debug!(
+        "Trying to write {} bytes to compressed cache file {cache_path:?}",
+        content.len()
+    );
+    let file = File::create(cache_path)?;
+    file.lock()?;
+    let mut encoder = zstd::stream::write::Encoder::new(file, 0)?;
+    encoder.write_all(content)?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[cfg(all(test, feature = "zstd-cache-compression"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zstd_cache_round_trip_uses_zstd_file_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = ZstdCompressedFileCache {
+            root_path: directory.path().to_path_buf(),
+        };
+        let content = b"repeated cache data repeated cache data repeated cache data";
+
+        cache.set("engine", content).unwrap();
+
+        assert!(!directory.path().join("engine").exists());
+        assert!(directory.path().join("engine.zstd").exists());
+        assert_eq!(cache.get("engine").unwrap().as_ref(), content);
+    }
 }

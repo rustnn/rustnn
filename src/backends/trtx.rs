@@ -22,8 +22,11 @@ use trtx::host_memory::HostMemory;
 
 use crate::GraphInfo;
 use crate::backends::caching::CacheResult;
-use crate::backends::caching::DefaultCache;
+#[cfg(not(feature = "zstd-cache-compression"))]
+use crate::backends::caching::DefaultCache as TrtxCache;
 use crate::backends::caching::PersistentCache;
+#[cfg(feature = "zstd-cache-compression")]
+use crate::backends::caching::ZstdCompressedFileCache as TrtxCache;
 use crate::converters::TrtxConverter;
 use crate::error::Error;
 
@@ -311,8 +314,7 @@ impl std::fmt::Debug for TrtxBuilder<'_> {
 
 const SOURCE_HASH: &str = include_str!(concat!(env!("OUT_DIR"), "/source_hash.txt"));
 
-static ENGINE_CACHE: LazyLock<CacheResult<DefaultCache>> =
-    LazyLock::new(|| DefaultCache::new("trtx"));
+static ENGINE_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCache::new("trtx"));
 static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
     format!(
         "trtx_{}.{}.{}_{}",
