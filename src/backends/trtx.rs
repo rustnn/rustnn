@@ -719,6 +719,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             array.as_ptr(),
             array.len(),
         );
+        stream.context().bind_to_thread()?;
         stream
             .memcpy_dtoh(&cuda_tensor.memory, array)
             .to_read_tensor_result(|| tensor.clone())?;
@@ -735,6 +736,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<()> {
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
+        stream.context().bind_to_thread()?;
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
             array.as_ptr(),
@@ -802,6 +804,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                     .set_output_tensor_address(output, ptr as *mut c_void)
                     .to_dispatch_result()?
             };
+            let event = cuda_tensor.stream.record_event(None).to_dispatch_result()?;
+            inference_stream.wait(&event).to_dispatch_result()?;
+            self.events.push(event);
         }
 
         if cuda_graphs_enabled {
@@ -809,8 +814,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
                 cuda_graph.launch(inference_stream).to_dispatch_result()?;
             } else {
-                let capture_stream = self.cuda_ctx.new_stream()?;
-                capture_stream
+                // TensorRT-RTX performs setup and JIT work on the first enqueue. Complete that
+                // work before capturing the second enqueue so capture only contains inference.
+                enqueue_inference_v3(&mut graph.exec, inference_stream)?;
+                inference_stream.synchronize().to_dispatch_result()?;
+                inference_stream
                     .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
                     .to_dispatch_result()?;
                 if let Err(source) = unsafe {
@@ -819,7 +827,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                         .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
                 } {
                     if let Ok(captured_graph) =
-                        unsafe { result::stream::end_capture(capture_stream.cu_stream()) }
+                        unsafe { result::stream::end_capture(inference_stream.cu_stream()) }
                         && !captured_graph.is_null()
                     {
                         let _ = unsafe { result::graph::destroy(captured_graph) };
@@ -829,8 +837,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                     });
                 }
                 let cuda_graph =
-                    CapturedCudaGraph::finish_capture(&capture_stream).to_dispatch_result()?;
-                cuda_graph.launch(inference_stream).to_dispatch_result()?;
+                    CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
+                // The uncaptured warm-up produced this dispatch's output. Replay on cache hits.
                 graph.cuda_graphs.insert(io_pointers, cuda_graph);
             }
         } else {

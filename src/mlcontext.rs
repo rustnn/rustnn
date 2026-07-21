@@ -739,6 +739,35 @@ webnn_graph "sample_graph" v1 {
         assert_eq!(&vec![2.0f32, 3., 4., 5.], &download);
     }
 
+    #[cfg(feature = "trtx-runtime")]
+    #[test]
+    fn test_trtx_cuda_graph_replay() {
+        let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
+            return;
+        };
+        if context.rustnn_backend() != Backend::Trtx {
+            return;
+        }
+
+        let desc = rw_tensor_desc([2, 2].to_vec());
+        let input_tensor = context.create_tensor(&desc).unwrap();
+        let output_tensor = context.create_tensor(&desc).unwrap();
+        let inputs = HashMap::from([("lhs", &input_tensor)]);
+        let outputs = HashMap::from([("sum", &output_tensor)]);
+
+        for upload in [vec![1.0f32, 2., 3., 4.], vec![5.0f32, 6., 7., 8.]] {
+            context.write_tensor(&input_tensor, &upload).unwrap();
+            context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+
+            let mut download = vec![0.0f32; 4];
+            context.read_tensor(&output_tensor, &mut download).unwrap();
+            assert_eq!(
+                upload.iter().map(|value| value + 1.0).collect::<Vec<_>>(),
+                download
+            );
+        }
+    }
+
     #[test]
     fn test_dispatch_invalid_input_name_error_message() {
         let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
