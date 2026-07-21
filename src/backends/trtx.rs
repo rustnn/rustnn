@@ -412,6 +412,8 @@ fn jit_cache_disk_key(device_cache_id: &str) -> String {
 // RuntimeCache owns its TensorRT IRuntimeCache and does not borrow the engine. The lifetime in
 // trtx::RuntimeCache is represented only by PhantomData, so erase it while the cache is held in
 // the process-global map and restore the current engine lifetime when cloning it out.
+//
+// Needs to be fixed next trtx release. See https://github.com/rustnn/trtx-rs/pull/129
 #[cfg(not(feature = "trtx-enterprise"))]
 fn into_global_runtime_cache<'engine>(
     cache: Arc<Mutex<trtx::RuntimeCache<'engine>>>,
