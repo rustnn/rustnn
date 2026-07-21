@@ -155,6 +155,7 @@ pub(crate) struct TrtxGraph<'context> {
     _engine: CudaEngine<'context>,
     cuda_stream: Arc<CudaStream>,
     cuda_graphs: HashMap<Vec<(bool, String, usize)>, CapturedCudaGraph>,
+    inference_count: u64,
 }
 
 struct CapturedCudaGraph {
@@ -221,6 +222,7 @@ impl std::fmt::Debug for TrtxGraph<'_> {
             .field("exec", &self.exec.name())
             .field("cuda_stream", &self.cuda_stream)
             .field("cuda_graph_count", &self.cuda_graphs.len())
+            .field("inference_count", &self.inference_count)
             .finish()
     }
 }
@@ -625,6 +627,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                     .new_stream()
                     .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
                 cuda_graphs: HashMap::new(),
+                inference_count: 0,
             }),
             &graph,
         )
@@ -813,10 +816,11 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             io_pointers.sort_unstable();
             if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
                 cuda_graph.launch(inference_stream).to_dispatch_result()?;
-            } else {
-                // TensorRT-RTX performs setup and JIT work on the first enqueue. Complete that
-                // work before capturing the second enqueue so capture only contains inference.
+            } else if graph.inference_count == 0 {
+                // TensorRT-RTX performs setup and JIT work on the first enqueue. Run that
+                // inference normally; the next dispatch can safely capture its enqueue.
                 enqueue_inference_v3(&mut graph.exec, inference_stream)?;
+            } else {
                 inference_stream.synchronize().to_dispatch_result()?;
                 inference_stream
                     .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
@@ -838,12 +842,13 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 }
                 let cuda_graph =
                     CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
-                // The uncaptured warm-up produced this dispatch's output. Replay on cache hits.
+                cuda_graph.launch(inference_stream).to_dispatch_result()?;
                 graph.cuda_graphs.insert(io_pointers, cuda_graph);
             }
         } else {
             enqueue_inference_v3(&mut graph.exec, inference_stream)?;
         }
+        graph.inference_count = graph.inference_count.saturating_add(1);
         let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
         for tensor in outputs.values() {
             let cuda_tensor = &mut self.tensors[tensor.id];

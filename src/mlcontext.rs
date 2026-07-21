@@ -755,7 +755,11 @@ webnn_graph "sample_graph" v1 {
         let inputs = HashMap::from([("lhs", &input_tensor)]);
         let outputs = HashMap::from([("sum", &output_tensor)]);
 
-        for upload in [vec![1.0f32, 2., 3., 4.], vec![5.0f32, 6., 7., 8.]] {
+        for upload in [
+            vec![1.0f32, 2., 3., 4.],
+            vec![5.0f32, 6., 7., 8.],
+            vec![9.0f32, 10., 11., 12.],
+        ] {
             context.write_tensor(&input_tensor, &upload).unwrap();
             context.dispatch(&mut graph, &inputs, &outputs).unwrap();
 
