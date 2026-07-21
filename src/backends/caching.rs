@@ -144,10 +144,28 @@ pub(crate) fn write_cache_file(cache_path: &Path, content: &[u8]) -> std::io::Re
         "Trying to write {} bytes to cache file {cache_path:?}",
         content.len()
     );
-    let mut file = File::create(cache_path)?;
-    file.lock()?;
-    file.write_all(content)?;
-    Ok(())
+    write_cache_file_atomically(cache_path, |file| file.write_all(content))
+}
+
+fn write_cache_file_atomically(
+    cache_path: &Path,
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let parent = cache_path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("cache path has no parent: {cache_path:?}"),
+        )
+    })?;
+    let mut temporary_file = tempfile::Builder::new()
+        .prefix(".rustnn-cache-")
+        .tempfile_in(parent)?;
+    write(temporary_file.as_file_mut())?;
+    temporary_file.as_file_mut().sync_all()?;
+    temporary_file
+        .persist(cache_path)
+        .map(|_| ())
+        .map_err(|error| error.error)
 }
 
 #[cfg(feature = "zstd-cache-compression")]
@@ -166,12 +184,12 @@ pub(crate) fn write_zstd_cache_file(cache_path: &Path, content: &[u8]) -> std::i
         "Trying to write {} bytes to compressed cache file {cache_path:?}",
         content.len()
     );
-    let file = File::create(cache_path)?;
-    file.lock()?;
-    let mut encoder = zstd::stream::write::Encoder::new(file, 0)?;
-    encoder.write_all(content)?;
-    encoder.finish()?;
-    Ok(())
+    write_cache_file_atomically(cache_path, |file| {
+        let mut encoder = zstd::stream::write::Encoder::new(file, 0)?;
+        encoder.write_all(content)?;
+        encoder.finish()?;
+        Ok(())
+    })
 }
 
 #[cfg(all(test, feature = "zstd-cache-compression"))]

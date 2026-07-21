@@ -29,8 +29,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 [features]
 default = []
 dynamic-inputs = []
-coreml-runtime = ["objc", "block", "dep:tempfile"]
-onnx-runtime = ["ort", "ndarray", "dep:tempfile"]
+coreml-runtime = ["objc", "block"]
+onnx-runtime = ["ort", "ndarray"]
 trtx-runtime = ["trtx", "cudarc", "zstd-cache-compression"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
@@ -48,7 +48,7 @@ prost-types = "0.12"
 bytes = "1.6"
 bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
-tempfile = { version = "3.8", optional = true }
+tempfile = "3.27"
 ort = { version = "=2.0.0-rc.12", optional = true, features = [
     "ndarray",
     "half",
@@ -86,7 +86,6 @@ seahash = "4.1.0"
 
 [dev-dependencies]
 tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
-tempfile = "3.8"
 half = "2.4"
 insta = { version = "1.47.2", features = ["yaml"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
