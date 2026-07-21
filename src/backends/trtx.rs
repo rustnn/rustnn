@@ -186,9 +186,9 @@ impl CapturedCudaGraph {
         })
     }
 
-    fn launch(&self) -> std::result::Result<(), DriverError> {
-        self.stream.context().bind_to_thread()?;
-        unsafe { result::graph::launch(self.executable, self.stream.cu_stream()) }
+    fn launch(&self, cuda_stream: &CudaStream) -> std::result::Result<(), DriverError> {
+        cuda_stream.context().bind_to_thread()?;
+        unsafe { result::graph::launch(self.executable, cuda_stream.cu_stream()) }
     }
 }
 
@@ -755,6 +755,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         inputs: &HashMap<&str, &MLTensor>,
         outputs: &HashMap<&str, &MLTensor>,
     ) -> crate::error::Result<()> {
+        self.cuda_ctx.bind_to_thread()?;
+
         let graph = graph
             .backend
             .as_trtx_engine_mut()
@@ -805,9 +807,10 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         if cuda_graphs_enabled {
             io_pointers.sort_unstable();
             if let Some(cuda_graph) = graph.cuda_graphs.get(&io_pointers) {
-                cuda_graph.launch().to_dispatch_result()?;
+                cuda_graph.launch(inference_stream).to_dispatch_result()?;
             } else {
-                inference_stream
+                let capture_stream = self.cuda_ctx.new_stream()?;
+                capture_stream
                     .begin_capture(sys::CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_THREAD_LOCAL)
                     .to_dispatch_result()?;
                 if let Err(source) = unsafe {
@@ -816,7 +819,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                         .enqueue_v3(inference_stream.cu_stream() as *mut c_void)
                 } {
                     if let Ok(captured_graph) =
-                        unsafe { result::stream::end_capture(inference_stream.cu_stream()) }
+                        unsafe { result::stream::end_capture(capture_stream.cu_stream()) }
                         && !captured_graph.is_null()
                     {
                         let _ = unsafe { result::graph::destroy(captured_graph) };
@@ -826,8 +829,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                     });
                 }
                 let cuda_graph =
-                    CapturedCudaGraph::finish_capture(inference_stream).to_dispatch_result()?;
-                cuda_graph.launch().to_dispatch_result()?;
+                    CapturedCudaGraph::finish_capture(&capture_stream).to_dispatch_result()?;
+                cuda_graph.launch(inference_stream).to_dispatch_result()?;
                 graph.cuda_graphs.insert(io_pointers, cuda_graph);
             }
         } else {
