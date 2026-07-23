@@ -86,7 +86,7 @@ jobs:
         run: cargo +1.95.0 check --no-default-features --features onnx-runtime
 
       - name: Run cargo check (TensorRT)
-        run: cargo +1.95.0 check -F trtx-runtime
+        run: cargo +1.96.0 check -F trtx-runtime --all-targets
 
       - name: Run cargo check (LiteRT)
         run: cargo +1.95.0 check --features litert-runtime
