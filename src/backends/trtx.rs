@@ -976,10 +976,7 @@ impl ListDevices for TrtxContext<'_> {
 #[cfg(feature = "trtx-runtime")]
 mod tests {
     use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
-    use crate::{
-        backends::trtx::{TrtxContext, format_cuda_device_cache_id},
-        mlcontext::ListDevices,
-    };
+    use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
 
     #[test]
     fn test_context_creation() {
