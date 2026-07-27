@@ -1,19 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-expand.https.any.js expand float32 3D tensor to 3D, litert
- Failed to build graph: failed to compile model: Failed to dispatch graph: LiteRT status error: code=3
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    expandInput: f32[1, 2, 1];
-  }
-
-  nodes {
-    [expandOutput] = expand(expandInput, label="");
-  }
-
-  outputs { expandOutput; }
-}
+(
+    "expand.https.any.js",
+    "expand float32 3D tensor to 3D",
+    "litert",
+    "PASS",
+)

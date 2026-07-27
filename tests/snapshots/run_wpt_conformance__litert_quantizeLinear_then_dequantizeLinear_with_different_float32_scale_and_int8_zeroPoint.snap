@@ -1,10 +1,9 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 dequantizeLinear.https.any.js quantizeLinear then dequantizeLinear with different float32 scale and int8 zeroPoint, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: QuantizeLinear { input: 2, scale: 3, zero_point: Some(4), options: Some(MLOperatorOptions { label: "" }), outputs: [5] }
+ Failed to dispatch graph: LiteRT status error: code=3
 
 --- built graph ---
 webnn_graph "graph" v2 {

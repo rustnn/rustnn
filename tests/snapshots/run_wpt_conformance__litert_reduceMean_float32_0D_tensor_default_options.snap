@@ -3,10 +3,10 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 reduce_mean.https.any.js reduceMean float32 0D tensor default options, litert
- reduce_mean :: reduceMean float32 0D tensor default options: index 0: actual=0.000000000000000000000000000000000000000000001 expected=95.844986 ulp=1119858849 tolerance=16
+ reduce_mean :: reduceMean float32 0D tensor default options: index 0: actual=0.000006603975 expected=95.844986 ulp=199366891 tolerance=16
   inputs: reduceMeanInput: [95.84498596191406]
   expected reduceMeanOutput: [95.844986]
-  actual reduceMeanOutput: [0.000000000000000000000000000000000000000000001]
+  actual reduceMeanOutput: [0.000006603975]
 
 --- built graph ---
 webnn_graph "graph" v2 {
