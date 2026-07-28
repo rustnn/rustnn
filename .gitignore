@@ -54,3 +54,4 @@ env/
 *~
 .DS_Store
 *.snap.new
+*.bak
