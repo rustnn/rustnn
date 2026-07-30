@@ -3,7 +3,14 @@ source: tests/run_wpt_conformance.rs
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 resample2d.https.any.js resample2d(upsample) float32 4D tensor options.axes=[1, 2], litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Resample2d { input: 0, options: Some(MLResample2dOptions { label: "", mode: "", scales: [], sizes: Some([4, 6]), axes: [1, 2] }), outputs: [1] }
+ resample2d :: resample2d(upsample) float32 4D tensor options.axes=[1, 2]: index 1: actual=50.959328 expected=59.92947 ulp=2351469 tolerance=4
+  inputs: resample2dInput: [59.92947006225586, 41.98918914794922, 66.39534759521484, 90.7006607055664, 86.95105743408203, 79.10005187988281]
+  expected resample2dOutput: [59.92947, 59.92947, 41.98919, 41.98919, 66.39535, 66.39535, 59.92947, 59.92947, 41.98919, 41.98919 ...] (len=24)
+  actual resample2dOutput: [59.92947, 50.959328, 41.98919, 54.19227, 66.39535, 66.39535, 75.31506, 69.89259, 64.47012, 68.60892 ...] (len=24)
+  expected resample2dOutput full nd:
+[59.92947, 59.92947, 41.98919, 41.98919, 66.39535, 66.39535, 59.92947, 59.92947, 41.98919, 41.98919, ...] (len=24, shape=[1, 4, 6, 1])
+  actual resample2dOutput full nd:
+[59.92947, 50.959328, 41.98919, 54.19227, 66.39535, 66.39535, 75.31506, 69.89259, 64.47012, 68.60892, ...] (len=24, shape=[1, 4, 6, 1])
 
 --- built graph ---
 webnn_graph "graph" v2 {

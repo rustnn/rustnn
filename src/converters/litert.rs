@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Shubham Gupta <shubhamg13.work@gmail.com>
+//
+// SPDX-License-Identifier: Apache-2
+
 //! TFLite FlatBuffer converter for WebNN graphs.
 //!
 //! Converts WebNN GraphInfo directly to TFLite flatbuffers using the
@@ -973,6 +977,160 @@ impl<'a> TfliteContext<'a> {
         }
     }
 
+    /// Emit a TFLite CAST operator.
+    fn emit_cast_op(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        out_tensor: i32,
+        out_type: tflite::TensorType,
+    ) {
+        let oc_idx = self.add_opcode(53, 1);
+        let iv = self.fbb.create_vector(&[in_tensor]);
+        let ov = self.fbb.create_vector(&[out_tensor]);
+        let co = tflite::CastOptions::create(
+            &mut self.fbb,
+            &tflite::CastOptionsArgs {
+                in_data_type: tflite::TensorType::INT32,
+                out_data_type: out_type,
+            },
+        );
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc_idx,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(co.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::CastOptions,
+                ..Default::default()
+            },
+        ));
+    }
+
+    /// DequantizeLinear: (cast(input, f32) - cast(zeroPoint, f32)) * scale.
+    /// QuantizeLinear: ROUND(input / scale) + zeroPoint.
+    fn build_quantize_ops(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let out_id = op.outputs()[0];
+        let out_shape: Vec<i32> = graph
+            .operand(out_id)
+            .map(|o| {
+                o.descriptor
+                    .shape
+                    .iter()
+                    .map(|d| match d {
+                        crate::graph::Dimension::Static(v) => *v as i32,
+                        _ => 1,
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![1]);
+        let in_type = tflite::TensorType::FLOAT32;
+        match op {
+            Operation::DequantizeLinear {
+                input,
+                scale: scale_id,
+                zero_point,
+                ..
+            } => {
+                let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
+                let scale_t = *tensor_map.get(scale_id).unwrap_or(scale_id) as i32;
+                let zp_id = zero_point.unwrap_or(*input);
+                let zp_t = *tensor_map.get(&zp_id).unwrap_or(&zp_id) as i32;
+
+                // Cast int inputs to float32 before arithmetic (TFLite SUB needs same type)
+                let float_in =
+                    self.add_tensor(&format!("dq_cast_in_{out_id}"), &out_shape, in_type, 0);
+                self.emit_cast_op(
+                    operator_offsets,
+                    in_t,
+                    float_in as i32,
+                    tflite::TensorType::FLOAT32,
+                );
+                let float_zp =
+                    self.add_tensor(&format!("dq_cast_zp_{out_id}"), &out_shape, in_type, 0);
+                self.emit_cast_op(
+                    operator_offsets,
+                    zp_t,
+                    float_zp as i32,
+                    tflite::TensorType::FLOAT32,
+                );
+
+                let sub_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUB,
+                    [float_in as i32, float_zp as i32],
+                    &format!("dq_sub_{out_id}"),
+                    &out_shape,
+                    in_type
+                );
+                let out = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::MUL,
+                    [sub_val, scale_t],
+                    &format!("dq_out_{out_id}"),
+                    &out_shape,
+                    in_type
+                );
+                tensor_map.insert(out_id, out as u32);
+                true
+            }
+            Operation::QuantizeLinear {
+                input,
+                scale: scale_id,
+                zero_point,
+                ..
+            } => {
+                let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
+                let scale_t = *tensor_map.get(scale_id).unwrap_or(scale_id) as i32;
+
+                let div_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::DIV,
+                    [in_t, scale_t],
+                    &format!("q_div_{out_id}"),
+                    &out_shape,
+                    in_type
+                );
+                let round_val = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ROUND,
+                    [div_val],
+                    &format!("q_round_{out_id}"),
+                    &out_shape,
+                    in_type
+                );
+                let cur = if let Some(zp) = zero_point {
+                    let zp_t = *tensor_map.get(&zp).unwrap_or(&zp) as i32;
+                    emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::ADD,
+                        [round_val, zp_t],
+                        &format!("q_out_{out_id}"),
+                        &out_shape,
+                        in_type
+                    )
+                } else {
+                    round_val
+                };
+                tensor_map.insert(out_id, cur as u32);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn build_math_ops(
         &mut self,
         op: &Operation,
@@ -1136,6 +1294,205 @@ impl<'a> TfliteContext<'a> {
                 in_type
             );
             tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // Erf: Gauss error function via Abramowitz & Stegun 7.1.26 approximation.
+        // erf(x) ≈ sign(x) * (1 - 1 / p⁴) where p = 1 + a1*|x| + a2*x² + a3*|x|³ + a4*|x|⁴
+        if let Operation::Erf { .. } = op {
+            let out_id = op.outputs()[0];
+            let p1 = scalar_const!(self, "erf_a1", 0.278393f32, in_type);
+            let p2 = scalar_const!(self, "erf_a2", 0.230389f32, in_type);
+            let p3 = scalar_const!(self, "erf_a3", 0.000972f32, in_type);
+            let p4 = scalar_const!(self, "erf_a4", 0.078108f32, in_type);
+            let one = scalar_const!(self, "erf_one", 1.0f32, in_type);
+
+            // |x|
+            let abs_x = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ABS,
+                [in_tensor],
+                "erf_abs",
+                in_shape,
+                in_type
+            );
+
+            // x²
+            let x2 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [abs_x, abs_x],
+                "erf_x2",
+                in_shape,
+                in_type
+            );
+
+            // |x|³
+            let x3 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [abs_x, x2],
+                "erf_x3",
+                in_shape,
+                in_type
+            );
+
+            // |x|⁴ = x² * x²
+            let x4 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [x2, x2],
+                "erf_x4",
+                in_shape,
+                in_type
+            );
+
+            // a1*|x|
+            let t1 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p1, abs_x],
+                "erf_t1",
+                in_shape,
+                in_type
+            );
+            // a2*x²
+            let t2 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p2, x2],
+                "erf_t2",
+                in_shape,
+                in_type
+            );
+            // a3*|x|³
+            let t3 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p3, x3],
+                "erf_t3",
+                in_shape,
+                in_type
+            );
+            // a4*|x|⁴
+            let t4 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p4, x4],
+                "erf_t4",
+                in_shape,
+                in_type
+            );
+
+            // p = 1 + t1 + t2 + t3 + t4
+            let p_sum12 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [t1, t2],
+                "erf_s12",
+                in_shape,
+                in_type
+            );
+            let p_sum34 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [t3, t4],
+                "erf_s34",
+                in_shape,
+                in_type
+            );
+            let p_sum1234 = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [p_sum12, p_sum34],
+                "erf_s1234",
+                in_shape,
+                in_type
+            );
+            let p_val = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [one, p_sum1234],
+                "erf_p",
+                in_shape,
+                in_type
+            );
+
+            // p²
+            let p2_val = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p_val, p_val],
+                "erf_p2",
+                in_shape,
+                in_type
+            );
+            // p⁴
+            let p4_val = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [p2_val, p2_val],
+                "erf_p4",
+                in_shape,
+                in_type
+            );
+
+            // 1/p⁴
+            let inv = emit_op!(
+                self,
+                operator_offsets,
+                std_op::DIV,
+                [one, p4_val],
+                "erf_inv",
+                in_shape,
+                in_type
+            );
+
+            // 1 - 1/p⁴
+            let val = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SUB,
+                [one, inv],
+                "erf_val",
+                in_shape,
+                in_type
+            );
+
+            // sign(x) * val
+            let sign_x = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SIGN,
+                [in_tensor],
+                "erf_sign",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [sign_x, val],
+                "erf_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(out_id, out as u32);
             return true;
         }
 
@@ -1410,7 +1767,7 @@ impl<'a> TfliteContext<'a> {
                     },
                 );
                 operator_offsets.push(tfl_op);
-                tensor_map.insert(out_id, out_tensor);
+                tensor_map.insert(out_id, out_tensor as u32);
                 return true;
             }
             None => (0..rank).collect(),
@@ -1737,7 +2094,7 @@ impl<'a> TfliteContext<'a> {
                     },
                 );
                 operator_offsets.push(tfl_op);
-                tensor_map.insert(out_id, out_tensor);
+                tensor_map.insert(out_id, out_tensor as u32);
             }
             return true;
         }
@@ -1961,6 +2318,850 @@ impl<'a> TfliteContext<'a> {
         None
     }
 
+    /// Triangular: keep upper/lower triangle via constant mask + multiply.
+    fn build_triangular_op(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        if let Operation::Triangular { options, .. } = op {
+            if in_shape.len() < 2 {
+                return false; // need at least 2D
+            }
+            let out_id = op.outputs()[0];
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let upper = opts.upper.unwrap_or(true);
+            let diagonal = opts.diagonal;
+
+            let rank = in_shape.len();
+            let m = in_shape[rank - 2];
+            let n = in_shape[rank - 1];
+            let m_usize = m as usize;
+            let n_usize = n as usize;
+
+            // Row shape [1, ..., 1, M, 1] and Col shape [1, ..., 1, 1, N]
+            let mut row_shape = vec![1i32; rank];
+            row_shape[rank - 2] = m;
+            row_shape[rank - 1] = 1;
+
+            let mut col_shape = vec![1i32; rank];
+            col_shape[rank - 2] = 1;
+            col_shape[rank - 1] = n;
+
+            // Row indices [0, 1, ..., M-1]
+            let mut row_data = vec![0u8; m_usize * 4];
+            for i in 0..m_usize {
+                row_data[i * 4..(i + 1) * 4].copy_from_slice(&(i as i32).to_le_bytes());
+            }
+            let rows =
+                self.add_constant("tri_rows", &row_shape, tflite::TensorType::INT32, &row_data);
+
+            // Col indices [0, 1, ..., N-1]
+            let mut col_data = vec![0u8; n_usize * 4];
+            for j in 0..n_usize {
+                col_data[j * 4..(j + 1) * 4].copy_from_slice(&(j as i32).to_le_bytes());
+            }
+            let cols =
+                self.add_constant("tri_cols", &col_shape, tflite::TensorType::INT32, &col_data);
+
+            // diagonal constant
+            let diag_buf: Vec<u8> = diagonal.to_le_bytes().to_vec();
+            let diag = self.add_constant("tri_diag", &[1], tflite::TensorType::INT32, &diag_buf);
+
+            // row_index - diagonal, broadcast to row_shape
+            let masked_rows = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SUB,
+                [rows as i32, diag as i32],
+                "tri_adj_rows",
+                &row_shape,
+                tflite::TensorType::INT32
+            );
+
+            // Comparison: broadcasts [M,1] with [1,N] → [M,N]
+            let cmp_op = if upper {
+                std_op::GREATER_EQUAL
+            } else {
+                std_op::LESS_EQUAL
+            };
+            // For upper: col >= row - diag
+            // For lower: col <= row - diag
+            let mask = emit_op!(
+                self,
+                operator_offsets,
+                cmp_op,
+                [cols as i32, masked_rows],
+                "tri_mask",
+                in_shape,
+                tflite::TensorType::INT32
+            );
+
+            // Cast int32 mask to float via properly built CAST op
+            let mask_f_tensor = self.add_tensor("tri_mask_f", in_shape, in_type, 0);
+            let oc_cast = self.add_opcode(53, 1); // CAST opcode
+            let iv_cast = self.fbb.create_vector(&[mask]);
+            let ov_cast = self.fbb.create_vector(&[mask_f_tensor as i32]);
+            let co = tflite::CastOptions::create(
+                &mut self.fbb,
+                &tflite::CastOptionsArgs {
+                    in_data_type: tflite::TensorType::INT32,
+                    out_data_type: in_type,
+                },
+            );
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_cast,
+                    inputs: Some(iv_cast),
+                    outputs: Some(ov_cast),
+                    builtin_options: Some(co.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::CastOptions,
+                    ..Default::default()
+                },
+            ));
+            let mask_f = mask_f_tensor as i32;
+
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [in_tensor, mask_f],
+                "tri_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(out_id, out as u32);
+            return true;
+        }
+        false
+    }
+
+    /// GatherElements: emulate with GATHER_ND + coordinate conversion.
+    /// Chromium-style: only supports constant indices.
+    fn build_gather_elements_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        if let Operation::GatherElements {
+            input,
+            indices: indices_op_id,
+            options,
+            ..
+        } = op
+        {
+            let out_id = op.outputs()[0];
+            let axis = options.as_ref().map(|o| o.axis).unwrap_or(0) as usize;
+
+            // Only constant indices supported (Chromium pattern)
+            let indices_data = graph
+                .constant_operand_ids_to_handles
+                .get(indices_op_id)
+                .map(|cd| cd.data.clone());
+            let indices_data = match indices_data {
+                Some(d) => d,
+                None => return false,
+            };
+
+            // Get input shape and indices shape from operands
+            let in_op = match graph.operand(*input) {
+                Some(o) => o,
+                None => return false,
+            };
+            let idx_op = match graph.operand(*indices_op_id) {
+                Some(o) => o,
+                None => return false,
+            };
+            let input_shape: Vec<i32> = in_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let indices_shape: Vec<i32> = idx_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let rank = indices_shape.len();
+            let flat_size = indices_shape.iter().product::<i32>() as usize;
+
+            // Parse int32 indices from raw bytes
+            if indices_data.len() != flat_size * 4 {
+                return false;
+            }
+            let indices_vals: Vec<i32> = indices_data
+                .chunks(4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+
+            // Clamp indices to [-N, N-1] range and handle negative
+            let axis_dim = input_shape[axis];
+            let clamped: Vec<i32> = indices_vals
+                .iter()
+                .map(|&v| {
+                    let c = v.clamp(-axis_dim, axis_dim - 1);
+                    if c < 0 { c + axis_dim } else { c }
+                })
+                .collect();
+
+            // Compute strides for indices tensor
+            let mut strides = vec![1i32; rank];
+            for i in (0..rank - 1).rev() {
+                strides[i] = strides[i + 1] * indices_shape[i + 1];
+            }
+
+            // Build coordinates: for each flat position, compute N-D coordinate
+            // then replace coordinate[axis] with the clamped index value
+            let coord_count = flat_size * rank;
+            let mut coords: Vec<i32> = vec![0i32; coord_count];
+            for flat_idx in 0..flat_size {
+                // Compute N-D coordinate of this position in indices space
+                let mut rem = flat_idx as i32;
+                for d in 0..rank {
+                    let coord = rem / strides[d];
+                    rem -= coord * strides[d];
+                    coords[flat_idx * rank + d] = coord;
+                }
+                // Replace coordinate at axis with the clamped index
+                coords[flat_idx * rank + axis] = clamped[flat_idx];
+            }
+
+            // Create coordinates constant tensor [flat_size, input_rank]
+            let coord_bytes: Vec<u8> = coords.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let coord_tensor = self.add_constant(
+                "gather_e_coords",
+                &[flat_size as i32, rank as i32],
+                tflite::TensorType::INT32,
+                &coord_bytes,
+            );
+
+            // Emit GATHER_ND with input + coordinates
+            let in_tensor_idx = *tensor_map.get(input).unwrap_or(input) as i32;
+            let gather_out_shape: Vec<i32> = vec![flat_size as i32];
+            let gather_out = self.add_tensor(
+                "gather_e_out",
+                &gather_out_shape,
+                tflite::TensorType::FLOAT32,
+                0,
+            );
+            let oc_idx = self.add_opcode(std_op::GATHER_ND, 1);
+            let iv = self
+                .fbb
+                .create_vector(&[in_tensor_idx, coord_tensor as i32]);
+            let ov = self.fbb.create_vector(&[gather_out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_idx,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    ..Default::default()
+                },
+            ));
+
+            // Reshape gather_out to indices_shape
+            let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+            let shape_bytes: Vec<u8> = indices_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = self.add_constant(
+                "gather_e_shape",
+                &[indices_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let oc_reshape = self.add_opcode(std_op::RESHAPE, 1);
+            let iv_r = self
+                .fbb
+                .create_vector(&[gather_out as i32, shape_const as i32]);
+            let ov_r = self.fbb.create_vector(&[out_tensor]);
+            let shape_vec = self.fbb.create_vector(&indices_shape);
+            let ro = tflite::ReshapeOptions::create(
+                &mut self.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_reshape,
+                    inputs: Some(iv_r),
+                    outputs: Some(ov_r),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+            tensor_map.insert(out_id, out_tensor as u32);
+            return true;
+        }
+        false
+    }
+
+    /// ScatterElements: emulate with SCATTER_ND + coordinate conversion.
+    /// Chromium-style: only supports constant int32 indices.
+    fn build_scatter_elements_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        if let Operation::ScatterElements {
+            input,
+            indices: indices_op_id,
+            updates: updates_op_id,
+            options,
+            ..
+        } = op
+        {
+            let out_id = op.outputs()[0];
+            let axis = options.as_ref().map(|o| o.axis).unwrap_or(0) as usize;
+
+            let indices_data = graph
+                .constant_operand_ids_to_handles
+                .get(indices_op_id)
+                .map(|cd| cd.data.clone());
+            let indices_data = match indices_data {
+                Some(d) => d,
+                None => return false,
+            };
+
+            let in_op = match graph.operand(*input) {
+                Some(o) => o,
+                None => return false,
+            };
+            let idx_op = match graph.operand(*indices_op_id) {
+                Some(o) => o,
+                None => return false,
+            };
+            let input_shape: Vec<i32> = in_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let indices_shape: Vec<i32> = idx_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let rank = indices_shape.len();
+            let flat_size = indices_shape.iter().product::<i32>() as usize;
+
+            if indices_data.len() != flat_size * 4 {
+                return false;
+            }
+            let indices_vals: Vec<i32> = indices_data
+                .chunks(4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+
+            let axis_dim = input_shape[axis];
+            let clamped: Vec<i32> = indices_vals
+                .iter()
+                .map(|&v| {
+                    let c = v.clamp(-axis_dim, axis_dim - 1);
+                    if c < 0 { c + axis_dim } else { c }
+                })
+                .collect();
+
+            let mut strides = vec![1i32; rank];
+            for i in (0..rank - 1).rev() {
+                strides[i] = strides[i + 1] * indices_shape[i + 1];
+            }
+
+            let coord_count = flat_size * rank;
+            let mut coords: Vec<i32> = vec![0i32; coord_count];
+            for flat_idx in 0..flat_size {
+                let mut rem = flat_idx as i32;
+                for d in 0..rank {
+                    let coord = rem / strides[d];
+                    rem -= coord * strides[d];
+                    coords[flat_idx * rank + d] = coord;
+                }
+                coords[flat_idx * rank + axis] = clamped[flat_idx];
+            }
+
+            let coord_bytes: Vec<u8> = coords.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let coord_tensor = self.add_constant(
+                "scatter_e_coords",
+                &[flat_size as i32, rank as i32],
+                tflite::TensorType::INT32,
+                &coord_bytes,
+            );
+
+            // Get input data type for scatter tensors
+            let in_type = graph
+                .operand(*input)
+                .and_then(|o| datatype_to_tflite(o.descriptor.data_type).ok())
+                .unwrap_or(tflite::TensorType::FLOAT32);
+
+            // Reshape updates to 1D [flat_size]
+            let updates_tensor = *tensor_map.get(updates_op_id).unwrap_or(updates_op_id) as i32;
+            let updates_1d_tensor =
+                self.add_tensor("scatter_e_upd", &[flat_size as i32], in_type, 0);
+            let shape_bytes: Vec<u8> = (flat_size as i32).to_le_bytes().to_vec();
+            let shape_const = self.add_constant(
+                "scatter_e_reshape",
+                &[1],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let oc_r = self.add_opcode(std_op::RESHAPE, 1);
+            let iv_r = self
+                .fbb
+                .create_vector(&[updates_tensor, shape_const as i32]);
+            let ov_r = self.fbb.create_vector(&[updates_1d_tensor as i32]);
+            let shape_vec = self.fbb.create_vector(&[flat_size as i32]);
+            let ro = tflite::ReshapeOptions::create(
+                &mut self.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_r,
+                    inputs: Some(iv_r),
+                    outputs: Some(ov_r),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+
+            // TFLite SCATTER_ND expects: (indices, updates, input_shape).
+            // SCATTER_ND internally creates the output tensor from the shape
+            // and initializes it to zeros, so no zero-input tensor is needed.
+            let input_shape_bytes: Vec<u8> =
+                input_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let input_shape_tensor = self.add_constant(
+                "scatter_e_shape",
+                &[input_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &input_shape_bytes,
+            );
+
+            // Pass 1: SCATTER_ND with BOOL true values → position mask
+            let true_data: Vec<u8> = std::iter::repeat(1u8).take(flat_size).collect();
+            let true_updates = self.add_constant(
+                "scatter_true_upd",
+                &[flat_size as i32],
+                tflite::TensorType::BOOL,
+                &true_data,
+            );
+            let mask_out = self.add_tensor(
+                "scatter_mask_out",
+                &input_shape,
+                tflite::TensorType::BOOL,
+                0,
+            );
+            let oc_s1 = self.add_opcode(std_op::SCATTER_ND, 1);
+            let iv_s1 = self.fbb.create_vector(&[
+                coord_tensor as i32,
+                true_updates as i32,
+                input_shape_tensor as i32,
+            ]);
+            let ov_s1 = self.fbb.create_vector(&[mask_out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_s1,
+                    inputs: Some(iv_s1),
+                    outputs: Some(ov_s1),
+                    ..Default::default()
+                },
+            ));
+
+            // Pass 2: SCATTER_ND with actual update values
+            let values_out = self.add_tensor("scatter_val_out", &input_shape, in_type, 0);
+            let oc_s2 = self.add_opcode(std_op::SCATTER_ND, 1);
+            let iv_s2 = self.fbb.create_vector(&[
+                coord_tensor as i32,
+                updates_1d_tensor as i32,
+                input_shape_tensor as i32,
+            ]);
+            let ov_s2 = self.fbb.create_vector(&[values_out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_s2,
+                    inputs: Some(iv_s2),
+                    outputs: Some(ov_s2),
+                    ..Default::default()
+                },
+            ));
+
+            // Pass 3: WHERE(mask, scattered_values, original_input) → output
+            let in_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+            let out_tensor_idx = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+            let oc_w = self.add_opcode(std_op::SELECT, 1);
+            let iv_w = self
+                .fbb
+                .create_vector(&[mask_out as i32, values_out as i32, in_tensor]);
+            let ov_w = self.fbb.create_vector(&[out_tensor_idx]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_w,
+                    inputs: Some(iv_w),
+                    outputs: Some(ov_w),
+                    ..Default::default()
+                },
+            ));
+            tensor_map.insert(out_id, out_tensor_idx as u32);
+            return true;
+        }
+        false
+    }
+
+    /// ScatterND: emulate with SCATTER_ND + WHERE (same pattern as Chromium's WebNNScatterND).
+    /// Only supports constant int32 indices with positive values (no negative clamping for now).
+    fn build_scatter_nd_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        if let Operation::ScatterND {
+            input,
+            indices: indices_op_id,
+            updates: updates_op_id,
+            ..
+        } = op
+        {
+            let out_id = op.outputs()[0];
+
+            let in_op = match graph.operand(*input) {
+                Some(o) => o,
+                None => return false,
+            };
+            let idx_op = match graph.operand(*indices_op_id) {
+                Some(o) => o,
+                None => return false,
+            };
+            let upd_op = match graph.operand(*updates_op_id) {
+                Some(o) => o,
+                None => return false,
+            };
+
+            let input_shape: Vec<i32> = in_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let updates_shape: Vec<i32> = upd_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+            let indices_shape: Vec<i32> = idx_op
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => *v as i32,
+                    _ => 1,
+                })
+                .collect();
+
+            if indices_shape.len() < 2 {
+                return false;
+            }
+
+            let in_type = datatype_to_tflite(in_op.descriptor.data_type)
+                .unwrap_or(tflite::TensorType::FLOAT32);
+
+            // Only support constant indices for now (like ScatterElements)
+            let indices_data = graph
+                .constant_operand_ids_to_handles
+                .get(indices_op_id)
+                .map(|cd| cd.data.clone());
+            let indices_data = match indices_data {
+                Some(d) => d,
+                None => return false,
+            };
+
+            let num_updates = indices_shape[0] as usize;
+            let indexing_depth = indices_shape[1] as usize;
+            let expected_len = num_updates * indexing_depth * 4;
+            if indices_data.len() < expected_len {
+                return false;
+            }
+
+            // Parse indices and clamp negative values
+            let indices_vals: Vec<i32> = indices_data[..expected_len]
+                .chunks(4)
+                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            let clamped: Vec<i32> = indices_vals
+                .chunks(indexing_depth)
+                .flat_map(|coord| {
+                    coord.iter().enumerate().map(|(d, &v)| {
+                        let dim_size = input_shape.get(d).copied().unwrap_or(1);
+                        let c = v.clamp(-dim_size, dim_size - 1);
+                        if c < 0 { c + dim_size } else { c }
+                    })
+                })
+                .collect();
+
+            let coord_bytes: Vec<u8> = clamped.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let indices_tensor = self.add_constant(
+                "scatternd_indices",
+                &indices_shape,
+                tflite::TensorType::INT32,
+                &coord_bytes,
+            );
+
+            // Input shape as constant 1D tensor
+            let input_shape_bytes: Vec<u8> =
+                input_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let input_shape_tensor = self.add_constant(
+                "scatternd_shape",
+                &[input_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &input_shape_bytes,
+            );
+
+            // Pass 1: SCATTER_ND with BOOL true values → position mask
+            let num_upd_elements: usize = updates_shape.iter().product::<i32>() as usize;
+            let true_data: Vec<u8> = std::iter::repeat(1u8).take(num_upd_elements).collect();
+            let true_updates = self.add_constant(
+                "scatternd_true_upd",
+                &updates_shape,
+                tflite::TensorType::BOOL,
+                &true_data,
+            );
+            let mask_out = self.add_tensor(
+                "scatternd_mask_out",
+                &input_shape,
+                tflite::TensorType::BOOL,
+                0,
+            );
+            let oc_s1 = self.add_opcode(std_op::SCATTER_ND, 1);
+            let iv_s1 = self.fbb.create_vector(&[
+                indices_tensor as i32,
+                true_updates as i32,
+                input_shape_tensor as i32,
+            ]);
+            let ov_s1 = self.fbb.create_vector(&[mask_out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_s1,
+                    inputs: Some(iv_s1),
+                    outputs: Some(ov_s1),
+                    ..Default::default()
+                },
+            ));
+
+            // Pass 2: SCATTER_ND with actual update values
+            let updates_tensor = *tensor_map.get(updates_op_id).unwrap_or(updates_op_id) as i32;
+            let values_out = self.add_tensor("scatternd_val_out", &input_shape, in_type, 0);
+            let oc_s2 = self.add_opcode(std_op::SCATTER_ND, 1);
+            let iv_s2 = self.fbb.create_vector(&[
+                indices_tensor as i32,
+                updates_tensor,
+                input_shape_tensor as i32,
+            ]);
+            let ov_s2 = self.fbb.create_vector(&[values_out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_s2,
+                    inputs: Some(iv_s2),
+                    outputs: Some(ov_s2),
+                    ..Default::default()
+                },
+            ));
+
+            // Pass 3: WHERE(mask, scattered_values, original_input) → output
+            let in_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+            let out_tensor_idx = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+            let oc_w = self.add_opcode(std_op::SELECT, 1);
+            let iv_w = self
+                .fbb
+                .create_vector(&[mask_out as i32, values_out as i32, in_tensor]);
+            let ov_w = self.fbb.create_vector(&[out_tensor_idx]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_w,
+                    inputs: Some(iv_w),
+                    outputs: Some(ov_w),
+                    ..Default::default()
+                },
+            ));
+            tensor_map.insert(out_id, out_tensor_idx as u32);
+            return true;
+        }
+        false
+    }
+
+    /// ConvTranspose2d: reorder inputs to TFLite format [output_shape, filter, input, bias].
+    fn build_conv_transpose_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &HashMap<u32, u32>,
+        inputs: &mut Vec<i32>,
+    ) -> bool {
+        if let Operation::ConvTranspose2d { .. } = op {
+            let input_ids = op.inputs();
+            if input_ids.len() < 2 {
+                return false;
+            }
+            let out_id = op.outputs()[0];
+
+            // Output shape tensor from output operand
+            let out_shape: Vec<i32> = graph
+                .operand(out_id)
+                .map(|o| {
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => 1,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let shape_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let output_shape_tensor = self.add_constant(
+                "conv_transpose_shape",
+                &[out_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+
+            // Add zero bias
+            let filter_id = input_ids[1];
+            let oc = graph
+                .operand(filter_id)
+                .and_then(|o| {
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .rev()
+                        .nth(2)
+                        .and_then(|d| match d {
+                            crate::graph::Dimension::Static(v) => Some(*v as i32),
+                            _ => None,
+                        })
+                })
+                .unwrap_or(1);
+            let in_type = graph
+                .operand(input_ids[0])
+                .map(|o| {
+                    datatype_to_tflite(o.descriptor.data_type)
+                        .unwrap_or(tflite::TensorType::FLOAT32)
+                })
+                .unwrap_or(tflite::TensorType::FLOAT32);
+            let esz = 4;
+            let bias = self.add_constant(
+                "conv_transpose_bias",
+                &[oc],
+                in_type,
+                &vec![0u8; oc as usize * esz],
+            );
+
+            // Reorder: [output_shape, filter, input, bias]
+            let filter_tensor = *tensor_map.get(&filter_id).unwrap_or(&filter_id) as i32;
+            let input_tensor = *tensor_map.get(&input_ids[0]).unwrap_or(&input_ids[0]) as i32;
+            *inputs = vec![
+                output_shape_tensor as i32,
+                filter_tensor,
+                input_tensor,
+                bias as i32,
+            ];
+            return true;
+        }
+        false
+    }
+
+    /// Split: use SPLIT_V with input, split_sizes, and axis tensors.
+    fn build_split_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &HashMap<u32, u32>,
+        inputs: &mut Vec<i32>,
+    ) -> bool {
+        if let Operation::Split { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let axis = opts.axis as i32;
+            let input_id = op.inputs()[0];
+            let in_tensor = *tensor_map.get(&input_id).unwrap_or(&input_id) as i32;
+            let output_ids = op.outputs();
+
+            // Build split sizes: each output's size along the split axis
+            let num_splits = output_ids.len();
+            let mut split_sizes = Vec::with_capacity(num_splits);
+            for &out_id in output_ids {
+                let size = graph
+                    .operand(out_id)
+                    .and_then(|o| o.descriptor.shape.get(axis as usize))
+                    .and_then(|d| match d {
+                        crate::graph::Dimension::Static(v) => Some(*v as i32),
+                        _ => None,
+                    })
+                    .unwrap_or(1);
+                split_sizes.push(size);
+            }
+
+            let sizes_bytes: Vec<u8> = split_sizes.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let sizes_tensor = self.add_constant(
+                "split_sizes",
+                &[num_splits as i32],
+                tflite::TensorType::INT32,
+                &sizes_bytes,
+            );
+
+            let axis_bytes = axis.to_le_bytes();
+            let axis_tensor =
+                self.add_constant("split_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
+
+            // SPLIT_V inputs: [input, split_sizes, axis]
+            *inputs = vec![in_tensor, sizes_tensor as i32, axis_tensor as i32];
+            return true;
+        }
+        false
+    }
+
     fn create_builtin_options(
         &mut self,
         op: &Operation,
@@ -2001,6 +3202,28 @@ impl<'a> TfliteContext<'a> {
                 (
                     Some(co.as_union_value()),
                     tflite::BuiltinOptions::Conv2DOptions,
+                )
+            }
+            Operation::ConvTranspose2d { options, .. } => {
+                let o = options.as_ref().cloned().unwrap_or_default();
+                let (sh, sw) = if o.strides.len() >= 2 {
+                    (o.strides[0] as i32, o.strides[1] as i32)
+                } else {
+                    (1, 1)
+                };
+                let to = tflite::TransposeConvOptions::create(
+                    &mut self.fbb,
+                    &tflite::TransposeConvOptionsArgs {
+                        padding: tflite::Padding::VALID,
+                        stride_w: sw,
+                        stride_h: sh,
+                        fused_activation_function: tflite::ActivationFunctionType::NONE,
+                        ..Default::default()
+                    },
+                );
+                (
+                    Some(to.as_union_value()),
+                    tflite::BuiltinOptions::TransposeConvOptions,
                 )
             }
             Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
@@ -2144,12 +3367,31 @@ impl<'a> TfliteContext<'a> {
                 }
             }
             Operation::CumulativeSum { options, .. } => {
-                let _ = options;
-                (None, tflite::BuiltinOptions::NONE)
+                let opts = options.as_ref().cloned().unwrap_or_default();
+                let co = tflite::CumsumOptions::create(
+                    &mut self.fbb,
+                    &tflite::CumsumOptionsArgs {
+                        exclusive: opts.exclusive,
+                        reverse: opts.reversed,
+                    },
+                );
+                (
+                    Some(co.as_union_value()),
+                    tflite::BuiltinOptions::CumsumOptions,
+                )
             }
-            Operation::Resample2d { options, .. } => {
-                let _ = options;
-                (None, tflite::BuiltinOptions::NONE)
+            Operation::Resample2d { .. } => {
+                let ro = tflite::ResizeBilinearOptions::create(
+                    &mut self.fbb,
+                    &tflite::ResizeBilinearOptionsArgs {
+                        align_corners: false,
+                        half_pixel_centers: false,
+                    },
+                );
+                (
+                    Some(ro.as_union_value()),
+                    tflite::BuiltinOptions::ResizeBilinearOptions,
+                )
             }
             Operation::Cast { data_type, .. } => {
                 let out_dt = datatype_to_tflite(crate::graph::DataType::from(*data_type))?;
@@ -2197,6 +3439,17 @@ impl<'a> TfliteContext<'a> {
                     tflite::BuiltinOptions::SqueezeOptions,
                 )
             }
+            Operation::Split { .. } => {
+                let num_splits = op.outputs().len() as i32;
+                let so = tflite::SplitVOptions::create(
+                    &mut self.fbb,
+                    &tflite::SplitVOptionsArgs { num_splits },
+                );
+                (
+                    Some(so.as_union_value()),
+                    tflite::BuiltinOptions::SplitVOptions,
+                )
+            }
             _ => (None, tflite::BuiltinOptions::NONE),
         };
         Ok(result)
@@ -2216,6 +3469,32 @@ fn build_spatial_inputs<'a>(
     if let Operation::Conv2d { options, .. } = op {
         let input_ids = op.inputs();
         if options.as_ref().and_then(|o| o.bias).is_none() && input_ids.len() >= 2 {
+            if let Some(fop) = graph.operand(input_ids[1]) {
+                let oc = fop
+                    .descriptor
+                    .shape
+                    .first()
+                    .and_then(|d| {
+                        if let crate::graph::Dimension::Static(v) = d {
+                            Some(*v as i32)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(1);
+                let tt = datatype_to_tflite(fop.descriptor.data_type)?;
+                let esz = 4;
+                inputs.push(
+                    ctx.add_constant("bias", &[oc], tt, &vec![0u8; oc as usize * esz]) as i32,
+                );
+            }
+        }
+    }
+
+    // TFLite ConvTranspose2d always requires a bias tensor. Add zero bias.
+    if let Operation::ConvTranspose2d { .. } = op {
+        let input_ids = op.inputs();
+        if input_ids.len() >= 2 {
             if let Some(fop) = graph.operand(input_ids[1]) {
                 let oc = fop
                     .descriptor
@@ -2617,7 +3896,11 @@ mod std_op {
     pub const GATHER: i32 = 36;
     pub const GELU: i32 = 150;
     pub const HARD_SWISH: i32 = 117;
+    pub const ROUND: i32 = 116;
     pub const REVERSE_V2: i32 = 105;
+    pub const CUMSUM: i32 = 128;
+    pub const RESIZE_BILINEAR: i32 = 23;
+    pub const SPLIT_V: i32 = 102;
     pub const SCATTER_ND: i32 = 122;
     pub const SIGN: i32 = 158;
     pub const SQUEEZE: i32 = 43;
@@ -2715,13 +3998,17 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::Gelu { .. } => Some(std_op::GELU),
         Operation::HardSwish { .. } => Some(std_op::HARD_SWISH),
         Operation::Reverse { .. } => Some(std_op::REVERSE_V2),
-        Operation::ScatterND { .. } => Some(std_op::SCATTER_ND),
+        Operation::Resample2d { .. } => Some(std_op::RESIZE_BILINEAR),
+        Operation::Split { .. } => Some(std_op::SPLIT_V),
+        Operation::RoundEven { .. } => Some(std_op::ROUND),
+        Operation::ScatterElements { .. } => Some(std_op::SCATTER_ND),
         Operation::Sign { .. } => Some(std_op::SIGN),
         Operation::Squeeze { .. } => Some(std_op::SQUEEZE),
         Operation::Tile { .. } => Some(std_op::TILE),
         Operation::Where { .. } => Some(std_op::SELECT),
         Operation::L2Pool2d { .. } => Some(std_op::L2_POOL_2D),
         Operation::GatherND { .. } => Some(std_op::GATHER_ND),
+        Operation::CumulativeSum { .. } => Some(std_op::CUMSUM),
         Operation::ConvTranspose2d { .. } => Some(std_op::TRANSPOSE_CONV),
         Operation::ReduceSum { .. } => Some(std_op::SUM),
         Operation::ReduceMean { .. } => Some(std_op::MEAN),
@@ -3091,6 +4378,9 @@ fn build_native_operators<'a>(
             in_type,
         );
 
+        // quantize_ops: DequantizeLinear, QuantizeLinear (emulated)
+        decomposed |= ctx.build_quantize_ops(op, graph, &mut tensor_map, &mut operator_offsets);
+
         // reduce_ops: reduceL1, reduceL2, reduceLogSum, reduceLogSumExp, reduceSumSquare
         decomposed |= ctx.build_reduce_ops(
             op,
@@ -3100,6 +4390,42 @@ fn build_native_operators<'a>(
             &in_shape,
             in_type,
         );
+
+        // triangular_op: keep upper/lower triangle via constant mask
+        decomposed |= ctx.build_triangular_op(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        );
+
+        // gather_elements_op: emulate with GATHER_ND (constant indices only)
+        decomposed |=
+            ctx.build_gather_elements_op(op, graph, &mut tensor_map, &mut operator_offsets);
+
+        // scatter_elements_op: emulate with SCATTER_ND (constant indices only)
+        if matches!(op, Operation::ScatterElements { .. }) {
+            if !ctx.build_scatter_elements_op(op, graph, &mut tensor_map, &mut operator_offsets) {
+                return Err(GraphError::ConversionFailed {
+                    format: "litert".to_string(),
+                    reason: "scatterElements: non-constant indices not yet supported".to_string(),
+                });
+            }
+            continue;
+        }
+
+        // scatter_nd_op: emulate with SCATTER_ND + WHERE (constant indices only)
+        if matches!(op, Operation::ScatterND { .. }) {
+            if !ctx.build_scatter_nd_op(op, graph, &mut tensor_map, &mut operator_offsets) {
+                return Err(GraphError::ConversionFailed {
+                    format: "litert".to_string(),
+                    reason: "scatterND: non-constant indices not yet supported".to_string(),
+                });
+            }
+            continue;
+        }
 
         if decomposed {
             continue;
@@ -3127,7 +4453,12 @@ fn build_native_operators<'a>(
             }
         };
 
-        let opcode_idx = ctx.add_opcode(tfl_opcode, 1);
+        let opcode_version = if tfl_opcode == std_op::BROADCAST_TO {
+            2
+        } else {
+            1
+        };
+        let opcode_idx = ctx.add_opcode(tfl_opcode, opcode_version);
 
         let input_ids = op.inputs();
         let output_ids = op.outputs();
@@ -3147,6 +4478,12 @@ fn build_native_operators<'a>(
             in_type,
             &mut operator_offsets,
         )?;
+
+        // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
+        ctx.build_conv_transpose_op(op, graph, &tensor_map, &mut inputs);
+
+        // Split: use SPLIT_V with [input, split_sizes, axis]
+        ctx.build_split_op(op, graph, &tensor_map, &mut inputs);
 
         // Reduce ops: add axes input, handle empty-axes identity.
         if build_reduce_inputs(ctx, op, &mut tensor_map, input_id, &in_shape, &mut inputs)? {

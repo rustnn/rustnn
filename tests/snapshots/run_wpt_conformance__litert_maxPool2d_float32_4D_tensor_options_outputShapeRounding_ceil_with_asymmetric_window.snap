@@ -6,13 +6,13 @@ maxPool2d.https.any.js maxPool2d float32 4D tensor options.outputShapeRounding=c
  max_pool2d :: maxPool2d float32 4D tensor options.outputShapeRounding=ceil with asymmetric window: index 2: actual=22 expected=15 ulp=4194304 tolerance=0
   inputs: maxPool2dInput: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24 ...] (len=25)
   expected maxPool2dOutput: [12, 14, 15, 22, 24, 25]
-  actual maxPool2dOutput: [12, 14, 22, 24, 0.000000000000000000000000000000000000000000021, 0]
+  actual maxPool2dOutput: [12, 14, 22, 24, 0.0000000026077593, 0.000000010663648]
   expected maxPool2dOutput full nd:
 (shape [1, 1, 2, 3])
   [12, 14, 15] [22, 24, 25]
   actual maxPool2dOutput full nd:
 (shape [1, 1, 2, 3])
-  [12, 14, 22] [24, 0.000000000000000000000000000000000000000000021, 0]
+  [12, 14, 22] [24, 0.0000000026077593, 0.000000010663648]
 
 --- built graph ---
 webnn_graph "graph" v2 {

@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Shubham Gupta <shubhamg13.work@gmail.com>
+//
+// SPDX-License-Identifier: Apache-2
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
@@ -19,27 +23,7 @@ use crate::operators::Operation;
 use crate::{GraphError, GraphInfo};
 
 /// WebNN operations not (yet) supported by the LiteRT backend
-const LITERT_UNSUPPORTED_OPS: &[&str] = &[
-    "average_pool2d",
-    "conv_transpose2d",
-    "cumulativeSum",
-    "dequantize_linear",
-    "erf",
-    "expand",
-    "gatherElements",
-    "gru",
-    "gru_cell",
-    "lstm",
-    "lstm_cell",
-    "max_pool2d",
-    "quantize_linear",
-    "resample2d",
-    "round_even",
-    "scatter_elements",
-    "split",
-    "triangular",
-    "where",
-];
+const LITERT_UNSUPPORTED_OPS: &[&str] = &["gru", "gru_cell", "lstm", "lstm_cell"];
 
 /// Returns the list of WebNN operations not supported by this backend.
 pub fn unsupported_ops() -> &'static [&'static str] {
@@ -48,6 +32,9 @@ pub fn unsupported_ops() -> &'static [&'static str] {
 
 /// Returns true if this dtype is NOT supported for this operation.
 pub fn dtype_unsupported_for_op(dtype: &str, op: &str) -> bool {
+    if matches!(op, "dequantize_linear" | "quantize_linear") {
+        return false;
+    }
     match dtype.to_lowercase().as_str() {
         "float32" | "float16" => false,
         "int32" | "uint8" => !matches!(

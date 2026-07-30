@@ -1,10 +1,16 @@
 ---
 source: tests/run_wpt_conformance.rs
-assertion_line: 64
 expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
 ---
 conv_transpose2d.https.any.js convTranspose2d float32 4D input and filter tensors options.inputLayout=nhwc options.filterLayout=hwoi, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: ConvTranspose2d { input: 1, filter: 0, options: Some(MLConvTranspose2dOptions { label: "", padding: [], strides: [], dilations: [], output_padding: [], output_sizes: None, groups: 1, input_layout: "nhwc", filter_layout: "hwoi", bias: None }), outputs: [2] }
+ conv_transpose2d :: convTranspose2d float32 4D input and filter tensors options.inputLayout=nhwc options.filterLayout=hwoi: index 1: actual=0.046990283 expected=0.054946538 ulp=2135741 tolerance=16384
+  inputs: convTranspose2dInput: [0.05605664849281311, 0.7114229798316956, 0.6529743671417236, 0.38622909784317017, 0.3870837390422821, 0.9461629390716552, 0.09573192149400712, 0.9234652519226074, 0.636277973651886]; convTranspose2dFilter: [0.8614422678947449, 0.9801966547966005, 0.6267672777175903, 0.06169835478067398, 0.6366490125656128, 0.3220160901546478, 0.8382642269134521, 0.7498031854629517, 0.11884837597608566, 0.3930714726448059, 0.9921330213546752, 0.13811933994293213, 0.3285411298274994, 0.28385090827941895, 0.8742373585700989, 0.4235861301422119, 0.7205492258071899, 0.1448512077331543] (constant)
+  expected convTranspose2dOutput: [0.048289567, 0.054946538, 0.6479843, 0.700793, 1.0440848, 0.70198804, 0.8621897, 0.26937708, 0.4157155, 0.21026826 ...] (len=50)
+  actual convTranspose2dOutput: [0.048289567, 0.046990283, 0.6312668, 0.651307, 0.7962314, 1.2446995, 0.547243, 0.9638053, 0.12689215, 0.37858048 ...] (len=50)
+  expected convTranspose2dOutput full nd:
+[0.048289567, 0.054946538, 0.6479843, 0.700793, 1.0440848, 0.70198804, 0.8621897, 0.26937708, 0.4157155, 0.21026826, ...] (len=50, shape=[1, 5, 5, 2])
+  actual convTranspose2dOutput full nd:
+[0.048289567, 0.046990283, 0.6312668, 0.651307, 0.7962314, 1.2446995, 0.547243, 0.9638053, 0.12689215, 0.37858048, ...] (len=50, shape=[1, 5, 5, 2])
 
 --- built graph ---
 webnn_graph "graph" v2 {

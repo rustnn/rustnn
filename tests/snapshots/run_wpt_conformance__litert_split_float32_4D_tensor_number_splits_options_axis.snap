@@ -1,19 +1,10 @@
 ---
 source: tests/run_wpt_conformance.rs
-expression: "format!(\"{file_name} {test_name}, {backend_prefix}\\n {msg}\")"
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
-split.https.any.js split float32 4D tensor number splits options.axis, litert
- Failed to convert graph: graph conversion failed for litert: unsupported operation: Split { input: 0, splits: [], split_equal_parts: Some(3), options: Some(MLSplitOptions { label: "", axis: 0 }), outputs: [1, 2, 3] }
-
---- built graph ---
-webnn_graph "graph" v2 {
-  inputs {
-    splitInput: f32[12, 1, 1, 2];
-  }
-
-  nodes {
-    [splitOutput1, splitOutput2, splitOutput3] = split(splitInput, axis=0, label="");
-  }
-
-  outputs { splitOutput1; splitOutput2; splitOutput3; }
-}
+(
+    "split.https.any.js",
+    "split float32 4D tensor number splits options.axis",
+    "litert",
+    "PASS",
+)
