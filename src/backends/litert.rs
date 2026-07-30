@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Shubham Gupta <shubhamg13.work@gmail.com>
+//
+// SPDX-License-Identifier: Apache-2
+
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;

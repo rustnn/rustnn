@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 Shubham Gupta <shubhamg13.work@gmail.com>
+//
+// SPDX-License-Identifier: Apache-2
+
 //! TFLite FlatBuffer converter for WebNN graphs.
 //!
 //! Converts WebNN GraphInfo directly to TFLite flatbuffers using the
