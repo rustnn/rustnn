@@ -1,11 +1,11 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference, MLTensorDescriptor,
+    MLContext, MLContextOptions, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
+    MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::{ContextProperties, GraphValidator, load_graph_from_path};
@@ -292,8 +292,8 @@ fn run() -> Result<(), String> {
         context
             .write_tensor(&input_tensor, input_data)
             .map_err(|e| format!("write_tensor: {e}"))?;
-        let inputs = HashMap::from([(input_name.as_str(), &input_tensor)]);
-        let outputs = HashMap::from([(output_name.as_str(), &output_tensor)]);
+        let inputs = MLNamedTensors::from([(input_name.as_str(), &input_tensor)]);
+        let outputs = MLNamedTensors::from([(output_name.as_str(), &output_tensor)]);
         context
             .dispatch(ml_graph, &inputs, &outputs)
             .map_err(|e| format!("dispatch: {e:?}"))?;
@@ -316,8 +316,8 @@ fn run() -> Result<(), String> {
             context
                 .write_tensor(&input_tensor, &input_data)
                 .map_err(|e| format!("write_tensor: {e}"))?;
-            let inputs = HashMap::from([(input_name.as_str(), &input_tensor)]);
-            let outputs = HashMap::from([(output_name.as_str(), &output_tensor)]);
+            let inputs = MLNamedTensors::from([(input_name.as_str(), &input_tensor)]);
+            let outputs = MLNamedTensors::from([(output_name.as_str(), &output_tensor)]);
             let start = Instant::now();
             context
                 .dispatch(&mut ml_graph, &inputs, &outputs)

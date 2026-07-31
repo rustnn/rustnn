@@ -1,7 +1,6 @@
 // Port of https://d3i5xkfad89fac.cloudfront.net/test-data/models/fast_style_transfer_nchw/weights
 // (Apache 2.0)
 use std::{
-    collections::HashMap,
     fmt,
     path::{Path, PathBuf},
     time::Instant,
@@ -11,8 +10,8 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, ValueEnum};
 use futures_util::future::join_all;
 use rustnn::mlcontext::{
-    MLContext, MLContextOptions, MLGraphBuilder, MLOperand, MLOperandDescriptor, MLPowerPreference,
-    MLTensorDescriptor,
+    MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors, MLOperand,
+    MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operator_options::{
@@ -850,8 +849,8 @@ fn run_inferences(
             .write_tensor(&input_tensors[slot], input_data)
             .context("write input tensor")?;
         starts[slot] = Some(Instant::now());
-        let inputs = HashMap::from([("input", &input_tensors[slot])]);
-        let outputs = HashMap::from([("output", &output_tensors[slot])]);
+        let inputs = MLNamedTensors::from([("input", &input_tensors[slot])]);
+        let outputs = MLNamedTensors::from([("output", &output_tensors[slot])]);
         context
             .dispatch(graph, &inputs, &outputs)
             .context("dispatch graph")?;
@@ -1010,7 +1009,7 @@ async fn main() -> Result<()> {
             inferred_output_shape,
             OUTPUT_SHAPE
         );
-        let outputs = HashMap::from([("output", output_operand)]);
+        let outputs = MLNamedOperands::from([("output", output_operand)]);
         builder.build(&outputs).context("build MLGraph")?
     };
 

@@ -6,7 +6,7 @@ use webnn_graph::serialize::SerializeOptions;
 
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
-use crate::mlcontext::{MLGraph, MLOperand, MLOperandDescriptor, MLTensor};
+use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConstantOptions,
@@ -2009,10 +2009,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     /// Serialize the in-progress graph (with outputs marked) as `.webnn` text for debugging.
-    pub fn rustnn_webnn_text_for_outputs(
-        &self,
-        outputs: &HashMap<&str, MLOperand>,
-    ) -> Option<String> {
+    pub fn rustnn_webnn_text_for_outputs(&self, outputs: &MLNamedOperands) -> Option<String> {
         let graph = self.graph.as_ref()?;
         if outputs.is_empty() {
             return None;
@@ -2052,7 +2049,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     /// the builder can still be built afterwards.
     pub fn rustnn_save_webnn(
         &self,
-        outputs: &HashMap<&str, MLOperand>,
+        outputs: &MLNamedOperands,
         path: impl AsRef<std::path::Path>,
     ) -> crate::error::Result<()> {
         if outputs.is_empty() {
@@ -2104,7 +2101,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     /*async*/
     pub fn build(
         &mut self,
-        outputs: &'_ HashMap<&str, MLOperand>,
+        outputs: &'_ MLNamedOperands,
     ) -> crate::error::Result<MLGraph<'context>> {
         trace!("Trying to build graph for outputs {outputs:?}");
         // spec: If outputs is empty, then return a new promise in realm rejected with a TypeError.
@@ -3060,14 +3057,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-
     use log::warn;
 
     use crate::{
         mlcontext::{
-            Backend, MLContext, MLContextOptions, MLOperandDescriptor, MLPowerPreference,
-            MLTensorDescriptor,
+            Backend, MLContext, MLContextOptions, MLNamedOperands, MLNamedTensors,
+            MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
         },
         mlgraphbuilder::MLGraphBuilder,
     };
@@ -3093,7 +3088,7 @@ mod test {
         let b = builder.input("b", &desc).unwrap();
         assert_eq!(builder.graph.as_ref().unwrap().operands.len(), 2);
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out1", a);
         outputs.insert("out2", b);
         let error = builder.build(&outputs).unwrap_err();
@@ -3111,7 +3106,7 @@ mod test {
         assert_eq!(builder.graph.as_ref().unwrap().operands.len(), 2);
         let out1 = builder.identity(a).unwrap();
         let out2 = builder.add(a, b).unwrap();
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out1", out1);
         outputs.insert("out2", out2);
         builder.build(&outputs).unwrap();
@@ -3153,7 +3148,7 @@ mod test {
         let a = builder.identity(a).unwrap();
         let output = builder.identity(a).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", output);
 
         // This graph deliberately stresses the graph-builder's binding/validation logic
@@ -3188,11 +3183,11 @@ mod test {
         let output = context.create_tensor(&a_desc).unwrap();
 
         // All declared graph inputs must be provided at dispatch (including unused ones).
-        let mut inputs = HashMap::new();
+        let mut inputs = MLNamedTensors::new();
         inputs.insert("a", &a);
         inputs.insert("unused", &unused);
         inputs.insert("incompatible", &incompatible);
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedTensors::new();
         outputs.insert("out", &output);
         context.write_tensor(&a, &[3.0f32, 4., 5., 6.]).unwrap();
         // CoreML rejects binding the declared-but-unused `incompatible` input at dispatch
@@ -3237,7 +3232,7 @@ mod test {
         let a = builder.identity(a).unwrap();
         let output = builder.add(a, b).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", output);
         let mut graph = builder.build(&outputs).unwrap();
 
@@ -3258,7 +3253,7 @@ mod test {
         assert_eq!(builder.rustnn_operand_shape(a).unwrap(), mat_desc.shape());
         let a = builder.identity(a).unwrap();
         let output = builder.add(a, b).unwrap();
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", output);
         let mut graph2 = builder.build(&outputs).unwrap();
 
@@ -3275,10 +3270,10 @@ mod test {
         context.write_tensor(&a, &[1.0f32, 2., 3., 4.]).unwrap();
         context.write_tensor(&b, &[2.0f32]).unwrap();
 
-        let mut inputs = HashMap::new();
+        let mut inputs = MLNamedTensors::new();
         inputs.insert("a", &a);
         inputs.insert("b", &b);
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedTensors::new();
         outputs.insert("out", &output);
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
         let mut output_cpu = vec![0.0f32; 4];
@@ -3343,7 +3338,7 @@ mod test {
         );
         assert_eq!(builder.rustnn_operand_shape(dq).unwrap(), int_desc.shape());
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", dq);
         builder.build(&outputs).unwrap();
     }
@@ -3369,7 +3364,7 @@ mod test {
             .unwrap();
         let sum = builder.add(a, b).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("sum", sum);
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -3428,7 +3423,7 @@ mod test {
             .unwrap();
         let out = builder.mul(a, scale).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", out);
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -3461,7 +3456,7 @@ mod test {
             .unwrap();
         let sum = builder.add(a, b).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("a", sum);
 
         let temp_dir = tempfile::TempDir::new().unwrap();
@@ -3469,7 +3464,7 @@ mod test {
         let err = builder
             .rustnn_save_webnn(&outputs, &webnn_path)
             .unwrap_err();
-        assert!(matches!(
+        std::assert_matches!(
             err,
             crate::error::Error::GraphBuilderError {
                 source: crate::error::GraphBuilderError::OutputNameConflictsWithOperand {
@@ -3477,7 +3472,7 @@ mod test {
                     operand_kind: "input",
                 }
             } if name == "a"
-        ));
+        );
         assert!(!webnn_path.exists());
     }
 
@@ -3502,7 +3497,7 @@ mod test {
             .unwrap();
         let sum = builder.add(a, b).unwrap();
 
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out1", sum);
         outputs.insert("out2", sum);
 
@@ -3511,12 +3506,12 @@ mod test {
         let err = builder
             .rustnn_save_webnn(&outputs, &webnn_path)
             .unwrap_err();
-        assert!(matches!(
+        std::assert_matches!(
             err,
             crate::error::Error::GraphBuilderError {
                 source: crate::error::GraphBuilderError::DuplicateOutput { .. }
             }
-        ));
+        );
         assert!(!webnn_path.exists());
     }
 }

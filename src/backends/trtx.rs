@@ -35,7 +35,7 @@ use crate::graph::WeightsToHash;
 use crate::mlcontext::MLTensor;
 use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{ListDevices, MLOperand};
-use crate::mlcontext::{MLBackendBuilder, MLGraph};
+use crate::mlcontext::{MLBackendBuilder, MLGraph, MLNamedTensors};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
 
@@ -746,8 +746,8 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     fn dispatch(
         &mut self,
         graph: &mut crate::mlcontext::MLGraph,
-        inputs: &HashMap<&str, &MLTensor>,
-        outputs: &HashMap<&str, &MLTensor>,
+        inputs: &MLNamedTensors,
+        outputs: &MLNamedTensors,
     ) -> crate::error::Result<()> {
         self.cuda_ctx.bind_to_thread()?;
 

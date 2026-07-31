@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
@@ -14,8 +13,8 @@ use crate::backend_selection::DeviceType;
 use crate::converters::{GraphConverter, LiteRtConverter};
 use crate::error::{Error, Result};
 use crate::mlcontext::{
-    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
-    RustNNOptions,
+    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
+    MLTensorDescriptor, RustNNOptions,
 };
 
 use crate::operator_enums::MLOperandDataType;
@@ -971,8 +970,8 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, &MLTensor>,
-        outputs: &HashMap<&str, &MLTensor>,
+        inputs: &MLNamedTensors,
+        outputs: &MLNamedTensors,
     ) -> Result<()> {
         let lite_graph = match &graph.backend {
             crate::mlcontext::MLBackendGraph::LiteRtGraph(graph) => graph,

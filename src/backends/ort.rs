@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -18,8 +17,8 @@ use crate::error::Error;
 use crate::executors::onnx::ensure_ort_initialized;
 use crate::graph::{pack_int4, pack_uint4_from_i32, unpack_int4, unpack_uint4};
 use crate::mlcontext::{
-    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
-    RustNNOptions,
+    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
+    MLTensorDescriptor, RustNNOptions,
 };
 use crate::{GraphError, GraphInfo, ONNX_EXTERNAL_WEIGHTS_FILENAME};
 
@@ -551,7 +550,7 @@ fn copy_dyn_value_to_buffer(
 
 fn write_outputs_from_session<'s>(
     session_outputs: &SessionOutputs<'s>,
-    outputs: &HashMap<&str, &MLTensor>,
+    outputs: &MLNamedTensors,
     tensors: &mut [OrtTensor],
 ) -> crate::error::Result<()> {
     for (&name, ml_tensor) in outputs.iter() {
@@ -765,8 +764,8 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, &MLTensor>,
-        outputs: &HashMap<&str, &MLTensor>,
+        inputs: &MLNamedTensors,
+        outputs: &MLNamedTensors,
     ) -> crate::error::Result<()> {
         let ort_graph =
             graph

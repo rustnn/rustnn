@@ -22,7 +22,10 @@
 use half::f16;
 use rustnn::error::GraphBuilderError;
 use rustnn::graph::{unpack_int4, unpack_uint4};
-use rustnn::mlcontext::{MLContext, MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor};
+use rustnn::mlcontext::{
+    MLContext, MLNamedOperands, MLNamedTensors, MLOperand, MLOperandDescriptor, MLTensor,
+    MLTensorDescriptor,
+};
 use rustnn::mlgraphbuilder::MLGraphBuilder;
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operator_options::{
@@ -1684,7 +1687,7 @@ pub fn execute_wpt_graph(
         }
     }
 
-    let mut build_outputs: HashMap<&str, MLOperand> = HashMap::new();
+    let mut build_outputs = MLNamedOperands::new();
     for name in graph.expected_outputs.keys() {
         let operand = operand_map
             .get(name)
@@ -1698,7 +1701,7 @@ pub fn execute_wpt_graph(
         .build(&build_outputs)
         .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
 
-    let mut input_tensors: HashMap<&str, &MLTensor> = HashMap::new();
+    let mut input_tensors = MLNamedTensors::new();
     let mut output_tensors_owned: HashMap<String, MLTensor> = HashMap::new();
     let mut input_owned: HashMap<String, MLTensor> = HashMap::new();
 
@@ -1724,7 +1727,7 @@ pub fn execute_wpt_graph(
     for (name, tensor) in &input_owned {
         input_tensors.insert(name.as_str(), tensor);
     }
-    let output_bindings: HashMap<&str, &MLTensor> = output_tensors_owned
+    let output_bindings: MLNamedTensors = output_tensors_owned
         .iter()
         .map(|(k, v)| (k.as_str(), v))
         .collect();

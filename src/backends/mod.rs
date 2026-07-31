@@ -81,8 +81,8 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     fn dispatch(
         &mut self,
         _graph: &mut mlcontext::MLGraph,
-        _inputs: &std::collections::HashMap<&str, &mlcontext::MLTensor>,
-        _outputs: &std::collections::HashMap<&str, &mlcontext::MLTensor>,
+        _inputs: &mlcontext::MLNamedTensors,
+        _outputs: &mlcontext::MLNamedTensors,
     ) -> crate::error::Result<()> {
         panic!("RustNN is expected to never use a disabled backend")
     }

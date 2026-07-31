@@ -6,8 +6,8 @@ use log::{debug, info};
 use rustnn::{
     ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
     mlcontext::{
-        MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLPowerPreference, MLTensor,
-        MLTensorDescriptor,
+        MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
+        MLTensor, MLTensorDescriptor,
     },
     operator_enums::MLOperandDataType,
 };
@@ -375,7 +375,7 @@ fn run_step<'context>(
         }
     }
 
-    // Name strings must outlive the HashMap borrows below.
+    // Name strings must outlive the named tensor map borrows below.
     let past_k_names: Vec<String> = (0..layout.num_layers)
         .map(|l| format!("past_key_values_{l}_key"))
         .collect();
@@ -389,7 +389,7 @@ fn run_step<'context>(
         .map(|l| format!("present_{l}_value"))
         .collect();
 
-    let mut inputs: HashMap<&str, &MLTensor> = HashMap::new();
+    let mut inputs = MLNamedTensors::new();
     inputs.insert("input_ids", &tensors.input_ids);
     inputs.insert("position_ids", &tensors.position_ids);
     inputs.insert("attention_mask", &tensors.attention_mask);
@@ -398,7 +398,7 @@ fn run_step<'context>(
         inputs.insert(&past_v_names[i], &tensors.past_v[i]);
     }
 
-    let mut outputs: HashMap<&str, &MLTensor> = HashMap::new();
+    let mut outputs = MLNamedTensors::new();
     outputs.insert(&layout.logits_name, logits_tensor);
     for i in 0..layout.num_layers {
         outputs.insert(&pres_k_names[i], &tensors.present_k[i]);

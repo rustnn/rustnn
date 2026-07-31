@@ -22,7 +22,8 @@ use crate::executors::coreml::{
 use crate::graph::DataType;
 use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{
-    MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLTensor, MLTensorDescriptor,
+    MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLNamedTensors, MLTensor,
+    MLTensorDescriptor,
 };
 use crate::operators::Operation;
 
@@ -205,8 +206,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, &MLTensor>,
-        outputs: &HashMap<&str, &MLTensor>,
+        inputs: &MLNamedTensors,
+        outputs: &MLNamedTensors,
     ) -> crate::error::Result<()> {
         // Gather raw-byte inputs keyed by feature name, then run; the borrow of
         // `self.tensors` is released before we write outputs back.
@@ -364,11 +365,9 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
 
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
-
     use crate::mlcontext::{
-        Backend, MLContext, MLContextOptions, MLOperandDescriptor, MLPowerPreference,
-        MLTensorDescriptor,
+        Backend, MLContext, MLContextOptions, MLNamedOperands, MLNamedTensors, MLOperandDescriptor,
+        MLPowerPreference, MLTensorDescriptor,
     };
     use crate::mlgraphbuilder::MLGraphBuilder;
     use crate::operator_enums::MLOperandDataType;
@@ -401,7 +400,7 @@ mod test {
         let b = builder.input("b", &desc).unwrap();
         let a = builder.relu(a).unwrap();
         let output = builder.add(a, b).unwrap();
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", output);
         let mut graph = builder.build(&outputs).unwrap();
 
@@ -417,10 +416,10 @@ mod test {
         context.write_tensor(&a, &[-1.0f32, 2., -3., 4.]).unwrap();
         context.write_tensor(&b, &[1.0f32, 1., 1., 1.]).unwrap();
 
-        let mut inputs = HashMap::new();
+        let mut inputs = MLNamedTensors::new();
         inputs.insert("a", &a);
         inputs.insert("b", &b);
-        let mut out_bindings = HashMap::new();
+        let mut out_bindings = MLNamedTensors::new();
         out_bindings.insert("out", &out);
 
         context
@@ -445,7 +444,7 @@ mod test {
         let a = builder.input("a", &desc).unwrap();
         let b = builder.input("b", &desc).unwrap();
         let output = builder.add(a, b).unwrap();
-        let mut outputs = HashMap::new();
+        let mut outputs = MLNamedOperands::new();
         outputs.insert("out", output);
 
         // CoreML's MLMultiArray has no native int32 add on every compute unit; if the
@@ -469,10 +468,10 @@ mod test {
         context.write_tensor(&a, &[1i32, 2, 3, 4]).unwrap();
         context.write_tensor(&b, &[10i32, 20, 30, 40]).unwrap();
 
-        let mut inputs = HashMap::new();
+        let mut inputs = MLNamedTensors::new();
         inputs.insert("a", &a);
         inputs.insert("b", &b);
-        let mut out_bindings = HashMap::new();
+        let mut out_bindings = MLNamedTensors::new();
         out_bindings.insert("out", &out);
 
         if let Err(e) = context.dispatch(&mut graph, &inputs, &out_bindings) {
