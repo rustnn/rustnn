@@ -2,12 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2
 
-use std::collections::HashMap;
 use std::fmt;
 
 use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
 use crate::error::Result;
+use crate::mlcontext::MLNamedTensors;
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
     RustNNOptions,
@@ -136,8 +136,8 @@ impl<'context> MLBackendContext<'context> for CannContext {
     fn dispatch(
         &mut self,
         _graph: &mut MLGraph,
-        _inputs: &HashMap<&str, &MLTensor>,
-        _outputs: &HashMap<&str, &MLTensor>,
+        _inputs: &MLNamedTensors,
+        _outputs: &MLNamedTensors,
     ) -> Result<()> {
         Err(crate::error::Error::GraphDispatchError {
             source: "CANN dispatch not yet implemented".into(),

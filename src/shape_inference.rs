@@ -303,7 +303,7 @@ fn conv_transpose_filter_dims_from_layout(
 /// Infer output shape for 2D convolution
 ///
 /// Following the W3C WebNN specification for conv2d:
-/// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d>
 ///
 /// Uses [`MLConv2dOptions`]. `padding` is WebNN order:
 /// `[beginning_height, ending_height, beginning_width, ending_width]`.
@@ -487,7 +487,7 @@ pub fn infer_conv2d_shape(
 /// Infer output shape for 2D transposed convolution (deconvolution)
 ///
 /// Following the W3C WebNN specification for convTranspose2d:
-/// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d>
 ///
 /// Uses [`MLConvTranspose2dOptions`]. `padding` is WebNN order:
 /// `[beginning_height, ending_height, beginning_width, ending_width]`.
@@ -685,7 +685,7 @@ fn pool2d_ceil_output_spatial(output_shape_rounding: &str) -> bool {
 /// Infer output shape for 2D pooling operations (average, max)
 ///
 /// Following the W3C WebNN specification for pool2d:
-/// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d>
 ///
 /// Uses [`MLPool2dOptions`]: `padding` is WebNN order
 /// `[beginning_height, ending_height, beginning_width, ending_width]`.
@@ -1004,7 +1004,7 @@ pub struct ReduceOptions {
 /// across specified axes.
 ///
 /// Following the W3C WebNN specification for reduction operations:
-/// https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce
+/// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
 pub fn infer_reduce_shape(
     input_shape: &[u32],
     options: &ReduceOptions,

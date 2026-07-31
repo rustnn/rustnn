@@ -100,7 +100,7 @@ pub trait DeviceTensorBackend: Send + Sync + std::fmt::Debug {
     /// Read tensor data from device to host
     ///
     /// This performs a device-to-host memory transfer.
-    /// Returns data as Vec<f32> (will expand to support other types later).
+    /// Returns data as `Vec<f32>` (will expand to support other types later).
     fn read_to_host(&self) -> Result<Vec<f32>, GraphError>;
 
     /// Write tensor data from host to device

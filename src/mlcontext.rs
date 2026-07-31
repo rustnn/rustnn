@@ -25,7 +25,10 @@ pub use crate::mlcontextoptions::{
     CoremlOptions, LiteRtOptions, MLContextOptions, MLPowerPreference, OrtOptions, RustNNOptions,
     TrtxOptions,
 };
+
+/// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedtensors>
 pub type MLNamedTensors<'names> = BTreeMap<&'names str, &'names MLTensor>;
+/// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedoperands>
 pub type MLNamedOperands<'names> = BTreeMap<&'names str, MLOperand>;
 
 pub use crate::mlgraphbuilder::MLGraphBuilder;
@@ -152,12 +155,12 @@ impl Display for MLContextLostInfo {
     }
 }
 
-/// https://www.w3.org/TR/webnn/#api-mltensor
+/// <https://www.w3.org/TR/webnn/#api-mltensor>
 #[derive(Debug, Clone)]
 pub struct MLTensor {
     pub(crate) id: usize,
     pub(crate) constant: bool,
-    /// internal slots as per https://www.w3.org/TR/webnn/#api-mltensor
+    /// internal slots as per <https://www.w3.org/TR/webnn/#api-mltensor>
     pub(crate) descriptor: MLTensorDescriptor,
     //context: &'context MLContext, // todo, omit context?
     //// pending promises, need to be canceled when tensor is destroyed

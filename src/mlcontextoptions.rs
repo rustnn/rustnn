@@ -12,8 +12,8 @@ pub enum MLPowerPreference {
     LowPower,
 }
 
-/// https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions
-/// https://www.w3.org/TR/webnn/#api-ml
+/// <https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions>
+/// <https://www.w3.org/TR/webnn/#api-ml>
 ///
 /// From specs: Note: MLContextOptions is under active development, and the design is expected to change,
 #[derive(Debug, Eq, PartialEq, Clone)]
