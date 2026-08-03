@@ -944,16 +944,42 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             Vec::new()
         };
         for (input, tensor) in inputs.iter() {
-            let shape: Vec<i64> = tensor
+            let logical_shape: Vec<i64> = tensor
                 .shape()
                 .iter()
                 .map(|&dimension| dimension as i64)
                 .collect();
+            // TensorRT optimization profiles do not permit a zero-sized dynamic dimension.
+            // Bind a zero-filled placeholder instead. This is required for the initial empty KV
+            // cache passed to cached transformer graphs.
+            let shape: Vec<i64> = logical_shape
+                .iter()
+                .map(|&dimension| dimension.max(1))
+                .collect();
+            if shape != logical_shape {
+                warn!(
+                    "TensorRT does not support zero-sized input dimensions; binding {input} as {:?} instead of {:?}",
+                    shape, logical_shape
+                );
+            }
             graph
                 .exec
                 .set_input_shape(input, &Dims64::from_slice(&shape))
                 .to_dispatch_result()?;
             let cuda_tensor = &mut self.tensors[tensor.id];
+            if shape != logical_shape {
+                let placeholder_elements = shape.iter().product::<i64>() as usize;
+                let placeholder_bytes = tensor
+                    .data_type()
+                    .rustnn_storage_byte_length(placeholder_elements);
+                if cuda_tensor.memory.num_bytes() < placeholder_bytes {
+                    debug!(
+                        "Growing TensorRT zero-dimension placeholder for {input} from {} to {placeholder_bytes} bytes",
+                        cuda_tensor.memory.num_bytes(),
+                    );
+                    cuda_tensor.memory = cuda_tensor.stream.alloc_zeros(placeholder_bytes)?;
+                }
+            }
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
             if cuda_graphs_enabled {
