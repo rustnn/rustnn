@@ -5,7 +5,7 @@ use log::{debug, trace};
 use webnn_graph::serialize::SerializeOptions;
 
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
-use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
+use crate::graph::{Dimension, TensorShape, get_static_or_max_size, to_dimension_vector};
 use crate::mlcontext::{MLGraph, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
@@ -125,7 +125,7 @@ fn slice_shape(
 
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -144,7 +144,7 @@ fn concat_shape(
     } else {
         let input_shapes: Vec<Vec<Dimension>> = operands
             .iter()
-            .map(|op| op.descriptor.shape.clone())
+            .map(|op| op.descriptor.known_shape().unwrap_or_default().to_vec())
             .collect();
         infer_concat_shape_dimensions(&input_shapes, axis).map_err(|e| {
             Box::new(ShapeInferenceError::ConcatError {
@@ -160,7 +160,7 @@ fn concat_shape(
     };
     Ok(OperandDescriptor {
         data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -189,7 +189,7 @@ fn expand_shape(
 
     Ok(OperandDescriptor {
         data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -252,7 +252,7 @@ fn constant_shape(
     };
     Ok(OperandDescriptor {
         data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -273,7 +273,7 @@ fn matmul_shape(
     )?;
     Ok(OperandDescriptor {
         data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -309,7 +309,7 @@ fn gemm_shape(
     }
     Ok(OperandDescriptor {
         data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -331,7 +331,7 @@ fn transpose_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -357,7 +357,7 @@ fn gather_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -397,7 +397,7 @@ fn gather_nd_shape(
         )?;
         return Ok(OperandDescriptor {
             data_type: input_op.descriptor.data_type,
-            shape,
+            shape: TensorShape::Known(shape),
             pending_permutation: vec![],
         });
     }
@@ -420,7 +420,7 @@ fn gather_nd_shape(
         )?;
         return Ok(OperandDescriptor {
             data_type: input_op.descriptor.data_type,
-            shape,
+            shape: TensorShape::Known(shape),
             pending_permutation: vec![],
         });
     }
@@ -428,7 +428,7 @@ fn gather_nd_shape(
     shape.extend_from_slice(&input_op.descriptor.shape[k..]);
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -531,7 +531,7 @@ fn resample2d_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -556,7 +556,7 @@ fn argminmax_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: opts.output_data_type.into(),
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -585,7 +585,7 @@ fn reduce_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -600,7 +600,7 @@ fn reshape_shape(
     let shape: Vec<Dimension> = new_shape.iter().cloned().map(Into::into).collect();
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -627,7 +627,7 @@ fn conv2d_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -654,7 +654,7 @@ fn conv_transpose2d_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -684,7 +684,7 @@ fn pool2d_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -711,7 +711,7 @@ fn global_pool_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -734,7 +734,7 @@ fn pad_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -757,7 +757,7 @@ fn squeeze_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -777,7 +777,7 @@ fn unsqueeze_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -797,7 +797,7 @@ fn tile_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -821,7 +821,7 @@ fn prelu_shape(
     )?;
     Ok(OperandDescriptor {
         data_type: input_op.descriptor.data_type,
-        shape,
+        shape: TensorShape::Known(shape),
         pending_permutation: vec![],
     })
 }
@@ -867,7 +867,7 @@ fn shape_op_shape(input: MLOperand, graph: &GraphInfo) -> Result<OperandDescript
     let rank = operand.descriptor.shape.len() as u32;
     Ok(OperandDescriptor {
         data_type: DataType::Int64,
-        shape: vec![Dimension::Static(rank)],
+        shape: TensorShape::Known(vec![Dimension::Static(rank)]),
         pending_permutation: vec![],
     })
 }
@@ -925,7 +925,7 @@ fn where_shape(
 
     Ok(OperandDescriptor {
         data_type: operands[1].descriptor.data_type,
-        shape: output_shape,
+        shape: TensorShape::Known(output_shape),
         pending_permutation: vec![],
     })
 }
@@ -941,21 +941,23 @@ fn same_shape(
 
     let mut output_descriptor = operands[0].descriptor.clone();
     for op in operands.iter().skip(1) {
-        output_descriptor.shape = crate::shape_inference::broadcast_shapes_dimensions(
-            &output_descriptor.shape,
-            &op.descriptor.shape,
-        )
-        .map_err(|e| {
-            Box::new(ShapeInferenceError::BroadcastError {
-                operation: operation.clone(),
-                inputs: inputs
-                    .iter()
-                    .copied()
-                    .zip(operands.iter().map(|&o| o.clone()))
-                    .collect(),
-                source: e,
-            })
-        })?;
+        output_descriptor.shape = TensorShape::Known(
+            crate::shape_inference::broadcast_shapes_dimensions(
+                &output_descriptor.shape,
+                &op.descriptor.shape,
+            )
+            .map_err(|e| {
+                Box::new(ShapeInferenceError::BroadcastError {
+                    operation: operation.clone(),
+                    inputs: inputs
+                        .iter()
+                        .copied()
+                        .zip(operands.iter().map(|&o| o.clone()))
+                        .collect(),
+                    source: e,
+                })
+            })?,
+        );
     }
 
     Ok(output_descriptor)
@@ -1280,13 +1282,13 @@ fn gru_output_shapes(
 
     let mut shapes = vec![OperandDescriptor {
         data_type: dtype,
-        shape: to_dimension_vector(&[num_dir, batch, h]),
+        shape: TensorShape::Known(to_dimension_vector(&[num_dir, batch, h])),
         pending_permutation: vec![],
     }];
     if opts.return_sequence {
         shapes.push(OperandDescriptor {
             data_type: dtype,
-            shape: to_dimension_vector(&[steps, num_dir, batch, h]),
+            shape: TensorShape::Known(to_dimension_vector(&[steps, num_dir, batch, h])),
             pending_permutation: vec![],
         });
     }
@@ -1310,18 +1312,18 @@ fn lstm_output_shapes(
     let mut shapes = Vec::new();
     shapes.push(OperandDescriptor {
         data_type: dtype,
-        shape: to_dimension_vector(&[num_dir, batch, h]),
+        shape: TensorShape::Known(to_dimension_vector(&[num_dir, batch, h])),
         pending_permutation: vec![],
     });
     shapes.push(OperandDescriptor {
         data_type: dtype,
-        shape: to_dimension_vector(&[num_dir, batch, h]),
+        shape: TensorShape::Known(to_dimension_vector(&[num_dir, batch, h])),
         pending_permutation: vec![],
     });
     if opts.return_sequence {
         shapes.push(OperandDescriptor {
             data_type: dtype,
-            shape: to_dimension_vector(&[steps, num_dir, batch, h]),
+            shape: TensorShape::Known(to_dimension_vector(&[steps, num_dir, batch, h])),
             pending_permutation: vec![],
         });
     }
@@ -1355,7 +1357,10 @@ fn gru_cell_shape(
     if input_shape.len() == 2 && hidden_size > 0 {
         return Ok(OperandDescriptor {
             data_type: graph.operands[input.id].descriptor.data_type,
-            shape: to_dimension_vector(&[get_static_or_max_size(&input_shape[0]), hidden_size]),
+            shape: TensorShape::Known(to_dimension_vector(&[
+                get_static_or_max_size(&input_shape[0]),
+                hidden_size,
+            ])),
             pending_permutation: vec![],
         });
     }
@@ -1911,7 +1916,7 @@ fn shape_inference_single_output(
             )?;
             Ok(OperandDescriptor {
                 data_type: operand.descriptor.data_type,
-                shape,
+                shape: TensorShape::Known(shape),
                 pending_permutation: vec![],
             })
         }

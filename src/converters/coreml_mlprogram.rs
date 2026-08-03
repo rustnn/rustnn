@@ -4761,6 +4761,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
     }
 
     fn convert(&self, graph_info: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+        graph_info.ensure_known_shapes(self.format())?;
         if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
@@ -5001,7 +5002,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         .map(|&v| GraphDimension::Static(v))
                         .collect()
                 } else {
-                    operand.descriptor.shape.clone()
+                    operand
+                        .descriptor
+                        .known_shape()
+                        .unwrap_or_default()
+                        .to_vec()
                 };
 
                 // Compute the final dtype (and convert bytes if needed).
@@ -5030,7 +5035,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 let mut modified_operand = operand.clone();
                 modified_operand.descriptor = OperandDescriptor {
                     data_type: final_dtype,
-                    shape: final_shape,
+                    shape: crate::graph::TensorShape::Known(final_shape),
                     pending_permutation: Vec::new(),
                 };
                 let const_op = Self::create_const_operation(
@@ -8039,7 +8044,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             } else {
                                 let orig_var_shape = graph_info
                                     .operand(variance_id_v)
-                                    .map(|o| o.descriptor.shape.clone())
+                                    .and_then(|o| o.descriptor.known_shape().map(ToOwned::to_owned))
                                     .unwrap_or_default();
                                 (mean_name, var_name, orig_var_shape)
                             };
@@ -9065,13 +9070,13 @@ mod tests {
     use prost::Message;
     use std::collections::HashMap;
 
-    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
-        crate::graph::to_dimension_vector(shape)
+    fn s(shape: &[u32]) -> crate::graph::TensorShape {
+        crate::graph::TensorShape::Known(crate::graph::to_dimension_vector(shape))
     }
 
     /// Helper to create a simple graph with a Float16 constant
     fn create_graph_with_float16_constant(
-        shape: Vec<crate::graph::Dimension>,
+        shape: crate::graph::TensorShape,
         data: Vec<u8>,
     ) -> GraphInfo {
         let mut graph = GraphInfo {
@@ -9704,13 +9709,13 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: crate::graph::TensorShape::Known(vec![
                             crate::graph::Dimension::Dynamic(crate::graph::DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             crate::graph::Dimension::Static(4),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                 },
@@ -9719,13 +9724,13 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: crate::graph::TensorShape::Known(vec![
                             crate::graph::Dimension::Dynamic(crate::graph::DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             crate::graph::Dimension::Static(4),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                 },
@@ -9884,10 +9889,10 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: crate::graph::TensorShape::Known(vec![
                             crate::graph::Dimension::Static(2),
                             crate::graph::Dimension::Static(3),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                 },
@@ -9896,10 +9901,10 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: crate::graph::TensorShape::Known(vec![
                             crate::graph::Dimension::Static(2),
                             crate::graph::Dimension::Static(3),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                 },

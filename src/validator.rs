@@ -70,6 +70,16 @@ impl<'a> GraphValidator<'a> {
         if !crate::graph::dynamic_inputs_enabled() && self.graph.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
+        for (operand_id, operand) in self.graph.operands.iter().enumerate() {
+            if operand.descriptor.shape.is_unknown() {
+                log::warn!(
+                    "validation continuing with unknown shape for operand {} (name={:?}, kind={:?}); backend lowering may reject it",
+                    operand_id,
+                    operand.name,
+                    operand.kind,
+                );
+            }
+        }
         if self.graph.operands.len() >= u32::MAX as usize {
             return Err(GraphError::TooManyOperands {
                 count: self.graph.operands.len(),
@@ -85,6 +95,14 @@ impl<'a> GraphValidator<'a> {
         for (idx, operand) in self.graph.operands.iter().enumerate() {
             let operand_id = idx as u32;
             let descriptor = &operand.descriptor;
+            if descriptor.shape.is_unknown() {
+                log::warn!(
+                    "skipping byte-limit validation for unknown shape on operand {} (name={:?})",
+                    operand_id,
+                    operand.name,
+                );
+                continue;
+            }
             let byte_length =
                 descriptor
                     .byte_length()
@@ -483,8 +501,8 @@ mod tests {
     use crate::graph::{ConstantData, GraphInfo, Operand};
     use crate::operators::Operation;
 
-    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
-        crate::graph::to_dimension_vector(shape)
+    fn s(shape: &[u32]) -> crate::graph::TensorShape {
+        crate::graph::TensorShape::Known(crate::graph::to_dimension_vector(shape))
     }
 
     fn constant_data_for(descriptor: &OperandDescriptor) -> ConstantData {
@@ -509,7 +527,7 @@ mod tests {
             kind: OperandKind::Input,
             descriptor: OperandDescriptor {
                 data_type: input_dtype,
-                shape: input_shape.clone(),
+                shape: crate::graph::TensorShape::Known(input_shape.clone()),
                 pending_permutation: Vec::new(),
             },
             name: Some("input".to_string()),
@@ -517,7 +535,7 @@ mod tests {
 
         let scale_descriptor = OperandDescriptor {
             data_type: scale_dtype,
-            shape: scale_shape.clone(),
+            shape: crate::graph::TensorShape::Known(scale_shape.clone()),
             pending_permutation: Vec::new(),
         };
         let scale_operand = Operand {
@@ -528,7 +546,7 @@ mod tests {
 
         let zero_point_descriptor = OperandDescriptor {
             data_type: zero_point_dtype,
-            shape: scale_shape.clone(),
+            shape: crate::graph::TensorShape::Known(scale_shape.clone()),
             pending_permutation: Vec::new(),
         };
         let zero_point_operand = Operand {
@@ -543,7 +561,7 @@ mod tests {
             } else {
                 DataType::Float32
             },
-            shape: input_shape.clone(),
+            shape: crate::graph::TensorShape::Known(input_shape.clone()),
             pending_permutation: Vec::new(),
         };
         let output_operand = Operand {
@@ -606,7 +624,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: dynamic_shape.clone(),
+                        shape: crate::graph::TensorShape::Known(dynamic_shape.clone()),
                         pending_permutation: vec![],
                     },
                     name: Some("input".to_string()),
@@ -615,7 +633,7 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: dynamic_shape,
+                        shape: crate::graph::TensorShape::Known(dynamic_shape),
                         pending_permutation: vec![],
                     },
                     name: Some("output".to_string()),
@@ -758,7 +776,7 @@ mod tests {
             kind: OperandKind::Intermediate,
             descriptor: OperandDescriptor {
                 data_type: DataType::Float32,
-                shape: vec![],
+                shape: crate::graph::TensorShape::Known(vec![]),
                 pending_permutation: Vec::new(),
             },
             name: Some("intermediate".to_string()),
@@ -768,7 +786,7 @@ mod tests {
             kind: OperandKind::Output,
             descriptor: OperandDescriptor {
                 data_type: DataType::Uint8,
-                shape: vec![],
+                shape: crate::graph::TensorShape::Known(vec![]),
                 pending_permutation: Vec::new(),
             },
             name: Some("output".to_string()),

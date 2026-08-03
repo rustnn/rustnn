@@ -72,20 +72,24 @@ impl RuntimeShapeState {
         descriptor: &OperandDescriptor,
         kind: TensorKind,
     ) -> Result<(), GraphError> {
-        if actual_shape.len() != descriptor.shape.len() {
+        let expected_shape =
+            descriptor
+                .known_shape()
+                .ok_or_else(|| GraphError::UnknownOperandShape {
+                    operand: 0,
+                    format: format!("runtime {} tensor `{}`", kind.as_str(), name),
+                })?;
+        if actual_shape.len() != expected_shape.len() {
             return Err(GraphError::RuntimeTensorRankMismatch {
                 kind: kind.as_str().to_string(),
                 name: name.to_string(),
-                expected_rank: descriptor.shape.len(),
+                expected_rank: expected_shape.len(),
                 actual_rank: actual_shape.len(),
             });
         }
 
-        for (axis, (actual, expected_dim)) in actual_shape
-            .iter()
-            .copied()
-            .zip(&descriptor.shape)
-            .enumerate()
+        for (axis, (actual, expected_dim)) in
+            actual_shape.iter().copied().zip(expected_shape).enumerate()
         {
             match expected_dim {
                 Dimension::Static(expected) => {
@@ -163,7 +167,7 @@ mod tests {
     fn input_desc(shape: Vec<Dimension>) -> OperandDescriptor {
         OperandDescriptor {
             data_type: DataType::Float32,
-            shape,
+            shape: crate::graph::TensorShape::Known(shape),
             pending_permutation: vec![],
         }
     }

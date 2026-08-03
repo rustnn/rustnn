@@ -110,8 +110,8 @@ mod tests {
     use crate::error::GraphError;
     use crate::graph::{DataType, GraphInfo, Operand, OperandDescriptor, OperandKind};
 
-    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
-        crate::graph::to_dimension_vector(shape)
+    fn s(shape: &[u32]) -> crate::graph::TensorShape {
+        crate::graph::TensorShape::Known(crate::graph::to_dimension_vector(shape))
     }
 
     struct DummyConverter;

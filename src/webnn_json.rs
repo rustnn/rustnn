@@ -20,7 +20,7 @@ use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
     ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, to_dimension_vector,
+    OperandKind, TensorShape, to_dimension_vector,
 };
 use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;
@@ -417,7 +417,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
             name: Some(name.clone()),
             descriptor: OperandDescriptor {
                 data_type: from_webnn_datatype(&const_decl.data_type),
-                shape: to_dimension_vector(&const_decl.shape),
+                shape: TensorShape::Known(to_dimension_vector(&const_decl.shape)),
                 pending_permutation: Vec::new(),
             },
             kind: OperandKind::Constant,
@@ -470,7 +470,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
                         name: Some(name.clone()),
                         descriptor: OperandDescriptor {
                             data_type: DataType::Float32, // Default, will be inferred
-                            shape: Vec::new(),            // Will be inferred
+                            shape: crate::graph::TensorShape::Unknown(()),
                             pending_permutation: Vec::new(),
                         },
                         kind: OperandKind::Intermediate,
@@ -523,7 +523,7 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
 }
 
 /// Infer output shapes for all operations in the graph
-fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
+pub fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
     use crate::shape_inference::*;
 
     fn parse_dtype(value: &serde_json::Value) -> Option<DataType> {
@@ -630,7 +630,8 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             {
                 let inp = &mut graph.operands[*input_id as usize];
                 if inp.descriptor.shape.len() != repeats_len {
-                    inp.descriptor.shape = vec![Dimension::Static(1); repeats_len];
+                    inp.descriptor.shape =
+                        TensorShape::Known(vec![Dimension::Static(1); repeats_len]);
                     made_progress = true;
                 }
             }
@@ -649,7 +650,13 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             let input_shapes: Vec<Vec<Dimension>> = op
                 .input_operands()
                 .iter()
-                .map(|&id| graph.operands[id as usize].descriptor.shape.clone())
+                .map(|&id| {
+                    graph.operands[id as usize]
+                        .descriptor
+                        .known_shape()
+                        .unwrap_or_default()
+                        .to_vec()
+                })
                 .collect();
             let input_types: Vec<DataType> = op
                 .input_operands()
@@ -759,6 +766,26 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     }
                 }
 
+                "unsqueeze" => {
+                    if input_shapes.len() == 1 {
+                        let axes = match &op {
+                            Operation::Unsqueeze { options, .. } => {
+                                options.as_ref().map(|options| options.axes.as_slice())
+                            }
+                            _ => None,
+                        }
+                        .unwrap_or(&[]);
+                        infer_unsqueeze_shape_dimensions(&input_shapes[0], axes).ok()
+                    } else {
+                        None
+                    }
+                }
+
+                "triangular" => input_shapes.first().cloned(),
+
+                // scatterND modifies values in-place, so its result has the data input's shape.
+                "scatternd" | "scatter_nd" => input_shapes.first().cloned(),
+
                 // MatMul
                 "matmul" => {
                     if input_shapes.len() >= 2 {
@@ -865,7 +892,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                     // to back-propagate indices shape and as the result.
                     let existing_output_shape = op.output_operand().and_then(|id| {
                         let o = graph.operands.get(id as usize)?;
-                        (!o.descriptor.shape.is_empty()).then_some(o.descriptor.shape.clone())
+                        o.descriptor.known_shape().map(ToOwned::to_owned)
                     });
 
                     if let Some(shape_override) = existing_output_shape {
@@ -884,9 +911,9 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
                                     if indices_operand.descriptor.shape.is_empty()
                                         && shape_override.len() >= tail_len
                                     {
-                                        indices_operand.descriptor.shape = shape_override
+                                        indices_operand.descriptor.shape = TensorShape::Known(shape_override
                                             [..shape_override.len() - tail_len]
-                                            .to_vec();
+                                            .to_vec());
                                         made_progress = true;
                                     }
                                 }
@@ -1071,7 +1098,7 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
             if let Some(shape) = output_shape
                 && let Some(output_id) = op.output_operand()
             {
-                graph.operands[output_id as usize].descriptor.shape = shape;
+                graph.operands[output_id as usize].descriptor.shape = TensorShape::Known(shape);
                 made_progress = true;
             }
 
@@ -1211,20 +1238,20 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
         }
     }
 
-    // Summary: count operands with empty shapes
-    let empty_shape_count = graph
+    // Unknown is distinct from a known rank-0 scalar (`Known([])`).
+    let unknown_shape_count = graph
         .operands
         .iter()
-        .filter(|op| op.descriptor.shape.is_empty())
+        .filter(|op| op.descriptor.shape.is_unknown())
         .count();
     debug_print!(
         "[SHAPE INFERENCE] Completed: {} operands still have empty shapes",
-        empty_shape_count
+        unknown_shape_count
     );
-    if empty_shape_count > 0 {
+    if unknown_shape_count > 0 {
         debug_print!("[SHAPE INFERENCE] WARNING: Some operands could not have shapes inferred!");
         for (idx, op) in graph.operands.iter().enumerate() {
-            if op.descriptor.shape.is_empty() {
+            if op.descriptor.shape.is_unknown() {
                 debug_print!("  operand_{}: name={:?}, kind={:?}", idx, op.name, op.kind);
             }
         }
@@ -1236,6 +1263,10 @@ fn infer_output_shapes(graph: &mut GraphInfo) -> Result<(), GraphError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn to_dimension_vector(shape: &[u32]) -> TensorShape {
+        TensorShape::Known(super::to_dimension_vector(shape))
+    }
     use webnn_graph::serialize::{SerializeOptions, serialize_graph_to_wg_text};
 
     fn wshape(shape: &[u32]) -> Vec<webnn_graph::ast::Dimension> {
@@ -1545,7 +1576,10 @@ mod tests {
         assert_eq!(graph_info.operands.len(), 1);
         assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
         let empty_shape: Vec<Dimension> = vec![];
-        assert_eq!(graph_info.operands[0].descriptor.shape, empty_shape);
+        assert_eq!(
+            graph_info.operands[0].descriptor.shape,
+            TensorShape::Known(empty_shape)
+        );
     }
 
     #[test]
@@ -2066,7 +2100,7 @@ mod tests {
         let out_desc = &graph_info.operands[out_id].descriptor;
         assert_eq!(
             out_desc.shape,
-            vec![Dimension::Static(2), Dimension::Static(3)]
+            TensorShape::Known(vec![Dimension::Static(2), Dimension::Static(3)])
         );
         assert_eq!(out_desc.data_type, DataType::Uint8);
     }
@@ -2123,7 +2157,7 @@ mod tests {
         let out_desc = &graph_info.operands[out_id].descriptor;
         assert_eq!(
             out_desc.shape,
-            vec![Dimension::Static(2), Dimension::Static(3)]
+            TensorShape::Known(vec![Dimension::Static(2), Dimension::Static(3)])
         );
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
@@ -2213,7 +2247,7 @@ mod tests {
         let out_desc = &graph_info.operands[out_id].descriptor;
         assert_eq!(
             out_desc.shape,
-            vec![Dimension::Static(3), Dimension::Static(4)]
+            TensorShape::Known(vec![Dimension::Static(3), Dimension::Static(4)])
         );
         assert_eq!(out_desc.data_type, DataType::Float32);
     }
@@ -2277,13 +2311,13 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: TensorShape::Known(vec![
                             Dimension::Dynamic(DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             Dimension::Static(3),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                     name: Some("x".to_string()),
@@ -2292,13 +2326,13 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: TensorShape::Known(vec![
                             Dimension::Dynamic(DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             Dimension::Static(3),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                     name: Some("y".to_string()),
@@ -2341,10 +2375,10 @@ mod tests {
                 kind: OperandKind::Constant,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Dynamic(DynamicDimension {
+                    shape: TensorShape::Known(vec![Dimension::Dynamic(DynamicDimension {
                         name: "n".to_string(),
                         max_size: 4,
-                    })],
+                    })]),
                     pending_permutation: vec![],
                 },
                 name: Some("const_dynamic".to_string()),

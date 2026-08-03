@@ -42,6 +42,7 @@ use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
 
 const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
+const TRTX_MANAGED_MEMORY_ENV_VAR: &str = "RUSTNN_TRTX_MANAGED_MEMORY";
 
 // TODO: also used in trtexec-rs. Should be part of trtx API?
 enum HostMemoryOrVec<'memory> {
@@ -244,6 +245,124 @@ impl TrtxTensor {
     }
 }
 
+/// TensorRT allocator backed by CUDA unified memory for diagnosing device-memory pressure.
+///
+/// CUDA may migrate these pages to host memory when device memory is exhausted. This is a
+/// correctness-oriented escape hatch, not a performance mode.
+#[derive(Default)]
+struct ManagedGpuAllocator {
+    allocations: Mutex<HashMap<usize, usize>>,
+}
+
+impl ManagedGpuAllocator {
+    unsafe fn allocate(&self, size: u64) -> *mut c_void {
+        let Ok(size) = usize::try_from(size) else {
+            return std::ptr::null_mut();
+        };
+        let size = size.max(1);
+        let pointer = match unsafe {
+            result::malloc_managed(size, sys::CUmemAttach_flags::CU_MEM_ATTACH_GLOBAL)
+        } {
+            Ok(pointer) => pointer,
+            Err(error) => {
+                warn!("cudaMallocManaged({size} bytes) for TensorRT failed: {error}");
+                return std::ptr::null_mut();
+            }
+        };
+        let pointer = pointer as usize;
+        self.allocations.lock().unwrap().insert(pointer, size);
+        pointer as *mut c_void
+    }
+
+    unsafe fn free(&self, pointer: *mut c_void) -> bool {
+        if pointer.is_null() {
+            return true;
+        }
+        let pointer = pointer as usize;
+        let Some(_) = self.allocations.lock().unwrap().remove(&pointer) else {
+            warn!("TensorRT attempted to free an untracked managed allocation {pointer:#x}");
+            return false;
+        };
+        match unsafe { result::free_sync(pointer as sys::CUdeviceptr) } {
+            Ok(()) => true,
+            Err(error) => {
+                warn!("cudaFree for TensorRT managed allocation {pointer:#x} failed: {error}");
+                false
+            }
+        }
+    }
+}
+
+impl trtx::interfaces::AllocateGpu for ManagedGpuAllocator {
+    unsafe fn allocate_async(
+        &self,
+        size: u64,
+        _alignment: u64,
+        _flags: u32,
+        _cuda_stream: *mut c_void,
+    ) -> *mut c_void {
+        unsafe { self.allocate(size) }
+    }
+
+    unsafe fn reallocate(
+        &self,
+        memory: *mut c_void,
+        _alignment: u64,
+        new_size: u64,
+    ) -> *mut c_void {
+        let old_size = self
+            .allocations
+            .lock()
+            .unwrap()
+            .get(&(memory as usize))
+            .copied()
+            .unwrap_or(0);
+        let replacement = unsafe { self.allocate(new_size) };
+        if replacement.is_null() {
+            return replacement;
+        }
+        if !memory.is_null() && old_size > 0 {
+            let copy_size = old_size.min(new_size as usize);
+            if let Err(error) = unsafe {
+                result::memcpy_dtod_sync(
+                    replacement as sys::CUdeviceptr,
+                    memory as sys::CUdeviceptr,
+                    copy_size,
+                )
+            } {
+                warn!("TensorRT managed allocation reallocation copy failed: {error}");
+                unsafe { self.free(replacement) };
+                return std::ptr::null_mut();
+            }
+            unsafe { self.free(memory) };
+        }
+        replacement
+    }
+
+    unsafe fn deallocate_async(&self, memory: *mut c_void, _cuda_stream: *mut c_void) -> bool {
+        unsafe { self.free(memory) }
+    }
+}
+
+impl Drop for ManagedGpuAllocator {
+    fn drop(&mut self) {
+        for pointer in self
+            .allocations
+            .get_mut()
+            .unwrap()
+            .drain()
+            .map(|(pointer, _)| pointer)
+        {
+            // SAFETY: pointers in the tracking map were allocated by `malloc_managed`.
+            if let Err(error) = unsafe { result::free_sync(pointer as sys::CUdeviceptr) } {
+                warn!(
+                    "cudaFree for leaked TensorRT managed allocation {pointer:#x} failed: {error}"
+                );
+            }
+        }
+    }
+}
+
 pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     device_cache_id: String,
@@ -285,7 +404,16 @@ impl<'context> TrtxContext<'context> {
             config.set_profiling_verbosity(trtx::ProfilingVerbosity::kDETAILED);
         }
         let config = Arc::new(config.into());
-        let runtime = Arc::new(trtx::Runtime::new(&LOGGER)?.into());
+        let mut runtime = trtx::Runtime::new(&LOGGER)?;
+        if std::env::var_os(TRTX_MANAGED_MEMORY_ENV_VAR).is_some() {
+            info!(
+                "Using cudaMallocManaged for TensorRT runtime allocations because {TRTX_MANAGED_MEMORY_ENV_VAR} is set"
+            );
+            runtime.set_gpu_allocator(trtx::interfaces::GpuAllocator::new(Box::new(
+                ManagedGpuAllocator::default(),
+            ))?);
+        }
+        let runtime = Arc::new(runtime.into());
         debug!("Created new TrtxContext");
         Ok(Self {
             cuda_ctx,
@@ -482,11 +610,10 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                         .iter()
                         .map(|dimension| i64::from(crate::graph::get_static_or_max_size(dimension)))
                         .collect();
-                    let opt: Vec<i64> = min
-                        .iter()
-                        .zip(&max)
-                        .map(|(&min, &max)| min.max(max.min(16)))
-                        .collect();
+                    // The graph materializes a causal-mask branch at its declared maximum
+                    // sequence length (4096). Its static and dynamic inputs therefore need
+                    // the same profile point; an arbitrary opt=16 is not valid here.
+                    let opt = max.clone();
                     profile
                         .set_dimensions(&name, OptProfileSelector::kMIN, &Dims64::from_slice(&min))
                         .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;

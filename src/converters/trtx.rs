@@ -528,17 +528,11 @@ impl TrtxConverter {
                     return Ok(None);
                 }
                 if tensor.get_type(&*network) == TrtDataType::kINT8 {
-                    let webnn_ty = graph
-                        .operand(operand_id)
-                        .map(|o| o.descriptor.data_type)
-                        .unwrap_or(DataType::Int8);
-                    Ok(Some(Self::trtx_int8_uint8_identity_dequantize(
-                        network,
-                        tensor,
-                        TrtDataType::kFLOAT,
-                        "mask broadcast promote",
-                        webnn_ty,
-                    )?))
+                    // Dynamic attention masks have an unknown TensorRT rank while the network
+                    // is assembled. TensorRT RTX 1.6 rejects Dequantize for that case because
+                    // block quantization requires a rank-matched scale. Cast has no such
+                    // rank-dependent scale contract and is sufficient before float broadcast.
+                    Ok(Some(Self::cast_to_float32(network, tensor)?))
                 } else {
                     Ok(Some(Self::cast_to_float32(network, tensor)?))
                 }
@@ -3370,7 +3364,21 @@ impl TrtxConverter {
         label: &str,
     ) -> Result<Vec<i64>, GraphError> {
         match tensor.dimensions(network) {
-            Ok(dims) if !dims.is_empty() || fallback_shape.is_empty() => Ok(dims),
+            Ok(dims) if !dims.is_empty() || fallback_shape.is_empty() => Ok(dims
+                .into_iter()
+                .enumerate()
+                .map(|(axis, dim)| {
+                    if dim < 0 {
+                        fallback_shape
+                            .get(axis)
+                            .copied()
+                            .map(i64::from)
+                            .unwrap_or(dim)
+                    } else {
+                        dim
+                    }
+                })
+                .collect()),
             Ok(_) => Ok(fallback_shape.iter().map(|&d| d as i64).collect()),
             Err(_) if !fallback_shape.is_empty() => {
                 Ok(fallback_shape.iter().map(|&d| d as i64).collect())
@@ -3775,9 +3783,19 @@ impl TrtxConverter {
         webnn_integer_dtype: DataType,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
         let input_ty = tensor.get_type(&*network);
-        // Always use a **scalar** (0D) scale for identity DQ. Matching zp rank (e.g. `[1,1]`) hits
-        // TensorRT `ScaleMode is illegal`; per-tensor scale broadcasts. Myelin: data rank >= scale rank.
-        let scale_shape: Vec<i64> = vec![];
+        // TensorRT RTX 1.6 requires the Dequantize scale to have the same rank as the
+        // dynamically-broadcast attention mask. Keep the normal per-tensor scalar scale for
+        // all other paths, whose QDQ lowering relies on scalar ScaleMode.
+        let scale_shape: Vec<i64> = if label == "mask broadcast promote" {
+            tensor
+                .dimensions(&*network)
+                .ok()
+                .filter(|dims| !dims.is_empty())
+                .map(|dims| vec![1; dims.len()])
+                .unwrap_or_else(|| vec![1; 4])
+        } else {
+            vec![]
+        };
         let scale_bytes: Vec<u8> = match dq_out_ty {
             TrtDataType::kFLOAT => 1.0f32.to_le_bytes().to_vec(),
             TrtDataType::kHALF => f16::from_f32(1.0f32).to_le_bytes().to_vec(),
@@ -8121,6 +8139,12 @@ impl TrtxConverter {
                 stride.push(1);
             } else if d == 1 {
                 stride.push(0);
+            } else if d > t {
+                // Dynamic-shape inference may conservatively add maxima through a concat
+                // (e.g. 4096 + 4096) even when a later graph constraint limits the runtime
+                // extent to `t`. ISlice can retain the valid prefix without treating this as
+                // an illegal broadcast.
+                stride.push(1);
             } else {
                 let input_name = graph
                     .operand(in_id)
@@ -15297,6 +15321,7 @@ impl GraphConverter for TrtxConverter {
     }
 
     fn convert(&self, graph_info: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        graph_info.ensure_known_shapes(self.format())?;
         trtx::dynamically_load_tensorrt(None::<&str>).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
@@ -15343,7 +15368,7 @@ impl GraphConverter for TrtxConverter {
             })?;
 
         // Set workspace size (1 GB)
-        config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 30);
+        config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 32);
 
         // WPT conformance often compares TRT to strict IEEE fp32 (ulpTol=0). TF32 matmul/conv rounds to
         // 10-bit mantissa on supported GPUs and can differ by many ULP from CPU reference.
@@ -15415,7 +15440,7 @@ mod tests {
         use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
-            shape: to_dimension_vector(&[1, 1]),
+            shape: crate::graph::TensorShape::Known(to_dimension_vector(&[1, 1])),
             pending_permutation: vec![],
         };
         let graph = GraphInfo {
@@ -15454,7 +15479,7 @@ mod tests {
         use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
-            shape: to_dimension_vector(&[1]),
+            shape: crate::graph::TensorShape::Known(to_dimension_vector(&[1])),
             pending_permutation: vec![],
         };
         let graph = GraphInfo {
