@@ -7753,6 +7753,36 @@ impl TrtxConverter {
         })
     }
 
+    fn tensor_dimension_size_tensor<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        axis: usize,
+        label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let shape = network
+            .add_shape(tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: Shape layer: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: Shape output: {e}"),
+            })?;
+        network
+            .add_slice(&shape, &[axis as i64], &[1], &[1])
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: shape-vector slice: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: shape-vector slice output: {e}"),
+            })
+    }
+
     /// Add slice operation.
     fn add_slice_op<'a>(
         graph: &'a GraphInfo,
@@ -7851,8 +7881,17 @@ impl TrtxConverter {
             .any(|dimension| matches!(dimension, MLDimension::Dynamic(_)))
         {
             let mut size_pieces = Vec::with_capacity(sizes_ml.len());
-            for dimension in sizes_ml {
+            for (axis, dimension) in sizes_ml.iter().enumerate() {
                 let piece = match dimension {
+                    // In mixed static/dynamic slices, exporter-provided non-singleton static
+                    // extents are profile maxima (e.g. 4096), not the current runtime extent.
+                    // Bind them to the source shape to avoid slicing past a short sequence.
+                    MLDimension::Static(size) if *size > 1 => Self::tensor_dimension_size_tensor(
+                        network,
+                        input,
+                        axis,
+                        "Slice static maximum extent",
+                    )?,
                     MLDimension::Static(size) => network
                         .add_small_constant_copied(
                             &[1],
@@ -8973,11 +9012,16 @@ impl TrtxConverter {
         clamp_max_val: i32,
         label: &str,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
-        let num_elements: usize = if indices_shape_i64.is_empty() {
-            1
-        } else {
-            indices_shape_i64.iter().map(|&d| d as usize).product()
-        };
+        let indices_rank = indices
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: indices dimensions: {e}"),
+            })?
+            .len();
+        // Use singleton constants for clamping. Constants at the WebNN maximum index shape
+        // force TensorRT to broadcast dynamic indices to that maximum and make Gather static.
+        let num_elements = 1;
         let indices_dtype = indices.data_type(&*network);
         let (min_data, max_data, constant_dtype) = if indices_dtype == TrtDataType::kINT64 {
             let min = clamp_min_val as i64;
@@ -9005,7 +9049,7 @@ impl TrtxConverter {
         let trt_dims: Vec<i64> = if indices_shape_i64.is_empty() {
             vec![1]
         } else {
-            indices_shape_i64.to_vec()
+            vec![1; indices_rank]
         };
 
         let min_const = network
