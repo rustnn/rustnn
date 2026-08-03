@@ -9662,28 +9662,33 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index zero output: {e}"),
                     })?;
-                let maxed = network
+                let mut maxed_layer = network
                     .add_elementwise(indices, &zero_t, ElementWiseOperation::kMAX)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index max(0): {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("scatterND index max output: {e}"),
                     })?;
-                let clamped = network
+                let _ = maxed_layer.set_name(network, "scatter_nd_index_max");
+                let maxed =
+                    maxed_layer
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("scatterND index max output: {e}"),
+                        })?;
+                let mut clamped_layer = network
                     .add_elementwise(&maxed, &bound_t, ElementWiseOperation::kMIN)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index min(bound): {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
+                    })?;
+                let _ = clamped_layer.set_name(network, "scatter_nd_index_min");
+                let clamped = clamped_layer.output(&*network, 0).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index min output: {e}"),
-                    })?;
+                    }
+                })?;
                 Some(clamped)
             }
             _ => None,
@@ -15593,6 +15598,35 @@ impl TrtxConverter {
         // Get input shape from graph
         let input_operand = &graph.operands[operation.input_operands()[0] as usize];
         let shape = &input_operand.descriptor.shape;
+
+        // SmolLM builds its causal-mask base with ConstantOfShape(0) and then applies
+        // triangular(k=1).  The existing lowering materializes a fixed profile-maximum
+        // `[4096, 4096]` mask, which cannot multiply the runtime `[sequence, past]`
+        // zero tensor once decoding reaches length 2.  Triangular preserves an all-zero
+        // input exactly, so retain that runtime-shaped tensor instead.
+        if shape
+            .iter()
+            .any(|dimension| matches!(dimension, Dimension::Dynamic(_)))
+            && input_operand
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("ConstantOfShape"))
+        {
+            return network
+                .add_identity(input_tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dynamic zero triangular identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map(|output| {
+                    tensor_map.insert(operation.output_operands_slice()[0], output);
+                })
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dynamic zero triangular identity output: {e}"),
+                });
+        }
 
         // Triangular only makes sense for 2D matrices (or higher-D tensors treated as batches of 2D)
         if shape.len() < 2 {
