@@ -1775,12 +1775,23 @@ impl TrtxConverter {
 
         Self::widen_matching_integer_inputs(network, &mut bc_input0, &mut bc_input1)?;
 
-        let layer = network
+        let mut layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add elementwise operation: {}", e),
             })?;
+
+        let _ = layer.set_name(
+            network,
+            &format!(
+                "webnn_{}_{}_{}_to_{}",
+                operation.op_type(),
+                id0,
+                id1,
+                operation.output_operands_slice()[0]
+            ),
+        );
 
         // Extract output tensor from layer
         let output = layer
