@@ -66,7 +66,7 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 endif
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann validate-all-env \
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann validate-all-env smollm-trtx \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -100,6 +100,10 @@ test-wpt: onnxruntime-download
 
 test-wpt-trtx:
 	$(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
+
+# Run the MLContext SmolLM example using TensorRT. Set SMOLLM_ARGS to forward example arguments.
+smollm-trtx:
+	$(CARGO) run --features "trtx-runtime,dynamic-inputs" --example smollm_mlcontext -- $(SMOLLM_ARGS)
 
 test-wpt-litert:
 	@HOST_TRIPLE=$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2); \
