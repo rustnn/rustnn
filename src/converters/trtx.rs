@@ -1413,6 +1413,77 @@ impl TrtxConverter {
         dims1: &[i64],
         op_name: &str,
     ) -> Result<(trtx::Tensor<'a>, trtx::Tensor<'a>), GraphError> {
+        // TensorRT requires matching ranks even when one input is a scalar. A scalar can always
+        // be rank-padded with static singleton dimensions; unlike a general dynamic reshape this
+        // needs no wildcard dimensions or shape tensor.
+        if dims0.is_empty() && !dims1.is_empty() {
+            let mut shuffle =
+                network
+                    .add_shuffle(tensor0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding shuffle: {e}"),
+                    })?;
+            shuffle
+                .set_reshape_dimensions(network, &vec![1; dims1.len()])
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: scalar rank padding reshape: {e}"),
+                })?;
+            let padded =
+                shuffle
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding output: {e}"),
+                    })?;
+            let other = network
+                .add_identity(tensor1)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((padded, other));
+        }
+        if dims1.is_empty() && !dims0.is_empty() {
+            let mut shuffle =
+                network
+                    .add_shuffle(tensor1)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding shuffle: {e}"),
+                    })?;
+            shuffle
+                .set_reshape_dimensions(network, &vec![1; dims0.len()])
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: scalar rank padding reshape: {e}"),
+                })?;
+            let padded =
+                shuffle
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding output: {e}"),
+                    })?;
+            let other = network
+                .add_identity(tensor0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((other, padded));
+        }
         if dims0.contains(&-1) || dims1.contains(&-1) {
             let output0 = network
                 .add_identity(tensor0)
@@ -3499,7 +3570,14 @@ impl TrtxConverter {
                 reason: format!("{label} uint8 storage fix dimensions: {e}"),
             })?;
         let bshape: Vec<i64> = if dims.is_empty() {
-            vec![]
+            // TensorRT may not expose a DQ output's dynamic rank during construction. The mask
+            // promotion path feeds rank-4 attention masks, so keep its correction constants
+            // rank-aligned rather than emitting illegal scalar elementwise inputs.
+            if label == "mask broadcast promote" {
+                vec![1; 4]
+            } else {
+                vec![]
+            }
         } else {
             vec![1_i64; dims.len()]
         };
