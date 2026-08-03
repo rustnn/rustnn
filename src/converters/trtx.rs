@@ -1376,7 +1376,7 @@ impl TrtxConverter {
         // TensorRT elementwise layers broadcast dynamic dimensions natively.  Static broadcast
         // inference below cannot represent `-1`; when ranks already agree, preserve the dynamic
         // tensors unchanged and let TensorRT resolve the shape at execution time.
-        if dims0.len() == dims1.len() && (dims0.contains(&-1) || dims1.contains(&-1)) {
+        if dims0.contains(&-1) || dims1.contains(&-1) {
             let output0 = network
                 .add_identity(tensor0)
                 .map_err(|e| GraphError::ConversionFailed {
@@ -1413,6 +1413,31 @@ impl TrtxConverter {
         dims1: &[i64],
         op_name: &str,
     ) -> Result<(trtx::Tensor<'a>, trtx::Tensor<'a>), GraphError> {
+        if dims0.contains(&-1) || dims1.contains(&-1) {
+            let output0 = network
+                .add_identity(tensor0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            let output1 = network
+                .add_identity(tensor1)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((output0, output1));
+        }
         let shape0 = Self::trtx_dims_to_u32(dims0, op_name)?;
         let shape1 = Self::trtx_dims_to_u32(dims1, op_name)?;
 
