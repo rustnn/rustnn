@@ -31,7 +31,8 @@ use super::{
 use crate::error::GraphError;
 use crate::executors::trtx::create_trtx_logger;
 use crate::graph::{
-    DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
+    DataType, Dimension, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4,
+    unpack_uint4,
 };
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
@@ -800,7 +801,10 @@ impl TrtxConverter {
                     .descriptor
                     .shape
                     .iter()
-                    .map(|d| get_static_or_max_size(d) as i64)
+                    .map(|d| match d {
+                        Dimension::Static(size) => i64::from(*size),
+                        Dimension::Dynamic(_) => -1,
+                    })
                     .collect();
                 let trt_io_name = io_binding_names
                     .get(&(operand_id as u32))

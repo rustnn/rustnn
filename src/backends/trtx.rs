@@ -17,8 +17,10 @@ use log::warn;
 use std::sync::{Arc, Mutex};
 use trtx::CudaEngine;
 use trtx::ExecutionContext;
+use trtx::OptProfileSelector;
 use trtx::Refitter;
 use trtx::host_memory::HostMemory;
+use trtx::trtx_sys::Dims64;
 
 use crate::GraphInfo;
 use crate::backends::caching::CacheResult;
@@ -453,6 +455,54 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
+            if graph.has_dynamic_dimensions() {
+                let mut profile = self
+                    .builder
+                    .lock()
+                    .unwrap()
+                    .creata_optimization_profile()
+                    .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+                for (operand_id, operand) in graph.operands.iter().enumerate() {
+                    if operand.kind != crate::graph::OperandKind::Input {
+                        continue;
+                    }
+                    let name = TrtxConverter::engine_io_tensor_name(&graph, operand_id as u32);
+                    let min: Vec<i64> = operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|dimension| match dimension {
+                            crate::graph::Dimension::Static(size) => i64::from(*size),
+                            crate::graph::Dimension::Dynamic(_) => 1,
+                        })
+                        .collect();
+                    let max: Vec<i64> = operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|dimension| i64::from(crate::graph::get_static_or_max_size(dimension)))
+                        .collect();
+                    let opt: Vec<i64> = min
+                        .iter()
+                        .zip(&max)
+                        .map(|(&min, &max)| min.max(max.min(16)))
+                        .collect();
+                    profile
+                        .set_dimensions(&name, OptProfileSelector::kMIN, &Dims64::from_slice(&min))
+                        .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+                    profile
+                        .set_dimensions(&name, OptProfileSelector::kOPT, &Dims64::from_slice(&opt))
+                        .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+                    profile
+                        .set_dimensions(&name, OptProfileSelector::kMAX, &Dims64::from_slice(&max))
+                        .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+                }
+                self.config
+                    .lock()
+                    .unwrap()
+                    .add_optimization_profile(&mut profile)
+                    .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+            }
             let non_refittable_constants =
                 crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
             for constant_id in graph.constant_operand_ids_to_handles.keys() {
@@ -767,6 +817,15 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             Vec::new()
         };
         for (input, tensor) in inputs.iter() {
+            let shape: Vec<i64> = tensor
+                .shape()
+                .iter()
+                .map(|&dimension| dimension as i64)
+                .collect();
+            graph
+                .exec
+                .set_input_shape(input, &Dims64::from_slice(&shape))
+                .to_dispatch_result()?;
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
