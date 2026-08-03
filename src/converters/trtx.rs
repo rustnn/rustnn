@@ -7842,6 +7842,22 @@ impl TrtxConverter {
         }
         let starts: Vec<i32> = starts_u32.iter().map(|&u| u as i32).collect();
         let sizes: Vec<i32> = sizes_ml.iter().map(|d| d.static_or_max() as i32).collect();
+        let source_shape = graph
+            .operand(operation.input_operands()[0])
+            .and_then(|operand| operand.descriptor.shape.known());
+        // The WebNN JSON representation records the profile maximum for some
+        // slices (notably attention's sequence axis) as a static extent.  The
+        // source descriptor still marks that axis dynamic, so make the TensorRT
+        // size input follow the actual runtime source shape instead of trying to
+        // read, for example, positions 0..4095 from a one-token prefill.
+        let needs_runtime_sizes = sizes_ml.iter().enumerate().any(|(axis, dimension)| {
+            matches!(dimension, MLDimension::Dynamic(_))
+                || (matches!(dimension, MLDimension::Static(size) if *size > 1)
+                    && matches!(
+                        source_shape.and_then(|shape| shape.get(axis)),
+                        Some(Dimension::Dynamic(_))
+                    ))
+        });
         let strides: Vec<i32> = if opts.strides.is_empty() {
             vec![1; starts.len()]
         } else {
@@ -7876,22 +7892,27 @@ impl TrtxConverter {
                 reason: format!("Failed to add slice layer: {}", e),
             })?;
 
-        if sizes_ml
-            .iter()
-            .any(|dimension| matches!(dimension, MLDimension::Dynamic(_)))
-        {
+        if needs_runtime_sizes {
             let mut size_pieces = Vec::with_capacity(sizes_ml.len());
             for (axis, dimension) in sizes_ml.iter().enumerate() {
                 let piece = match dimension {
                     // In mixed static/dynamic slices, exporter-provided non-singleton static
                     // extents are profile maxima (e.g. 4096), not the current runtime extent.
                     // Bind them to the source shape to avoid slicing past a short sequence.
-                    MLDimension::Static(size) if *size > 1 => Self::tensor_dimension_size_tensor(
-                        network,
-                        input,
-                        axis,
-                        "Slice static maximum extent",
-                    )?,
+                    MLDimension::Static(size)
+                        if *size > 1
+                            && matches!(
+                                source_shape.and_then(|shape| shape.get(axis)),
+                                Some(Dimension::Dynamic(_))
+                            ) =>
+                    {
+                        Self::tensor_dimension_size_tensor(
+                            network,
+                            input,
+                            axis,
+                            "Slice dynamic source extent",
+                        )?
+                    }
                     MLDimension::Static(size) => network
                         .add_small_constant_copied(
                             &[1],

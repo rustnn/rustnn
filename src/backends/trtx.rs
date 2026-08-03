@@ -889,8 +889,13 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             array.len(),
         );
         stream.context().bind_to_thread()?;
+        // Empty logical cache outputs use a one-element physical TensorRT
+        // placeholder. Read only the logical result length, rather than asking
+        // cudarc to copy the full placeholder into the caller's zero-byte
+        // destination.
+        let memory = cuda_tensor.memory.slice(..array.len());
         stream
-            .memcpy_dtoh(&cuda_tensor.memory, array)
+            .memcpy_dtoh(&memory, array)
             .to_read_tensor_result(|| tensor.clone())?;
         stream
             .synchronize()
@@ -906,6 +911,23 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         let cuda_tensor = &mut self.tensors[tensor.id];
         let stream = &cuda_tensor.stream;
         stream.context().bind_to_thread()?;
+        // `write_tensor` precedes `dispatch`, where TensorRT receives its input
+        // shapes. Allocate the physical one-element placeholder here as well so
+        // uploading an empty KV cache never copies into the logical zero-byte
+        // allocation.
+        let logical_shape = tensor.shape();
+        if logical_shape.contains(&0) {
+            let placeholder_elements = logical_shape
+                .iter()
+                .map(|&dimension| dimension.max(1) as usize)
+                .product::<usize>();
+            let placeholder_bytes = tensor
+                .data_type()
+                .rustnn_storage_byte_length(placeholder_elements);
+            if cuda_tensor.memory.num_bytes() < placeholder_bytes {
+                cuda_tensor.memory = cuda_tensor.stream.alloc_zeros(placeholder_bytes)?;
+            }
+        }
         debug!(
             "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
             array.as_ptr(),
