@@ -3430,6 +3430,7 @@ dependencies = [
 [[package]]
 name = "trtx"
 version = "0.8.0+rtx1.5"
+source = "git+https://github.com/rustnn/trtx-rs#eaab89a99ec0bbd9ac84e6c99a8daeb82880f3b5"
 dependencies = [
  "autocxx",
  "cudarc 0.11.9",
@@ -3444,6 +3445,7 @@ dependencies = [
 [[package]]
 name = "trtx-sys"
 version = "0.8.0+rtx1.5"
+source = "git+https://github.com/rustnn/trtx-rs#eaab89a99ec0bbd9ac84e6c99a8daeb82880f3b5"
 dependencies = [
  "autocxx",
  "autocxx-build",
