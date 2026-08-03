@@ -1373,6 +1373,34 @@ impl TrtxConverter {
             .unwrap_or_default();
         let dims0 = Self::trtx_dims_or_fallback(&*network, tensor0, &fb0, op_name)?;
         let dims1 = Self::trtx_dims_or_fallback(&*network, tensor1, &fb1, op_name)?;
+        // TensorRT elementwise layers broadcast dynamic dimensions natively.  Static broadcast
+        // inference below cannot represent `-1`; when ranks already agree, preserve the dynamic
+        // tensors unchanged and let TensorRT resolve the shape at execution time.
+        if dims0.len() == dims1.len() && (dims0.contains(&-1) || dims1.contains(&-1)) {
+            let output0 = network
+                .add_identity(tensor0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            let output1 = network
+                .add_identity(tensor1)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((output0, output1));
+        }
         Self::ensure_broadcast_compatible_dims(network, tensor0, &dims0, tensor1, &dims1, op_name)
     }
 
@@ -7768,38 +7796,125 @@ impl TrtxConverter {
                 reason: format!("Unsqueeze: invalid axes {axes:?} for output rank {output_rank}"),
             });
         }
-        let mut output_dims = Vec::with_capacity(output_rank);
-        let mut input_axis = 0;
-        for output_axis in 0..output_rank {
-            if axes.binary_search(&(output_axis as u32)).is_ok() {
-                output_dims.push(1);
-            } else {
-                output_dims.push(input_dims[input_axis]);
-                input_axis += 1;
-            }
-        }
-
-        // Use IShuffleLayer to add dimensions
-        let mut layer = network
-            .add_shuffle(input)
+        let mut output = network
+            .add_identity(input)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add shuffle layer for unsqueeze: {}", e),
-            })?;
-
-        layer
-            .set_reshape_dimensions(network, &output_dims)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Unsqueeze: failed to set reshape dimensions {output_dims:?}: {e}"),
-            })?;
-
-        let output = layer
+                reason: format!("Unsqueeze input identity: {e}"),
+            })?
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
+                reason: format!("Unsqueeze input identity output: {e}"),
             })?;
+
+        // A static reshape may contain only one `-1`. Build the target shape at runtime instead,
+        // preserving every dynamic input dimension and inserting a literal one at each axis.
+        for axis in axes {
+            let rank = output
+                .dimensions(&*network)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: input dimensions: {e}"),
+                })?
+                .len();
+            let shape = network
+                .add_shape(&output)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: Shape layer: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: Shape output: {e}"),
+                })?;
+            let one = network
+                .add_small_constant_copied(&[1], &1_i64.to_le_bytes(), TrtDataType::kINT64, None)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: one constant: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: one constant output: {e}"),
+                })?;
+            let mut pieces = Vec::new();
+            if axis > 0 {
+                pieces.push(
+                    network
+                        .add_slice(&shape, &[0], &[axis as i64], &[1])
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: prefix shape slice: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: prefix shape output: {e}"),
+                        })?,
+                );
+            }
+            pieces.push(one);
+            if (axis as usize) < rank {
+                pieces.push(
+                    network
+                        .add_slice(
+                            &shape,
+                            &[axis as i64],
+                            &[(rank - axis as usize) as i64],
+                            &[1],
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: suffix shape slice: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: suffix shape output: {e}"),
+                        })?,
+                );
+            }
+            let piece_refs: Vec<&trtx::Tensor<'a>> = pieces.iter().collect();
+            let target_shape = if piece_refs.len() == 1 {
+                pieces.pop().unwrap()
+            } else {
+                let mut concat = network.add_concatenation(&piece_refs).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shape concat: {e}"),
+                    }
+                })?;
+                concat.set_axis(network, 0);
+                concat
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shape concat output: {e}"),
+                    })?
+            };
+            let mut shuffle =
+                network
+                    .add_shuffle(&output)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shuffle: {e}"),
+                    })?;
+            shuffle.set_input(network, 1, &target_shape).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: set dynamic reshape shape: {e}"),
+                }
+            })?;
+            output = shuffle
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: shuffle output: {e}"),
+                })?;
+        }
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
