@@ -150,6 +150,54 @@ fn embed_wpt_corpus_for_wasm() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[cfg(feature = "cann-runtime")]
+fn build_cann_shim() {
+    // OHOS targets report target_os="linux" but target_env="ohos".
+    // With OHOS target, compile the CANN adapter C++ shim that wraps the HiAI DDK
+
+    if std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default() != "ohos" {
+        return;
+    }
+
+    let shim_dir = "src/executors/cann_shim";
+    let ddk = "third_party/cann/include";
+    let sources = [
+        "context_adapter.cc",
+        "graph_adapter.cc",
+        "model_adapter.cc",
+        "model_manager_adapter.cc",
+        "operator_adapter.cc",
+        "io_tensor_adapter.cc",
+        "op_tensor_adapter.cc",
+    ];
+
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .include(shim_dir)
+        .include(ddk)
+        .flag("-std=c++17")
+        .flag("-fvisibility=hidden");
+    for src in &sources {
+        let path = format!("{}/{}", shim_dir, src);
+        println!("cargo:rerun-if-changed={path}");
+        build.file(&path);
+    }
+    build.compile("cann_shim");
+
+    println!("cargo:rustc-link-lib=dylib=hiai");
+    println!("cargo:rustc-link-lib=dylib=hiai_ir");
+    println!("cargo:rustc-link-lib=dylib=hiai_ir_build");
+    println!("cargo:rustc-link-lib=dylib=hiai_ir_build_aipp");
+    println!("cargo:rustc-link-lib=dylib=c++");
+
+    if let Ok(ddk_lib) = std::env::var("HIAI_DDK_LIB") {
+        if !ddk_lib.is_empty() {
+            println!("cargo:rustc-link-search=native={ddk_lib}");
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
     build_coreml_protos()?;
@@ -160,6 +208,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build TFLite flatbuffer schema - Only required for the litert-runtime.
     #[cfg(feature = "litert-runtime")]
     build_tflite_schema();
+
+    #[cfg(feature = "cann-runtime")]
+    build_cann_shim();
 
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");

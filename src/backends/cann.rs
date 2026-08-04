@@ -6,12 +6,29 @@ use std::fmt;
 
 use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
-use crate::error::Result;
-use crate::mlcontext::MLNamedTensors;
+use crate::converters::cann::encode_via_adapter;
+use crate::error::{Error, Result};
+use crate::executors::cann_shim::{CannTensorDesc, cann_dispatch};
+use crate::mlcontext::MLBackendGraph::CannEngine;
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
     RustNNOptions,
 };
+use crate::operator_enums::MLOperandDataType;
+
+/// Map WebNN operand data type to CANN adapter enum
+fn ml_operand_to_cann_dtype(data_type: MLOperandDataType) -> i32 {
+    match data_type {
+        MLOperandDataType::Float32 => 0, // CANN_DT_FLOAT
+        MLOperandDataType::Float16 => 1, // CANN_DT_FLOAT16
+        MLOperandDataType::Int32 => 3,   // CANN_DT_INT32
+        MLOperandDataType::Int8 => 2,    // CANN_DT_INT8
+        MLOperandDataType::Uint8 => 4,   // CANN_DT_UINT8
+        MLOperandDataType::Int64 => 9,   // CANN_DT_INT64
+        MLOperandDataType::Uint32 => 8,  // CANN_DT_UINT32
+        _ => 0,                          // default CANN_DT_FLOAT
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct CannTensor {
@@ -20,7 +37,7 @@ pub(crate) struct CannTensor {
 
 #[derive(Debug)]
 pub(crate) struct CannGraph {
-    pub(crate) _model_bytes: Vec<u8>,
+    pub(crate) model_bytes: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -64,8 +81,8 @@ impl<'context> MLBackendContext<'context> for CannContext {
     }
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
-        let n = descriptor.rustnn_required_bytes();
-        let memory = vec![0u8; n];
+        let byte_count = descriptor.rustnn_required_bytes();
+        let memory = vec![0u8; byte_count];
         self.tensors.push(CannTensor { memory });
         Ok(MLTensor {
             id: self.tensors.len() - 1,
@@ -128,20 +145,45 @@ impl<'context> MLBackendContext<'context> for CannContext {
                 tensor: tensor.clone(),
             });
         }
-        let n = array.len();
-        host[..n].copy_from_slice(array);
+        let byte_len = array.len();
+        host[..byte_len].copy_from_slice(array);
         Ok(())
     }
 
     fn dispatch(
         &mut self,
-        _graph: &mut MLGraph,
-        _inputs: &MLNamedTensors,
-        _outputs: &MLNamedTensors,
+        graph: &mut MLGraph,
+        inputs: &HashMap<&str, &MLTensor>,
+        outputs: &HashMap<&str, &MLTensor>,
     ) -> Result<()> {
-        Err(crate::error::Error::GraphDispatchError {
-            source: "CANN dispatch not yet implemented".into(),
-        })
+        let model_bytes = if let CannEngine(ref cann_graph) = graph.backend {
+            &cann_graph.model_bytes
+        } else {
+            return Err(Error::GraphDispatchError {
+                source: "graph is not a CANN graph".into(),
+            });
+        };
+
+        let build_desc = |tensor: &&MLTensor| -> CannTensorDesc {
+            CannTensorDesc {
+                data: self.tensors[tensor.id].memory.clone(),
+                shape: tensor.shape().iter().map(|dim| *dim as u32).collect(),
+                dtype: ml_operand_to_cann_dtype(tensor.data_type()),
+            }
+        };
+
+        let input_descs: Vec<CannTensorDesc> = inputs.values().map(build_desc).collect();
+        let mut output_descs: Vec<CannTensorDesc> = outputs.values().map(build_desc).collect();
+
+        cann_dispatch(model_bytes, &input_descs, &mut output_descs)?;
+
+        for (tensor, output_desc) in outputs.values().zip(output_descs.iter()) {
+            self.tensors[tensor.id]
+                .memory
+                .copy_from_slice(&output_desc.data);
+        }
+
+        Ok(())
     }
 
     fn rustnn_resize_tensor(&mut self, _tensor: &mut MLTensor, _new_shape: &[u64]) -> Result<()> {
@@ -171,16 +213,13 @@ impl fmt::Debug for CannBuilder {
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
     fn build(&mut self, graph_info: GraphInfo) -> Result<MLGraph<'context>> {
-        let graph = CannGraph {
-            _model_bytes: Vec::new(),
-        };
-        MLGraph::new(
-            crate::mlcontext::MLBackendGraph::CannGraph {
-                graph,
-                _phantom: std::marker::PhantomData,
-            },
-            &graph_info,
-        )
+        // Build the CANN graph and compile to offline model bytes.
+        let model_bytes =
+            encode_via_adapter(&graph_info).map_err(|e| Error::GraphDispatchError {
+                source: format!("CANN graph build failed: {e}").into(),
+            })?;
+        let graph = CannGraph { model_bytes };
+        MLGraph::new(CannEngine(graph), &graph_info)
     }
 }
 
