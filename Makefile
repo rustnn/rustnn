@@ -8,6 +8,14 @@ COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
 LITERT_PATH ?= target/graph.tflite
 CANN_PATH ?= target/graph.cann
+OHOS_SDK_NATIVE ?=
+OHOS_LLVM ?= $(OHOS_SDK_NATIVE)/llvm/bin
+OHOS_SYSROOT ?= $(OHOS_SDK_NATIVE)/sysroot
+OHOS_CC ?= $(OHOS_LLVM)/clang
+OHOS_CXX ?= $(OHOS_LLVM)/clang++
+OHOS_AR ?= $(OHOS_LLVM)/llvm-ar
+OHOS_CFLAGS ?= --target=aarch64-linux-ohos --sysroot=$(OHOS_SYSROOT)
+
 ORT_VERSION ?= 1.29.0
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
@@ -68,7 +76,17 @@ else ifeq ($(ORT_ENV_VARS_DEFERRED),1)
 	ORT_ENV_VARS := ORT_DYLIB_PATH=$(ORT_DYLIB_FILE)
 endif
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann validate-all-env \
+# Bundled OHOS cross-compilation environment
+CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_CC) \
+	CXX_aarch64_unknown_linux_ohos=$(OHOS_CXX) \
+	AR_aarch64_unknown_linux_ohos=$(OHOS_AR) \
+	CFLAGS_aarch64_unknown_linux_ohos="$(OHOS_CFLAGS)" \
+	CXXFLAGS_aarch64_unknown_linux_ohos="$(OHOS_CFLAGS) -std=c++17" \
+	CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=$(OHOS_CC) \
+	HIAI_DDK_LIB=$(DDK_LIB) \
+	RUSTFLAGS="-Clink-arg=--target=aarch64-linux-ohos -Clink-arg=--sysroot=$(OHOS_SYSROOT)"
+
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann cann-build cann-device-test validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -258,6 +276,24 @@ litert:
 cann:
 	$(CARGO) run --features cann-runtime -- $(GRAPH_FILE) --convert cann --convert-output $(CANN_PATH)
 
+cann-build:
+	@if [ -z "$(DDK_LIB)" ]; then \
+	    echo "Error: DDK_LIB not set. export DDK_LIB=/path/to/ddk/ai_ddk_lib/lib64"; \
+	    exit 1; \
+	fi
+	$(CANN_CROSS_ENV) $(CARGO) build --target aarch64-unknown-linux-ohos --features cann-runtime --release
+
+cann-device-test:
+	@if [ -z "$(DDK_LIB)" ]; then \
+	    echo "Error: DDK_LIB not set. export DDK_LIB=/path/to/ddk/ai_ddk_lib/lib64"; \
+	    exit 1; \
+	fi
+	$(CANN_CROSS_ENV) $(CARGO) build --example cann_device_test \
+		--target aarch64-unknown-linux-ohos --features cann-runtime --release
+	OHOS_SDK_NATIVE=$(OHOS_SDK_NATIVE) \
+	DDK_LIB=$(DDK_LIB) \
+	./scripts/ohos-test-helper.sh $(filter-out $@,$(MAKECMDGOALS))
+
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
 
@@ -350,8 +386,10 @@ help:
 	@echo "LiteRT Conversion:"
 	@echo "  litert             - Convert graph to LiteRT/TFLite format"
 	@echo ""
-	@echo "CANN Conversion:"
+	@echo "CANN:"
 	@echo "  cann               - Convert graph to CANN/HiAI format"
+	@echo "  cann-build    		- Cross-compile rustnn for OHOS via cargo"
+	@echo "  cann-device-test   - Test on device via scripts/ohos-test-helper.sh"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"
