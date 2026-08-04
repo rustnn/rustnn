@@ -29,7 +29,6 @@ use super::{
     ConvertedGraph, GraphConverter, pool2d_shared::infer_pool2d_ceil_mode_from_output_sizes,
 };
 use crate::error::GraphError;
-use crate::executors::trtx::create_trtx_logger;
 use crate::graph::{
     DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
 };
@@ -14955,16 +14954,12 @@ impl GraphConverter for TrtxConverter {
         }
 
         // Create TensorRT logger, builder, and network
-        let logger = create_trtx_logger().map_err(|e| GraphError::ConversionFailed {
-            format: "trtx".to_string(),
-            reason: format!("Failed to create TensorRT logger: {}", e),
-        })?;
+        let logger = &crate::backends::trtx::LOGGER;
 
-        let mut builder =
-            trtx::Builder::new(&logger).map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to create TensorRT builder: {}", e),
-            })?;
+        let mut builder = trtx::Builder::new(logger).map_err(|e| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("Failed to create TensorRT builder: {}", e),
+        })?;
 
         let mut network = builder
             .create_network(trtx::builder::network_flags::EXPLICIT_BATCH)
