@@ -341,7 +341,7 @@ impl Drop for TrtxContext<'_> {
             return;
         };
 
-        let serialized = match runtime_cache.lock().unwrap().serialize() {
+        let serialized = match runtime_cache.serialize() {
             Ok(serialized) => serialized,
             Err(error) => {
                 warn!(
@@ -391,9 +391,8 @@ static ENGINE_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCac
 static JIT_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCache::new("trtx-jit"));
 
 #[cfg(not(feature = "trtx-enterprise"))]
-static TRTX_RUNTIME_CACHE: LazyLock<
-    Mutex<HashMap<String, Arc<Mutex<trtx::RuntimeCache<'static>>>>>,
-> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static TRTX_RUNTIME_CACHE: LazyLock<Mutex<HashMap<String, Arc<trtx::RuntimeCache>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
     format!(
         "trtx_{}.{}.{}_{}",
@@ -407,25 +406,6 @@ static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
 #[cfg(not(feature = "trtx-enterprise"))]
 fn jit_cache_disk_key(device_cache_id: &str) -> String {
     format!("{device_cache_id}_{}.cache", *TRTX_SUFFIX)
-}
-
-// RuntimeCache owns its TensorRT IRuntimeCache and does not borrow the engine. The lifetime in
-// trtx::RuntimeCache is represented only by PhantomData, so erase it while the cache is held in
-// the process-global map and restore the current engine lifetime when cloning it out.
-//
-// Needs to be fixed next trtx release. See https://github.com/rustnn/trtx-rs/pull/129
-#[cfg(not(feature = "trtx-enterprise"))]
-fn into_global_runtime_cache<'engine>(
-    cache: Arc<Mutex<trtx::RuntimeCache<'engine>>>,
-) -> Arc<Mutex<trtx::RuntimeCache<'static>>> {
-    unsafe { std::mem::transmute(cache) }
-}
-
-#[cfg(not(feature = "trtx-enterprise"))]
-fn from_global_runtime_cache<'engine>(
-    cache: Arc<Mutex<trtx::RuntimeCache<'static>>>,
-) -> Arc<Mutex<trtx::RuntimeCache<'engine>>> {
-    unsafe { std::mem::transmute(cache) }
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'context> {
@@ -592,9 +572,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let runtime_cache = {
                 let mut caches = TRTX_RUNTIME_CACHE.lock().unwrap();
                 if let Some(cache) = caches.get(&self.device_cache_id) {
-                    from_global_runtime_cache(Arc::clone(cache))
+                    Arc::clone(cache)
                 } else {
-                    let mut cache = runtime_config
+                    let cache = runtime_config
                         .create_runtime_cache()
                         .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
                     if let Ok(disk_cache) = JIT_CACHE.as_ref()
@@ -613,11 +593,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                             ),
                         }
                     }
-                    let cache = Arc::new(Mutex::new(cache));
-                    caches.insert(
-                        self.device_cache_id.clone(),
-                        into_global_runtime_cache(Arc::clone(&cache)),
-                    );
+                    let cache = Arc::new(cache);
+                    caches.insert(self.device_cache_id.clone(), Arc::clone(&cache));
                     cache
                 }
             };
