@@ -33,6 +33,16 @@ impl<T> ToDispatchResult<T> for ort::Result<T> {
     }
 }
 
+impl From<ort::memory::DeviceType> for crate::backend_selection::DeviceType {
+    fn from(value: ort::memory::DeviceType) -> Self {
+        match value {
+            ort::memory::DeviceType::CPU => Self::Cpu,
+            ort::memory::DeviceType::GPU => Self::Gpu,
+            ort::memory::DeviceType::NPU => Self::Gpu,
+        }
+    }
+}
+
 fn tensor_byte_len(descriptor: &MLTensorDescriptor) -> crate::error::Result<usize> {
     let elements: usize = descriptor
         .shape()

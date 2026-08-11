@@ -25,17 +25,6 @@ pub enum DeviceType {
     Npu,
 }
 
-#[cfg(feature = "onnx-runtime")]
-impl From<ort::memory::DeviceType> for DeviceType {
-    fn from(value: ort::memory::DeviceType) -> Self {
-        match value {
-            ort::memory::DeviceType::CPU => Self::Cpu,
-            ort::memory::DeviceType::GPU => Self::Gpu,
-            ort::memory::DeviceType::NPU => Self::Gpu,
-        }
-    }
-}
-
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Backend {
     Onnx,
