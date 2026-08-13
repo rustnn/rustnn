@@ -6,11 +6,13 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-if [ -z "$DDK_LIB" ]; then
-    echo "Error: DDK_LIB is not set."
-    echo "  export DDK_LIB=/path/to/CANN-Kit-next/ddk/ai_ddk_lib/lib64"
+if [ -z "$CANN_DDK" ]; then
+    echo "Error: CANN_DDK is not set."
+    echo "  export CANN_DDK=/path/to/CANN-Kit-next/ddk/"
     exit 1
 fi
+
+DDK_LIB="${CANN_DDK}/ai_ddk_lib/lib64"
 
 BINARY="${PROJECT_DIR}/target/aarch64-unknown-linux-ohos/release/examples/cann_device_test"
 

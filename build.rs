@@ -159,8 +159,22 @@ fn build_cann_shim() {
         return;
     }
 
+    // The Huawei CANN-Kit DDK is pre-requiste for building the CANN shim.
+    let ddk = std::env::var("CANN_DDK")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "CANN_DDK not set. \
+                 export CANN_DDK=/path/to/CANN-Kit-next/ddk/"
+            )
+        });
+    println!("cargo:rerun-if-env-changed=CANN_DDK");
+
+    let ddk_include = Path::new(&ddk).join("ai_ddk_lib").join("include");
+    let ddk_lib = Path::new(&ddk).join("ai_ddk_lib").join("lib64");
+
     let shim_dir = "src/executors/cann_shim";
-    let ddk = "third_party/cann/include";
     let sources = [
         "context_adapter.cc",
         "graph_adapter.cc",
@@ -175,7 +189,7 @@ fn build_cann_shim() {
     build
         .cpp(true)
         .include(shim_dir)
-        .include(ddk)
+        .include(&ddk_include)
         .flag("-std=c++17")
         .flag("-fvisibility=hidden");
     for src in &sources {
@@ -190,12 +204,10 @@ fn build_cann_shim() {
     println!("cargo:rustc-link-lib=dylib=hiai_ir_build");
     println!("cargo:rustc-link-lib=dylib=hiai_ir_build_aipp");
     println!("cargo:rustc-link-lib=dylib=c++");
-
-    if let Ok(ddk_lib) = std::env::var("HIAI_DDK_LIB") {
-        if !ddk_lib.is_empty() {
-            println!("cargo:rustc-link-search=native={ddk_lib}");
-        }
-    }
+    println!(
+        "cargo:rustc-link-search=native={}",
+        ddk_lib.to_string_lossy()
+    );
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
