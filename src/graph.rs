@@ -198,25 +198,134 @@ pub fn pack_uint4_from_i32(values: &[i32]) -> Vec<u8> {
     )
 }
 
+/// Whether a tensor's rank and dimensions are known in the graph IR.
+///
+/// `Known(Vec::new())` is a rank-0 scalar. `Unknown` is reserved for intermediate
+/// operands whose shape has not yet been inferred.
+#[derive(Debug, Clone, Deserialize, Hash, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum TensorShape {
+    Known(Vec<Dimension>),
+    Unknown(()),
+}
+
+impl Serialize for TensorShape {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Known(shape) => shape.serialize(serializer),
+            Self::Unknown(_) => serializer.serialize_none(),
+        }
+    }
+}
+
+impl Default for TensorShape {
+    fn default() -> Self {
+        Self::Unknown(())
+    }
+}
+
+impl TensorShape {
+    pub fn known(&self) -> Option<&[Dimension]> {
+        match self {
+            Self::Unknown(_) => None,
+            Self::Known(shape) => Some(shape),
+        }
+    }
+
+    pub fn known_mut(&mut self) -> Option<&mut Vec<Dimension>> {
+        match self {
+            Self::Unknown(_) => None,
+            Self::Known(shape) => Some(shape),
+        }
+    }
+
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown(_))
+    }
+
+    pub fn rank(&self) -> Option<usize> {
+        self.known().map(|shape| shape.len())
+    }
+}
+
+// Transitional compatibility for existing shape-inference code. Read-side callers must migrate to
+// `known()` before relying on rank; mutation materializes a previously unknown shape as known.
+impl std::ops::Deref for TensorShape {
+    type Target = Vec<Dimension>;
+
+    fn deref(&self) -> &Self::Target {
+        static EMPTY: std::sync::LazyLock<Vec<Dimension>> = std::sync::LazyLock::new(Vec::new);
+        match self {
+            Self::Unknown(_) => &EMPTY,
+            Self::Known(shape) => shape,
+        }
+    }
+}
+
+impl std::ops::DerefMut for TensorShape {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        if matches!(self, Self::Unknown(_)) {
+            *self = Self::Known(Vec::new());
+        }
+        match self {
+            Self::Known(shape) => shape,
+            Self::Unknown(_) => unreachable!(),
+        }
+    }
+}
+
+impl From<Vec<Dimension>> for TensorShape {
+    fn from(shape: Vec<Dimension>) -> Self {
+        Self::Known(shape)
+    }
+}
+
+impl std::iter::FromIterator<Dimension> for TensorShape {
+    fn from_iter<T: IntoIterator<Item = Dimension>>(iter: T) -> Self {
+        Self::Known(iter.into_iter().collect())
+    }
+}
+
+impl<'a> IntoIterator for &'a TensorShape {
+    type Item = &'a Dimension;
+    type IntoIter = std::slice::Iter<'a, Dimension>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        std::ops::Deref::deref(self).iter()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct OperandDescriptor {
     pub data_type: DataType,
     #[serde(default)]
-    pub shape: Vec<Dimension>,
+    pub shape: TensorShape,
     #[serde(default)]
     pub pending_permutation: Vec<u32>,
 }
 
 impl OperandDescriptor {
+    pub fn known_shape(&self) -> Option<&[Dimension]> {
+        match &self.shape {
+            TensorShape::Unknown(_) => None,
+            TensorShape::Known(shape) => Some(shape),
+        }
+    }
+
     pub fn has_dynamic_dimensions(&self) -> bool {
-        self.shape
+        self.known_shape()
+            .unwrap_or_default()
             .iter()
             .any(|dim| matches!(dim, Dimension::Dynamic(_)))
     }
 
     pub fn static_shape(&self) -> Option<Vec<u32>> {
-        let mut shape = Vec::with_capacity(self.shape.len());
-        for dim in &self.shape {
+        let known = self.known_shape()?;
+        let mut shape = Vec::with_capacity(known.len());
+        for dim in known {
             match dim {
                 Dimension::Static(v) => shape.push(*v),
                 Dimension::Dynamic(_) => return None,
@@ -226,15 +335,20 @@ impl OperandDescriptor {
     }
 
     pub fn static_or_max_shape(&self) -> Vec<u32> {
-        self.shape.iter().map(get_static_or_max_size).collect()
+        self.known_shape()
+            .unwrap_or_default()
+            .iter()
+            .map(get_static_or_max_size)
+            .collect()
     }
 
     pub fn element_count(&self) -> Option<usize> {
-        if self.shape.is_empty() {
+        let shape = self.known_shape()?;
+        if shape.is_empty() {
             return Some(1);
         }
         let mut count = 1usize;
-        for dim in &self.shape {
+        for dim in shape {
             let size = get_static_or_max_size(dim) as usize;
             count = count.checked_mul(size)?;
         }
@@ -301,6 +415,18 @@ impl GraphInfo {
         self.operands
             .iter()
             .any(|operand| operand.descriptor.has_dynamic_dimensions())
+    }
+
+    pub fn ensure_known_shapes(&self, format: &str) -> Result<(), GraphError> {
+        for (operand, value) in self.operands.iter().enumerate() {
+            if value.descriptor.shape.is_unknown() {
+                return Err(GraphError::UnknownOperandShape {
+                    operand: operand as u32,
+                    format: format.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Ensures `input_operands` / `output_operands` match operands tagged as graph I/O.
@@ -439,6 +565,10 @@ impl GraphInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn to_dimension_vector(shape: &[u32]) -> TensorShape {
+        TensorShape::Known(super::to_dimension_vector(shape))
+    }
     use crate::error::GraphError;
 
     #[test]
@@ -762,5 +892,46 @@ mod tests {
             graph.validate_io_operand_lists(),
             Err(GraphError::InputIdListMismatch { .. })
         );
+    }
+
+    #[test]
+    fn tensor_shape_distinguishes_unknown_from_scalar() {
+        let unknown = TensorShape::Unknown(());
+        let scalar = TensorShape::Known(vec![]);
+
+        assert!(unknown.is_unknown());
+        assert_eq!(unknown.rank(), None);
+        assert!(!scalar.is_unknown());
+        assert_eq!(scalar.rank(), Some(0));
+        assert_eq!(
+            OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: scalar,
+                pending_permutation: vec![],
+            }
+            .element_count(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn tensor_shape_serde_preserves_scalar_and_dynamic_dimension() {
+        let descriptor = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: TensorShape::Known(vec![Dimension::Dynamic(DynamicDimension {
+                name: "batch".to_string(),
+                max_size: 8,
+            })]),
+            pending_permutation: vec![],
+        };
+        let encoded = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(encoded["shape"][0]["name"], "batch");
+        let decoded: OperandDescriptor = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.shape, descriptor.shape);
+
+        let scalar: TensorShape = serde_json::from_str("[]").unwrap();
+        assert_eq!(scalar, TensorShape::Known(vec![]));
+        let unknown: TensorShape = serde_json::from_str("null").unwrap();
+        assert!(unknown.is_unknown());
     }
 }

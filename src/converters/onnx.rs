@@ -20,7 +20,8 @@ use crate::converters::{ConvertedGraph, ONNX_EXTERNAL_WEIGHTS_FILENAME, operand_
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
-    DataType, Dimension, GraphInfo, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
+    DataType, Dimension, GraphInfo, OperandKind, TensorShape, get_static_or_max_size, unpack_int4,
+    unpack_uint4,
 };
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
@@ -484,8 +485,10 @@ impl OnnxConverter {
                     );
                     normalized_input_shape = vec![1, channels];
                     if normalized_descriptor_shape.len() == 1 {
-                        normalized_descriptor_shape =
-                            vec![Dimension::Static(1), normalized_descriptor_shape[0].clone()];
+                        normalized_descriptor_shape = TensorShape::Known(vec![
+                            Dimension::Static(1),
+                            normalized_descriptor_shape[0].clone(),
+                        ]);
                     }
                     node_output_name = format!("{}_bn_output", op_name);
                     reshape_back_shape = Some(vec![channels as i64]);
@@ -2265,6 +2268,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
     }
 
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        graph.ensure_known_shapes(self.format())?;
         if !crate::graph::dynamic_inputs_enabled() && graph.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
@@ -10339,8 +10343,8 @@ mod tests {
     use crate::protos::onnx::tensor_proto::DataType as ProtoDataType;
     use std::collections::HashMap;
 
-    fn s(shape: &[u32]) -> Vec<Dimension> {
-        crate::graph::to_dimension_vector(shape)
+    fn s(shape: &[u32]) -> TensorShape {
+        TensorShape::Known(crate::graph::to_dimension_vector(shape))
     }
 
     #[test]
@@ -10872,13 +10876,13 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: TensorShape::Known(vec![
                             Dimension::Dynamic(DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             Dimension::Static(4),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                     name: Some("input".to_string()),
@@ -10887,13 +10891,13 @@ mod tests {
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: vec![
+                        shape: TensorShape::Known(vec![
                             Dimension::Dynamic(DynamicDimension {
                                 name: "batch".to_string(),
                                 max_size: 8,
                             }),
                             Dimension::Static(4),
-                        ],
+                        ]),
                         pending_permutation: vec![],
                     },
                     name: Some("output".to_string()),
@@ -11085,7 +11089,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(3), Dimension::Static(2)],
+                    shape: TensorShape::Known(vec![Dimension::Static(3), Dimension::Static(2)]),
                     pending_permutation: vec![],
                 },
                 name: Some("x".to_string()),
@@ -11094,7 +11098,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(12), Dimension::Static(2)],
+                    shape: TensorShape::Known(vec![Dimension::Static(12), Dimension::Static(2)]),
                     pending_permutation: vec![],
                 },
                 name: Some("w".to_string()),
@@ -11103,7 +11107,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(12), Dimension::Static(4)],
+                    shape: TensorShape::Known(vec![Dimension::Static(12), Dimension::Static(4)]),
                     pending_permutation: vec![],
                 },
                 name: Some("r".to_string()),
@@ -11112,7 +11116,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(3), Dimension::Static(4)],
+                    shape: TensorShape::Known(vec![Dimension::Static(3), Dimension::Static(4)]),
                     pending_permutation: vec![],
                 },
                 name: Some("h".to_string()),
@@ -11121,7 +11125,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(12)],
+                    shape: TensorShape::Known(vec![Dimension::Static(12)]),
                     pending_permutation: vec![],
                 },
                 name: Some("b".to_string()),
@@ -11130,7 +11134,7 @@ mod tests {
                 kind: OperandKind::Input,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(12)],
+                    shape: TensorShape::Known(vec![Dimension::Static(12)]),
                     pending_permutation: vec![],
                 },
                 name: Some("rb".to_string()),
@@ -11139,7 +11143,7 @@ mod tests {
                 kind: OperandKind::Output,
                 descriptor: OperandDescriptor {
                     data_type: DataType::Float32,
-                    shape: vec![Dimension::Static(3), Dimension::Static(4)],
+                    shape: TensorShape::Known(vec![Dimension::Static(3), Dimension::Static(4)]),
                     pending_permutation: vec![],
                 },
                 name: Some("y".to_string()),

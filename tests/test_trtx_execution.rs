@@ -11,13 +11,17 @@ mod tests {
     use rustnn::converters::{GraphConverter, TrtxConverter};
     use rustnn::graph::{
         ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
-        get_static_or_max_size, to_dimension_vector,
+        get_static_or_max_size, to_dimension_vector as dimensions,
     };
     use rustnn::operator_options::MLConv2dOptions;
     use rustnn::operators::Operation;
     use std::collections::HashMap;
     use trtx::cuda::DeviceBuffer;
     use trtx::{Logger, Runtime};
+
+    fn to_dimension_vector(shape: &[u32]) -> rustnn::graph::TensorShape {
+        rustnn::graph::TensorShape::Known(dimensions(shape))
+    }
 
     /// Build [`Operation`] from WebNN op name, operand wiring, JSON attributes, and optional options label.
     fn trtx_operation(

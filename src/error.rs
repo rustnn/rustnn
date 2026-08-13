@@ -355,6 +355,8 @@ pub enum GraphError {
     TooManyOperands { count: usize },
     #[error("operand {operand} has a shape that overflows element count")]
     OperandElementCountOverflow { operand: u32 },
+    #[error("cannot lower operand {operand}: its shape is unknown for {format}")]
+    UnknownOperandShape { operand: u32, format: String },
     #[error("operand {operand} exceeds tensor byte limit ({byte_length} > {limit})")]
     TensorLimit {
         operand: u32,

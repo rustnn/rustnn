@@ -31,7 +31,8 @@ use super::{
 use crate::error::GraphError;
 use crate::executors::trtx::create_trtx_logger;
 use crate::graph::{
-    DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
+    DataType, Dimension, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4,
+    unpack_uint4,
 };
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
@@ -527,17 +528,11 @@ impl TrtxConverter {
                     return Ok(None);
                 }
                 if tensor.get_type(&*network) == TrtDataType::kINT8 {
-                    let webnn_ty = graph
-                        .operand(operand_id)
-                        .map(|o| o.descriptor.data_type)
-                        .unwrap_or(DataType::Int8);
-                    Ok(Some(Self::trtx_int8_uint8_identity_dequantize(
-                        network,
-                        tensor,
-                        TrtDataType::kFLOAT,
-                        "mask broadcast promote",
-                        webnn_ty,
-                    )?))
+                    // Dynamic attention masks have an unknown TensorRT rank while the network
+                    // is assembled. TensorRT RTX 1.6 rejects Dequantize for that case because
+                    // block quantization requires a rank-matched scale. Cast has no such
+                    // rank-dependent scale contract and is sufficient before float broadcast.
+                    Ok(Some(Self::cast_to_float32(network, tensor)?))
                 } else {
                     Ok(Some(Self::cast_to_float32(network, tensor)?))
                 }
@@ -800,7 +795,10 @@ impl TrtxConverter {
                     .descriptor
                     .shape
                     .iter()
-                    .map(|d| get_static_or_max_size(d) as i64)
+                    .map(|d| match d {
+                        Dimension::Static(size) => i64::from(*size),
+                        Dimension::Dynamic(_) => -1,
+                    })
                     .collect();
                 let trt_io_name = io_binding_names
                     .get(&(operand_id as u32))
@@ -1208,7 +1206,7 @@ impl TrtxConverter {
             "reduceSumSquare" => Self::add_reduce_sum_square_op(network, tensor_map, operation)?,
 
             // Shape manipulation operations
-            "slice" => Self::add_slice_op(network, tensor_map, operation)?,
+            "slice" => Self::add_slice_op(graph, network, tensor_map, operation)?,
             "split" => Self::add_split_op(network, tensor_map, operation)?,
             "squeeze" => Self::add_squeeze_op(network, tensor_map, operation)?,
             "unsqueeze" => Self::add_unsqueeze_op(network, tensor_map, operation)?,
@@ -1309,6 +1307,7 @@ impl TrtxConverter {
             "transpose" => Self::add_transpose_op(graph, network, tensor_map, operation)?,
             "reshape" => Self::add_reshape_op(graph, network, tensor_map, operation)?,
             "resample2d" => Self::add_resample2d_op(graph, network, tensor_map, operation)?,
+            "shape" => Self::add_shape_op(network, tensor_map, operation)?,
 
             "gru" => {
                 crate::converters::trtx_gru::add_gru_op(graph, network, tensor_map, operation)?
@@ -1347,6 +1346,89 @@ impl TrtxConverter {
             .collect()
     }
 
+    /// Prefix singleton dimensions using a runtime shape tensor, preserving all dynamic extents.
+    fn rank_pad_dynamic_tensor<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        rank: usize,
+        target_rank: usize,
+        op_name: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        if rank == target_rank {
+            return network
+                .add_identity(tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                });
+        }
+        let prefix_len = target_rank - rank;
+        let shape = network
+            .add_shape(tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast Shape: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast Shape output: {e}"),
+            })?;
+        let mut one_bytes = Vec::with_capacity(prefix_len * std::mem::size_of::<i64>());
+        for _ in 0..prefix_len {
+            one_bytes.extend_from_slice(&1_i64.to_le_bytes());
+        }
+        let ones = network
+            .add_small_constant_copied(&[prefix_len as i64], &one_bytes, TrtDataType::kINT64, None)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast prefix ones: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast prefix ones output: {e}"),
+            })?;
+        let mut concat = network.add_concatenation(&[&ones, &shape]).map_err(|e| {
+            GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast shape concat: {e}"),
+            }
+        })?;
+        concat.set_axis(network, 0);
+        let target_shape =
+            concat
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast shape concat output: {e}"),
+                })?;
+        let mut shuffle =
+            network
+                .add_shuffle(tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast rank padding shuffle: {e}"),
+                })?;
+        shuffle
+            .set_input(network, 1, &target_shape)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast rank padding shape: {e}"),
+            })?;
+        shuffle
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_name}: dynamic broadcast rank padding output: {e}"),
+            })
+    }
+
     /// Helper to ensure two tensors have compatible shapes for elementwise operations.
     /// Expands both tensors to the NumPy broadcast union shape (rank pad + resize).
     fn ensure_broadcast_compatible<'a>(
@@ -1366,8 +1448,23 @@ impl TrtxConverter {
             .operand(id1)
             .map(|o| o.descriptor.static_or_max_shape())
             .unwrap_or_default();
-        let dims0 = Self::trtx_dims_or_fallback(&*network, tensor0, &fb0, op_name)?;
-        let dims1 = Self::trtx_dims_or_fallback(&*network, tensor1, &fb1, op_name)?;
+        let dims0 = tensor0
+            .dimensions(&*network)
+            .unwrap_or_else(|_| fb0.iter().copied().map(i64::from).collect());
+        let dims1 = tensor1
+            .dimensions(&*network)
+            .unwrap_or_else(|_| fb1.iter().copied().map(i64::from).collect());
+        // TensorRT elementwise layers broadcast dynamic dimensions natively.  Static broadcast
+        // inference below cannot represent `-1`; when ranks already agree, preserve the dynamic
+        // tensors unchanged and let TensorRT resolve the shape at execution time.
+        if dims0.contains(&-1) || dims1.contains(&-1) {
+            let target_rank = dims0.len().max(dims1.len());
+            let output0 =
+                Self::rank_pad_dynamic_tensor(network, tensor0, dims0.len(), target_rank, op_name)?;
+            let output1 =
+                Self::rank_pad_dynamic_tensor(network, tensor1, dims1.len(), target_rank, op_name)?;
+            return Ok((output0, output1));
+        }
         Self::ensure_broadcast_compatible_dims(network, tensor0, &dims0, tensor1, &dims1, op_name)
     }
 
@@ -1380,6 +1477,102 @@ impl TrtxConverter {
         dims1: &[i64],
         op_name: &str,
     ) -> Result<(trtx::Tensor<'a>, trtx::Tensor<'a>), GraphError> {
+        // TensorRT requires matching ranks even when one input is a scalar. A scalar can always
+        // be rank-padded with static singleton dimensions; unlike a general dynamic reshape this
+        // needs no wildcard dimensions or shape tensor.
+        if dims0.is_empty() && !dims1.is_empty() {
+            let mut shuffle =
+                network
+                    .add_shuffle(tensor0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding shuffle: {e}"),
+                    })?;
+            shuffle
+                .set_reshape_dimensions(network, &vec![1; dims1.len()])
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: scalar rank padding reshape: {e}"),
+                })?;
+            let padded =
+                shuffle
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding output: {e}"),
+                    })?;
+            let other = network
+                .add_identity(tensor1)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((padded, other));
+        }
+        if dims1.is_empty() && !dims0.is_empty() {
+            let mut shuffle =
+                network
+                    .add_shuffle(tensor1)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding shuffle: {e}"),
+                    })?;
+            shuffle
+                .set_reshape_dimensions(network, &vec![1; dims0.len()])
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: scalar rank padding reshape: {e}"),
+                })?;
+            let padded =
+                shuffle
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("{op_name}: scalar rank padding output: {e}"),
+                    })?;
+            let other = network
+                .add_identity(tensor0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((other, padded));
+        }
+        if dims0.contains(&-1) || dims1.contains(&-1) {
+            let output0 = network
+                .add_identity(tensor0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            let output1 = network
+                .add_identity(tensor1)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_name}: dynamic broadcast identity output: {e}"),
+                })?;
+            return Ok((output0, output1));
+        }
         let shape0 = Self::trtx_dims_to_u32(dims0, op_name)?;
         let shape1 = Self::trtx_dims_to_u32(dims1, op_name)?;
 
@@ -1524,20 +1717,25 @@ impl TrtxConverter {
                 });
         }
 
-        let mut resize_layer =
-            network
-                .add_resize(cur)
+        // TensorRT elementwise layers perform NumPy broadcasting natively.  Do not materialize
+        // it with IResizeLayer: IResizeLayer rejects the INT64 shape tensors used by dynamic
+        // graphs. The leading-dimension shuffle above is enough to align ranks.
+        if let Some(tensor) = staged {
+            Ok(tensor)
+        } else {
+            let layer = network
+                .add_identity(cur)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("{op_label} broadcast resize: {e}"),
+                    reason: format!("{op_label} broadcast identity: {e}"),
                 })?;
-        resize_layer.set_output_dimensions(network, target_dims);
-        resize_layer
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("{op_label} broadcast resize output: {e}"),
-            })
+            layer
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("{op_label} broadcast identity output: {e}"),
+                })
+        }
     }
 
     /// Add elementwise operation
@@ -1565,7 +1763,7 @@ impl TrtxConverter {
             })?;
 
         // Ensure broadcast compatibility (this may reshape tensors if needed)
-        let (bc_input0, bc_input1) = Self::ensure_broadcast_compatible(
+        let (mut bc_input0, mut bc_input1) = Self::ensure_broadcast_compatible(
             network,
             graph,
             id0,
@@ -1575,12 +1773,25 @@ impl TrtxConverter {
             operation.op_type(),
         )?;
 
-        let layer = network
+        Self::widen_matching_integer_inputs(network, &mut bc_input0, &mut bc_input1)?;
+
+        let mut layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add elementwise operation: {}", e),
             })?;
+
+        let _ = layer.set_name(
+            network,
+            &format!(
+                "webnn_{}_{}_{}_to_{}",
+                operation.op_type(),
+                id0,
+                id1,
+                operation.output_operands_slice()[0]
+            ),
+        );
 
         // Extract output tensor from layer
         let output = layer
@@ -1593,6 +1804,58 @@ impl TrtxConverter {
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// TensorRT elementwise layers require matching input data types.  Dynamic-shape graphs often
+    /// combine an INT64 shape tensor with an INT32 scalar, so promote compatible integer pairs.
+    fn widen_matching_integer_inputs<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        input0: &mut trtx::Tensor<'a>,
+        input1: &mut trtx::Tensor<'a>,
+    ) -> Result<(), GraphError> {
+        let dtype0 = input0.data_type(&*network);
+        let dtype1 = input1.data_type(&*network);
+        let target = match (dtype0, dtype1) {
+            (left, right) if left == right => return Ok(()),
+            (TrtDataType::kINT64, _) | (_, TrtDataType::kINT64) => TrtDataType::kINT64,
+            (TrtDataType::kINT32, TrtDataType::kINT8)
+            | (TrtDataType::kINT8, TrtDataType::kINT32)
+            | (TrtDataType::kINT32, TrtDataType::kUINT8)
+            | (TrtDataType::kUINT8, TrtDataType::kINT32) => TrtDataType::kINT32,
+            _ => return Ok(()),
+        };
+
+        if dtype0 != target {
+            let layer =
+                network
+                    .add_cast(input0, target)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("integer input cast: {e}"),
+                    })?;
+            *input0 = layer
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("integer input cast output: {e}"),
+                })?;
+        }
+        if dtype1 != target {
+            let layer =
+                network
+                    .add_cast(input1, target)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("integer input cast: {e}"),
+                    })?;
+            *input1 = layer
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("integer input cast output: {e}"),
+                })?;
+        }
         Ok(())
     }
 
@@ -1631,7 +1894,7 @@ impl TrtxConverter {
 
         let i32_0 = Self::cast_uint8_to_int32(network, input0)?;
         let i32_1 = Self::cast_uint8_to_int32(network, input1)?;
-        let (bc_input0, bc_input1) = Self::ensure_broadcast_compatible(
+        let (mut bc_input0, mut bc_input1) = Self::ensure_broadcast_compatible(
             network,
             graph,
             id0,
@@ -1640,6 +1903,8 @@ impl TrtxConverter {
             &i32_1,
             operation.op_type(),
         )?;
+
+        Self::widen_matching_integer_inputs(network, &mut bc_input0, &mut bc_input1)?;
 
         let layer = network
             .add_elementwise(&bc_input0, &bc_input1, op_code)
@@ -1685,7 +1950,7 @@ impl TrtxConverter {
             })?;
 
         // Ensure broadcast compatibility
-        let (bc_input0, bc_input1) = Self::ensure_broadcast_compatible(
+        let (mut bc_input0, mut bc_input1) = Self::ensure_broadcast_compatible(
             network,
             graph,
             id0,
@@ -1694,6 +1959,8 @@ impl TrtxConverter {
             input1,
             operation.op_type(),
         )?;
+
+        Self::widen_matching_integer_inputs(network, &mut bc_input0, &mut bc_input1)?;
 
         // Comparison operation returns BOOL
         let layer = network
@@ -3178,7 +3445,21 @@ impl TrtxConverter {
         label: &str,
     ) -> Result<Vec<i64>, GraphError> {
         match tensor.dimensions(network) {
-            Ok(dims) if !dims.is_empty() || fallback_shape.is_empty() => Ok(dims),
+            Ok(dims) if !dims.is_empty() || fallback_shape.is_empty() => Ok(dims
+                .into_iter()
+                .enumerate()
+                .map(|(axis, dim)| {
+                    if dim < 0 {
+                        fallback_shape
+                            .get(axis)
+                            .copied()
+                            .map(i64::from)
+                            .unwrap_or(dim)
+                    } else {
+                        dim
+                    }
+                })
+                .collect()),
             Ok(_) => Ok(fallback_shape.iter().map(|&d| d as i64).collect()),
             Err(_) if !fallback_shape.is_empty() => {
                 Ok(fallback_shape.iter().map(|&d| d as i64).collect())
@@ -3378,7 +3659,14 @@ impl TrtxConverter {
                 reason: format!("{label} uint8 storage fix dimensions: {e}"),
             })?;
         let bshape: Vec<i64> = if dims.is_empty() {
-            vec![]
+            // TensorRT may not expose a DQ output's dynamic rank during construction. The mask
+            // promotion path feeds rank-4 attention masks, so keep its correction constants
+            // rank-aligned rather than emitting illegal scalar elementwise inputs.
+            if label == "mask broadcast promote" {
+                vec![1; 4]
+            } else {
+                vec![]
+            }
         } else {
             vec![1_i64; dims.len()]
         };
@@ -3576,9 +3864,19 @@ impl TrtxConverter {
         webnn_integer_dtype: DataType,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
         let input_ty = tensor.get_type(&*network);
-        // Always use a **scalar** (0D) scale for identity DQ. Matching zp rank (e.g. `[1,1]`) hits
-        // TensorRT `ScaleMode is illegal`; per-tensor scale broadcasts. Myelin: data rank >= scale rank.
-        let scale_shape: Vec<i64> = vec![];
+        // TensorRT RTX 1.6 requires the Dequantize scale to have the same rank as the
+        // dynamically-broadcast attention mask. Keep the normal per-tensor scalar scale for
+        // all other paths, whose QDQ lowering relies on scalar ScaleMode.
+        let scale_shape: Vec<i64> = if label == "mask broadcast promote" {
+            tensor
+                .dimensions(&*network)
+                .ok()
+                .filter(|dims| !dims.is_empty())
+                .map(|dims| vec![1; dims.len()])
+                .unwrap_or_else(|| vec![1; 4])
+        } else {
+            vec![]
+        };
         let scale_bytes: Vec<u8> = match dq_out_ty {
             TrtDataType::kFLOAT => 1.0f32.to_le_bytes().to_vec(),
             TrtDataType::kHALF => f16::from_f32(1.0f32).to_le_bytes().to_vec(),
@@ -7405,7 +7703,100 @@ impl TrtxConverter {
     // ============================================================================
 
     /// Add slice operation
+    fn dynamic_dimension_size_tensor<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor_map: &HashMap<u32, trtx::Tensor<'a>>,
+        name: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        for (operand_id, operand) in graph.operands.iter().enumerate() {
+            if operand.kind != OperandKind::Input {
+                continue;
+            }
+            for (axis, dimension) in operand.descriptor.shape.iter().enumerate() {
+                let Dimension::Dynamic(dynamic) = dimension else {
+                    continue;
+                };
+                if dynamic.name != name {
+                    continue;
+                }
+                let source = tensor_map.get(&(operand_id as u32)).ok_or_else(|| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!(
+                            "Slice dynamic dimension {name:?}: input operand {operand_id} tensor is missing"
+                        ),
+                    }
+                })?;
+                let shape = network
+                    .add_shape(source)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Slice dynamic dimension {name:?}: Shape layer: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Slice dynamic dimension {name:?}: Shape output: {e}"),
+                    })?;
+                return network
+                    .add_slice(&shape, &[axis as i64], &[1], &[1])
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!(
+                            "Slice dynamic dimension {name:?}: shape-vector slice: {e}"
+                        ),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!(
+                            "Slice dynamic dimension {name:?}: shape-vector slice output: {e}"
+                        ),
+                    });
+            }
+        }
+        Err(GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!(
+                "Slice dynamic dimension {name:?} does not correspond to any graph input dimension"
+            ),
+        })
+    }
+
+    fn tensor_dimension_size_tensor<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor: &trtx::Tensor<'a>,
+        axis: usize,
+        label: &str,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let shape = network
+            .add_shape(tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: Shape layer: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: Shape output: {e}"),
+            })?;
+        network
+            .add_slice(&shape, &[axis as i64], &[1], &[1])
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: shape-vector slice: {e}"),
+            })?
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: shape-vector slice output: {e}"),
+            })
+    }
+
+    /// Add slice operation.
     fn add_slice_op<'a>(
+        graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7462,6 +7853,22 @@ impl TrtxConverter {
         }
         let starts: Vec<i32> = starts_u32.iter().map(|&u| u as i32).collect();
         let sizes: Vec<i32> = sizes_ml.iter().map(|d| d.static_or_max() as i32).collect();
+        let source_shape = graph
+            .operand(operation.input_operands()[0])
+            .and_then(|operand| operand.descriptor.shape.known());
+        // The WebNN JSON representation records the profile maximum for some
+        // slices (notably attention's sequence axis) as a static extent.  The
+        // source descriptor still marks that axis dynamic, so make the TensorRT
+        // size input follow the actual runtime source shape instead of trying to
+        // read, for example, positions 0..4095 from a one-token prefill.
+        let needs_runtime_sizes = sizes_ml.iter().enumerate().any(|(axis, dimension)| {
+            matches!(dimension, MLDimension::Dynamic(_))
+                || (matches!(dimension, MLDimension::Static(size) if *size > 1)
+                    && matches!(
+                        source_shape.and_then(|shape| shape.get(axis)),
+                        Some(Dimension::Dynamic(_))
+                    ))
+        });
         let strides: Vec<i32> = if opts.strides.is_empty() {
             vec![1; starts.len()]
         } else {
@@ -7489,12 +7896,84 @@ impl TrtxConverter {
         let trt_sizes_i64: Vec<i64> = trt_sizes.iter().map(|&x| x as i64).collect();
         let strides_i64: Vec<i64> = strides.iter().map(|&x| x as i64).collect();
 
-        let layer = network
+        let mut layer = network
             .add_slice(input, &starts_i64, &trt_sizes_i64, &strides_i64)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add slice layer: {}", e),
             })?;
+
+        if needs_runtime_sizes {
+            let mut size_pieces = Vec::with_capacity(sizes_ml.len());
+            for (axis, dimension) in sizes_ml.iter().enumerate() {
+                let piece = match dimension {
+                    // In mixed static/dynamic slices, exporter-provided non-singleton static
+                    // extents are profile maxima (e.g. 4096), not the current runtime extent.
+                    // Bind them to the source shape to avoid slicing past a short sequence.
+                    MLDimension::Static(size)
+                        if *size > 1
+                            && matches!(
+                                source_shape.and_then(|shape| shape.get(axis)),
+                                Some(Dimension::Dynamic(_))
+                            ) =>
+                    {
+                        Self::tensor_dimension_size_tensor(
+                            network,
+                            input,
+                            axis,
+                            "Slice dynamic source extent",
+                        )?
+                    }
+                    MLDimension::Static(size) => network
+                        .add_small_constant_copied(
+                            &[1],
+                            &i64::from(*size).to_le_bytes(),
+                            TrtDataType::kINT64,
+                            None,
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Slice static size constant: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Slice static size constant output: {e}"),
+                        })?,
+                    MLDimension::Dynamic(dynamic) => Self::dynamic_dimension_size_tensor(
+                        graph,
+                        network,
+                        tensor_map,
+                        &dynamic.name,
+                    )?,
+                };
+                size_pieces.push(piece);
+            }
+            let size_refs: Vec<&trtx::Tensor<'a>> = size_pieces.iter().collect();
+            let size_tensor = if size_refs.len() == 1 {
+                size_pieces.pop().unwrap()
+            } else {
+                let mut concat = network.add_concatenation(&size_refs).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Slice dynamic size concat: {e}"),
+                    }
+                })?;
+                concat.set_axis(network, 0);
+                concat
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Slice dynamic size concat output: {e}"),
+                    })?
+            };
+            layer.set_input(network, 2, &size_tensor).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Slice dynamic size input: {e}"),
+                }
+            })?;
+        }
 
         let output = layer
             .output(&*network, 0)
@@ -7674,45 +8153,151 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        // Get axes from attributes
-        let axes_value =
-            operation
-                .attributes()
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
-                })?;
-
-        let _axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
+        let axes = match operation {
+            Operation::Unsqueeze { options, .. } => options
+                .as_ref()
+                .map(|options| options.axes.clone())
+                .unwrap_or_default(),
+            _ => unreachable!("add_unsqueeze_op is only called for unsqueeze operations"),
         };
-
-        // Use IShuffleLayer to add dimensions
-        let layer = network
-            .add_shuffle(input)
+        let input_dims = input
+            .dimensions(&*network)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add shuffle layer for unsqueeze: {}", e),
+                reason: format!("Unsqueeze: failed to get input dimensions: {e}"),
             })?;
-
-        // Note: Setting reshape dimensions requires accessing layer methods
-        // Full implementation requires calling layer.set_reshape_dimensions()
-        // with the expanded shape (inserting 1s at specified axes)
-
-        let output = layer
+        let output_rank = input_dims.len() + axes.len();
+        let mut axes = axes;
+        axes.sort_unstable();
+        if axes
+            .iter()
+            .enumerate()
+            .any(|(i, &axis)| axis as usize >= output_rank || (i > 0 && axes[i - 1] == axis))
+        {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Unsqueeze: invalid axes {axes:?} for output rank {output_rank}"),
+            });
+        }
+        let mut output = network
+            .add_identity(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Unsqueeze input identity: {e}"),
+            })?
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
+                reason: format!("Unsqueeze input identity output: {e}"),
             })?;
+
+        // A static reshape may contain only one `-1`. Build the target shape at runtime instead,
+        // preserving every dynamic input dimension and inserting a literal one at each axis.
+        for axis in axes {
+            let rank = output
+                .dimensions(&*network)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: input dimensions: {e}"),
+                })?
+                .len();
+            let shape = network
+                .add_shape(&output)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: Shape layer: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: Shape output: {e}"),
+                })?;
+            let one = network
+                .add_small_constant_copied(&[1], &1_i64.to_le_bytes(), TrtDataType::kINT64, None)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: one constant: {e}"),
+                })?
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: one constant output: {e}"),
+                })?;
+            let mut pieces = Vec::new();
+            if axis > 0 {
+                pieces.push(
+                    network
+                        .add_slice(&shape, &[0], &[axis as i64], &[1])
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: prefix shape slice: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: prefix shape output: {e}"),
+                        })?,
+                );
+            }
+            pieces.push(one);
+            if (axis as usize) < rank {
+                pieces.push(
+                    network
+                        .add_slice(
+                            &shape,
+                            &[axis as i64],
+                            &[(rank - axis as usize) as i64],
+                            &[1],
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: suffix shape slice: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Unsqueeze: suffix shape output: {e}"),
+                        })?,
+                );
+            }
+            let piece_refs: Vec<&trtx::Tensor<'a>> = pieces.iter().collect();
+            let target_shape = if piece_refs.len() == 1 {
+                pieces.pop().unwrap()
+            } else {
+                let mut concat = network.add_concatenation(&piece_refs).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shape concat: {e}"),
+                    }
+                })?;
+                concat.set_axis(network, 0);
+                concat
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shape concat output: {e}"),
+                    })?
+            };
+            let mut shuffle =
+                network
+                    .add_shuffle(&output)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Unsqueeze: shuffle: {e}"),
+                    })?;
+            shuffle.set_input(network, 1, &target_shape).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: set dynamic reshape shape: {e}"),
+                }
+            })?;
+            output = shuffle
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Unsqueeze: shuffle output: {e}"),
+                })?;
+        }
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -7723,7 +8308,7 @@ impl TrtxConverter {
     /// Add expand operation (broadcast to new shape)
     /// Implemented as input * ones(new_shape) so elementwise broadcast produces the expanded tensor.
     fn add_expand_op<'a>(
-        graph: &GraphInfo,
+        graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7735,11 +8320,8 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        let new_shape: Vec<i32> = match operation {
-            Operation::Expand { new_shape, .. } => new_shape
-                .iter()
-                .map(|d| MLDimension::static_or_max(d) as i32)
-                .collect(),
+        let new_shape_ml = match operation {
+            Operation::Expand { new_shape, .. } => new_shape,
             _ => {
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
@@ -7747,6 +8329,10 @@ impl TrtxConverter {
                 });
             }
         };
+        let new_shape: Vec<i32> = new_shape_ml
+            .iter()
+            .map(|d| MLDimension::static_or_max(d) as i32)
+            .collect();
 
         let new_shape_i64: Vec<i64> = new_shape.iter().map(|&d| d as i64).collect();
         let target_rank = new_shape_i64.len();
@@ -7756,7 +8342,21 @@ impl TrtxConverter {
             .operand(in_id)
             .map(|o| o.descriptor.static_or_max_shape())
             .unwrap_or_default();
-        let in_dims = Self::trtx_dims_or_fallback(&*network, input, &fb_in, "expand")?;
+        // Preserve TensorRT's `-1` runtime dimensions for shape manipulation. Replacing them
+        // with WebNN maxima here would turn a dynamic rank-alignment shuffle into e.g.
+        // `[1, 4096]` and make the input effectively static.
+        let in_dims = match input.dimensions(&*network) {
+            Ok(dims) if !dims.is_empty() || fb_in.is_empty() => dims,
+            Ok(_) if !fb_in.is_empty() => fb_in.iter().copied().map(i64::from).collect(),
+            Ok(_) => Vec::new(),
+            Err(_) if !fb_in.is_empty() => fb_in.iter().copied().map(i64::from).collect(),
+            Err(error) => {
+                return Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("expand: input dimensions: {error}"),
+                });
+            }
+        };
         if in_dims.len() > target_rank {
             return Err(GraphError::ConversionFailed {
                 format: "trtx".to_string(),
@@ -7812,25 +8412,95 @@ impl TrtxConverter {
         let mut stride: Vec<i64> = Vec::with_capacity(target_rank);
         for (i, &t) in new_shape_i64.iter().enumerate() {
             let d = aligned_dims.get(i).copied().unwrap_or(1);
-            if d == t {
+            if d < 0 || d == t {
                 stride.push(1);
             } else if d == 1 {
                 stride.push(0);
+            } else if d > t {
+                // Dynamic-shape inference may conservatively add maxima through a concat
+                // (e.g. 4096 + 4096) even when a later graph constraint limits the runtime
+                // extent to `t`. ISlice can retain the valid prefix without treating this as
+                // an illegal broadcast.
+                stride.push(1);
             } else {
+                let input_name = graph
+                    .operand(in_id)
+                    .and_then(|operand| operand.name.as_deref())
+                    .unwrap_or("<unnamed>");
                 return Err(GraphError::ConversionFailed {
                     format: "trtx".to_string(),
-                    reason: format!("expand: cannot broadcast dim {d} to {t}"),
+                    reason: format!(
+                        "expand input {in_id} ({input_name}): cannot broadcast dim {d} to {t}"
+                    ),
                 });
             }
         }
         let start: Vec<i64> = vec![0i64; target_rank];
 
-        let output = network
+        let mut slice = network
             .add_slice(&aligned_input, &start, &new_shape_i64, &stride)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("expand slice broadcast: {e}"),
-            })?
+            })?;
+        if new_shape_ml
+            .iter()
+            .any(|dimension| matches!(dimension, MLDimension::Dynamic(_)))
+        {
+            let mut size_pieces = Vec::with_capacity(new_shape_ml.len());
+            for dimension in new_shape_ml {
+                let piece = match dimension {
+                    MLDimension::Static(size) => network
+                        .add_small_constant_copied(
+                            &[1],
+                            &i64::from(*size).to_le_bytes(),
+                            TrtDataType::kINT64,
+                            None,
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Expand static target-size constant: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Expand static target-size constant output: {e}"),
+                        })?,
+                    MLDimension::Dynamic(dynamic) => Self::dynamic_dimension_size_tensor(
+                        graph,
+                        network,
+                        tensor_map,
+                        &dynamic.name,
+                    )?,
+                };
+                size_pieces.push(piece);
+            }
+            let size_refs: Vec<&trtx::Tensor<'a>> = size_pieces.iter().collect();
+            let size_tensor = if size_refs.len() == 1 {
+                size_pieces.pop().unwrap()
+            } else {
+                let mut concat = network.add_concatenation(&size_refs).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Expand dynamic target-size concat: {e}"),
+                    }
+                })?;
+                concat.set_axis(network, 0);
+                concat
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Expand dynamic target-size concat output: {e}"),
+                    })?
+            };
+            slice.set_input(network, 2, &size_tensor).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Expand dynamic target-size input: {e}"),
+                }
+            })?;
+        }
+        let output = slice
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
@@ -8374,31 +9044,54 @@ impl TrtxConverter {
         clamp_max_val: i32,
         label: &str,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
-        let num_elements: usize = if indices_shape_i64.is_empty() {
-            1
+        let indices_rank = indices
+            .dimensions(&*network)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{label}: indices dimensions: {e}"),
+            })?
+            .len();
+        // Use singleton constants for clamping. Constants at the WebNN maximum index shape
+        // force TensorRT to broadcast dynamic indices to that maximum and make Gather static.
+        let num_elements = 1;
+        let indices_dtype = indices.data_type(&*network);
+        let (min_data, max_data, constant_dtype) = if indices_dtype == TrtDataType::kINT64 {
+            let min = clamp_min_val as i64;
+            let max = clamp_max_val as i64;
+            (
+                (0..num_elements)
+                    .flat_map(|_| min.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                (0..num_elements)
+                    .flat_map(|_| max.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                TrtDataType::kINT64,
+            )
         } else {
-            indices_shape_i64.iter().map(|&d| d as usize).product()
+            (
+                (0..num_elements)
+                    .flat_map(|_| clamp_min_val.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                (0..num_elements)
+                    .flat_map(|_| clamp_max_val.to_le_bytes())
+                    .collect::<Vec<_>>(),
+                TrtDataType::kINT32,
+            )
         };
-        let min_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_min_val.to_le_bytes())
-            .collect();
-        let max_data: Vec<u8> = (0..num_elements)
-            .flat_map(|_| clamp_max_val.to_le_bytes())
-            .collect();
         let trt_dims: Vec<i64> = if indices_shape_i64.is_empty() {
             vec![1]
         } else {
-            indices_shape_i64.to_vec()
+            vec![1; indices_rank]
         };
 
         let min_const = network
-            .add_small_constant_copied(&trt_dims, &min_data, trtx::DataType::kINT32, None)
+            .add_small_constant_copied(&trt_dims, &min_data, constant_dtype, None)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("{label}: clamp min constant: {e}"),
             })?;
         let max_const = network
-            .add_small_constant_copied(&trt_dims, &max_data, trtx::DataType::kINT32, None)
+            .add_small_constant_copied(&trt_dims, &max_data, constant_dtype, None)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("{label}: clamp max constant: {e}"),
@@ -8969,28 +9662,33 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index zero output: {e}"),
                     })?;
-                let maxed = network
+                let mut maxed_layer = network
                     .add_elementwise(indices, &zero_t, ElementWiseOperation::kMAX)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index max(0): {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("scatterND index max output: {e}"),
                     })?;
-                let clamped = network
+                let _ = maxed_layer.set_name(network, "scatter_nd_index_max");
+                let maxed =
+                    maxed_layer
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("scatterND index max output: {e}"),
+                        })?;
+                let mut clamped_layer = network
                     .add_elementwise(&maxed, &bound_t, ElementWiseOperation::kMIN)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index min(bound): {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
+                    })?;
+                let _ = clamped_layer.set_name(network, "scatter_nd_index_min");
+                let clamped = clamped_layer.output(&*network, 0).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index min output: {e}"),
-                    })?;
+                    }
+                })?;
                 Some(clamped)
             }
             _ => None,
@@ -13826,7 +14524,7 @@ impl TrtxConverter {
 
     /// Add reshape operation using shuffle layer
     fn add_reshape_op<'a>(
-        _graph: &GraphInfo,
+        graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -13869,6 +14567,64 @@ impl TrtxConverter {
                 reason: format!("Failed to set reshape dimensions: {}", e),
             })?;
 
+        if new_shape
+            .iter()
+            .any(|dimension| matches!(dimension, MLDimension::Dynamic(_)))
+        {
+            let mut shape_pieces = Vec::with_capacity(new_shape.len());
+            for dimension in new_shape {
+                let piece = match dimension {
+                    MLDimension::Static(size) => network
+                        .add_small_constant_copied(
+                            &[1],
+                            &i64::from(*size).to_le_bytes(),
+                            TrtDataType::kINT64,
+                            None,
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Reshape static dimension constant: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Reshape static dimension constant output: {e}"),
+                        })?,
+                    MLDimension::Dynamic(dynamic) => Self::dynamic_dimension_size_tensor(
+                        graph,
+                        network,
+                        tensor_map,
+                        &dynamic.name,
+                    )?,
+                };
+                shape_pieces.push(piece);
+            }
+            let shape_refs: Vec<&trtx::Tensor<'a>> = shape_pieces.iter().collect();
+            let shape_tensor = if shape_refs.len() == 1 {
+                shape_pieces.pop().unwrap()
+            } else {
+                let mut concat = network.add_concatenation(&shape_refs).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Reshape dynamic dimension concat: {e}"),
+                    }
+                })?;
+                concat.set_axis(network, 0);
+                concat
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Reshape dynamic dimension concat output: {e}"),
+                    })?
+            };
+            layer.set_input(network, 1, &shape_tensor).map_err(|e| {
+                GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Reshape dynamic dimension input: {e}"),
+                }
+            })?;
+        }
+
         // Extract output tensor from layer
         let output = layer
             .output(&*network, 0)
@@ -13880,6 +14636,36 @@ impl TrtxConverter {
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
+        Ok(())
+    }
+
+    /// Add an internal Shape operation. TensorRT produces an INT64 shape tensor whose values are
+    /// resolved from the runtime input dimensions.
+    fn add_shape_op<'a>(
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
+        operation: &Operation,
+    ) -> Result<(), GraphError> {
+        let input_id = operation.input_operands()[0];
+        let input = tensor_map
+            .get(&input_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Shape input operand {input_id} not found"),
+            })?;
+        let layer = network
+            .add_shape(input)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("add Shape layer: {e}"),
+            })?;
+        let output = layer
+            .output(&*network, 0)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Shape layer output: {e}"),
+            })?;
+        tensor_map.insert(operation.output_operands_slice()[0], output);
         Ok(())
     }
 
@@ -14813,6 +15599,35 @@ impl TrtxConverter {
         let input_operand = &graph.operands[operation.input_operands()[0] as usize];
         let shape = &input_operand.descriptor.shape;
 
+        // SmolLM builds its causal-mask base with ConstantOfShape(0) and then applies
+        // triangular(k=1).  The existing lowering materializes a fixed profile-maximum
+        // `[4096, 4096]` mask, which cannot multiply the runtime `[sequence, past]`
+        // zero tensor once decoding reaches length 2.  Triangular preserves an all-zero
+        // input exactly, so retain that runtime-shaped tensor instead.
+        if shape
+            .iter()
+            .any(|dimension| matches!(dimension, Dimension::Dynamic(_)))
+            && input_operand
+                .name
+                .as_deref()
+                .is_some_and(|name| name.contains("ConstantOfShape"))
+        {
+            return network
+                .add_identity(input_tensor)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dynamic zero triangular identity: {e}"),
+                })?
+                .output(&*network, 0)
+                .map(|output| {
+                    tensor_map.insert(operation.output_operands_slice()[0], output);
+                })
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("dynamic zero triangular identity output: {e}"),
+                });
+        }
+
         // Triangular only makes sense for 2D matrices (or higher-D tensors treated as batches of 2D)
         if shape.len() < 2 {
             return Err(GraphError::ConversionFailed {
@@ -14938,6 +15753,7 @@ impl GraphConverter for TrtxConverter {
     }
 
     fn convert(&self, graph_info: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        graph_info.ensure_known_shapes(self.format())?;
         trtx::dynamically_load_tensorrt(None::<&str>).map_err(|e| {
             GraphError::ConversionFailed {
                 format: "trtx".to_string(),
@@ -14984,7 +15800,7 @@ impl GraphConverter for TrtxConverter {
             })?;
 
         // Set workspace size (1 GB)
-        config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 30);
+        config.set_memory_pool_limit(trtx::builder::MemoryPoolType::kWORKSPACE, 1 << 32);
 
         // WPT conformance often compares TRT to strict IEEE fp32 (ulpTol=0). TF32 matmul/conv rounds to
         // 10-bit mantissa on supported GPUs and can differ by many ULP from CPU reference.
@@ -15056,7 +15872,7 @@ mod tests {
         use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
-            shape: to_dimension_vector(&[1, 1]),
+            shape: crate::graph::TensorShape::Known(to_dimension_vector(&[1, 1])),
             pending_permutation: vec![],
         };
         let graph = GraphInfo {
@@ -15095,7 +15911,7 @@ mod tests {
         use crate::graph::{Operand, OperandDescriptor, OperandKind};
         let desc = OperandDescriptor {
             data_type: DataType::Float32,
-            shape: to_dimension_vector(&[1]),
+            shape: crate::graph::TensorShape::Known(to_dimension_vector(&[1])),
             pending_permutation: vec![],
         };
         let graph = GraphInfo {

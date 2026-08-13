@@ -38,6 +38,7 @@ impl GraphConverter for LiteRtConverter {
     }
 
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
+        graph.ensure_known_shapes(self.format())?;
         let bytes = build_native(graph)?;
         Ok(ConvertedGraph {
             format: "litert",
@@ -4726,8 +4727,8 @@ mod tests {
     use crate::operators::Operation;
     use std::collections::HashMap;
 
-    fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
-        to_dimension_vector(shape)
+    fn s(shape: &[u32]) -> crate::graph::TensorShape {
+        crate::graph::TensorShape::Known(to_dimension_vector(shape))
     }
 
     fn op(op_type: &str, inputs: &[u32], outputs: &[u32]) -> Operation {

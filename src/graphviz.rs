@@ -101,7 +101,10 @@ fn escape_label(label: &str) -> String {
         .replace('\n', "\\n")
 }
 
-fn format_shape(shape: &[Dimension]) -> String {
+fn format_shape(shape: &crate::graph::TensorShape) -> String {
+    let Some(shape) = shape.known() else {
+        return "unknown".to_string();
+    };
     if shape.is_empty() {
         return "scalar".to_string();
     }
@@ -119,9 +122,14 @@ fn format_shape(shape: &[Dimension]) -> String {
 mod tests {
     use super::graph_to_dot;
     use crate::graph::{
-        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
+        DataType, GraphInfo, Operand, OperandDescriptor, OperandKind,
+        to_dimension_vector as dimensions,
     };
     use crate::operators::Operation;
+
+    fn to_dimension_vector(shape: &[u32]) -> crate::graph::TensorShape {
+        crate::graph::TensorShape::Known(dimensions(shape))
+    }
 
     #[test]
     fn exports_graphviz_with_operands_and_operations() {
