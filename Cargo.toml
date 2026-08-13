@@ -24,7 +24,7 @@ exclude = [
 # suppress it because the diagnostic originates inside the external macro; declaring the value
 # here (crate-wide check-cfg) is the reliable fix and keeps CI's `-D warnings` green.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))', 'cfg(web_sys_unstable_apis)'] }
 
 [features]
 default = []
@@ -33,12 +33,91 @@ coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray"]
 trtx-runtime = ["trtx", "cudarc", "zstd-cache-compression"]
 trtx-runtime-mock = ["trtx/mock", "cudarc"]
+# test feature for validation of RTX runtime
+trtx-enterprise = ["trtx-runtime", "trtx/enterprise"]
+zstd-cache-compression = ["dep:zstd"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
 cann-runtime = ["dep:libloading"]
 cann-runtime-mock = []
-zstd-cache-compression = ["dep:zstd"]
-# test feature for validation of RTX runtime
-trtx-enterprise = ["trtx-runtime", "trtx/enterprise"]
+native-examples = []
+webnn-wpt-tests = []
+webnn-runtime = ["wasm-bindgen", "web-sys", "js-sys", "pollster", "wasm-bindgen-futures", "Ml", "MlArgMinMaxOptions", "MlBatchNormalizationOptions", "MlClampOptions", "MlContext", "MlContextOptions", "MlConv2dFilterOperandLayout", "MlConv2dOptions", "MlConvTranspose2dFilterOperandLayout", "MlConvTranspose2dOptions", "MlCumulativeSumOptions", "MlEluOptions", "MlGatherOptions", "MlGemmOptions", "MlGraph", "MlGraphBuilder", "MlGruCellOptions", "MlGruOptions", "MlGruWeightLayout", "MlHardSigmoidOptions", "MlInputOperandLayout", "MlInstanceNormalizationOptions", "MlInterpolationMode", "MlLayerNormalizationOptions", "MlLeakyReluOptions", "MlLinearOptions", "MlLstmCellOptions", "MlLstmOptions", "MlLstmWeightLayout", "MlOperand", "MlOperandDataType", "MlOperandDescriptor", "MlOperatorOptions", "MlPadOptions", "MlPaddingMode", "MlPool2dOptions", "MlPowerPreference", "MlRecurrentNetworkActivation", "MlRecurrentNetworkDirection", "MlReduceOptions", "MlResample2dOptions", "MlReverseOptions", "MlRoundingType", "MlScatterOptions", "MlSliceOptions", "MlSplitOptions", "MlTensor", "MlTensorDescriptor", "MlTransposeOptions", "MlTriangularOptions"]
+pollster = ["dep:pollster"]
+
+MimeTypeArray = []
+GpuDevice = []
+Ml = []
+MlArgMinMaxOptions = []
+MlBatchNormalizationOptions = []
+MlBatchNormalizationSupportLimits = []
+MlBinarySupportLimits = []
+MlClampOptions = []
+MlConcatSupportLimits = []
+MlContext = []
+MlContextLostInfo = []
+MlContextOptions = []
+MlConv2dFilterOperandLayout = []
+MlConv2dOptions = []
+MlConv2dSupportLimits = []
+MlConvTranspose2dFilterOperandLayout = []
+MlConvTranspose2dOptions = []
+MlCumulativeSumOptions = []
+MlEluOptions = []
+MlGatherOptions = []
+MlGatherSupportLimits = []
+MlGemmOptions = []
+MlGemmSupportLimits = []
+MlGraph = []
+MlGraphBuilder = []
+MlGruCellOptions = []
+MlGruCellSupportLimits = []
+MlGruOptions = []
+MlGruSupportLimits = []
+MlGruWeightLayout = []
+MlHardSigmoidOptions = []
+MlInputOperandLayout = []
+MlInstanceNormalizationOptions = []
+MlInterpolationMode = []
+MlLayerNormalizationOptions = []
+MlLeakyReluOptions = []
+MlLinearOptions = []
+MlLogicalNotSupportLimits = []
+MlLstmCellOptions = []
+MlLstmCellSupportLimits = []
+MlLstmOptions = []
+MlLstmSupportLimits = []
+MlLstmWeightLayout = []
+MlNormalizationSupportLimits = []
+MlOpSupportLimits = []
+MlOperand = []
+MlOperandDataType = []
+MlOperandDescriptor = []
+MlOperatorOptions = []
+MlPadOptions = []
+MlPaddingMode = []
+MlPool2dOptions = []
+MlPowerPreference = []
+MlPreluSupportLimits = []
+MlQuantizeDequantizeLinearSupportLimits = []
+MlRankRange = []
+MlRecurrentNetworkActivation = []
+MlRecurrentNetworkDirection = []
+MlReduceOptions = []
+MlResample2dOptions = []
+MlReverseOptions = []
+MlRoundingType = []
+MlScatterOptions = []
+MlScatterSupportLimits = []
+MlSingleInputSupportLimits = []
+MlSliceOptions = []
+MlSplitOptions = []
+MlSplitSupportLimits = []
+MlTensor = []
+MlTensorDescriptor = []
+MlTensorLimits = []
+MlTransposeOptions = []
+MlTriangularOptions = []
+MlWhereSupportLimits = []
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -77,9 +156,22 @@ seahash = "4.1.0"
 dirs = "6.0.0"
 zstd = { version = "0.13", optional = true }
 
+
+web-sys = { version = "0.3.104", features = [
+    "console",
+    "GpuDevice",
+    "Navigator",
+    "Window",
+], optional = true }
+wasm-bindgen = { version = "0.2.127", optional = true }
+js-sys = { version = "0.3.104", optional = true }
+wasm-bindgen-futures = { version = "0.4.77", optional = true }
+
 # The exception feature is needed to avoid undefined behavior when objc throws exceptions
 objc = { version = "0.2", optional = true, features = [] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
 block = { version = "0.1", optional = true }
+pollster = { version = "1.0.1", optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # For macOS, explicitly enable the "exception" feature
 objc = { version = "0.2", optional = true, features = ["exception"] }
@@ -90,7 +182,6 @@ cc = "1.0"
 seahash = "4.1.0"
 
 [dev-dependencies]
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 half = "2.4"
 insta = { version = "1.47.2", features = ["yaml"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
@@ -98,14 +189,31 @@ dirs = "6.0.0"
 anyhow = "1.0.102"
 futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 libtest-mimic = "0.8.2"
 pretty_env_logger = "0.5.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
 
 [[test]]
 name = "run_wpt_conformance"
 path = "tests/run_wpt_conformance.rs"
 harness = false
+
+[[example]]
+name = "fast_style_transfer_builder_api"
+path = "examples/fast_style_transfer_builder_api.rs"
+required-features = ["native-examples"]
+
+[[example]]
+name = "smollm_mlcontext"
+path = "examples/smollm_mlcontext.rs"
+required-features = ["native-examples"]
 
 [profile.dev.package]
 insta.opt-level = 3

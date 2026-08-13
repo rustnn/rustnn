@@ -1,0 +1,42 @@
+#![allow(unused_imports)]
+#![allow(clippy::all)]
+use super::*;
+use wasm_bindgen::prelude::*;
+#[cfg(web_sys_unstable_apis)]
+#[wasm_bindgen]
+extern "C" {
+    # [wasm_bindgen (extends = :: js_sys :: Object , js_name = MLOperand , typescript_type = "MLOperand")]
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    #[doc = "The `MlOperand` class."]
+    #[doc = ""]
+    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLOperand)"]
+    #[doc = ""]
+    #[doc = "*This API requires the following crate features to be activated: `MlOperand`*"]
+    #[doc = ""]
+    #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
+    #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
+    pub type MlOperand;
+    #[cfg(web_sys_unstable_apis)]
+    #[cfg(feature = "MlOperandDataType")]
+    # [wasm_bindgen (structural , method , getter , js_class = "MLOperand" , js_name = dataType)]
+    #[doc = "Getter for the `dataType` field of this object."]
+    #[doc = ""]
+    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLOperand/dataType)"]
+    #[doc = ""]
+    #[doc = "*This API requires the following crate features to be activated: `MlOperand`, `MlOperandDataType`*"]
+    #[doc = ""]
+    #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
+    #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
+    pub fn data_type(this: &MlOperand) -> MlOperandDataType;
+    #[cfg(web_sys_unstable_apis)]
+    # [wasm_bindgen (structural , method , getter , js_class = "MLOperand" , js_name = shape)]
+    #[doc = "Getter for the `shape` field of this object."]
+    #[doc = ""]
+    #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLOperand/shape)"]
+    #[doc = ""]
+    #[doc = "*This API requires the following crate features to be activated: `MlOperand`*"]
+    #[doc = ""]
+    #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
+    #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
+    pub fn shape(this: &MlOperand) -> ::js_sys::Array<::js_sys::Number>;
+}

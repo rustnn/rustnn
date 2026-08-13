@@ -23,15 +23,21 @@ pub enum Dimension {
     Dynamic(DynamicDimension),
 }
 
+impl Dimension {
+    pub fn get_static_or_max_size(&self) -> u32 {
+        match self {
+            Self::Static(value) => *value,
+            Self::Dynamic(dimension) => dimension.max_size,
+        }
+    }
+}
+
 pub fn to_dimension_vector(shape: &[u32]) -> Vec<Dimension> {
     shape.iter().copied().map(Dimension::Static).collect()
 }
 
 pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
-    match dim {
-        Dimension::Static(v) => *v,
-        Dimension::Dynamic(d) => d.max_size,
-    }
+    dim.get_static_or_max_size()
 }
 
 impl From<MLDimension> for Dimension {

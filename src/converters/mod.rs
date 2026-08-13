@@ -16,6 +16,8 @@ mod trtx_gru;
 mod trtx_lstm;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx_rnn;
+#[cfg(feature = "webnn-runtime")]
+pub mod webnn;
 mod weight_file_builder;
 
 pub use coreml_mlprogram::CoremlMlProgramConverter;

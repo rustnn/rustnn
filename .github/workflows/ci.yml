@@ -22,14 +22,20 @@ jobs:
 
       - name: Install Rust MSRV
         uses: dtolnay/rust-toolchain@1.95.0
+        with:
+         targets: wasm32-unknown-unknown
+
 
       - name: Install Rust test toolchain
         uses: dtolnay/rust-toolchain@1.96.0
+        with:
+         targets: wasm32-unknown-unknown
 
       - name: Install Rust formatting toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+          targets: wasm32-unknown-unknown
 
       - name: Install protobuf compiler (Linux)
         if: runner.os == 'Linux'
@@ -90,6 +96,12 @@ jobs:
 
       - name: Run cargo check (LiteRT)
         run: cargo +1.95.0 check --features litert-runtime
+
+      - name: Build wasm32
+        run: |
+          make fetch-wpt # browser wasm32 can't read files, therefore wpt spec is baked into test wasm32
+          RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown -F webnn-runtime,webnn-wpt-tests --all-targets
+          RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown --no-default-features -F webnn-runtime
 
       - name: Run cargo check (CANN runtime)
         run: cargo +1.95.0 check --features cann-runtime

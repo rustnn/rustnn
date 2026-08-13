@@ -12,6 +12,8 @@ ORT_VERSION ?= 1.24.3
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
 MATURIN_ARGS ?=
+CHROMEDRIVER_CACHE ?= $(CURDIR)/.cache/chromedriver
+CHROMEDRIVER ?= $(CHROMEDRIVER_CACHE)/chromedriver
 
 # Platform detection
 UNAME_S := $(shell uname)
@@ -71,6 +73,7 @@ endif
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	help clean-all
+	webnn-chromedriver require-wpt-cache test-webnn-wpt-chrome test-webnn-wpt-chrome-headless
 
 clean:
 	$(CARGO) clean
@@ -93,6 +96,50 @@ test:
 
 fetch-wpt:
 	node scripts/fetch_wpt.mjs
+
+require-wpt-cache:
+	@test -d .cache/wpt/webnn || (echo "WPT cache is missing; run 'make fetch-wpt' first." >&2; exit 1)
+
+# Download Chrome for Testing's newest driver compatible with the Chrome on PATH.
+# Set CHROME=... to select a different installed Chrome binary, or
+# CHROMEDRIVER_VERSION=... to pin a particular Chrome-for-Testing release.
+webnn-chromedriver:
+	@set -eu; \
+	chrome="$(CHROME)"; \
+	if [ -z "$$chrome" ]; then \
+		for candidate in google-chrome google-chrome-stable google-chrome-unstable chromium chromium-browser; do \
+			if command -v "$$candidate" >/dev/null 2>&1; then chrome="$$candidate"; break; fi; \
+		done; \
+	fi; \
+	version="$(CHROMEDRIVER_VERSION)"; \
+	if [ -z "$$version" ] && [ -n "$$chrome" ]; then \
+		chrome_version="$$($$chrome --product-version 2>/dev/null || true)"; \
+		major="$${chrome_version%%.*}"; \
+		case "$$major" in (*[!0-9]*|'') ;; (*) version="$$(curl -fsSL "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$$major" || true)";; esac; \
+	fi; \
+	if [ -z "$$version" ]; then version="$$(curl -fsSL https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_STABLE)"; fi; \
+	case "$$(uname -s):$$(uname -m)" in \
+		Linux:x86_64) platform=linux64;; \
+		Linux:aarch64) platform=linux64;; \
+		Darwin:arm64) platform=mac-arm64;; \
+		Darwin:x86_64) platform=mac-x64;; \
+		*) echo "Unsupported platform for Chrome for Testing driver: $$(uname -s) $$(uname -m)" >&2; exit 1;; \
+	esac; \
+	mkdir -p "$(CHROMEDRIVER_CACHE)"; \
+	tmp="$$(mktemp -d "$(CHROMEDRIVER_CACHE)/download.XXXXXX")"; \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	curl -fsSL "https://storage.googleapis.com/chrome-for-testing-public/$$version/$$platform/chromedriver-$$platform.zip" -o "$$tmp/chromedriver.zip"; \
+	unzip -oq "$$tmp/chromedriver.zip" -d "$(CHROMEDRIVER_CACHE)"; \
+	ln -sfn "chromedriver-$$platform/chromedriver" "$(CHROMEDRIVER)"; \
+	chmod +x "$(CHROMEDRIVER)"; \
+	echo "ChromeDriver $$version: $(CHROMEDRIVER)"
+
+# Requires wasm-pack, Node.js, curl, and unzip. webdriver.json enables Chrome's WebNN feature.
+test-webnn-wpt-chrome: require-wpt-cache webnn-chromedriver
+	@env -u CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER WASM_BINDGEN_TEST_ADDRESS=127.0.0.1:0 RUSTFLAGS='-C target-feature=+reference-types --cfg=web_sys_unstable_apis' wasm-pack test --chrome --chromedriver "$(CHROMEDRIVER)" -- --test webnn_wpt -F webnn-runtime,webnn-wpt-tests -- --nocapture
+
+test-webnn-wpt-chrome-headless: require-wpt-cache webnn-chromedriver
+	@env -u CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER RUSTFLAGS='-C target-feature=+reference-types --cfg=web_sys_unstable_apis' wasm-pack test --headless --chrome --chromedriver "$(CHROMEDRIVER)" -- --test webnn_wpt -F webnn-runtime,webnn-wpt-tests -- --nocapture
 
 # WPT conformance (requires Node.js, WPT cache; set WPT_BACKEND=onnx|trtx to pick backend)
 test-wpt: onnxruntime-download
@@ -292,6 +339,9 @@ help:
 	@echo "  test-wpt-op OP=... - Run filtered WPT trials"
 	@echo "  test-wpt-report    - Run full WPT suite and write JSON/HTML reports (ignores trial failures)"
 	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
+	@echo "  webnn-chromedriver - Download a ChromeDriver compatible with installed Chrome"
+	@echo "  test-webnn-wpt-chrome - Run browser WebNN WPT graph-build tests in Chrome"
+	@echo "  test-webnn-wpt-chrome-headless - Run the browser WebNN WPT tests headlessly"
 	@echo ""
 	@echo "CoreML Conversion:"
 	@echo "  coreml             - Convert graph to CoreML format"

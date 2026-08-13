@@ -46,3 +46,4 @@ pub use graphviz::graph_to_dot;
 pub use loader::load_graph_from_path;
 pub use operators::Operation;
 pub use validator::{ContextProperties, GraphValidator, ValidationArtifacts};
+extern crate alloc;

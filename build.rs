@@ -1,6 +1,5 @@
 use std::hash::Hasher;
 use std::io::Read;
-#[cfg(feature = "litert-runtime")]
 use std::process::Command;
 use std::{env, fs};
 use std::{fs::File, path::Path};
@@ -118,11 +117,45 @@ fn create_source_hash(source_files: &[&str]) {
     fs::write(dest_path, hash_string).unwrap();
 }
 
+fn embed_wpt_corpus_for_wasm() -> Result<(), Box<dyn std::error::Error>> {
+    if env::var_os("CARGO_FEATURE_WEBNN_WPT_TESTS").is_none()
+        || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
+    {
+        return Ok(());
+    }
+
+    println!("cargo:rerun-if-env-changed=WPT_DIR");
+    println!("cargo:rerun-if-changed=scripts/wpt_bridge/dump_corpus.mjs");
+
+    let wpt_dir = env::var("WPT_DIR").unwrap_or_else(|_| ".cache/wpt".to_string());
+    let output = Command::new("node")
+        .args([
+            "scripts/wpt_bridge/dump_corpus.mjs",
+            "--wpt-dir",
+            wpt_dir.as_str(),
+        ])
+        .output()
+        .map_err(|error| format!("failed to run the WPT Node bridge: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "WPT Node bridge failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+
+    let output_path = Path::new(&env::var("OUT_DIR")?).join("webnn-wpt-corpus.json");
+    fs::write(output_path, output.stdout)?;
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
     build_coreml_protos()?;
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     build_coreml_shim();
+    embed_wpt_corpus_for_wasm()?;
 
     // Build TFLite flatbuffer schema - Only required for the litert-runtime.
     #[cfg(feature = "litert-runtime")]
