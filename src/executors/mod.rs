@@ -1,7 +1,7 @@
-#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+#[cfg(feature = "cann-runtime")]
 pub mod cann_shim;
-#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
-pub mod cann_shim_types;
+#[cfg(feature = "cann-runtime")]
+pub mod cann_sys;
 
 #[cfg(feature = "coreml-runtime")]
 pub mod coreml;
