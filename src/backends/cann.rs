@@ -24,8 +24,8 @@ use crate::error::{Error, Result};
 use crate::executors::cann_shim::{CannTensorDesc, cann_dispatch};
 use crate::mlcontext::MLBackendGraph::CannEngine;
 use crate::mlcontext::{
-    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLTensor, MLTensorDescriptor,
-    RustNNOptions,
+    ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
+    MLTensorDescriptor, RustNNOptions,
 };
 use crate::operator_enums::MLOperandDataType;
 
@@ -51,6 +51,12 @@ pub(crate) struct CannTensor {
 #[derive(Debug)]
 pub(crate) struct CannGraph {
     pub(crate) model_bytes: Vec<u8>,
+    // Input/output names in the model's canonical order (matching how the
+    // graph was compiled). dispatch() relies on this to feed tensors to the
+    // NPU positionally, since MLNamedTensors (a BTreeMap) sorts by name rather
+    // than the model's operand order.
+    pub(crate) input_names: Vec<String>,
+    pub(crate) output_names: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -166,16 +172,18 @@ impl<'context> MLBackendContext<'context> for CannContext {
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
-        inputs: &HashMap<&str, &MLTensor>,
-        outputs: &HashMap<&str, &MLTensor>,
+        inputs: &MLNamedTensors,
+        outputs: &MLNamedTensors,
     ) -> Result<()> {
-        let model_bytes = if let CannEngine(ref cann_graph) = graph.backend {
-            &cann_graph.model_bytes
+        let cann_graph = if let CannEngine(ref cann_graph) = graph.backend {
+            cann_graph
         } else {
             return Err(Error::GraphDispatchError {
                 source: "graph is not a CANN graph".into(),
             });
         };
+
+        let model_bytes = &cann_graph.model_bytes;
 
         let build_desc = |tensor: &&MLTensor| -> CannTensorDesc {
             CannTensorDesc {
@@ -185,12 +193,36 @@ impl<'context> MLBackendContext<'context> for CannContext {
             }
         };
 
-        let input_descs: Vec<CannTensorDesc> = inputs.values().map(build_desc).collect();
-        let mut output_descs: Vec<CannTensorDesc> = outputs.values().map(build_desc).collect();
+        // Feed tensors to the NPU positionally, in the model's canonical
+        // input/output order (BTreeMap sorts by name).
+        let mut input_descs = Vec::with_capacity(cann_graph.input_names.len());
+        for name in &cann_graph.input_names {
+            let tensor = inputs
+                .get(name.as_str())
+                .ok_or_else(|| Error::GraphDispatchError {
+                    source: format!("missing input '{name}' for CANN dispatch").into(),
+                })?;
+            input_descs.push(build_desc(tensor));
+        }
+
+        let mut output_descs = Vec::with_capacity(cann_graph.output_names.len());
+        for name in &cann_graph.output_names {
+            let tensor = outputs
+                .get(name.as_str())
+                .ok_or_else(|| Error::GraphDispatchError {
+                    source: format!("missing output '{name}' for CANN dispatch").into(),
+                })?;
+            output_descs.push(build_desc(tensor));
+        }
 
         cann_dispatch(model_bytes, &input_descs, &mut output_descs)?;
 
-        for (tensor, output_desc) in outputs.values().zip(output_descs.iter()) {
+        for (name, output_desc) in cann_graph.output_names.iter().zip(output_descs.iter()) {
+            let tensor = outputs
+                .get(name.as_str())
+                .ok_or_else(|| Error::GraphDispatchError {
+                    source: format!("missing output '{name}' for CANN dispatch").into(),
+                })?;
             self.tensors[tensor.id]
                 .memory
                 .copy_from_slice(&output_desc.data);
@@ -231,7 +263,36 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
             encode_via_adapter(&graph_info).map_err(|e| Error::GraphDispatchError {
                 source: format!("CANN graph build failed: {e}").into(),
             })?;
-        let graph = CannGraph { model_bytes };
+
+        // Record the input/output names in the model's canonical order. Names
+        // are guaranteed present: MLGraph::new() below runs io_binding_maps(),
+        // which errors on missing or duplicate names.
+        let input_names = graph_info
+            .input_operands
+            .iter()
+            .map(|&id| {
+                graph_info.operands[id as usize]
+                    .name
+                    .clone()
+                    .expect("input name validated by io_binding_maps")
+            })
+            .collect();
+        let output_names = graph_info
+            .output_operands
+            .iter()
+            .map(|&id| {
+                graph_info.operands[id as usize]
+                    .name
+                    .clone()
+                    .expect("output name validated by io_binding_maps")
+            })
+            .collect();
+
+        let graph = CannGraph {
+            model_bytes,
+            input_names,
+            output_names,
+        };
         MLGraph::new(CannEngine(graph), &graph_info)
     }
 }

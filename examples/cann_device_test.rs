@@ -25,7 +25,7 @@
 //! Run on device:
 //!   LD_LIBRARY_PATH=. ./cann_device_test
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use rustnn::backend_selection::Backend;
 use rustnn::mlcontext::{
@@ -63,7 +63,7 @@ fn main() {
     let a: MLOperand = builder.input("a", &desc_2x2).unwrap();
     let b: MLOperand = builder.input("b", &desc_2x2).unwrap();
     let sum: MLOperand = builder.add(a, b).unwrap();
-    let mut graph = builder.build(&HashMap::from([("sum", sum)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("sum", sum)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2])
         .to_writable()
@@ -81,8 +81,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("a", &tensor_a), ("b", &tensor_b)]),
-            &HashMap::from([("sum", &tensor_out)]),
+            &BTreeMap::from([("a", &tensor_a), ("b", &tensor_b)]),
+            &BTreeMap::from([("sum", &tensor_out)]),
         )
         .unwrap();
 
@@ -99,7 +99,7 @@ fn main() {
     let desc_4 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
     let input: MLOperand = builder.input("x", &desc_4).unwrap();
     let output: MLOperand = builder.relu(input).unwrap();
-    let mut graph = builder.build(&HashMap::from([("r", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("r", output)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
         .to_writable()
@@ -113,8 +113,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("r", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("r", &tensor_output)]),
         )
         .unwrap();
 
@@ -131,7 +131,7 @@ fn main() {
     let desc_4 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
     let input: MLOperand = builder.input("x", &desc_4).unwrap();
     let output: MLOperand = builder.identity(input).unwrap();
-    let mut graph = builder.build(&HashMap::from([("id", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("id", output)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
         .to_writable()
@@ -145,8 +145,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("id", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("id", &tensor_output)]),
         )
         .unwrap();
 
@@ -167,7 +167,7 @@ fn main() {
         .constant_from_vec(&filter_desc, vec![1.0f32, 0.0, 0.0, 1.0])
         .unwrap();
     let output: MLOperand = builder.conv2d(input, filter).unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc_input = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 3, 3])
         .to_writable()
@@ -186,8 +186,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -211,7 +211,7 @@ fn main() {
     let output: MLOperand = builder
         .max_pool2d_with_options(input, pool_options)
         .unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc_input = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 4, 4])
         .to_writable()
@@ -228,8 +228,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -256,7 +256,7 @@ fn main() {
     let output: MLOperand = builder
         .conv_transpose2d_with_options(input, filter, transpose_options)
         .unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc_input = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 2, 2])
         .to_writable()
@@ -272,8 +272,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -301,7 +301,7 @@ fn main() {
         .constant_from_vec(&desc_2x2, vec![1.0f32, 0.0, 0.0, 1.0])
         .unwrap();
     let output: MLOperand = builder.matmul(a, b).unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2])
         .to_writable()
@@ -315,8 +315,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("a", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("a", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -333,7 +333,7 @@ fn main() {
     let desc_2 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2]);
     let input: MLOperand = builder.input("x", &desc_2).unwrap();
     let output: MLOperand = builder.cos(input).unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2])
         .to_writable()
@@ -347,8 +347,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -382,7 +382,7 @@ fn main() {
     let output: MLOperand = builder
         .arg_max_with_options(input, 0, argmax_options)
         .unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc_input = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4])
         .to_writable()
@@ -397,8 +397,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -426,7 +426,7 @@ fn main() {
     let output: MLOperand = builder
         .batch_normalization_with_options(input, mean, variance, bn_options)
         .unwrap();
-    let mut graph = builder.build(&HashMap::from([("y", output)])).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 
     let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 2, 2])
         .to_writable()
@@ -440,8 +440,8 @@ fn main() {
     context
         .dispatch(
             &mut graph,
-            &HashMap::from([("x", &tensor_input)]),
-            &HashMap::from([("y", &tensor_output)]),
+            &BTreeMap::from([("x", &tensor_input)]),
+            &BTreeMap::from([("y", &tensor_output)]),
         )
         .unwrap();
 
@@ -455,6 +455,45 @@ fn main() {
             "BatchNormalization[{i}] expected {expected}, got {val}"
         );
     }
+    println!("  PASS");
+
+    // ── Test 11: Sub (multi-input, non-commutative) ─────────────────
+    // Verifies dispatch() feeds inputs to the NPU in the model's canonical
+    // order, not BTreeMap's name-sorted order (a - b != b - a).
+    println!("\n--- Op: Sub ---");
+
+    let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+    let desc_2x2 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let a: MLOperand = builder.input("a", &desc_2x2).unwrap();
+    let b: MLOperand = builder.input("b", &desc_2x2).unwrap();
+    let output: MLOperand = builder.sub(a, b).unwrap();
+    let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+    let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2])
+        .to_writable()
+        .to_readable();
+    let tensor_a = context.create_tensor(&tdesc).unwrap();
+    let tensor_b = context.create_tensor(&tdesc).unwrap();
+    let tensor_out = context.create_tensor(&tdesc).unwrap();
+
+    context
+        .write_tensor(&tensor_a, &vec![5.0f32, 6.0, 7.0, 8.0])
+        .unwrap();
+    context
+        .write_tensor(&tensor_b, &vec![1.0f32, 2.0, 3.0, 4.0])
+        .unwrap();
+    context
+        .dispatch(
+            &mut graph,
+            &BTreeMap::from([("a", &tensor_a), ("b", &tensor_b)]),
+            &BTreeMap::from([("y", &tensor_out)]),
+        )
+        .unwrap();
+
+    let mut out_data = vec![0.0f32; 4];
+    context.read_tensor(&tensor_out, &mut out_data).unwrap();
+    println!("  Sub([5,6,7,8], [1,2,3,4]) = {:?}", out_data);
+    assert_eq!(out_data, [4.0f32, 4.0, 4.0, 4.0]);
     println!("  PASS");
 
     println!("\n=== All tests passed ===");
