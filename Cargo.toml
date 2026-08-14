@@ -180,6 +180,7 @@ objc = { version = "0.2", optional = true, features = ["exception"] }
 prost-build = "0.12"
 cc = "1.0"
 seahash = "4.1.0"
+bindgen = "0.72"
 
 [dev-dependencies]
 half = "2.4"

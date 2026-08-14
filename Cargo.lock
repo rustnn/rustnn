@@ -2936,6 +2936,7 @@ version = "0.5.11"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bindgen",
  "block",
  "bytemuck",
  "bytes",

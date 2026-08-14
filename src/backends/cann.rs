@@ -21,15 +21,18 @@ use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
 use crate::converters::cann::encode_via_adapter;
 use crate::error::{Error, Result};
+#[cfg(feature = "cann-runtime")]
 use crate::executors::cann_shim::{CannTensorDesc, cann_dispatch};
 use crate::mlcontext::MLBackendGraph::CannEngine;
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
     MLTensorDescriptor, RustNNOptions,
 };
+#[cfg(feature = "cann-runtime")]
 use crate::operator_enums::MLOperandDataType;
 
 /// Map WebNN operand data type to CANN adapter enum
+#[cfg(feature = "cann-runtime")]
 fn ml_operand_to_cann_dtype(data_type: MLOperandDataType) -> i32 {
     match data_type {
         MLOperandDataType::Float32 => 0, // CANN_DT_FLOAT
@@ -49,6 +52,9 @@ pub(crate) struct CannTensor {
 }
 
 #[derive(Debug)]
+// Fields are only read by the runtime `dispatch`; the mock build never
+// constructs a graph.
+#[allow(dead_code)]
 pub(crate) struct CannGraph {
     pub(crate) model_bytes: Vec<u8>,
     // Input/output names in the model's canonical order (matching how the
@@ -169,6 +175,7 @@ impl<'context> MLBackendContext<'context> for CannContext {
         Ok(())
     }
 
+    #[cfg(feature = "cann-runtime")]
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
@@ -229,6 +236,18 @@ impl<'context> MLBackendContext<'context> for CannContext {
         }
 
         Ok(())
+    }
+
+    #[cfg(not(feature = "cann-runtime"))]
+    fn dispatch(
+        &mut self,
+        _graph: &mut MLGraph,
+        _inputs: &MLNamedTensors,
+        _outputs: &MLNamedTensors,
+    ) -> Result<()> {
+        Err(Error::GraphDispatchError {
+            source: "CANN shim not available (mock mode)".into(),
+        })
     }
 
     fn rustnn_resize_tensor(&mut self, _tensor: &mut MLTensor, _new_shape: &[u64]) -> Result<()> {

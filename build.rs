@@ -151,15 +151,53 @@ fn embed_wpt_corpus_for_wasm() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(feature = "cann-runtime")]
-fn build_cann_shim() {
-    // OHOS targets report target_os="linux" but target_env="ohos".
-    // With OHOS target, compile the CANN adapter C++ shim that wraps the HiAI DDK
+fn link_cann_ddk() {
+    let shim_dir = "src/executors/cann_shim";
 
+    // Generate Rust FFI bindings
+    let headers = [
+        "adapter_types.h",
+        "context_adapter.h",
+        "graph_adapter.h",
+        "io_tensor_adapter.h",
+        "model_adapter.h",
+        "model_manager_adapter.h",
+        "operator_adapter.h",
+        "op_tensor_adapter.h",
+    ];
+
+    let mut builder = bindgen::Builder::default()
+        .clang_arg("-x")
+        .clang_arg("c++")
+        .clang_arg("-std=c++17")
+        .clang_arg(format!("-I{shim_dir}"))
+        .default_enum_style(bindgen::EnumVariation::Rust {
+            non_exhaustive: false,
+        })
+        .allowlist_type(".*Cann.*")
+        .allowlist_function(".*cann_.*");
+
+    for header in &headers {
+        println!("cargo:rerun-if-changed={shim_dir}/{header}");
+        builder = builder.header(format!("{shim_dir}/{header}"));
+    }
+
+    let bindings = builder
+        .generate()
+        .expect("Unable to generate CANN bindings");
+
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let out_path = Path::new(&out_dir).join("cann_bindings.rs");
+    bindings
+        .write_to_file(out_path)
+        .expect("Couldn't write CANN bindings");
+
+    // Compile the C++ adapter and link the HiAI DDK
     if std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default() != "ohos" {
         return;
     }
 
-    // The Huawei CANN-Kit DDK is pre-requiste for building the CANN shim.
+    // The Huawei CANN-Kit DDK is a prerequisite for building the CANN shim.
     let ddk = std::env::var("CANN_DDK")
         .ok()
         .filter(|p| !p.is_empty())
@@ -174,7 +212,6 @@ fn build_cann_shim() {
     let ddk_include = Path::new(&ddk).join("ai_ddk_lib").join("include");
     let ddk_lib = Path::new(&ddk).join("ai_ddk_lib").join("lib64");
 
-    let shim_dir = "src/executors/cann_shim";
     let sources = [
         "context_adapter.cc",
         "graph_adapter.cc",
@@ -193,7 +230,7 @@ fn build_cann_shim() {
         .flag("-std=c++17")
         .flag("-fvisibility=hidden");
     for src in &sources {
-        let path = format!("{}/{}", shim_dir, src);
+        let path = format!("{shim_dir}/{src}");
         println!("cargo:rerun-if-changed={path}");
         build.file(&path);
     }
@@ -222,7 +259,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     build_tflite_schema();
 
     #[cfg(feature = "cann-runtime")]
-    build_cann_shim();
+    link_cann_ddk();
 
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
