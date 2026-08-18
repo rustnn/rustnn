@@ -229,7 +229,7 @@ macro_rules! reshape_1d_to_axis {
     }};
 }
 
-// CAST uint8 tensor to BOOL for logical operations (Chromium pattern)
+// CAST uint8 tensor to BOOL for logical operations
 macro_rules! cast_to_bool {
     ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
         let bool_name = concat!($prefix, "_bool");
@@ -252,7 +252,7 @@ macro_rules! cast_to_bool {
     }};
 }
 
-// CAST BOOL tensor back to uint8 for logical operations (Chromium pattern)
+// CAST BOOL tensor back to uint8 for logical operations
 macro_rules! cast_from_bool {
     ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
         let uint8_name = concat!($prefix, "_u8");
@@ -2031,7 +2031,7 @@ impl<'a> TfliteContext<'a> {
         true
     }
 
-    /// Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+    /// Identity: emit RESHAPE with same shape
     fn build_identity_op(
         &mut self,
         op: &Operation,
@@ -2442,7 +2442,6 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// GatherElements: emulate with GATHER_ND + coordinate conversion.
-    /// Chromium-style: only supports constant indices.
     fn build_gather_elements_op(
         &mut self,
         op: &Operation,
@@ -2460,7 +2459,7 @@ impl<'a> TfliteContext<'a> {
             let out_id = op.outputs()[0];
             let axis = options.as_ref().map(|o| o.axis).unwrap_or(0) as usize;
 
-            // Only constant indices supported (Chromium pattern)
+            // Only constant indices supported
             let indices_data = graph
                 .constant_operand_ids_to_handles
                 .get(indices_op_id)
@@ -2613,7 +2612,6 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// ScatterElements: emulate with SCATTER_ND + coordinate conversion.
-    /// Chromium-style: only supports constant int32 indices.
     fn build_scatter_elements_op(
         &mut self,
         op: &Operation,
@@ -2838,8 +2836,9 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
-    /// ScatterND: emulate with SCATTER_ND + WHERE (same pattern as Chromium's WebNNScatterND).
-    /// Only supports constant int32 indices with positive values (no negative clamping for now).
+    /// ScatterND: emulate with SCATTER_ND + WHERE
+    /// Constant indices are negative-clamped at build time; runtime indices are used
+    /// as-is (TFLite SCATTER_ND requires non-negative indices).
     fn build_scatter_nd_op(
         &mut self,
         op: &Operation,
@@ -2904,46 +2903,43 @@ impl<'a> TfliteContext<'a> {
             let in_type = datatype_to_tflite(in_op.descriptor.data_type)
                 .unwrap_or(tflite::TensorType::FLOAT32);
 
-            // Only support constant indices for now (like ScatterElements)
-            let indices_data = graph
-                .constant_operand_ids_to_handles
-                .get(indices_op_id)
-                .map(|cd| cd.data.clone());
-            let indices_data = match indices_data {
-                Some(d) => d,
-                None => return false,
+            // Indices: constant (negative-clamped at build time) or runtime (used as-is;
+            // TFLite SCATTER_ND requires non-negative int32 indices).
+            let indices_tensor: i32 = match graph.constant_operand_ids_to_handles.get(indices_op_id)
+            {
+                Some(cd) => {
+                    let indices_data = &cd.data;
+                    let num_updates = indices_shape[0] as usize;
+                    let indexing_depth = indices_shape[1] as usize;
+                    let expected_len = num_updates * indexing_depth * 4;
+                    if indices_data.len() < expected_len {
+                        return false;
+                    }
+                    let indices_vals: Vec<i32> = indices_data[..expected_len]
+                        .chunks(4)
+                        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    let clamped: Vec<i32> = indices_vals
+                        .chunks(indexing_depth)
+                        .flat_map(|coord| {
+                            coord.iter().enumerate().map(|(d, &v)| {
+                                let dim_size = input_shape.get(d).copied().unwrap_or(1);
+                                let c = v.clamp(-dim_size, dim_size - 1);
+                                if c < 0 { c + dim_size } else { c }
+                            })
+                        })
+                        .collect();
+                    let coord_bytes: Vec<u8> =
+                        clamped.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    self.add_constant(
+                        "scatternd_indices",
+                        &indices_shape,
+                        tflite::TensorType::INT32,
+                        &coord_bytes,
+                    ) as i32
+                }
+                None => *tensor_map.get(indices_op_id).unwrap_or(indices_op_id) as i32,
             };
-
-            let num_updates = indices_shape[0] as usize;
-            let indexing_depth = indices_shape[1] as usize;
-            let expected_len = num_updates * indexing_depth * 4;
-            if indices_data.len() < expected_len {
-                return false;
-            }
-
-            // Parse indices and clamp negative values
-            let indices_vals: Vec<i32> = indices_data[..expected_len]
-                .chunks(4)
-                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
-            let clamped: Vec<i32> = indices_vals
-                .chunks(indexing_depth)
-                .flat_map(|coord| {
-                    coord.iter().enumerate().map(|(d, &v)| {
-                        let dim_size = input_shape.get(d).copied().unwrap_or(1);
-                        let c = v.clamp(-dim_size, dim_size - 1);
-                        if c < 0 { c + dim_size } else { c }
-                    })
-                })
-                .collect();
-
-            let coord_bytes: Vec<u8> = clamped.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let indices_tensor = self.add_constant(
-                "scatternd_indices",
-                &indices_shape,
-                tflite::TensorType::INT32,
-                &coord_bytes,
-            );
 
             // Input shape as constant 1D tensor
             let input_shape_bytes: Vec<u8> =
@@ -2972,7 +2968,7 @@ impl<'a> TfliteContext<'a> {
             );
             let oc_s1 = self.add_opcode(std_op::SCATTER_ND, 1);
             let iv_s1 = self.fbb.create_vector(&[
-                indices_tensor as i32,
+                indices_tensor,
                 true_updates as i32,
                 input_shape_tensor as i32,
             ]);
@@ -2992,7 +2988,7 @@ impl<'a> TfliteContext<'a> {
             let values_out = self.add_tensor("scatternd_val_out", &input_shape, in_type, 0);
             let oc_s2 = self.add_opcode(std_op::SCATTER_ND, 1);
             let iv_s2 = self.fbb.create_vector(&[
-                indices_tensor as i32,
+                indices_tensor,
                 updates_tensor,
                 input_shape_tensor as i32,
             ]);
@@ -4300,7 +4296,7 @@ fn build_native_operators<'a>(
     mut operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
 ) -> Result<(), GraphError> {
     for op in &graph.operations {
-        // Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+        // Identity: emit RESHAPE with same shape
         if ctx.build_identity_op(op, graph, &mut tensor_map, &mut operator_offsets) {
             continue;
         }
@@ -4416,12 +4412,12 @@ fn build_native_operators<'a>(
             continue;
         }
 
-        // scatter_nd_op: emulate with SCATTER_ND + WHERE (constant indices only)
+        // scatter_nd_op: emulate with SCATTER_ND + WHERE (constant or runtime indices)
         if matches!(op, Operation::ScatterND { .. }) {
             if !ctx.build_scatter_nd_op(op, graph, &mut tensor_map, &mut operator_offsets) {
                 return Err(GraphError::ConversionFailed {
                     format: "litert".to_string(),
-                    reason: "scatterND: non-constant indices not yet supported".to_string(),
+                    reason: "scatterND: unsupported indices shape or data".to_string(),
                 });
             }
             continue;

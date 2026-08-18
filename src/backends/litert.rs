@@ -46,12 +46,12 @@ pub fn dtype_unsupported_for_op(dtype: &str, op: &str) -> bool {
                 | "logical_and"
                 | "logical_not"
                 | "logical_or"
-                | "isNaN"
-                | "isInfinite"
+                | "logical_xor"
                 | "is_nan"
                 | "is_infinite"
                 | "not_equal"
                 | "scatter_elements"
+                | "scatter_nd"
                 | "where"
         ),
         _ => true,
