@@ -2,8 +2,8 @@
 name = "rustnn"
 version = "0.5.11"
 edition = "2024"
-# Tests use std::assert_matches!, which requires Rust 1.96.0.
-rust-version = "1.95"
+# Keep in sync with the `channel` in rust-toolchain.toml.
+rust-version = "1.97"
 description = "W3C WebNN implementation with ONNX, CoreML, and TensorRT backends [DO NOT USE IN PRODUCTION - Development Release]"
 license = "Apache-2.0"
 repository = "https://github.com/rustnn/rustnn"
@@ -133,11 +133,11 @@ bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
 tempfile = "3.27"
 libloading = { version = "0.9", optional = true }
-ort = { version = "=2.0.0-rc.12", optional = true, features = [
+ort = { version = "=2.0.0-rc.13", optional = true, features = [
     "ndarray",
     "half",
     "load-dynamic",
-    "api-24",
+    "api-27",
 ] }
 half = "2.4"
 safetensors = "0.7"

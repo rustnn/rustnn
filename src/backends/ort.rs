@@ -608,12 +608,18 @@ impl OrtContext {
         let selected = env
             .devices()
             .inspect(|d| {
+                let hardware = d.hardware_device();
                 debug!(
                     "Saw ONNX device {:?}",
-                    (&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
+                    (
+                        &hardware.vendor(),
+                        &d.ep_vendor(),
+                        &hardware.id(),
+                        &hardware.ty(),
+                    )
                 )
             })
-            .position(|d| device_type == d.ty().into())
+            .position(|d| device_type == d.hardware_device().ty().into())
             .ok_or(Error::NoDeviceAvailable)?;
 
         Ok(Self {
@@ -627,14 +633,15 @@ impl OrtContext {
 impl fmt::Debug for OrtContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let device = self.env.devices().nth(self.device_idx).unwrap();
+        let hardware = device.hardware_device();
         f.debug_struct("OrtContext")
             .field(
                 "device",
                 &(
-                    &device.vendor(),
+                    &hardware.vendor(),
                     &device.ep_vendor(),
-                    &device.id(),
-                    &device.ty(),
+                    &hardware.id(),
+                    &hardware.ty(),
                 ),
             )
             .field("tensor_count", &self.tensors.len())
@@ -656,12 +663,18 @@ impl ListDevices for OrtContext {
 
         let mut rtn = vec![];
         for (idx, d) in env.devices().enumerate() {
+            let hardware = d.hardware_device();
             debug!(
                 "Saw ONNX device {:?}",
-                (&d.vendor(), &d.ep_vendor(), &d.id(), &d.ty(),)
+                (
+                    &hardware.vendor(),
+                    &d.ep_vendor(),
+                    &hardware.id(),
+                    &hardware.ty(),
+                )
             );
             rtn.push(BackendDevice::Onnx {
-                device_type: d.ty().into(),
+                device_type: hardware.ty().into(),
                 ep_device_idx: idx,
             })
         }
@@ -673,7 +686,7 @@ impl ListDevices for OrtContext {
 impl<'context> MLBackendContext<'context> for OrtContext {
     fn accelerated(&self) -> bool {
         let device = self.env.devices().nth(self.device_idx).unwrap();
-        device.ty() != DeviceType::CPU
+        device.hardware_device().ty() != DeviceType::CPU
     }
 
     fn create_builder<'builder>(

@@ -31,6 +31,7 @@ unsafe extern "C" {}
 
 // Objective-C++ exception firewall (src/executors/coreml_shim.mm).
 // Return codes: 0 = success, 1 = NSError, 2 = NSException, 3 = C++ exception.
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn rustnn_coreml_compile(
         model_url: *mut Object,
@@ -52,6 +53,37 @@ unsafe extern "C" {
         error: *mut c_char,
         error_length: usize,
     ) -> i32;
+}
+
+// Shims to check compilation on Linux
+#[cfg(not(target_os = "macos"))]
+pub unsafe extern "C" fn rustnn_coreml_compile(
+    _model_url: *mut Object,
+    _out_url: *mut *mut Object,
+    _error: *mut c_char,
+    _error_length: usize,
+) -> i32 {
+    1
+}
+#[cfg(not(target_os = "macos"))]
+pub unsafe extern "C" fn rustnn_coreml_load(
+    _compiled_url: *mut Object,
+    _configuration: *mut Object,
+    _out_model: *mut *mut Object,
+    _error: *mut c_char,
+    _error_length: usize,
+) -> i32 {
+    1
+}
+#[cfg(not(target_os = "macos"))]
+pub unsafe extern "C" fn rustnn_coreml_predict(
+    _model: *mut Object,
+    _features: *mut Object,
+    _out_provider: *mut *mut Object,
+    _error: *mut c_char,
+    _error_length: usize,
+) -> i32 {
+    1
 }
 
 fn shim_error_to_string(buffer: &[u8]) -> String {
