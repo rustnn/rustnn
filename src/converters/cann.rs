@@ -18,7 +18,7 @@
 //! CANN/HiAI converter for WebNN graphs.
 //!
 //! Converts `GraphInfo` into compiled model bytes via the adapter
-//! (src/executors/cann_shim/). The adapter wraps the HiAI DDK's C++ API.
+//! (the `hiai-rs` crate's `adapter/`). The adapter wraps the HiAI DDK's C++ API.
 //!
 //! - `cann-runtime`: calls `encode_via_adapter()` to build a GE graph,
 //!   compile via HiaiIrBuild, return ModelBufferData bytes.
@@ -36,6 +36,7 @@ use super::{ConvertedGraph, GraphConverter};
 // Returns Some(name) for ops that map directly to an adapter cann_op_*()
 //
 // Returns `None` for ops that need decomposition or are not supported
+#[cfg(any(feature = "cann-runtime", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
         // ── Element-wise binary ──────────────────────────────────────
@@ -163,16 +164,42 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
+// The YoloV8s priority operators. encode_via_adapter (and the mock path) only
+// accept these; every other operation is reported as unsupported. The wiring
+// for other ops remains in place below for future re-enabling.
+pub(crate) fn is_supported_op(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Add { .. }
+            | Operation::Sub { .. }
+            | Operation::Mul { .. }
+            | Operation::Div { .. }
+            | Operation::Conv2d { .. }
+            | Operation::MaxPool2d { .. }
+            | Operation::Concat { .. }
+            | Operation::Reshape { .. }
+            | Operation::Resample2d { .. }
+            | Operation::Sigmoid { .. }
+            | Operation::Slice { .. }
+            | Operation::Softmax { .. }
+            | Operation::Split { .. }
+            | Operation::Transpose { .. }
+            | Operation::Cast { .. }
+            | Operation::ReduceSum { .. }
+            | Operation::Prelu { .. }
+    )
+}
+
 #[cfg(feature = "cann-runtime")]
 mod adapter {
     use super::*;
-    use crate::executors::cann_sys::*;
     use crate::graph::{DataType, OperandDescriptor};
+    use hiai_rs::sys::*;
 
     // ── Graph builder helpers ──────────────────────────────────────────
 
-    fn cann_data_type(data_type: DataType) -> crate::executors::cann_sys::ddk_CannDataType {
-        use crate::executors::cann_sys::ddk_CannDataType as C;
+    fn cann_data_type(data_type: DataType) -> hiai_rs::sys::ddk_CannDataType {
+        use hiai_rs::sys::ddk_CannDataType as C;
         match data_type {
             DataType::Float32 => C::CANN_DT_FLOAT,
             DataType::Float16 => C::CANN_DT_FLOAT16,
@@ -180,6 +207,8 @@ mod adapter {
             DataType::Int8 => C::CANN_DT_INT8,
             DataType::Uint8 => C::CANN_DT_UINT8,
             DataType::Uint32 => C::CANN_DT_UINT32,
+            DataType::Int64 => C::CANN_DT_INT64,
+            DataType::Uint64 => C::CANN_DT_UINT64,
             _ => C::CANN_DT_FLOAT,
         }
     }
@@ -257,6 +286,113 @@ mod adapter {
             .collect()
     }
 
+    // Create a Const operator holding the given tensor data, mirroring the
+    // Chromium reference's Constant<T>() helper (Const().set_attr_value(tensor)).
+    fn make_const(
+        name: &str,
+        data: &[u8],
+        shape: &[i64],
+        dtype: ddk_CannDataType,
+        format: i32,
+    ) -> ddk_CannOperatorHandle {
+        let name_c = std::ffi::CString::new(name).unwrap();
+        let value_name = std::ffi::CString::new("value").unwrap();
+        let const_op = unsafe { ddk_cann_op_const_with_name(name_c.as_ptr()) };
+        unsafe {
+            ddk_cann_operator_set_attr_tensor_raw_format(
+                const_op,
+                value_name.as_ptr(),
+                data.as_ptr() as *const std::ffi::c_void,
+                data.len() as u32,
+                shape.as_ptr(),
+                shape.len() as i32,
+                dtype,
+                format,
+            );
+        }
+        const_op
+    }
+
+    // Connect an operand to `name` on `op`. (Split is decomposed into Slice ops
+    // elsewhere, so every source here is single-output.)
+    unsafe fn set_operand_input(
+        op: ddk_CannOperatorHandle,
+        name: &std::ffi::CStr,
+        handle: ddk_CannOperatorHandle,
+    ) -> i32 {
+        unsafe { ddk_cann_operator_set_input(op, name.as_ptr(), handle) }
+    }
+
+    // Connect `index` on dynamic input `name` of `op` to a source operand's
+    // handle. Dynamic inputs route a multi-output source (Split) by the
+    // consumer's 1-based index, matching the Chromium reference.
+    unsafe fn set_dynamic_input(
+        op: ddk_CannOperatorHandle,
+        name: &std::ffi::CStr,
+        index: u32,
+        handle: ddk_CannOperatorHandle,
+    ) -> i32 {
+        unsafe { ddk_cann_operator_set_dynamic_input_by_index(op, name.as_ptr(), index, handle) }
+    }
+
+    // Create a `Slice` op extracting `sizes` starting at `starts` from
+    // `x_handle`. Shared by the Slice operation and the Split decomposition
+    // (Split is emitted as N single-output Slices, since GE cannot resolve
+    // SplitD's dynamic output from a static consumer).
+    fn create_slice_op(
+        name: &str,
+        x_handle: ddk_CannOperatorHandle,
+        starts: &[i32],
+        sizes: &[i32],
+        extra_ops: &mut Vec<ddk_CannOperatorHandle>,
+    ) -> Result<ddk_CannOperatorHandle, GraphError> {
+        let name_c = std::ffi::CString::new(name).unwrap();
+        let slice_type = std::ffi::CString::new("Slice").unwrap();
+        let slice_op =
+            unsafe { ddk_cann_operator_create_registered(slice_type.as_ptr(), name_c.as_ptr()) };
+        if slice_op.is_null() {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!("cann_operator_create failed for slice '{name}'").into(),
+            });
+        }
+
+        let x_name = std::ffi::CString::new("x").unwrap();
+        let status = unsafe { set_operand_input(slice_op, &x_name, x_handle) };
+        if status != 0 {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!("cann_operator_set_input for slice '{name}' failed").into(),
+            });
+        }
+
+        let offsets_const = make_const(
+            &format!("{name}_offsets"),
+            bytemuck::cast_slice(starts),
+            &[starts.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(offsets_const);
+        let size_const = make_const(
+            &format!("{name}_size"),
+            bytemuck::cast_slice(sizes),
+            &[sizes.len() as i64],
+            ddk_CannDataType::CANN_DT_INT32,
+            2,
+        );
+        extra_ops.push(size_const);
+
+        let offsets_name = std::ffi::CString::new("offsets").unwrap();
+        let size_name = std::ffi::CString::new("size").unwrap();
+        unsafe {
+            ddk_cann_operator_set_input(slice_op, offsets_name.as_ptr(), offsets_const);
+            ddk_cann_operator_set_input(slice_op, size_name.as_ptr(), size_const);
+        }
+
+        Ok(slice_op)
+    }
+
     // Returns the output operand slice for all operations with standard
     // `outputs: Vec<u32>` field.
     fn op_outputs(operation: &Operation) -> &[u32] {
@@ -326,8 +462,17 @@ mod adapter {
             // ArgMax / ArgMin
             | Operation::ArgMax { outputs, .. }
             | Operation::ArgMin { outputs, .. }
+            // Reduction
+            | Operation::ReduceSum { outputs, .. }
             // Normalization
-            | Operation::BatchNormalization { outputs, .. } => outputs,
+            | Operation::BatchNormalization { outputs, .. }
+            // Shape / other (YoloV8s)
+            | Operation::Concat { outputs, .. }
+            | Operation::Reshape { outputs, .. }
+            | Operation::Resample2d { outputs, .. }
+            | Operation::Slice { outputs, .. }
+            | Operation::Split { outputs, .. }
+            | Operation::Transpose { outputs, .. } => outputs,
             _ => &[],
         }
     }
@@ -481,8 +626,283 @@ mod adapter {
 
         // ── 3. Create compute operations ─────────────────────────────────
         let mut compute_ops: Vec<ddk_CannOperatorHandle> = Vec::new();
+        // Intermediate ops from decompositions (e.g. sigmoid), added to the
+        // graph alongside compute_ops.
+        let mut extra_ops: Vec<ddk_CannOperatorHandle> = Vec::new();
 
         for op in &graph.operations {
+            // Phase-out gate: only the YoloV8s priority operators are accepted.
+            if !is_supported_op(op) {
+                return Err(GraphError::ConversionFailed {
+                    format: "cann".into(),
+                    reason: format!("unsupported op: {}", op.label()).into(),
+                });
+            }
+
+            // Sigmoid is decomposed (matching the Chromium reference):
+            // sigmoid(x) = 1 / (1 + exp(-x))
+            if let Operation::Sigmoid { input, outputs, .. } = op {
+                let x_handle = handles[*input as usize];
+                let out_id = outputs[0];
+
+                let one = make_const(
+                    &format!("sigmoid_one_{out_id}"),
+                    bytemuck::cast_slice(&[1.0f32]),
+                    &[1], // shape [1] (adapter requires shape_count > 0)
+                    ddk_CannDataType::CANN_DT_FLOAT,
+                    0, // FORMAT_NCHW
+                );
+                extra_ops.push(one);
+
+                let neg_name = CString::new(format!("sigmoid_neg_{out_id}")).unwrap();
+                let neg_type = CString::new("Neg").unwrap();
+                let neg = unsafe {
+                    ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_name.as_ptr())
+                };
+                let x_name = CString::new("x").unwrap();
+                unsafe { set_operand_input(neg, &x_name, x_handle) };
+                extra_ops.push(neg);
+
+                let exp_name = CString::new(format!("sigmoid_exp_{out_id}")).unwrap();
+                let exp_type = CString::new("Exp").unwrap();
+                let exp_neg = unsafe {
+                    ddk_cann_operator_create_registered(exp_type.as_ptr(), exp_name.as_ptr())
+                };
+                unsafe { ddk_cann_operator_set_input(exp_neg, x_name.as_ptr(), neg) };
+                extra_ops.push(exp_neg);
+
+                let denom_name = CString::new(format!("sigmoid_denom_{out_id}")).unwrap();
+                let add_type = CString::new("Add").unwrap();
+                let denom = unsafe {
+                    ddk_cann_operator_create_registered(add_type.as_ptr(), denom_name.as_ptr())
+                };
+                let x1_name = CString::new("x1").unwrap();
+                let x2_name = CString::new("x2").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(denom, x1_name.as_ptr(), one);
+                    ddk_cann_operator_set_input(denom, x2_name.as_ptr(), exp_neg);
+                }
+                extra_ops.push(denom);
+
+                let div_name = CString::new(format!("sigmoid_div_{out_id}")).unwrap();
+                let div_type = CString::new("Div").unwrap();
+                let div = unsafe {
+                    ddk_cann_operator_create_registered(div_type.as_ptr(), div_name.as_ptr())
+                };
+                unsafe {
+                    ddk_cann_operator_set_input(div, x1_name.as_ptr(), one);
+                    ddk_cann_operator_set_input(div, x2_name.as_ptr(), denom);
+                }
+
+                for &o in outputs.iter() {
+                    handles[o as usize] = div;
+                }
+                compute_ops.push(div);
+                continue;
+            }
+
+            // PReLU is decomposed (matching the Chromium reference):
+            // prelu(x, slope) = max(0, x) + slope * min(0, x)
+            if let Operation::Prelu {
+                input,
+                slope,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let slope_handle = handles[*slope as usize];
+                let out_id = outputs[0];
+
+                let x_name = CString::new("x").unwrap();
+                let x1_name = CString::new("x1").unwrap();
+                let x2_name = CString::new("x2").unwrap();
+                let mode_name = CString::new("mode").unwrap();
+                let neg_type = CString::new("Neg").unwrap();
+                let relu_type = CString::new("ReLU").unwrap();
+                let mul_type = CString::new("Mul").unwrap();
+                let add_type = CString::new("Add").unwrap();
+
+                // pos = ReLU(x) = Activation(x, mode=1)
+                let pos_name = CString::new(format!("prelu_pos_{out_id}")).unwrap();
+                let pos = unsafe {
+                    ddk_cann_operator_create_registered(relu_type.as_ptr(), pos_name.as_ptr())
+                };
+                unsafe { set_operand_input(pos, &x_name, x_handle) };
+                unsafe { ddk_cann_operator_set_attr_int64(pos, mode_name.as_ptr(), 1) };
+                extra_ops.push(pos);
+
+                // neg_input = Neg(x)
+                let neg_input_name = CString::new(format!("prelu_neg_input_{out_id}")).unwrap();
+                let neg_input = unsafe {
+                    ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_input_name.as_ptr())
+                };
+                unsafe { set_operand_input(neg_input, &x_name, x_handle) };
+                extra_ops.push(neg_input);
+
+                // relu_neg = Activation(neg_input, mode=1)
+                let relu_neg_name = CString::new(format!("prelu_relu_neg_{out_id}")).unwrap();
+                let relu_neg = unsafe {
+                    ddk_cann_operator_create_registered(relu_type.as_ptr(), relu_neg_name.as_ptr())
+                };
+                unsafe { set_operand_input(relu_neg, &x_name, neg_input) };
+                unsafe { ddk_cann_operator_set_attr_int64(relu_neg, mode_name.as_ptr(), 1) };
+                extra_ops.push(relu_neg);
+
+                // neg_x = Neg(relu_neg)
+                let neg_x_name = CString::new(format!("prelu_neg_x_{out_id}")).unwrap();
+                let neg_x = unsafe {
+                    ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_x_name.as_ptr())
+                };
+                unsafe { set_operand_input(neg_x, &x_name, relu_neg) };
+                extra_ops.push(neg_x);
+
+                // neg_scaled = Mul(neg_x, slope)
+                let neg_scaled_name = CString::new(format!("prelu_neg_scaled_{out_id}")).unwrap();
+                let neg_scaled = unsafe {
+                    ddk_cann_operator_create_registered(mul_type.as_ptr(), neg_scaled_name.as_ptr())
+                };
+                unsafe {
+                    ddk_cann_operator_set_input(neg_scaled, x1_name.as_ptr(), neg_x);
+                    ddk_cann_operator_set_input(neg_scaled, x2_name.as_ptr(), slope_handle);
+                }
+                extra_ops.push(neg_scaled);
+
+                // output = Add(pos, neg_scaled)
+                let output_name = CString::new(format!("prelu_output_{out_id}")).unwrap();
+                let output = unsafe {
+                    ddk_cann_operator_create_registered(add_type.as_ptr(), output_name.as_ptr())
+                };
+                unsafe {
+                    ddk_cann_operator_set_input(output, x1_name.as_ptr(), pos);
+                    ddk_cann_operator_set_input(output, x2_name.as_ptr(), neg_scaled);
+                }
+
+                for &o in outputs.iter() {
+                    handles[o as usize] = output;
+                }
+                compute_ops.push(output);
+                continue;
+            }
+
+            // Resample2d picks ResizeNearestNeighbor vs ResizeBilinear based on
+            // the interpolation mode (matching the Chromium reference).
+            if let Operation::Resample2d {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+
+                let nearest = options
+                    .as_ref()
+                    .map(|o| o.mode == "nearest-neighbor")
+                    .unwrap_or(false);
+                let op_name = CString::new(format!("resample2d_{}", outputs[0])).unwrap();
+                let resample_op = if nearest {
+                    unsafe { ddk_cann_op_resize_nearest_neighbor_with_name(op_name.as_ptr()) }
+                } else {
+                    let resample2d_type = CString::new("Resample2D").unwrap();
+                    unsafe {
+                        ddk_cann_operator_create_registered(
+                            resample2d_type.as_ptr(),
+                            op_name.as_ptr(),
+                        )
+                    }
+                };
+                if resample_op.is_null() {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: "cann_operator_create failed for resample2d".into(),
+                    });
+                }
+
+                let status = unsafe { set_operand_input(resample_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: "cann_operator_set_input for resample2d failed".into(),
+                    });
+                }
+
+                // size = [h, w] from the output shape (NCHW axes 2, 3).
+                let out_dims = descriptor_dims(&graph.operands[outputs[0] as usize].descriptor);
+                let h = if out_dims.len() >= 4 { out_dims[2] } else { 0 };
+                let w = if out_dims.len() >= 4 { out_dims[3] } else { 0 };
+                let size_vals: Vec<i32> = [h as i32, w as i32].to_vec();
+                let size_const = make_const(
+                    &format!("resample_size_{}", outputs[0]),
+                    bytemuck::cast_slice(&size_vals),
+                    &[2],
+                    ddk_CannDataType::CANN_DT_INT32,
+                    2,
+                );
+                extra_ops.push(size_const);
+                let size_name = CString::new("size").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(resample_op, size_name.as_ptr(), size_const);
+                }
+
+                for &out_id in outputs.iter() {
+                    handles[out_id as usize] = resample_op;
+                }
+                compute_ops.push(resample_op);
+                continue;
+            }
+
+            // Wire Split by decomposing it into N single-output Slice ops.
+            // GE cannot resolve SplitD's dynamic output "y" from a static
+            // consumer (GetOutput("y", i) still yields an invalid graph), so we
+            // emit one Slice per output instead.
+            if let Operation::Split {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let axis = options.as_ref().map(|o| o.axis).unwrap_or(0) as usize;
+                let input_dims = descriptor_dims(&graph.operands[*input as usize].descriptor);
+                let rank = input_dims.len();
+
+                let mut offset: i32 = 0;
+                for &out_id in outputs.iter() {
+                    let out_dims = descriptor_dims(&graph.operands[out_id as usize].descriptor);
+                    let part_size = out_dims[axis] as i32;
+
+                    let starts: Vec<i32> = (0..rank)
+                        .map(|d| if d == axis { offset } else { 0 })
+                        .collect();
+                    let sizes: Vec<i32> = (0..rank)
+                        .map(|d| {
+                            if d == axis {
+                                part_size
+                            } else {
+                                input_dims[d] as i32
+                            }
+                        })
+                        .collect();
+
+                    let slice_op = create_slice_op(
+                        &format!("split_{out_id}"),
+                        x_handle,
+                        &starts,
+                        &sizes,
+                        &mut extra_ops,
+                    )?;
+
+                    handles[out_id as usize] = slice_op;
+                    compute_ops.push(slice_op);
+
+                    offset += part_size;
+                }
+                continue;
+            }
+
             let operator_type_name = match webnn_op_to_hiai(op) {
                 Some(name) => CString::new(name).unwrap(),
                 None => {
@@ -494,7 +914,12 @@ mod adapter {
             };
 
             // Create operator via cann_operator_create_registered.
-            let op_name = CString::new("op").unwrap();
+            let op_name = CString::new(format!(
+                "{}_{}",
+                operator_type_name.to_str().unwrap(),
+                op_outputs(op)[0]
+            ))
+            .unwrap();
             let compute_op: ddk_CannOperatorHandle = unsafe {
                 ddk_cann_operator_create_registered(operator_type_name.as_ptr(), op_name.as_ptr())
             };
@@ -511,10 +936,8 @@ mod adapter {
                 let rhs = handles[b as usize];
                 let lhs_name = CString::new(name_a).unwrap();
                 let rhs_name = CString::new(name_b).unwrap();
-                let status_a =
-                    unsafe { ddk_cann_operator_set_input(compute_op, lhs_name.as_ptr(), lhs) };
-                let status_b =
-                    unsafe { ddk_cann_operator_set_input(compute_op, rhs_name.as_ptr(), rhs) };
+                let status_a = unsafe { set_operand_input(compute_op, &lhs_name, lhs) };
+                let status_b = unsafe { set_operand_input(compute_op, &rhs_name, rhs) };
                 if status_a != 0 || status_b != 0 {
                     return Err(GraphError::ConversionFailed {
                         format: "cann".into(),
@@ -529,9 +952,7 @@ mod adapter {
             if let Some(input) = unary_op_input(op) {
                 let source_handle = handles[input as usize];
                 let x_name = CString::new("x").unwrap();
-                let status = unsafe {
-                    ddk_cann_operator_set_input(compute_op, x_name.as_ptr(), source_handle)
-                };
+                let status = unsafe { set_operand_input(compute_op, &x_name, source_handle) };
                 if status != 0 {
                     return Err(GraphError::ConversionFailed {
                         format: "cann".into(),
@@ -540,6 +961,80 @@ mod adapter {
                         )
                         .into(),
                     });
+                }
+            }
+
+            // Wire Cast via hiai::op::CastT (adapter maps "Cast"; attrs
+            // src_dtype/dst_dtype).
+            if let Operation::Cast { input, outputs, .. } = op {
+                let src_dtype = graph.operands[*input as usize].descriptor.data_type;
+                let dst_dtype = graph.operands[outputs[0] as usize].descriptor.data_type;
+                let src_name = CString::new("src_dtype").unwrap();
+                let dst_name = CString::new("dst_dtype").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_attr_int64(
+                        compute_op,
+                        src_name.as_ptr(),
+                        cann_data_type(src_dtype) as i64,
+                    );
+                    ddk_cann_operator_set_attr_int64(
+                        compute_op,
+                        dst_name.as_ptr(),
+                        cann_data_type(dst_dtype) as i64,
+                    );
+                }
+            }
+
+            // Wire ReduceSum via hiai::op::ReduceSum (x + axes const + keep_dims).
+            if let Operation::ReduceSum {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "cann_operator_set_input for {operator_type_name:?} failed"
+                        )
+                        .into(),
+                    });
+                }
+
+                // axes const: reduce over the requested axes, or all axes if none.
+                // HIAI ReduceSum declares axes as DT_INT32.
+                let rank = graph.operands[*input as usize].descriptor.shape.len();
+                let axes: Vec<i32> = options
+                    .as_ref()
+                    .and_then(|o| o.axes.as_ref())
+                    .map(|a| a.iter().map(|&ax| ax as i32).collect())
+                    .unwrap_or_else(|| (0..rank as u32).map(|ax| ax as i32).collect());
+                let axes_const = make_const(
+                    &format!("reduce_sum_axes_{}", outputs[0]),
+                    bytemuck::cast_slice(&axes),
+                    &[axes.len() as i64],
+                    ddk_CannDataType::CANN_DT_INT32,
+                    2, // FORMAT_ND
+                );
+                extra_ops.push(axes_const);
+                let axes_name = CString::new("axes").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(compute_op, axes_name.as_ptr(), axes_const);
+                }
+
+                let keep_dims = options.as_ref().map(|o| o.keep_dimensions).unwrap_or(false);
+                let keep_dims_name = CString::new("keep_dims").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_attr_bool(
+                        compute_op,
+                        keep_dims_name.as_ptr(),
+                        keep_dims as i32,
+                    );
                 }
             }
 
@@ -555,8 +1050,7 @@ mod adapter {
                 let filter_handle = handles[*filter as usize];
                 let x_name = CString::new("x").unwrap();
                 let filter_name = CString::new("filter").unwrap();
-                let set_status_x =
-                    unsafe { ddk_cann_operator_set_input(compute_op, x_name.as_ptr(), x_handle) };
+                let set_status_x = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
                 let set_status_filter = unsafe {
                     ddk_cann_operator_set_input(compute_op, filter_name.as_ptr(), filter_handle)
                 };
@@ -568,6 +1062,22 @@ mod adapter {
                         )
                         .into(),
                     });
+                }
+
+                // Optional bias input (hiai::op::Convolution supports a bias input,
+                // matching the Chromium reference's set_input_bias).
+                if let Some(bias_id) = options.as_ref().and_then(|o| o.bias) {
+                    let bias_handle = handles[bias_id as usize];
+                    let bias_name = CString::new("bias").unwrap();
+                    let set_status_bias = unsafe {
+                        ddk_cann_operator_set_input(compute_op, bias_name.as_ptr(), bias_handle)
+                    };
+                    if set_status_bias != 0 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "cann".into(),
+                            reason: "cann_operator_set_input for Conv2d bias failed".into(),
+                        });
+                    }
                 }
 
                 // hiai::op::Convolution: strides(2), pads(4), dilations(2),
@@ -663,8 +1173,7 @@ mod adapter {
             if let Operation::MaxPool2d { input, options, .. } = op {
                 let x_handle = handles[*input as usize];
                 let x_name = CString::new("x").unwrap();
-                let status =
-                    unsafe { ddk_cann_operator_set_input(compute_op, x_name.as_ptr(), x_handle) };
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
                 if status != 0 {
                     return Err(GraphError::ConversionFailed {
                         format: "cann".into(),
@@ -687,8 +1196,8 @@ mod adapter {
                 if let Some(pool_options) = options {
                     if pool_options.padding.len() >= 4 {
                         padding_top = pool_options.padding[0] as i64;
-                        padding_left = pool_options.padding[1] as i64;
-                        padding_bottom = pool_options.padding[2] as i64;
+                        padding_bottom = pool_options.padding[1] as i64;
+                        padding_left = pool_options.padding[2] as i64;
                         padding_right = pool_options.padding[3] as i64;
                     }
                     if let Some(ref ws) = pool_options.window_dimensions {
@@ -862,10 +1371,16 @@ mod adapter {
 
             // Wire ArgMax via hiai::op::ArgMaxExt2.
             // Axis is a tensor input, not an attribute.  Create an inline Const.
-            if let Operation::ArgMax { input, axis, .. } = op {
+            if let Operation::ArgMax {
+                input,
+                axis,
+                outputs,
+                ..
+            } = op
+            {
                 let x_handle = handles[*input as usize];
 
-                let axis_name_str = CString::new("axis").unwrap();
+                let axis_name_str = CString::new(format!("argmax_axis_{}", outputs[0])).unwrap();
                 let axis_operator = unsafe { ddk_cann_op_const_with_name(axis_name_str.as_ptr()) };
                 let axis_value: i32 = *axis as i32;
                 let axis_shape: [i64; 1] = [1];
@@ -947,6 +1462,188 @@ mod adapter {
                 }
             }
 
+            // Wire Softmax via hiai::op::Softmax.
+            if let Operation::Softmax { input, axis, .. } = op {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "cann_operator_set_input for {operator_type_name:?} failed"
+                        )
+                        .into(),
+                    });
+                }
+                let axis_name = CString::new("axis").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_attr_int64(compute_op, axis_name.as_ptr(), *axis as i64);
+                }
+            }
+
+            // Wire Concat via hiai::op::ConcatD (dynamic input x, 1-based index).
+            if let Operation::Concat { inputs, axis, .. } = op {
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe {
+                    ddk_cann_operator_create_dynamic_input(
+                        compute_op,
+                        x_name.as_ptr(),
+                        inputs.len() as u32,
+                    )
+                };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!("cann_operator_create_dynamic_input failed: {status}")
+                            .into(),
+                    });
+                }
+                for (i, &input_id) in inputs.iter().enumerate() {
+                    let handle = handles[input_id as usize];
+                    let status =
+                        unsafe { set_dynamic_input(compute_op, &x_name, (i + 1) as u32, handle) };
+                    if status != 0 {
+                        return Err(GraphError::ConversionFailed {
+                            format: "cann".into(),
+                            reason: format!(
+                                "cann_operator_set_dynamic_input_by_index failed: {status}"
+                            )
+                            .into(),
+                        });
+                    }
+                }
+                let concat_dim_name = CString::new("concat_dim").unwrap();
+                let n_name = CString::new("N").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_attr_int64(
+                        compute_op,
+                        concat_dim_name.as_ptr(),
+                        *axis as i64,
+                    );
+                    ddk_cann_operator_set_attr_int64(
+                        compute_op,
+                        n_name.as_ptr(),
+                        inputs.len() as i64,
+                    );
+                }
+            }
+
+            // Wire Reshape via hiai::op::Reshape (x + shape const).
+            if let Operation::Reshape { input, outputs, .. } = op {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "cann_operator_set_input for {operator_type_name:?} failed"
+                        )
+                        .into(),
+                    });
+                }
+                let shape_vals = descriptor_dims(&graph.operands[outputs[0] as usize].descriptor);
+                let shape_const = make_const(
+                    &format!("reshape_shape_{}", outputs[0]),
+                    bytemuck::cast_slice(&shape_vals),
+                    &[shape_vals.len() as i64],
+                    ddk_CannDataType::CANN_DT_INT64,
+                    2, // FORMAT_ND
+                );
+                extra_ops.push(shape_const);
+                let shape_name = CString::new("shape").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(compute_op, shape_name.as_ptr(), shape_const);
+                }
+            }
+
+            // Wire Slice via hiai::op::Slice (x + offsets + size).
+            if let Operation::Slice {
+                input,
+                starts,
+                sizes,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "cann_operator_set_input for {operator_type_name:?} failed"
+                        )
+                        .into(),
+                    });
+                }
+                let dims = starts.len();
+                let offsets_vals: Vec<i32> = starts.iter().map(|&s| s as i32).collect();
+                let offsets_const = make_const(
+                    &format!("slice_offsets_{}", outputs[0]),
+                    bytemuck::cast_slice(&offsets_vals),
+                    &[dims as i64],
+                    ddk_CannDataType::CANN_DT_INT32,
+                    2,
+                );
+                extra_ops.push(offsets_const);
+                let size_vals: Vec<i32> = sizes.iter().map(|d| d.static_or_max() as i32).collect();
+                let size_const = make_const(
+                    &format!("slice_size_{}", outputs[0]),
+                    bytemuck::cast_slice(&size_vals),
+                    &[dims as i64],
+                    ddk_CannDataType::CANN_DT_INT32,
+                    2,
+                );
+                extra_ops.push(size_const);
+                let offsets_name = CString::new("offsets").unwrap();
+                let size_name = CString::new("size").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(compute_op, offsets_name.as_ptr(), offsets_const);
+                    ddk_cann_operator_set_input(compute_op, size_name.as_ptr(), size_const);
+                }
+            }
+
+            // Wire Transpose via ge::op::Transpose (x + perm const).
+            if let Operation::Transpose {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
+                let x_handle = handles[*input as usize];
+                let x_name = CString::new("x").unwrap();
+                let status = unsafe { set_operand_input(compute_op, &x_name, x_handle) };
+                if status != 0 {
+                    return Err(GraphError::ConversionFailed {
+                        format: "cann".into(),
+                        reason: format!(
+                            "cann_operator_set_input for {operator_type_name:?} failed"
+                        )
+                        .into(),
+                    });
+                }
+                let perm_vals: Vec<i32> = options
+                    .as_ref()
+                    .map(|o| o.permutation.iter().map(|&p| p as i32).collect())
+                    .unwrap_or_default();
+                let perm_const = make_const(
+                    &format!("transpose_perm_{}", outputs[0]),
+                    bytemuck::cast_slice(&perm_vals),
+                    &[perm_vals.len() as i64],
+                    ddk_CannDataType::CANN_DT_INT32,
+                    2,
+                );
+                extra_ops.push(perm_const);
+                let perm_name = CString::new("perm").unwrap();
+                unsafe {
+                    ddk_cann_operator_set_input(compute_op, perm_name.as_ptr(), perm_const);
+                }
+            }
+
             let outputs: &[u32] = op_outputs(op);
             for &out_id in outputs.iter() {
                 handles[out_id as usize] = compute_op;
@@ -996,14 +1693,9 @@ mod adapter {
                     reason: format!("no handle for output operand {out_id}").into(),
                 });
             }
-            let status = unsafe {
-                ddk_cann_operator_set_dynamic_input_by_index(
-                    net_out,
-                    x_name.as_ptr(),
-                    output_index as u32,
-                    source_handle,
-                )
-            };
+            // Dynamic input index is 1-based (matches the Chromium reference).
+            let dst_index = (output_index + 1) as u32;
+            let status = unsafe { set_dynamic_input(net_out, &x_name, dst_index, source_handle) };
             if status != 0 {
                 return Err(GraphError::ConversionFailed {
                     format: "cann".into(),
@@ -1053,6 +1745,7 @@ mod adapter {
         all_ops.extend(data_ops.clone());
         all_ops.extend(const_ops);
         all_ops.extend(compute_ops);
+        all_ops.extend(extra_ops);
         all_ops.push(net_out);
 
         // ── 5. Add all ops to graph ─────────────────────────────────────
@@ -1130,28 +1823,14 @@ mod adapter {
             });
         }
 
-        // Build options: input shapes + NPU device (required for Conv2D).
+        // Build options: CUSTOM device select + NPU order, matching the
+        // Chromium reference (which does not set input shapes; HiAI's HCL
+        // compiler pads to 4D itself and rejects explicitly-set mixed-rank
+        // input shapes).
         let build_opts = unsafe { ddk_cann_build_options_create() };
         if !build_opts.is_null() {
-            // Collect input shapes as Vec<Vec<i64>> and pass via set_input_shapes.
-            let mut shapes_ptrs: Vec<*const i64> = Vec::new();
-            let mut shape_counts: Vec<i32> = Vec::new();
-            let mut dims_bufs: Vec<Vec<i64>> = Vec::new();
-            for &input_id in &graph.input_operands {
-                let d = descriptor_dims(&graph.operands[input_id as usize].descriptor);
-                dims_bufs.push(d);
-            }
-            for d in &dims_bufs {
-                shapes_ptrs.push(d.as_ptr());
-                shape_counts.push(d.len() as i32);
-            }
             unsafe {
-                ddk_cann_build_options_set_input_shapes(
-                    build_opts,
-                    shapes_ptrs.as_ptr(),
-                    shape_counts.as_ptr(),
-                    shape_counts.len() as i32,
-                );
+                ddk_cann_build_options_set_mode(build_opts, 1); // CUSTOM
                 let devices: [i32; 1] = [0]; // 0 = NPU
                 ddk_cann_build_options_set_device_order(build_opts, devices.as_ptr(), 1);
             }
@@ -1236,7 +1915,7 @@ impl GraphConverter for CannConverter {
 fn build_hiai_ir_model_mock(graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
     let mut operation_count: usize = 0;
     for operation in &graph.operations {
-        if webnn_op_to_hiai(operation).is_some() {
+        if is_supported_op(operation) {
             operation_count += 1;
         }
     }
@@ -1374,6 +2053,38 @@ mod tests {
             outputs: vec![2],
         };
         assert_eq!(webnn_op_to_hiai(&op), Some("Sub"));
+    }
+
+    #[test]
+    fn test_webnn_op_to_hiai_div() {
+        let op = Operation::Div {
+            a: 0,
+            b: 1,
+            options: None,
+            outputs: vec![2],
+        };
+        assert_eq!(webnn_op_to_hiai(&op), Some("Div"));
+    }
+
+    #[test]
+    fn test_webnn_op_to_hiai_cast() {
+        let op = Operation::Cast {
+            input: 0,
+            data_type: crate::operator_enums::MLOperandDataType::Int32,
+            options: None,
+            outputs: vec![1],
+        };
+        assert_eq!(webnn_op_to_hiai(&op), Some("Cast"));
+    }
+
+    #[test]
+    fn test_webnn_op_to_hiai_reduce_sum() {
+        let op = Operation::ReduceSum {
+            input: 0,
+            options: None,
+            outputs: vec![1],
+        };
+        assert_eq!(webnn_op_to_hiai(&op), Some("ReduceSum"));
     }
 
     #[test]

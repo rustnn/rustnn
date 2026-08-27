@@ -150,103 +150,6 @@ fn embed_wpt_corpus_for_wasm() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(feature = "cann-runtime")]
-fn link_cann_ddk() {
-    let shim_dir = "src/executors/cann_shim";
-
-    // Generate Rust FFI bindings
-    let headers = [
-        "adapter_types.h",
-        "context_adapter.h",
-        "graph_adapter.h",
-        "io_tensor_adapter.h",
-        "model_adapter.h",
-        "model_manager_adapter.h",
-        "operator_adapter.h",
-        "op_tensor_adapter.h",
-    ];
-
-    let mut builder = bindgen::Builder::default()
-        .clang_arg("-x")
-        .clang_arg("c++")
-        .clang_arg("-std=c++17")
-        .clang_arg(format!("-I{shim_dir}"))
-        .default_enum_style(bindgen::EnumVariation::Rust {
-            non_exhaustive: false,
-        })
-        .allowlist_type(".*Cann.*")
-        .allowlist_function(".*cann_.*");
-
-    for header in &headers {
-        println!("cargo:rerun-if-changed={shim_dir}/{header}");
-        builder = builder.header(format!("{shim_dir}/{header}"));
-    }
-
-    let bindings = builder
-        .generate()
-        .expect("Unable to generate CANN bindings");
-
-    let out_dir = env::var("OUT_DIR").unwrap();
-    let out_path = Path::new(&out_dir).join("cann_bindings.rs");
-    bindings
-        .write_to_file(out_path)
-        .expect("Couldn't write CANN bindings");
-
-    // Compile the C++ adapter and link the HiAI DDK
-    if std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default() != "ohos" {
-        return;
-    }
-
-    // The Huawei CANN-Kit DDK is a prerequisite for building the CANN shim.
-    let ddk = std::env::var("CANN_DDK")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| {
-            panic!(
-                "CANN_DDK not set. \
-                 export CANN_DDK=/path/to/CANN-Kit-next/ddk/"
-            )
-        });
-    println!("cargo:rerun-if-env-changed=CANN_DDK");
-
-    let ddk_include = Path::new(&ddk).join("ai_ddk_lib").join("include");
-    let ddk_lib = Path::new(&ddk).join("ai_ddk_lib").join("lib64");
-
-    let sources = [
-        "context_adapter.cc",
-        "graph_adapter.cc",
-        "model_adapter.cc",
-        "model_manager_adapter.cc",
-        "operator_adapter.cc",
-        "io_tensor_adapter.cc",
-        "op_tensor_adapter.cc",
-    ];
-
-    let mut build = cc::Build::new();
-    build
-        .cpp(true)
-        .include(shim_dir)
-        .include(&ddk_include)
-        .flag("-std=c++17")
-        .flag("-fvisibility=hidden");
-    for src in &sources {
-        let path = format!("{shim_dir}/{src}");
-        println!("cargo:rerun-if-changed={path}");
-        build.file(&path);
-    }
-    build.compile("cann_shim");
-
-    println!("cargo:rustc-link-lib=dylib=hiai");
-    println!("cargo:rustc-link-lib=dylib=hiai_ir");
-    println!("cargo:rustc-link-lib=dylib=hiai_ir_build");
-    println!("cargo:rustc-link-lib=dylib=hiai_ir_build_aipp");
-    println!("cargo:rustc-link-lib=dylib=c++");
-    println!(
-        "cargo:rustc-link-search=native={}",
-        ddk_lib.to_string_lossy()
-    );
-}
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
     build_coreml_protos()?;
@@ -257,9 +160,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Build TFLite flatbuffer schema - Only required for the litert-runtime.
     #[cfg(feature = "litert-runtime")]
     build_tflite_schema();
-
-    #[cfg(feature = "cann-runtime")]
-    link_cann_ddk();
 
     println!("cargo:rerun-if-changed=protos");
     println!("cargo:rerun-if-changed=build.rs");
