@@ -21,8 +21,6 @@ use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
 use crate::converters::cann::encode_via_adapter;
 use crate::error::{Error, Result};
-#[cfg(feature = "cann-runtime")]
-use crate::executors::cann_shim::{CannTensorDesc, cann_dispatch};
 use crate::mlcontext::MLBackendGraph::CannEngine;
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
@@ -30,6 +28,8 @@ use crate::mlcontext::{
 };
 #[cfg(feature = "cann-runtime")]
 use crate::operator_enums::MLOperandDataType;
+#[cfg(feature = "cann-runtime")]
+use hiai_rs::{TensorDesc, dispatch};
 
 /// Map WebNN operand data type to CANN adapter enum
 #[cfg(feature = "cann-runtime")]
@@ -192,8 +192,8 @@ impl<'context> MLBackendContext<'context> for CannContext {
 
         let model_bytes = &cann_graph.model_bytes;
 
-        let build_desc = |tensor: &&MLTensor| -> CannTensorDesc {
-            CannTensorDesc {
+        let build_desc = |tensor: &&MLTensor| -> TensorDesc {
+            TensorDesc {
                 data: self.tensors[tensor.id].memory.clone(),
                 shape: tensor.shape().iter().map(|dim| *dim as u32).collect(),
                 dtype: ml_operand_to_cann_dtype(tensor.data_type()),
@@ -222,7 +222,11 @@ impl<'context> MLBackendContext<'context> for CannContext {
             output_descs.push(build_desc(tensor));
         }
 
-        cann_dispatch(model_bytes, &input_descs, &mut output_descs)?;
+        dispatch(model_bytes, &input_descs, &mut output_descs).map_err(|e| {
+            Error::GraphDispatchError {
+                source: Box::new(e),
+            }
+        })?;
 
         for (name, output_desc) in cann_graph.output_names.iter().zip(output_descs.iter()) {
             let tensor = outputs
