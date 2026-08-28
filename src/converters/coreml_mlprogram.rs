@@ -2101,6 +2101,233 @@ impl CoremlMlProgramConverter {
         Ok((interleaved_input, interleaved_scale))
     }
 
+    /// Lower `reduceLogSumExp` using the numerically stable max-shift identity:
+    ///
+    /// `log(sum(exp(x))) = max(x) + log(sum(exp(x - max(x))))`.
+    ///
+    /// CoreML's native `reduce_log_sum_exp` overflows and underflows for the
+    /// large-magnitude WebNN conformance inputs. Keep the reduced axes until
+    /// the final step so `max(x)` broadcasts correctly for arbitrary axes.
+    fn emit_stable_reduce_log_sum_exp(
+        graph: &GraphInfo,
+        op: &Operation,
+        overrides: &HashMap<u32, String>,
+        main_block: &mut Block,
+    ) -> Result<(), GraphError> {
+        let (input_id, options) = match op {
+            Operation::ReduceLogSumExp { input, options, .. } => (*input, options.as_ref()),
+            _ => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml_mlprogram".to_string(),
+                    reason: "stable reduceLogSumExp lowering called on another operation"
+                        .to_string(),
+                });
+            }
+        };
+        let output_id = op
+            .output_operand()
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "coreml_mlprogram".to_string(),
+                reason: "reduceLogSumExp has no output operand".to_string(),
+            })?;
+        let input_operand =
+            graph
+                .operand(input_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "coreml_mlprogram".to_string(),
+                    reason: format!("reduceLogSumExp input operand {} not found", input_id),
+                })?;
+        let output_operand =
+            graph
+                .operand(output_id)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "coreml_mlprogram".to_string(),
+                    reason: format!("reduceLogSumExp output operand {} not found", output_id),
+                })?;
+
+        let input_name = Self::output_name_for_operand(graph, input_id, overrides);
+        let (output_name, output_type) = Self::create_output_value(graph, output_id, overrides)?;
+
+        // CoreML represents WebNN scalars as one-element rank-1 tensors at the
+        // model boundary, so default scalar reduction uses the synthetic axis 0.
+        let input_rank = input_operand.descriptor.shape.len();
+        let working_rank = input_rank.max(1);
+        let axes: Vec<u32> = match options.and_then(|opts| opts.axes.as_ref()) {
+            Some(axes) => axes.clone(),
+            None => (0..working_rank as u32).collect(),
+        };
+
+        // An explicitly empty axes sequence is an identity for reduceLogSumExp.
+        if axes.is_empty() {
+            let mut identity_inputs = HashMap::new();
+            identity_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+            main_block.operations.push(Self::create_mil_operation(
+                mil_ops::IDENTITY,
+                identity_inputs,
+                vec![output_type],
+            ));
+            return Ok(());
+        }
+
+        if let Some(&axis) = axes.iter().find(|&&axis| axis as usize >= working_rank) {
+            return Err(GraphError::ConversionFailed {
+                format: "coreml_mlprogram".to_string(),
+                reason: format!(
+                    "reduceLogSumExp axis {} is out of range for rank {}",
+                    axis, working_rank
+                ),
+            });
+        }
+
+        let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
+        let working_shape = if input_rank == 0 {
+            vec![GraphDimension::Static(1)]
+        } else {
+            input_operand.descriptor.shape.clone()
+        };
+        let working_input_name = if input_rank == 0 {
+            let reshaped_name = format!("{}_lse_input1d", output_name);
+            let reshaped_type =
+                Self::create_named_value_type(reshaped_name.clone(), dtype, &working_shape, false);
+            let mut reshape_inputs = HashMap::new();
+            reshape_inputs.insert("x".to_string(), Self::create_name_argument(input_name));
+            reshape_inputs.insert("shape".to_string(), Self::create_immediate_int_array(&[1]));
+            main_block.operations.push(Self::create_mil_operation(
+                mil_ops::RESHAPE,
+                reshape_inputs,
+                vec![reshaped_type],
+            ));
+            reshaped_name
+        } else {
+            input_name
+        };
+        let mut keep_dims_shape = working_shape.clone();
+        for &axis in &axes {
+            keep_dims_shape[axis as usize] = GraphDimension::Static(1);
+        }
+
+        let max_name = format!("{}_lse_max", output_name);
+        let max_type =
+            Self::create_named_value_type(max_name.clone(), dtype, &keep_dims_shape, false);
+        let mut max_inputs = HashMap::new();
+        max_inputs.insert(
+            "x".to_string(),
+            Self::create_name_argument(working_input_name.clone()),
+        );
+        max_inputs.insert("axes".to_string(), Self::create_immediate_int_array(&axes));
+        max_inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::REDUCE_MAX,
+            max_inputs,
+            vec![max_type],
+        ));
+
+        let shifted_name = format!("{}_lse_shifted", output_name);
+        let shifted_type =
+            Self::create_named_value_type(shifted_name.clone(), dtype, &working_shape, false);
+        let mut sub_inputs = HashMap::new();
+        sub_inputs.insert(
+            "x".to_string(),
+            Self::create_name_argument(working_input_name),
+        );
+        sub_inputs.insert(
+            "y".to_string(),
+            Self::create_name_argument(max_name.clone()),
+        );
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::SUB,
+            sub_inputs,
+            vec![shifted_type],
+        ));
+
+        let exp_name = format!("{}_lse_exp", output_name);
+        let exp_type =
+            Self::create_named_value_type(exp_name.clone(), dtype, &working_shape, false);
+        let mut exp_inputs = HashMap::new();
+        exp_inputs.insert("x".to_string(), Self::create_name_argument(shifted_name));
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::EXP,
+            exp_inputs,
+            vec![exp_type],
+        ));
+
+        let sum_name = format!("{}_lse_sum", output_name);
+        let sum_type =
+            Self::create_named_value_type(sum_name.clone(), dtype, &keep_dims_shape, false);
+        let mut sum_inputs = HashMap::new();
+        sum_inputs.insert("x".to_string(), Self::create_name_argument(exp_name));
+        sum_inputs.insert("axes".to_string(), Self::create_immediate_int_array(&axes));
+        sum_inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::REDUCE_SUM,
+            sum_inputs,
+            vec![sum_type],
+        ));
+
+        let log_name = format!("{}_lse_log", output_name);
+        let log_type =
+            Self::create_named_value_type(log_name.clone(), dtype, &keep_dims_shape, false);
+        let mut log_inputs = HashMap::new();
+        log_inputs.insert("x".to_string(), Self::create_name_argument(sum_name));
+        log_inputs.insert(
+            "epsilon".to_string(),
+            Self::create_immediate_float(DEFAULT_EPSILON),
+        );
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::LOG,
+            log_inputs,
+            vec![log_type],
+        ));
+
+        let keep_dimensions = options.map(|opts| opts.keep_dimensions).unwrap_or(false);
+        if keep_dimensions || input_rank == 0 {
+            let mut add_inputs = HashMap::new();
+            add_inputs.insert("x".to_string(), Self::create_name_argument(max_name));
+            add_inputs.insert("y".to_string(), Self::create_name_argument(log_name));
+            main_block.operations.push(Self::create_mil_operation(
+                mil_ops::ADD,
+                add_inputs,
+                vec![output_type],
+            ));
+            return Ok(());
+        }
+
+        let keep_dims_name = format!("{}_lse_keepdims", output_name);
+        let keep_dims_type =
+            Self::create_named_value_type(keep_dims_name.clone(), dtype, &keep_dims_shape, false);
+        let mut add_inputs = HashMap::new();
+        add_inputs.insert("x".to_string(), Self::create_name_argument(max_name));
+        add_inputs.insert("y".to_string(), Self::create_name_argument(log_name));
+        main_block.operations.push(Self::create_mil_operation(
+            mil_ops::ADD,
+            add_inputs,
+            vec![keep_dims_type],
+        ));
+
+        if output_operand.descriptor.shape.is_empty() {
+            // WebNN scalar outputs use CoreML's one-element boundary representation.
+            let mut reshape_inputs = HashMap::new();
+            reshape_inputs.insert("x".to_string(), Self::create_name_argument(keep_dims_name));
+            reshape_inputs.insert("shape".to_string(), Self::create_immediate_int_array(&[1]));
+            main_block.operations.push(Self::create_mil_operation(
+                mil_ops::RESHAPE,
+                reshape_inputs,
+                vec![output_type],
+            ));
+        } else {
+            let mut squeeze_inputs = HashMap::new();
+            squeeze_inputs.insert("x".to_string(), Self::create_name_argument(keep_dims_name));
+            squeeze_inputs.insert("axes".to_string(), Self::create_immediate_int_array(&axes));
+            main_block.operations.push(Self::create_mil_operation(
+                mil_ops::SQUEEZE,
+                squeeze_inputs,
+                vec![output_type],
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Lower `dequantizeLinear` as `(input - zeroPoint) * scale` in elementwise form.
     ///
     /// Handles quantized types and scale shapes CoreML's native `dequantize` cannot:
@@ -7280,6 +7507,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 continue;
             }
 
+            if op_type_lower == "reducelogsumexp" {
+                Self::emit_stable_reduce_log_sum_exp(
+                    graph_info,
+                    op,
+                    &operand_name_overrides,
+                    &mut main_block,
+                )?;
+                continue;
+            }
+
             // Dequantize/quantize with rank-0 (scalar) input: CoreML requires rank >= 1.
             // Reshape [] → [1] before the op. The output type from create_output_value already
             // promotes 0D to [1] (scalar_as_one_dim=true), so no reshape back is needed.
@@ -9067,6 +9304,121 @@ mod tests {
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)
+    }
+
+    fn main_operation_types(graph: &GraphInfo) -> Vec<String> {
+        let converted = CoremlMlProgramConverter
+            .convert(graph)
+            .expect("CoreML conversion should succeed");
+        let model = Model::decode(converted.data.as_slice()).expect("decode CoreML model");
+        let program = match model.r#type.expect("model type") {
+            crate::protos::coreml::specification::model::Type::MlProgram(program) => program,
+            _ => panic!("expected MLProgram model"),
+        };
+        program
+            .functions
+            .get("main")
+            .expect("main function")
+            .block_specializations
+            .get("CoreML7")
+            .expect("CoreML7 block")
+            .operations
+            .iter()
+            .map(|op| op.r#type.clone())
+            .collect()
+    }
+
+    fn reduce_log_sum_exp_graph(
+        input_shape: &[u32],
+        output_shape: &[u32],
+        options: serde_json::Value,
+    ) -> GraphInfo {
+        GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(input_shape),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(output_shape),
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![op_from_operator_options(
+                "reduceLogSumExp",
+                vec![0],
+                Some(1),
+                vec![],
+                OperatorOptions::from_json_with_op_type("reduceLogSumExp", &options)
+                    .expect("reduceLogSumExp options"),
+            )],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_reduce_log_sum_exp_uses_stable_decomposition() {
+        let graph = reduce_log_sum_exp_graph(
+            &[2, 3],
+            &[2],
+            serde_json::json!({ "axes": [1], "keepDimensions": false }),
+        );
+
+        assert_eq!(
+            main_operation_types(&graph),
+            vec![
+                "reduce_max",
+                "sub",
+                "exp",
+                "reduce_sum",
+                "log",
+                "add",
+                "squeeze",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reduce_log_sum_exp_empty_axes_is_identity() {
+        let graph = reduce_log_sum_exp_graph(
+            &[2, 3],
+            &[2, 3],
+            serde_json::json!({ "axes": [], "keepDimensions": false }),
+        );
+
+        assert_eq!(main_operation_types(&graph), vec!["identity"]);
+    }
+
+    #[test]
+    fn test_reduce_log_sum_exp_scalar_uses_stable_decomposition() {
+        let graph = reduce_log_sum_exp_graph(&[], &[], serde_json::json!({}));
+
+        assert_eq!(
+            main_operation_types(&graph),
+            vec![
+                "reshape",
+                "reduce_max",
+                "sub",
+                "exp",
+                "reduce_sum",
+                "log",
+                "add",
+            ]
+        );
     }
 
     /// Helper to create a simple graph with a Float16 constant
