@@ -284,7 +284,7 @@ cann-device-test:
 	    echo "Error: CANN_DDK not set. export CANN_DDK=/path/to/CANN-Kit-next/ddk/"; \
 	    exit 1; \
 	fi
-	$(CANN_CROSS_ENV) $(CARGO) build --example cann_device_test \
+	$(CANN_CROSS_ENV) $(CARGO) test --test test_cann_execution --no-run \
 		--target aarch64-unknown-linux-ohos --features cann-runtime --release
 	CANN_DDK=$(CANN_DDK) \
 	./scripts/ohos-test-helper.sh $(filter-out $@,$(MAKECMDGOALS))

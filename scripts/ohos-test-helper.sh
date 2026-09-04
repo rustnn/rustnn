@@ -14,7 +14,10 @@ fi
 
 DDK_LIB="${CANN_DDK}/ai_ddk_lib/lib64"
 
-BINARY="${PROJECT_DIR}/target/aarch64-unknown-linux-ohos/release/examples/cann_device_test"
+BINARY_DIR="${PROJECT_DIR}/target/aarch64-unknown-linux-ohos/release/deps"
+# libtest gives the test binary a hashed name; pick the most recently built.
+BINARY="$(ls -t "${BINARY_DIR}"/test_cann_execution-* 2>/dev/null | head -1)"
+DEVICE_BIN="test_cann_execution"
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
@@ -34,11 +37,11 @@ push_to_device() {
     echo "=== Pushing to ${target} ==="
     hdc shell "mkdir -p ${target}"
 
-    if [ -f "$BINARY" ]; then
-        echo "  cann_device_test -> ${target}/"
-        hdc file send "$BINARY" "${target}/"
+    if [ -n "$BINARY" ] && [ -f "$BINARY" ]; then
+        echo "  ${BINARY##*/} -> ${target}/${DEVICE_BIN}"
+        hdc file send "$BINARY" "${target}/${DEVICE_BIN}"
     else
-        echo "  WARN: $BINARY not found. Run 'make cann-build' first."
+        echo "  WARN: test_cann_execution binary not found. Run 'make cann-device-test' first."
     fi
 
     for lib in libhiai.so libhiai_ir.so libhiai_ir_build.so libhiai_ir_build_aipp.so; do
@@ -49,7 +52,7 @@ push_to_device() {
         fi
     done
 
-    hdc shell "chmod +x ${target}/cann_device_test"
+    hdc shell "chmod +x ${target}/${DEVICE_BIN}"
     ok "pushed"
 }
 
@@ -60,7 +63,7 @@ test_on_device() {
     push_to_device "$target"
     echo ""
     echo "=== Running on device ==="
-    hdc shell "cd ${target} && LD_LIBRARY_PATH=. ./cann_device_test"
+    hdc shell "cd ${target} && LD_LIBRARY_PATH=. ./${DEVICE_BIN} --nocapture --test-threads=1"
 }
 
 # ── Main ───────────────────────────────────────────────────────────────
@@ -74,7 +77,7 @@ case "$TARGET" in
         echo "Usage: $0 [push|test] [target-dir]"
         echo ""
         echo "  push    Transfer files to OHOS device via hdc"
-        echo "  test    Push + execute cann_device_test on device"
+        echo "  test    Push + execute test_cann_execution on device"
         echo ""
         echo "  Default target-dir: /data/local/tmp/cann-test"
         exit 1
