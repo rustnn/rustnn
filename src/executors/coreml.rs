@@ -10,6 +10,7 @@ use std::io::Write;
 use std::os::raw::{c_char, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
 use std::sync::mpsc;
 
 use block::ConcreteBlock;
@@ -84,6 +85,30 @@ pub unsafe extern "C" fn rustnn_coreml_predict(
     _error_length: usize,
 ) -> i32 {
     1
+}
+
+/// Releases an owned (+1) Objective-C object when dropped (including on early
+/// `return`/`?`), balancing any +1 ownership we hold: the retain transferred by
+/// the shim's `__bridge_retained` casts, or objects we created via
+/// `new`/`alloc`+`init`.
+struct ReleaseOnDrop(*mut Object);
+
+impl ReleaseOnDrop {
+    /// Take the pointer back out without releasing, handing ownership (+1)
+    /// to the caller.
+    fn into_inner(self) -> *mut Object {
+        let ptr = self.0;
+        std::mem::forget(self);
+        ptr
+    }
+}
+
+impl Drop for ReleaseOnDrop {
+    fn drop(&mut self) {
+        unsafe {
+            let _: () = msg_send![self.0, release];
+        }
+    }
 }
 
 fn shim_error_to_string(buffer: &[u8]) -> String {
@@ -289,17 +314,26 @@ fn compute_unit_for_device(
 /// Load a CoreML model directly from protobuf bytes and retain it for repeated
 /// dispatch, falling back to CPU-only if the preferred compute units fail.
 pub(crate) fn compile_model(
-    model_bytes: &[u8],
-    weights_data: Option<&[u8]>,
+    model_bytes: Vec<u8>,
+    weights_data: Option<Vec<u8>>,
     device_type: crate::backend_selection::DeviceType,
     use_in_memory_asset: bool,
 ) -> Result<CompiledCoremlModel, GraphError> {
+    // Owned so the in-memory path can hand the buffers to NSData without
+    // copying (weight blobs reach hundreds of MB); the Arcs keep them valid
+    // for the URL fallback below even after the NSData objects are released.
+    let model_bytes = Arc::new(model_bytes);
+    let weights_data = weights_data.map(Arc::new);
     if !use_in_memory_asset {
-        return compile_model_from_url(model_bytes, weights_data, device_type);
+        return compile_model_from_url(
+            &model_bytes,
+            weights_data.as_deref().map(Vec::as_slice),
+            device_type,
+        );
     }
     let memory_result = autoreleasepool(|| unsafe {
         let (asset, specification_data, retained_weights_data) =
-            create_in_memory_model_asset(model_bytes, weights_data)?;
+            create_in_memory_model_asset(&model_bytes, weights_data.as_ref())?;
 
         let (preferred_code, preferred_name) = compute_unit_for_device(device_type);
         let mut candidates: Vec<(i64, &'static str)> = vec![(preferred_code, preferred_name)];
@@ -310,6 +344,7 @@ pub(crate) fn compile_model(
         let mut last_error = String::from("MLModel load failed");
         for (code, name) in candidates {
             let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let _config_guard = ReleaseOnDrop(config);
             let () = msg_send![config, setComputeUnits: code];
             match load_model_asset(asset, config) {
                 Ok(model) => {
@@ -335,12 +370,15 @@ pub(crate) fn compile_model(
         Err(GraphError::CoremlRuntimeFailed { reason: last_error })
     });
     memory_result.or_else(|memory_error| {
-        compile_model_from_url(model_bytes, weights_data, device_type).map_err(|url_error| {
-            GraphError::CoremlRuntimeFailed {
-                reason: format!(
-                    "in-memory model load failed ({memory_error}); URL fallback failed ({url_error})"
-                ),
-            }
+        compile_model_from_url(
+            &model_bytes,
+            weights_data.as_deref().map(Vec::as_slice),
+            device_type,
+        )
+        .map_err(|url_error| GraphError::CoremlRuntimeFailed {
+            reason: format!(
+                "in-memory model load failed ({memory_error}); URL fallback failed ({url_error})"
+            ),
         })
     })
 }
@@ -353,6 +391,8 @@ fn compile_model_from_url(
     autoreleasepool(|| unsafe {
         let (compiled_url, compiled_dir, temp_model) =
             prepare_compiled_model_with_weights(model_bytes, weights_data, None)?;
+        // Owned (+1) by us; released when this function returns on any path.
+        let _compiled_url_guard = ReleaseOnDrop(compiled_url);
         let (preferred_code, preferred_name) = compute_unit_for_device(device_type);
         let mut candidates = vec![(preferred_code, preferred_name)];
         if preferred_code != 0 {
@@ -362,6 +402,7 @@ fn compile_model_from_url(
         let mut last_error = String::from("MLModel load failed");
         for (code, name) in candidates {
             let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let _config_guard = ReleaseOnDrop(config);
             let () = msg_send![config, setComputeUnits: code];
             let mut model: *mut Object = ptr::null_mut();
             let mut error = [0u8; 1024];
@@ -376,8 +417,8 @@ fn compile_model_from_url(
                 last_error = format!("MLModel load failed: {}", shim_error_to_string(&error));
                 continue;
             }
-            // The shim returns a borrowed model. Retain it beyond this pool.
-            let _: *mut Object = msg_send![model, retain];
+            // The shim returns an owned (+1) model; `CompiledCoremlModel`'s
+            // Drop releases it.
             return Ok(CompiledCoremlModel {
                 model,
                 compute_unit: name,
@@ -395,12 +436,41 @@ fn compile_model_from_url(
     })
 }
 
+/// Wrap an `Arc`-owned buffer in an `NSData` WITHOUT copying. The NSData's
+/// deallocator drops an `Arc` clone, so the bytes stay valid for as long as
+/// EITHER the caller's `Arc` or the `NSData` lives — however long CoreML
+/// internally retains the latter. Returns an owned (+1) object.
+unsafe fn nsdata_from_arc(buffer: &Arc<Vec<u8>>) -> Result<*mut Object, GraphError> {
+    let bytes = buffer.as_ptr() as *mut c_void;
+    let length = buffer.len();
+    let raw = Arc::into_raw(Arc::clone(buffer)) as usize;
+    // NSData calls the deallocator exactly once, when its storage is freed.
+    let deallocator = ConcreteBlock::new(move |_bytes: *mut c_void, _length: usize| {
+        drop(unsafe { Arc::from_raw(raw as *const Vec<u8>) });
+    })
+    .copy();
+    let data: *mut Object = msg_send![class!(NSData), alloc];
+    let data: *mut Object = msg_send![data,
+        initWithBytesNoCopy: bytes
+        length: length
+        deallocator: &*deallocator];
+    if data.is_null() {
+        // Never observed in practice; leak the Arc clone rather than risk a
+        // double-free if the failed init already consumed the deallocator.
+        return Err(GraphError::CoremlRuntimeFailed {
+            reason: "failed to create NSData for CoreML model bytes".to_string(),
+        });
+    }
+    Ok(data)
+}
+
 /// Create an `MLModelAsset` whose specification and optional external weight blob
-/// are entirely memory-backed. The returned Objective-C objects are retained and
-/// must remain alive for at least as long as the loaded `MLModel`.
+/// are entirely memory-backed (zero-copy views over the given buffers). The
+/// returned Objective-C objects are retained and must remain alive for at least
+/// as long as the loaded `MLModel`.
 unsafe fn create_in_memory_model_asset(
-    model_bytes: &[u8],
-    weights: Option<&[u8]>,
+    model_bytes: &Arc<Vec<u8>>,
+    weights: Option<&Arc<Vec<u8>>>,
 ) -> Result<(*mut Object, *mut Object, Option<*mut Object>), GraphError> {
     let Some(asset_class) = Class::get("MLModelAsset") else {
         return Err(GraphError::CoremlRuntimeFailed {
@@ -408,27 +478,18 @@ unsafe fn create_in_memory_model_asset(
         });
     };
 
-    let specification_data: *mut Object =
-        msg_send![class!(NSData), dataWithBytes: model_bytes.as_ptr() length: model_bytes.len()];
-    if specification_data.is_null() {
-        return Err(GraphError::CoremlRuntimeFailed {
-            reason: "failed to create NSData for CoreML model specification".to_string(),
-        });
-    }
-    let _: *mut Object = msg_send![specification_data, retain];
+    let specification_data: *mut Object = unsafe { nsdata_from_arc(model_bytes)? };
 
     let mut error: *mut Object = ptr::null_mut();
     let (asset, weights_data): (*mut Object, Option<*mut Object>) = match weights {
         Some(weights) => {
-            let weights_data: *mut Object =
-                msg_send![class!(NSData), dataWithBytes: weights.as_ptr() length: weights.len()];
-            if weights_data.is_null() {
-                let _: () = msg_send![specification_data, release];
-                return Err(GraphError::CoremlRuntimeFailed {
-                    reason: "failed to create NSData for CoreML model weights".to_string(),
-                });
-            }
-            let _: *mut Object = msg_send![weights_data, retain];
+            let weights_data: *mut Object = match unsafe { nsdata_from_arc(weights) } {
+                Ok(data) => data,
+                Err(err) => {
+                    let _: () = msg_send![specification_data, release];
+                    return Err(err);
+                }
+            };
 
             // BlobFileValue stores `@model_path/weights/weights.bin`. For an
             // in-memory asset CoreML expects the path relative to `@model_path`.
@@ -544,6 +605,7 @@ pub(crate) fn run_coreml_bytes(
                 reason: ns_error_to_string(create_error, "MLDictionaryFeatureProvider init failed"),
             });
         }
+        let _provider_guard = ReleaseOnDrop(provider);
 
         let mut output_provider: *mut Object = ptr::null_mut();
         let mut error = [0u8; 1024];
@@ -559,6 +621,10 @@ pub(crate) fn run_coreml_bytes(
                 reason: format!("prediction failed: {}", shim_error_to_string(&error)),
             });
         }
+        // `rustnn_coreml_predict` (coreml_shim.mm) hands back `output_provider`
+        // already retained (`__bridge_retained`) -- we own this reference and
+        // must release it once we're done extracting outputs.
+        let _output_provider_guard = ReleaseOnDrop(output_provider);
 
         let mut result = HashMap::with_capacity(output_descriptors.len());
         for (name, descriptor) in output_descriptors {
@@ -1040,17 +1106,21 @@ fn run_impl_zeroed_with_weights(
     unsafe {
         let (compiled_url, compiled_path_buf, temp_mlmodel) =
             prepare_compiled_model_with_weights(model_bytes, weights_data, compiled_path)?;
+        // Owned (+1) by us; released when this function returns on any path.
+        let _compiled_url_guard = ReleaseOnDrop(compiled_url);
 
         // Try only Neural Engine + GPU (best performance on Apple Silicon)
         // Fallback to ALL if that fails
         let targets = [
-            (3i64, "CPU_AND_NE"), // Neural Engine + GPU (best for Apple Silicon)
-            (0i64, "ALL"),        // Fallback to all available compute units
+            (3i64, "CPU_AND_NE"), // CPU + Neural Engine (best for Apple Silicon)
+            (2i64, "ALL"),        // All available compute units
+            (0i64, "CPU_ONLY"),   // Guaranteed-to-load last resort
         ];
         let mut attempts = Vec::new();
 
         for (code, name) in targets {
             let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let _config_guard = ReleaseOnDrop(config);
             let () = msg_send![config, setComputeUnits: code];
             let mut model: *mut Object = ptr::null_mut();
             let mut error = [0u8; 1024];
@@ -1071,6 +1141,8 @@ fn run_impl_zeroed_with_weights(
                 });
                 continue;
             }
+            // Owned (+1) by us for this attempt; released at end of iteration.
+            let _model_guard = ReleaseOnDrop(model);
             let model_description: *mut Object = msg_send![model, modelDescription];
             let input_descs: *mut Object = msg_send![model_description, inputDescriptionsByName];
 
@@ -1137,6 +1209,7 @@ fn run_impl_zeroed_with_weights(
                 });
                 continue;
             }
+            let _provider_guard = ReleaseOnDrop(provider);
 
             let mut output_provider: *mut Object = ptr::null_mut();
             let mut error = [0u8; 1024];
@@ -1157,6 +1230,8 @@ fn run_impl_zeroed_with_weights(
                 });
                 continue;
             }
+            // The shim returns a retained provider; release it after collecting.
+            let _output_provider_guard = ReleaseOnDrop(output_provider);
 
             match collect_outputs(output_provider) {
                 Ok(outputs) => attempts.push(CoremlRunAttempt {
@@ -1213,17 +1288,21 @@ fn run_impl_with_inputs_with_weights(
     unsafe {
         let (compiled_url, compiled_path_buf, temp_mlmodel) =
             prepare_compiled_model_with_weights(model_bytes, weights_data, cache_path)?;
+        // Owned (+1) by us; released when this function returns on any path.
+        let _compiled_url_guard = ReleaseOnDrop(compiled_url);
 
         // Try only Neural Engine + GPU (best performance on Apple Silicon)
         // Fallback to ALL if that fails
         let targets = [
-            (3i64, "CPU_AND_NE"), // Neural Engine + GPU (best for Apple Silicon)
-            (0i64, "ALL"),        // Fallback to all available compute units
+            (3i64, "CPU_AND_NE"), // CPU + Neural Engine (best for Apple Silicon)
+            (2i64, "ALL"),        // All available compute units
+            (0i64, "CPU_ONLY"),   // Guaranteed-to-load last resort
         ];
         let mut attempts = Vec::new();
 
         for (code, name) in targets {
             let config: *mut Object = msg_send![class!(MLModelConfiguration), new];
+            let _config_guard = ReleaseOnDrop(config);
             let () = msg_send![config, setComputeUnits: code];
             let mut model: *mut Object = ptr::null_mut();
             let mut error = [0u8; 1024];
@@ -1244,6 +1323,8 @@ fn run_impl_with_inputs_with_weights(
                 });
                 continue;
             }
+            // Owned (+1) by us for this attempt; released at end of iteration.
+            let _model_guard = ReleaseOnDrop(model);
 
             // Get model input descriptions to query expected data types
             let model_description: *mut Object = msg_send![model, modelDescription];
@@ -1318,6 +1399,7 @@ fn run_impl_with_inputs_with_weights(
                 });
                 continue;
             }
+            let _provider_guard = ReleaseOnDrop(provider);
 
             let mut output_provider: *mut Object = ptr::null_mut();
             let mut error = [0u8; 1024];
@@ -1338,6 +1420,8 @@ fn run_impl_with_inputs_with_weights(
                 });
                 continue;
             }
+            // The shim returns a retained provider; release it after collecting.
+            let _output_provider_guard = ReleaseOnDrop(output_provider);
 
             match collect_outputs(output_provider) {
                 Ok(outputs) => attempts.push(CoremlRunAttempt {
@@ -1510,6 +1594,10 @@ unsafe fn prepare_compiled_model(
     unsafe { prepare_compiled_model_with_weights(model_bytes, None, cached_compiled) }
 }
 
+/// Compile a model to a `.mlmodelc`, optionally persisting it to `cached_compiled`.
+///
+/// On success the returned NSURL is owned (+1); the caller must release it
+/// (e.g. via [`ReleaseOnDrop`]) once the model has been loaded.
 pub(crate) unsafe fn prepare_compiled_model_with_weights(
     model_bytes: &[u8],
     weights_data: Option<&[u8]>,
@@ -1532,6 +1620,9 @@ pub(crate) unsafe fn prepare_compiled_model_with_weights(
             reason: format!("MLModel compile failed: {}", shim_error_to_string(&error)),
         });
     }
+    // The shim returns an owned (+1) URL; the guard releases it on every path
+    // that doesn't hand it back to the caller.
+    let compiled_url_guard = ReleaseOnDrop(compiled_url);
 
     let compiled_path_obj: *mut Object = msg_send![compiled_url, path];
     let compiled_src_path = PathBuf::from(unsafe { nsstring_to_string(compiled_path_obj) });
@@ -1540,16 +1631,27 @@ pub(crate) unsafe fn prepare_compiled_model_with_weights(
         if path.exists() {
             let _ = std::fs::remove_dir_all(path);
         }
-        if let Err(err) = copy_dir_recursively(&compiled_src_path, path) {
+        let copy_result = copy_dir_recursively(&compiled_src_path, path);
+        // Drop CoreML's temp .mlmodelc either way; the non-cached paths delete
+        // it via their callers.
+        let _ = std::fs::remove_dir_all(&compiled_src_path);
+        if let Err(err) = copy_result {
             return Err(GraphError::CoremlRuntimeFailed {
                 reason: format!("failed to persist compiled model: {}", err),
             });
         }
         let persisted_url = unsafe { nsurl_from_path(path)? };
+        // `nsurl_from_path` returns an autoreleased URL; retain it so both
+        // branches hand the caller an owned (+1) reference.
+        let _: *mut Object = msg_send![persisted_url, retain];
         return Ok((persisted_url, path.to_path_buf(), Some(temp_mlmodel)));
     }
 
-    Ok((compiled_url, compiled_src_path, Some(temp_mlmodel)))
+    Ok((
+        compiled_url_guard.into_inner(),
+        compiled_src_path,
+        Some(temp_mlmodel),
+    ))
 }
 
 #[allow(dead_code)]
@@ -1788,6 +1890,9 @@ unsafe fn create_multi_array(shape: &[i64], data_type: i32) -> Result<*mut Objec
             reason: unsafe { ns_error_to_string(error, "MLMultiArray init failed") },
         });
     }
+    // Hand callers a pool-backed reference; MLFeatureValue retains the array
+    // for as long as the feature dictionary needs it.
+    let array: *mut Object = msg_send![array, autorelease];
     Ok(array)
 }
 

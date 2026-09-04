@@ -80,7 +80,13 @@ impl<'a> GraphValidator<'a> {
         let mut outputs = HashMap::new();
         let mut graph_inputs = Vec::with_capacity(self.graph.input_operands.len());
         let mut graph_outputs = Vec::with_capacity(self.graph.output_operands.len());
-        let mut constant_handles = self.graph.constant_operand_ids_to_handles.clone();
+        // Borrow, don't clone: the map holds every weight buffer, and cloning
+        // it duplicates the full weight volume just for a presence check.
+        // `seen_constants` replaces the old clone-and-remove bookkeeping:
+        // operand ids are unique per loop iteration, so counting successful
+        // lookups detects map entries with no matching Constant operand.
+        let constant_handles = &self.graph.constant_operand_ids_to_handles;
+        let mut seen_constants = 0usize;
         let tensor_constants = &self.graph.id_to_constant_tensor_operand_map;
         for (idx, operand) in self.graph.operands.iter().enumerate() {
             let operand_id = idx as u32;
@@ -155,7 +161,8 @@ impl<'a> GraphValidator<'a> {
                     }
                 }
                 OperandKind::Constant => {
-                    if let Some(data) = constant_handles.remove(&operand_id) {
+                    if let Some(data) = constant_handles.get(&operand_id) {
+                        seen_constants += 1;
                         if data.data.len() != byte_length {
                             return Err(GraphError::ConstantLengthMismatch {
                                 operand: operand_id,
@@ -180,7 +187,7 @@ impl<'a> GraphValidator<'a> {
         if graph_outputs != self.graph.output_operands {
             return Err(GraphError::OutputOperandListMismatch);
         }
-        if !constant_handles.is_empty() {
+        if seen_constants != constant_handles.len() {
             return Err(GraphError::UnusedConstantHandles);
         }
 

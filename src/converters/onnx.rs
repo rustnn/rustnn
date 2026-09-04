@@ -5024,34 +5024,29 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             Self::invalid_operand("where true input", *true_id, Some((op, idx)))
                         })?;
 
-                    let true_cast_name = format!("{}_true_cast_{}", op_name, cast_counter);
-                    cast_counter += 1;
-                    nodes.push(Self::create_cast_node(
-                        &format!("{}_cast_true_{}", op_name, cast_counter),
-                        inputs[1].clone(),
-                        true_cast_name.clone(),
-                        Self::data_type_code(target_type),
-                    ));
-                    inputs[1] = true_cast_name;
+                    // target_type is the true input's dtype, so only the false input
+                    // may need a cast. Identity casts must be avoided: ORT's fp16
+                    // InsertedPrecisionFreeCast transform mishandles f16->f16 casts
+                    // feeding Where when optimizations are disabled.
+                    let false_operand = graph.operand(*false_id).ok_or_else(|| {
+                        Self::invalid_operand("where false input", *false_id, Some((op, idx)))
+                    })?;
 
-                    // Validate false operand exists for clearer converter errors.
-                    if graph.operand(*false_id).is_none() {
-                        return Err(Self::invalid_operand(
-                            "where false input",
-                            *false_id,
-                            Some((op, idx)),
+                    let false_type = type_overrides
+                        .get(false_id)
+                        .copied()
+                        .unwrap_or(false_operand.descriptor.data_type);
+                    if false_type != target_type {
+                        let false_cast_name = format!("{}_false_cast_{}", op_name, cast_counter);
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_false_{}", op_name, cast_counter),
+                            inputs[2].clone(),
+                            false_cast_name.clone(),
+                            Self::data_type_code(target_type),
                         ));
+                        cast_counter += 1;
+                        inputs[2] = false_cast_name;
                     }
-
-                    let false_cast_name = format!("{}_false_cast_{}", op_name, cast_counter);
-                    cast_counter += 1;
-                    nodes.push(Self::create_cast_node(
-                        &format!("{}_cast_false_{}", op_name, cast_counter),
-                        inputs[2].clone(),
-                        false_cast_name.clone(),
-                        Self::data_type_code(target_type),
-                    ));
-                    inputs[2] = false_cast_name;
 
                     if let Some(output_id) = op.output_operand() {
                         type_overrides.insert(output_id, target_type);
@@ -5643,6 +5638,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     hidden_state_rank,
                     hidden_state_needs_reshape,
                     hidden_state_shape_ok_3d,
+                    hidden_state_dim0,
                 ) = if let Some(id) = initial_h_operand_id {
                     let desc = graph.operand(id);
                     let rank = desc.map(|o| o.descriptor.shape.len()).unwrap_or(0);
@@ -5660,7 +5656,20 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         && shape[0] == 1
                         && shape[1] as i64 == batch_size
                         && shape[2] as i64 == hidden_size as i64;
-                    (operand_name(graph, id), rank, needs_reshape, shape_ok_3d)
+                    // Per the WebNN spec, initialHiddenState is already [numDirections, batchSize,
+                    // hiddenSize]; a rank-3 state with dim0 > 1 already carries both directions.
+                    let dim0 = if rank == 3 {
+                        shape.first().copied().unwrap_or(1)
+                    } else {
+                        1
+                    };
+                    (
+                        operand_name(graph, id),
+                        rank,
+                        needs_reshape,
+                        shape_ok_3d,
+                        dim0,
+                    )
                 } else {
                     let name = format!("{}_initial_h_zero", op_name);
                     initializers.push(Self::create_vector_initializer(
@@ -5669,7 +5678,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         vec![batch_size, hidden_size as i64],
                         0.0,
                     ));
-                    (name, 2, false, false)
+                    (name, 2, false, false, 1)
                 };
 
                 // ONNX initial_h must be 3D [num_directions, batch_size, hidden_size].
@@ -5725,8 +5734,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     });
                 }
 
-                // For bidirectional, ONNX initial_h must be [2, batch, hidden]. WebNN sends [1, batch, hidden]; duplicate on axis 0.
-                let h_3d_final_name = if direction == "both" {
+                // For bidirectional, ONNX initial_h must be [2, batch, hidden]. Per spec the caller
+                // already supplies [numDirections, batch, hidden]; only duplicate on axis 0 as a compat
+                // shim when the incoming state is single-direction ([1, batch, hidden]).
+                let h_3d_final_name = if direction == "both" && hidden_state_dim0 == 1 {
                     let h_3d_bidi_name = format!("{}_h_3d_bidi", op_name);
                     nodes.push(NodeProto {
                         input: vec![h_3d_name.clone(), h_3d_name.clone()],
@@ -6119,7 +6130,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     recurrent_weight_name.clone()
                 };
                 // ONNX LSTM initial_h / initial_c must be 3D [num_directions, batch_size, hidden_size] = [1, 2, 2].
-                let (h_3d_final_name, c_3d_final_name) = {
+                let (h_3d_final_name, c_3d_final_name, initial_h_dim0, initial_c_dim0) = {
                     let zero_h = format!("{}_initial_h_zero", op_name);
                     let zero_c = format!("{}_initial_c_zero", op_name);
                     initializers.push(Self::create_vector_initializer(
@@ -6152,6 +6163,25 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .and_then(|id| graph.operand(id))
                         .map(|o| o.descriptor.shape.len())
                         .unwrap_or(2);
+                    // Per the WebNN spec, initialHiddenState/initialCellState are already
+                    // [numDirections, batchSize, hiddenSize]; a rank-3 state with dim0 > 1
+                    // already carries both directions and must not be duplicated below.
+                    let h_dim0 = if h_rank == 3 {
+                        initial_h_operand_id
+                            .and_then(|id| graph.operand(id))
+                            .map(|o| get_static_or_max_size(&o.descriptor.shape[0]))
+                            .unwrap_or(1)
+                    } else {
+                        1
+                    };
+                    let c_dim0 = if c_rank == 3 {
+                        initial_c_operand_id
+                            .and_then(|id| graph.operand(id))
+                            .map(|o| get_static_or_max_size(&o.descriptor.shape[0]))
+                            .unwrap_or(1)
+                    } else {
+                        1
+                    };
                     if h_rank == 3 {
                         nodes.push(NodeProto {
                             input: vec![h_name.clone()],
@@ -6186,43 +6216,50 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             ..Default::default()
                         });
                     }
-                    (h_3d_name.clone(), c_3d_name.clone())
+                    (h_3d_name.clone(), c_3d_name.clone(), h_dim0, c_dim0)
                 };
-                // For bidirectional, ONNX initial_h/initial_c must be [2, batch, hidden]. WebNN sends [1, batch, hidden]; duplicate on axis 0.
-                let (lstm_initial_h_name, lstm_initial_c_name) =
-                    if direction == "both" || direction == "bidirectional" {
-                        let h_bidi = format!("{}_initial_h_bidi", op_name);
-                        let c_bidi = format!("{}_initial_c_bidi", op_name);
-                        nodes.push(NodeProto {
-                            input: vec![h_3d_final_name.clone(), h_3d_final_name.clone()],
-                            output: vec![h_bidi.clone()],
-                            name: format!("{}_concat_initial_h", op_name),
-                            op_type: "Concat".to_string(),
-                            attribute: vec![AttributeProto {
-                                name: "axis".to_string(),
-                                r#type: AttributeType::Int as i32,
-                                i: 0,
-                                ..Default::default()
-                            }],
+                // For bidirectional, ONNX initial_h/initial_c must be [2, batch, hidden]. Per spec the
+                // caller already supplies [numDirections, batch, hidden]; only duplicate on axis 0 as a
+                // compat shim when the incoming state is single-direction ([1, batch, hidden]).
+                let is_bidirectional = direction == "both" || direction == "bidirectional";
+                let lstm_initial_h_name = if is_bidirectional && initial_h_dim0 == 1 {
+                    let h_bidi = format!("{}_initial_h_bidi", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![h_3d_final_name.clone(), h_3d_final_name.clone()],
+                        output: vec![h_bidi.clone()],
+                        name: format!("{}_concat_initial_h", op_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 0,
                             ..Default::default()
-                        });
-                        nodes.push(NodeProto {
-                            input: vec![c_3d_final_name.clone(), c_3d_final_name.clone()],
-                            output: vec![c_bidi.clone()],
-                            name: format!("{}_concat_initial_c", op_name),
-                            op_type: "Concat".to_string(),
-                            attribute: vec![AttributeProto {
-                                name: "axis".to_string(),
-                                r#type: AttributeType::Int as i32,
-                                i: 0,
-                                ..Default::default()
-                            }],
+                        }],
+                        ..Default::default()
+                    });
+                    h_bidi
+                } else {
+                    h_3d_final_name
+                };
+                let lstm_initial_c_name = if is_bidirectional && initial_c_dim0 == 1 {
+                    let c_bidi = format!("{}_initial_c_bidi", op_name);
+                    nodes.push(NodeProto {
+                        input: vec![c_3d_final_name.clone(), c_3d_final_name.clone()],
+                        output: vec![c_bidi.clone()],
+                        name: format!("{}_concat_initial_c", op_name),
+                        op_type: "Concat".to_string(),
+                        attribute: vec![AttributeProto {
+                            name: "axis".to_string(),
+                            r#type: AttributeType::Int as i32,
+                            i: 0,
                             ..Default::default()
-                        });
-                        (h_bidi, c_bidi)
-                    } else {
-                        (h_3d_final_name, c_3d_final_name)
-                    };
+                        }],
+                        ..Default::default()
+                    });
+                    c_bidi
+                } else {
+                    c_3d_final_name
+                };
                 let lstm_y_name = format!("{}_y", op_name);
                 let lstm_y_h_name = format!("{}_y_h", op_name);
                 let lstm_y_c_name = format!("{}_y_c", op_name);
@@ -6338,8 +6375,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     }
                 } else {
                     // WPT: lstmOutput1 = Y_h, lstmOutput2 = Y_c, lstmOutput3 = sequence (Y).
+                    // Graphs that don't use that naming convention fall back to positional
+                    // WebNN spec order: outputs[0] = Y_h, outputs[1] = Y_c, outputs[2] = Y
+                    // (sequence, only present when returnSequence). Without this fallback,
+                    // Y_h/Y_c were silently dropped for any non-WPT-named output (bug: graph
+                    // output declared but no node produces it).
                     // Use out_id in node name so each Identity has a unique name.
-                    for &out_id in output_ids.iter().take(3) {
+                    for (pos, &out_id) in output_ids.iter().enumerate().take(3) {
                         let out_name = operand_name(graph, out_id);
                         let (src_name, label) = if out_name.contains("Output1") {
                             // WPT lstmOutput1 = hidden state (Y_h).
@@ -6347,10 +6389,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         } else if out_name.contains("Output2") {
                             // WPT lstmOutput2 = cell state (Y_c).
                             (lstm_y_c_name.clone(), "y_c")
-                        } else if out_name.contains("Output3")
-                            || (output_ids.len() >= 3 && out_id == output_ids[2])
-                        {
-                            // WPT lstmOutput3 = sequence (Y) when returnSequence is true.
+                        } else if out_name.contains("Output3") || pos == 2 {
+                            // lstmOutput3, or positional fallback: sequence (Y) when returnSequence is true.
                             if unidirectional {
                                 let seq_4d_name = format!("{}_y_seq_4d", op_name);
                                 nodes.push(NodeProto {
@@ -6364,6 +6404,12 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             } else {
                                 (seq_source.clone(), "y_seq")
                             }
+                        } else if pos == 0 {
+                            // Positional fallback: WebNN spec order puts hidden state (Y_h) first.
+                            (lstm_y_h_name.clone(), "y")
+                        } else if pos == 1 {
+                            // Positional fallback: WebNN spec order puts cell state (Y_c) second.
+                            (lstm_y_c_name.clone(), "y_c")
                         } else {
                             continue;
                         };
@@ -9250,9 +9296,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .static_or_max_shape()
                 });
 
-                // Get axes from typed options (unsqueeze). Typed options required.
+                // Get axes from typed options. Empty axes stay axes-less: for Squeeze that
+                // means "remove all unit dims" per ONNX semantics.
                 let axes_i64 = match &op {
                     Operation::Unsqueeze { options, .. } => options
+                        .as_ref()
+                        .filter(|o| !o.axes.is_empty())
+                        .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>()),
+                    Operation::Squeeze { options, .. } => options
                         .as_ref()
                         .filter(|o| !o.axes.is_empty())
                         .map(|o| o.axes.iter().map(|&u| u as i64).collect::<Vec<i64>>()),
@@ -9611,37 +9662,37 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .ok_or_else(|| {
                             Self::invalid_operand("where true input", true_id, Some((op, idx)))
                         })?;
-                    if graph.operand(false_id).is_none() {
-                        return Err(Self::invalid_operand(
-                            "where false input",
-                            false_id,
-                            Some((op, idx)),
-                        ));
-                    }
+                    let false_operand = graph.operand(false_id).ok_or_else(|| {
+                        Self::invalid_operand("where false input", false_id, Some((op, idx)))
+                    })?;
 
                     let target_type = true_type;
 
-                    let true_input_name = operand_name(graph, true_id);
-                    let true_cast_output_name = format!("{}_true_cast_{}", op_name, cast_counter);
-                    cast_counter += 1;
-                    nodes.push(Self::create_cast_node(
-                        &format!("{}_cast_true_{}", op_name, cast_counter),
-                        true_input_name,
-                        true_cast_output_name.clone(),
-                        Self::data_type_code(target_type),
-                    ));
-                    inputs.push(true_cast_output_name);
+                    // target_type is the true input's dtype, so only the false input
+                    // may need a cast. Identity casts must be avoided: ORT's fp16
+                    // InsertedPrecisionFreeCast transform mishandles f16->f16 casts
+                    // feeding Where when optimizations are disabled.
+                    inputs.push(operand_name(graph, true_id));
 
+                    let false_type = type_overrides
+                        .get(&false_id)
+                        .copied()
+                        .unwrap_or(false_operand.descriptor.data_type);
                     let false_input_name = operand_name(graph, false_id);
-                    let false_cast_output_name = format!("{}_false_cast_{}", op_name, cast_counter);
-                    cast_counter += 1;
-                    nodes.push(Self::create_cast_node(
-                        &format!("{}_cast_false_{}", op_name, cast_counter),
-                        false_input_name,
-                        false_cast_output_name.clone(),
-                        Self::data_type_code(target_type),
-                    ));
-                    inputs.push(false_cast_output_name);
+                    if false_type != target_type {
+                        let false_cast_output_name =
+                            format!("{}_false_cast_{}", op_name, cast_counter);
+                        nodes.push(Self::create_cast_node(
+                            &format!("{}_cast_false_{}", op_name, cast_counter),
+                            false_input_name,
+                            false_cast_output_name.clone(),
+                            Self::data_type_code(target_type),
+                        ));
+                        cast_counter += 1;
+                        inputs.push(false_cast_output_name);
+                    } else {
+                        inputs.push(false_input_name);
+                    }
 
                     let output_operand_id = op
                         .output_operand()
@@ -10333,6 +10384,7 @@ mod tests {
     use crate::graph::{
         DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor, OperandKind,
     };
+    use crate::operator_options::MLLstmOptions;
     #[cfg(feature = "dynamic-inputs")]
     use crate::operator_options::OperatorOptions;
     use crate::operators::Operation;
@@ -10861,6 +10913,86 @@ mod tests {
         let converter = OnnxConverter;
         let result = converter.convert(&graph);
         result.unwrap();
+    }
+
+    #[test]
+    fn test_where_same_dtype_inputs_emit_no_value_casts() {
+        // Identity casts on Where value inputs break ORT fp16 graphs at
+        // GraphOptimizationLevel::Disable (InsertedPrecisionFreeCast quirk).
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Uint8,
+                    shape: s(&[2]),
+                    pending_permutation: vec![],
+                },
+                name: Some("cond".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: s(&[2]),
+                    pending_permutation: vec![],
+                },
+                name: Some("t".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: s(&[2]),
+                    pending_permutation: vec![],
+                },
+                name: Some("f".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float16,
+                    shape: s(&[2]),
+                    pending_permutation: vec![],
+                },
+                name: Some("out".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation::Where {
+            condition: 0,
+            true_value: 1,
+            false_value: 2,
+            options: None,
+            outputs: vec![3],
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2],
+            output_operands: vec![3],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        let where_node = gp
+            .node
+            .iter()
+            .find(|n| n.op_type == "Where")
+            .expect("Where node present");
+        assert_eq!(where_node.input[1], "t");
+        assert_eq!(where_node.input[2], "f");
+        assert!(
+            !gp.node
+                .iter()
+                .any(|n| n.name.contains("_cast_true_") || n.name.contains("_cast_false_")),
+            "same-dtype Where value inputs must not get identity casts",
+        );
     }
 
     #[cfg(not(feature = "dynamic-inputs"))]
@@ -11473,6 +11605,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_squeeze_with_axes_emits_axes_input() {
+        // Regression: squeeze(input [1,2,1,3], axes=[2]) must export an ONNX Squeeze
+        // with an explicit axes input. An axes-less Squeeze removes ALL unit dims,
+        // silently changing the output shape from [1,2,3] to [2,3].
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Static(2),
+                        Dimension::Static(1),
+                        Dimension::Static(3),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: vec![
+                        Dimension::Static(1),
+                        Dimension::Static(2),
+                        Dimension::Static(3),
+                    ],
+                    pending_permutation: vec![],
+                },
+                name: Some("squeezed".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation::Squeeze {
+            input: 0,
+            options: Some(crate::operator_options::MLSqueezeOptions {
+                label: String::new(),
+                axes: vec![2],
+            }),
+            outputs: vec![1],
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        let squeeze_node = gp
+            .node
+            .iter()
+            .find(|n| n.op_type == "Squeeze")
+            .expect("Squeeze node present");
+        assert_eq!(
+            squeeze_node.input.len(),
+            2,
+            "Squeeze with explicit axes must carry a second (axes) input, got {:?}",
+            squeeze_node.input
+        );
+        let axes_init = gp
+            .initializer
+            .iter()
+            .find(|t| t.name == squeeze_node.input[1])
+            .expect("axes initializer present");
+        assert_eq!(axes_init.int64_data, vec![2]);
+    }
+
     #[cfg(feature = "dynamic-inputs")]
     #[test]
     fn test_where_shape_tracking_prevents_expand_scalar_reshape() {
@@ -11929,6 +12138,150 @@ mod tests {
             gp.node.iter().any(|n| n.name.contains("split_p")),
             "peephole path must split peephole weights"
         );
+    }
+
+    /// LSTM_BIDI_EXPORTER_BUGS.md bug 1: spec-shape [numDirections, batch, hidden]
+    /// initial states must not be duplicated on axis 0 for direction "both".
+    #[test]
+    fn test_lstm_bidirectional_spec_shape_initial_state_not_duplicated() {
+        let operands = vec![
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 1, 3]),
+                    pending_permutation: vec![],
+                },
+                name: Some("input".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 16, 3]),
+                    pending_permutation: vec![],
+                },
+                name: Some("weight".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 16, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("recurrent_weight".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    // Already spec-shaped [numDirections=2, batch=1, hidden=4].
+                    shape: s(&[2, 1, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("initial_h".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Input,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 1, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("initial_c".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 1, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("Y_h".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 1, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("Y_c".to_string()),
+            },
+            Operand {
+                kind: OperandKind::Output,
+                descriptor: OperandDescriptor {
+                    data_type: DataType::Float32,
+                    shape: s(&[2, 2, 1, 4]),
+                    pending_permutation: vec![],
+                },
+                name: Some("Y".to_string()),
+            },
+        ];
+
+        let operations = vec![Operation::Lstm {
+            input: 0,
+            weight: 1,
+            recurrence: 2,
+            steps: 2,
+            hidden_size: 4,
+            options: Some(MLLstmOptions {
+                label: String::new(),
+                bias: None,
+                recurrent_bias: None,
+                peephole_weight: None,
+                initial_hidden_state: Some(3),
+                initial_cell_state: Some(4),
+                return_sequence: true,
+                direction: "both".to_string(),
+                layout: String::new(),
+                activations: None,
+            }),
+            outputs: vec![5, 6, 7],
+        }];
+
+        let graph = GraphInfo {
+            operands,
+            input_operands: vec![0, 1, 2, 3, 4],
+            output_operands: vec![5, 6, 7],
+            operations,
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let model =
+            ModelProto::decode(OnnxConverter.convert(&graph).unwrap().data.as_slice()).unwrap();
+        let gp = model.graph.unwrap();
+
+        // Bug 1: spec-shaped [2, batch, hidden] initial states must pass through unduplicated.
+        assert!(
+            !gp.node
+                .iter()
+                .any(|n| n.name.contains("_concat_initial_h")
+                    || n.name.contains("_concat_initial_c")),
+            "already-bidirectional initial states must not be duplicated on axis 0"
+        );
+        let lstm_node = gp
+            .node
+            .iter()
+            .find(|n| n.op_type == "LSTM")
+            .expect("LSTM node present");
+        // Without duplication, initial_h/initial_c reach LSTM straight from the pass-through
+        // Identity nodes (lstm_0_h_3d / lstm_0_c_3d), not a Concat-doubled tensor.
+        assert_eq!(lstm_node.input[5], "lstm_0_h_3d");
+        assert_eq!(lstm_node.input[6], "lstm_0_c_3d");
+
+        // Bug 2: Y_h/Y_c/Y graph outputs must not be dropped for non-WPT-named outputs.
+        for expected in ["Y_h", "Y_c", "Y"] {
+            assert!(
+                gp.node
+                    .iter()
+                    .any(|n| n.output.iter().any(|o| o == expected)),
+                "graph output {expected} must be produced by some node"
+            );
+        }
     }
 
     #[cfg(feature = "onnx-runtime")]

@@ -2318,14 +2318,28 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         descriptor: &MLOperandDescriptor,
         values: &[T],
     ) -> crate::error::Result<MLOperand> {
+        trace!(
+            "constant_from_slice: {descriptor:?} size={} bytes",
+            descriptor.rustnn_required_bytes()
+        );
+        self.constant_from_bytes(descriptor, bytemuck::cast_slice::<T, u8>(values).to_vec())
+    }
+
+    /// Register a constant from raw little-endian bytes, taking ownership of
+    /// the buffer. Unlike [`Self::constant_from_slice`] this makes no copy:
+    /// weight tensors reach hundreds of MB and every extra copy of them stays
+    /// live for the whole backend compile.
+    pub fn constant_from_bytes(
+        &mut self,
+        descriptor: &MLOperandDescriptor,
+        data: Vec<u8>,
+    ) -> crate::error::Result<MLOperand> {
         let required_size = descriptor.rustnn_required_bytes();
-        let provided_size = std::mem::size_of_val(values);
-        trace!("constant_from_slice: {descriptor:?} size={required_size} bytes");
-        if required_size != provided_size {
+        if required_size != data.len() {
             return Err(GraphBuilderError::WrongConstantSize {
                 descriptor: descriptor.clone(),
                 required_size,
-                provided_size,
+                provided_size: data.len(),
             }
             .into());
         }
@@ -2345,13 +2359,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         graph
             .id_to_constant_tensor_operand_map
             .insert(id as u32, format!("{id}"));
-        graph.constant_operand_ids_to_handles.insert(
-            id as u32,
-            crate::ConstantData {
-                data: bytemuck::cast_slice::<T, u8>(values).to_vec(),
-                label: None,
-            },
-        );
+        graph
+            .constant_operand_ids_to_handles
+            .insert(id as u32, crate::ConstantData { data, label: None });
 
         Ok(MLOperand { id })
     }
