@@ -267,9 +267,7 @@ mod adapter {
             | Operation::Erf { input, .. }
             | Operation::Reciprocal { input, .. } => Some(*input),
             Operation::Cast { input, .. } | Operation::Identity { input, .. } => Some(*input),
-            Operation::Clamp { input, .. }
-            | Operation::Softmax { input, .. }
-            | Operation::LogicalNot { input, .. } => Some(*input),
+            Operation::Clamp { input, .. } | Operation::LogicalNot { input, .. } => Some(*input),
             _ => None,
         }
     }
@@ -1751,9 +1749,25 @@ mod adapter {
         // ── 5. Add all ops to graph ─────────────────────────────────────
         for &handle in &all_ops {
             if unsafe { ddk_cann_graph_add_op(can_graph, handle) } != 0 {
+                let name = unsafe { ddk_cann_operator_get_name(handle) };
+                let op_type = unsafe { ddk_cann_operator_get_type(handle) };
+                let name = if name.is_null() {
+                    "<unknown>".to_string()
+                } else {
+                    unsafe { std::ffi::CStr::from_ptr(name) }
+                        .to_string_lossy()
+                        .into_owned()
+                };
+                let op_type = if op_type.is_null() {
+                    "<unknown>".to_string()
+                } else {
+                    unsafe { std::ffi::CStr::from_ptr(op_type) }
+                        .to_string_lossy()
+                        .into_owned()
+                };
                 return Err(GraphError::ConversionFailed {
                     format: "cann".into(),
-                    reason: "cann_graph_add_op failed".into(),
+                    reason: format!("cann_graph_add_op failed for {op_type} '{name}'").into(),
                 });
             }
         }
