@@ -293,7 +293,8 @@ mod adapter {
         dtype: ddk_CannDataType,
         format: i32,
     ) -> ddk_CannOperatorHandle {
-        let name_c = std::ffi::CString::new(name).unwrap();
+        let name_c =
+            std::ffi::CString::new(name).expect("operator/operand names never contain NUL bytes");
         let value_name = std::ffi::CString::new("value").unwrap();
         let const_op = unsafe { ddk_cann_op_const_with_name(name_c.as_ptr()) };
         unsafe {
@@ -344,7 +345,8 @@ mod adapter {
         sizes: &[i32],
         extra_ops: &mut Vec<ddk_CannOperatorHandle>,
     ) -> Result<ddk_CannOperatorHandle, GraphError> {
-        let name_c = std::ffi::CString::new(name).unwrap();
+        let name_c =
+            std::ffi::CString::new(name).expect("operator/operand names never contain NUL bytes");
         let slice_type = std::ffi::CString::new("Slice").unwrap();
         let slice_op =
             unsafe { ddk_cann_operator_create_registered(slice_type.as_ptr(), name_c.as_ptr()) };
@@ -518,7 +520,7 @@ mod adapter {
                     .clone()
                     .unwrap_or_else(|| format!("input_{input_id}")),
             )
-            .unwrap();
+            .expect("operator/operand names never contain NUL bytes");
 
             let data_op = unsafe { ddk_cann_op_data_with_name(name.as_ptr()) };
             if data_op.is_null() {
@@ -582,7 +584,7 @@ mod adapter {
                     .clone()
                     .unwrap_or_else(|| format!("const_{const_id}")),
             )
-            .unwrap();
+            .expect("operator/operand names never contain NUL bytes");
 
             let const_op = unsafe { ddk_cann_op_const_with_name(name.as_ptr()) };
             if const_op.is_null() {
@@ -652,7 +654,8 @@ mod adapter {
                 );
                 extra_ops.push(one);
 
-                let neg_name = CString::new(format!("sigmoid_neg_{out_id}")).unwrap();
+                let neg_name = CString::new(format!("sigmoid_neg_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let neg_type = CString::new("Neg").unwrap();
                 let neg = unsafe {
                     ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_name.as_ptr())
@@ -661,7 +664,8 @@ mod adapter {
                 unsafe { set_operand_input(neg, &x_name, x_handle) };
                 extra_ops.push(neg);
 
-                let exp_name = CString::new(format!("sigmoid_exp_{out_id}")).unwrap();
+                let exp_name = CString::new(format!("sigmoid_exp_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let exp_type = CString::new("Exp").unwrap();
                 let exp_neg = unsafe {
                     ddk_cann_operator_create_registered(exp_type.as_ptr(), exp_name.as_ptr())
@@ -669,7 +673,8 @@ mod adapter {
                 unsafe { ddk_cann_operator_set_input(exp_neg, x_name.as_ptr(), neg) };
                 extra_ops.push(exp_neg);
 
-                let denom_name = CString::new(format!("sigmoid_denom_{out_id}")).unwrap();
+                let denom_name = CString::new(format!("sigmoid_denom_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let add_type = CString::new("Add").unwrap();
                 let denom = unsafe {
                     ddk_cann_operator_create_registered(add_type.as_ptr(), denom_name.as_ptr())
@@ -682,7 +687,8 @@ mod adapter {
                 }
                 extra_ops.push(denom);
 
-                let div_name = CString::new(format!("sigmoid_div_{out_id}")).unwrap();
+                let div_name = CString::new(format!("sigmoid_div_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let div_type = CString::new("Div").unwrap();
                 let div = unsafe {
                     ddk_cann_operator_create_registered(div_type.as_ptr(), div_name.as_ptr())
@@ -722,7 +728,8 @@ mod adapter {
                 let add_type = CString::new("Add").unwrap();
 
                 // pos = ReLU(x) = Activation(x, mode=1)
-                let pos_name = CString::new(format!("prelu_pos_{out_id}")).unwrap();
+                let pos_name = CString::new(format!("prelu_pos_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let pos = unsafe {
                     ddk_cann_operator_create_registered(relu_type.as_ptr(), pos_name.as_ptr())
                 };
@@ -731,7 +738,8 @@ mod adapter {
                 extra_ops.push(pos);
 
                 // neg_input = Neg(x)
-                let neg_input_name = CString::new(format!("prelu_neg_input_{out_id}")).unwrap();
+                let neg_input_name = CString::new(format!("prelu_neg_input_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let neg_input = unsafe {
                     ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_input_name.as_ptr())
                 };
@@ -739,7 +747,8 @@ mod adapter {
                 extra_ops.push(neg_input);
 
                 // relu_neg = Activation(neg_input, mode=1)
-                let relu_neg_name = CString::new(format!("prelu_relu_neg_{out_id}")).unwrap();
+                let relu_neg_name = CString::new(format!("prelu_relu_neg_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let relu_neg = unsafe {
                     ddk_cann_operator_create_registered(relu_type.as_ptr(), relu_neg_name.as_ptr())
                 };
@@ -748,7 +757,8 @@ mod adapter {
                 extra_ops.push(relu_neg);
 
                 // neg_x = Neg(relu_neg)
-                let neg_x_name = CString::new(format!("prelu_neg_x_{out_id}")).unwrap();
+                let neg_x_name = CString::new(format!("prelu_neg_x_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let neg_x = unsafe {
                     ddk_cann_operator_create_registered(neg_type.as_ptr(), neg_x_name.as_ptr())
                 };
@@ -756,7 +766,8 @@ mod adapter {
                 extra_ops.push(neg_x);
 
                 // neg_scaled = Mul(neg_x, slope)
-                let neg_scaled_name = CString::new(format!("prelu_neg_scaled_{out_id}")).unwrap();
+                let neg_scaled_name = CString::new(format!("prelu_neg_scaled_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let neg_scaled = unsafe {
                     ddk_cann_operator_create_registered(mul_type.as_ptr(), neg_scaled_name.as_ptr())
                 };
@@ -767,7 +778,8 @@ mod adapter {
                 extra_ops.push(neg_scaled);
 
                 // output = Add(pos, neg_scaled)
-                let output_name = CString::new(format!("prelu_output_{out_id}")).unwrap();
+                let output_name = CString::new(format!("prelu_output_{out_id}"))
+                    .expect("operator/operand names never contain NUL bytes");
                 let output = unsafe {
                     ddk_cann_operator_create_registered(add_type.as_ptr(), output_name.as_ptr())
                 };
@@ -799,7 +811,8 @@ mod adapter {
                     .as_ref()
                     .map(|o| o.mode == "nearest-neighbor")
                     .unwrap_or(false);
-                let op_name = CString::new(format!("resample2d_{}", outputs[0])).unwrap();
+                let op_name = CString::new(format!("resample2d_{}", outputs[0]))
+                    .expect("operator/operand names never contain NUL bytes");
                 let resample_op = if nearest {
                     unsafe { ddk_cann_op_resize_nearest_neighbor_with_name(op_name.as_ptr()) }
                 } else {
@@ -902,7 +915,9 @@ mod adapter {
             }
 
             let operator_type_name = match webnn_op_to_hiai(op) {
-                Some(name) => CString::new(name).unwrap(),
+                Some(name) => {
+                    CString::new(name).expect("operator/operand names never contain NUL bytes")
+                }
                 None => {
                     return Err(GraphError::ConversionFailed {
                         format: "cann".into(),
@@ -917,7 +932,7 @@ mod adapter {
                 operator_type_name.to_str().unwrap(),
                 op_outputs(op)[0]
             ))
-            .unwrap();
+            .expect("operator/operand names never contain NUL bytes");
             let compute_op: ddk_CannOperatorHandle = unsafe {
                 ddk_cann_operator_create_registered(operator_type_name.as_ptr(), op_name.as_ptr())
             };
@@ -932,8 +947,10 @@ mod adapter {
             if let Some((a, b, name_a, name_b)) = binary_op_inputs(op) {
                 let lhs = handles[a as usize];
                 let rhs = handles[b as usize];
-                let lhs_name = CString::new(name_a).unwrap();
-                let rhs_name = CString::new(name_b).unwrap();
+                let lhs_name =
+                    CString::new(name_a).expect("operator/operand names never contain NUL bytes");
+                let rhs_name =
+                    CString::new(name_b).expect("operator/operand names never contain NUL bytes");
                 let status_a = unsafe { set_operand_input(compute_op, &lhs_name, lhs) };
                 let status_b = unsafe { set_operand_input(compute_op, &rhs_name, rhs) };
                 if status_a != 0 || status_b != 0 {
@@ -1151,7 +1168,8 @@ mod adapter {
                     let groups_name = CString::new("groups").unwrap();
                     ddk_cann_operator_set_attr_int64(compute_op, groups_name.as_ptr(), groups);
                     let data_format_name = CString::new("data_format").unwrap();
-                    let data_format_value = CString::new(format_str).unwrap();
+                    let data_format_value = CString::new(format_str)
+                        .expect("operator/operand names never contain NUL bytes");
                     ddk_cann_operator_set_attr_string(
                         compute_op,
                         data_format_name.as_ptr(),
@@ -1351,7 +1369,8 @@ mod adapter {
                     let groups_name = CString::new("groups").unwrap();
                     ddk_cann_operator_set_attr_int64(compute_op, groups_name.as_ptr(), groups);
                     let data_format_name = CString::new("data_format").unwrap();
-                    let data_format_value = CString::new(format_str).unwrap();
+                    let data_format_value = CString::new(format_str)
+                        .expect("operator/operand names never contain NUL bytes");
                     ddk_cann_operator_set_attr_string(
                         compute_op,
                         data_format_name.as_ptr(),
@@ -1378,7 +1397,8 @@ mod adapter {
             {
                 let x_handle = handles[*input as usize];
 
-                let axis_name_str = CString::new(format!("argmax_axis_{}", outputs[0])).unwrap();
+                let axis_name_str = CString::new(format!("argmax_axis_{}", outputs[0]))
+                    .expect("operator/operand names never contain NUL bytes");
                 let axis_operator = unsafe { ddk_cann_op_const_with_name(axis_name_str.as_ptr()) };
                 let axis_value: i32 = *axis as i32;
                 let axis_shape: [i64; 1] = [1];
@@ -1655,7 +1675,8 @@ mod adapter {
             .name
             .as_deref()
             .unwrap_or("output");
-        let net_name = CString::new(out_name).unwrap();
+        let net_name =
+            CString::new(out_name).expect("operator/operand names never contain NUL bytes");
         let mut net_out = unsafe {
             ddk_cann_op_net_output_with_name(net_name.as_ptr(), graph.output_operands.len() as i32)
         };
