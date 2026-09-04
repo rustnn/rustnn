@@ -2302,8 +2302,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         graph.constant_operand_ids_to_handles.insert(
             id as u32,
             crate::ConstantData {
-                // TODO: can't do this cast because of mismatched alignment
-                data: bytemuck::cast_vec::<T, u8>(values),
+                data: bytemuck::cast_slice(values.as_slice()).to_vec(),
                 label: None,
             },
         );
