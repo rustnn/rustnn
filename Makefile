@@ -82,7 +82,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 	CANN_DDK=$(CANN_DDK) \
 	RUSTFLAGS="-Clink-arg=--target=aarch64-linux-ohos -Clink-arg=--sysroot=$(OHOS_SDK_NATIVE)/sysroot"
 
-.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann cann-build cann-device-test validate-all-env \
+.PHONY: build test fmt run viz onnx coreml coreml-validate onnx-validate litert cann cann-build cann-device-test validate-cann-env validate-all-env \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fmt-check lint \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
@@ -272,18 +272,25 @@ litert:
 cann:
 	$(CARGO) run --features cann-runtime -- $(GRAPH_FILE) --convert cann --convert-output $(CANN_PATH)
 
-cann-build:
+validate-cann-env:
+	@if ! rustup target list --installed | grep -qx aarch64-unknown-linux-ohos; then \
+	    echo "Error: Rust target 'aarch64-unknown-linux-ohos' is not installed."; \
+	    echo "  Install it with:  rustup target add aarch64-unknown-linux-ohos"; \
+	    exit 1; \
+	fi
+	@if [ -z "$(OHOS_SDK_NATIVE)" ]; then \
+	    echo "Error: OHOS_SDK_NATIVE not set. export OHOS_SDK_NATIVE=/path/to/OpenHarmony/<version>/sdk/native"; \
+	    exit 1; \
+	fi
 	@if [ -z "$(CANN_DDK)" ]; then \
 	    echo "Error: CANN_DDK not set. export CANN_DDK=/path/to/CANN-Kit-next/ddk/"; \
 	    exit 1; \
 	fi
+
+cann-build: validate-cann-env
 	$(CANN_CROSS_ENV) $(CARGO) build --target aarch64-unknown-linux-ohos --features cann-runtime --release
 
-cann-device-test:
-	@if [ -z "$(CANN_DDK)" ]; then \
-	    echo "Error: CANN_DDK not set. export CANN_DDK=/path/to/CANN-Kit-next/ddk/"; \
-	    exit 1; \
-	fi
+cann-device-test: validate-cann-env
 	$(CANN_CROSS_ENV) $(CARGO) test --test test_cann_execution --no-run \
 		--target aarch64-unknown-linux-ohos --features cann-runtime --release
 	CANN_DDK=$(CANN_DDK) \
