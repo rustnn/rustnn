@@ -29,7 +29,7 @@ use crate::mlcontext::{
 #[cfg(feature = "cann-runtime")]
 use crate::operator_enums::MLOperandDataType;
 #[cfg(feature = "cann-runtime")]
-use hiai_rs::{TensorDesc, dispatch};
+use hiai_rs::{Session, TensorDesc};
 
 /// Map WebNN operand data type to CANN adapter enum
 #[cfg(feature = "cann-runtime")]
@@ -69,6 +69,13 @@ pub(crate) struct CannGraph {
 pub(crate) struct CannContext {
     tensors: Vec<CannTensor>,
     _device_type: DeviceType,
+    /// Loaded models, keyed by their compiled offline model bytes, so repeated
+    /// dispatches of the same graph skip the expensive `Session::load`. Each
+    /// session is wrapped in a `Mutex` because `Session` is `Send` but not
+    /// `Sync` (its `dispatch` mutates the DDK model manager internally), while
+    /// `CannContext` must satisfy the `Sync` bound of `MLBackendContext`.
+    #[cfg(feature = "cann-runtime")]
+    sessions: std::collections::HashMap<Vec<u8>, std::sync::Mutex<Session>>,
 }
 
 impl CannContext {
@@ -79,6 +86,8 @@ impl CannContext {
         Ok(Self {
             tensors: Vec::new(),
             _device_type: device_type,
+            #[cfg(feature = "cann-runtime")]
+            sessions: std::collections::HashMap::new(),
         })
     }
 }
@@ -222,11 +231,28 @@ impl<'context> MLBackendContext<'context> for CannContext {
             output_descs.push(build_desc(tensor));
         }
 
-        dispatch(model_bytes, &input_descs, &mut output_descs).map_err(|e| {
-            Error::GraphDispatchError {
+        // Reuse a previously loaded session for this model; load once on the
+        // first dispatch and cache it (the model load dominates per-call cost).
+        let session = if let Some(session) = self.sessions.get(model_bytes) {
+            session
+        } else {
+            let session = Session::load(model_bytes).map_err(|e| Error::GraphDispatchError {
                 source: Box::new(e),
-            }
-        })?;
+            })?;
+            self.sessions
+                .insert(model_bytes.clone(), std::sync::Mutex::new(session));
+            self.sessions
+                .get(model_bytes)
+                .expect("session was just inserted")
+        };
+
+        session
+            .lock()
+            .expect("session mutex poisoned")
+            .dispatch(&input_descs, &mut output_descs)
+            .map_err(|e| Error::GraphDispatchError {
+                source: Box::new(e),
+            })?;
 
         for (name, output_desc) in cann_graph.output_names.iter().zip(output_descs.iter()) {
             let tensor = outputs
@@ -234,9 +260,13 @@ impl<'context> MLBackendContext<'context> for CannContext {
                 .ok_or_else(|| Error::GraphDispatchError {
                     source: format!("missing output '{name}' for CANN dispatch").into(),
                 })?;
-            self.tensors[tensor.id]
-                .memory
-                .copy_from_slice(&output_desc.data);
+            // hiai-rs `dispatch` truncates `output_desc.data` to the actual
+            // produced size, so resize the destination to match before copying
+            // (avoids a length-mismatch panic when the model output is smaller
+            // than the pre-allocated tensor buffer).
+            let mem = &mut self.tensors[tensor.id].memory;
+            mem.truncate(output_desc.data.len());
+            mem.copy_from_slice(&output_desc.data);
         }
 
         Ok(())
