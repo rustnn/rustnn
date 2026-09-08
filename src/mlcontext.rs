@@ -338,7 +338,7 @@ impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
                     MLDimension::Static(s) => Dimension::Static(*s),
                     MLDimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
                         name: d.name.clone(),
-                        max_size: u32::MAX,
+                        max_size: d.max_size,
                     }),
                 })
                 .collect(),
