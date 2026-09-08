@@ -118,6 +118,14 @@ fn main() {
     let args = Arguments::from_args();
     let wpt_dir = default_wpt_dir();
 
+    // See https://docs.nvidia.com/deeplearning/tensorrt-rtx/latest/inference-library/capture-replay.html#capture-replay
+    // for this Linux-only feature that is enabled via TRT_SHIM_OUTPUT_JSON_FILE
+    #[cfg(all(unix, feature = "trtx-runtime"))]
+    if std::env::var("TRT_SHIM_OUTPUT_JSON_FILE").is_ok() {
+        trtx::dynamically_load_tensorrt(Some("libtensorrt_shim.so"))
+            .expect("Failed to load libtensorrt_shim.so for TensorRT API capture (TRT_SHIM_OUTPUT_JSON_FILE was set)");
+    }
+
     let corpus = match load_wpt_corpus(&wpt_dir) {
         Ok(c) => c,
         Err(e) => {
