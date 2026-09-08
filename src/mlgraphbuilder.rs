@@ -1995,6 +1995,20 @@ fn shape_inference_single_output(
         Operation::Gru { .. } | Operation::Lstm { .. } | Operation::LstmCell { .. } => {
             panic!("This method only supports single output ops. Use shape_inference_multi_output")
         }
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::Range { .. }
+        | Operation::ModulusFloor { .. }
+        | Operation::ModulusTruncate { .. }
+        | Operation::ReshapeTo2d { .. }
+        | Operation::ReshapeDynamic { .. }
+        | Operation::ExpandDynamic { .. }
+        | Operation::SliceDynamic { .. }
+        | Operation::PadDynamic { .. }
+        | Operation::SplitDynamic { .. }
+        | Operation::Resample2dDynamic { .. }
+        | Operation::TileDynamic { .. } => {
+            unimplemented!("dynamic-shape operation shape inference is not implemented")
+        }
     }
 }
 

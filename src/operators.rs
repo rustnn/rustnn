@@ -54,6 +54,11 @@ use crate::{
     },
 };
 
+#[cfg(feature = "dynamic-inputs")]
+use crate::operator_options::{
+    MLResample2dDynamicOptions, MLReshapeTo2dOptions, MLSliceDynamicOptions,
+};
+
 // ---------------------------------------------------------------------------
 // Operation enum: one variant per WebNN builder
 // ---------------------------------------------------------------------------
@@ -785,8 +790,91 @@ pub enum Operation {
 
     // ---------- Shape (interchange / internal) ----------
     /// Shape operator (interchange / internal; see spec § 7.3).
+    // TODO: Align this existing interchange/internal operation with the dynamic-shape explainer.
+    // From https://github.com/webmachinelearning/webnn/pull/945.
     Shape {
         input: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+
+    // ---------- Dynamic shape ----------
+    // From https://github.com/webmachinelearning/webnn/pull/945.
+    #[cfg(feature = "dynamic-inputs")]
+    Range {
+        start: OperandIndex,
+        limit: OperandIndex,
+        delta: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    ModulusFloor {
+        a: OperandIndex,
+        b: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    ModulusTruncate {
+        a: OperandIndex,
+        b: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    ReshapeTo2d {
+        input: OperandIndex,
+        options: Option<MLReshapeTo2dOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    ReshapeDynamic {
+        input: OperandIndex,
+        new_shape: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    ExpandDynamic {
+        input: OperandIndex,
+        new_shape: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    SliceDynamic {
+        input: OperandIndex,
+        starts: OperandIndex,
+        sizes: OperandIndex,
+        options: Option<MLSliceDynamicOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    PadDynamic {
+        input: OperandIndex,
+        beginning_padding: OperandIndex,
+        ending_padding: OperandIndex,
+        options: Option<MLOperatorOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    SplitDynamic {
+        input: OperandIndex,
+        splits: OperandIndex,
+        options: Option<MLSplitOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    Resample2dDynamic {
+        input: OperandIndex,
+        options: Option<MLResample2dDynamicOptions>,
+        outputs: Vec<OperandIndex>,
+    },
+    #[cfg(feature = "dynamic-inputs")]
+    TileDynamic {
+        input: OperandIndex,
+        repetitions: OperandIndex,
         options: Option<MLOperatorOptions>,
         outputs: Vec<OperandIndex>,
     },
@@ -1019,6 +1107,28 @@ impl Operation {
             Operation::Softsign { .. } => "softsign",
             Operation::Gelu { .. } => "gelu",
             Operation::Shape { .. } => "shape",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range { .. } => "range",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ModulusFloor { .. } => "modulusFloor",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ModulusTruncate { .. } => "modulusTruncate",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeTo2d { .. } => "reshapeTo2d",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeDynamic { .. } => "reshapeDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ExpandDynamic { .. } => "expandDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SliceDynamic { .. } => "sliceDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::PadDynamic { .. } => "padDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SplitDynamic { .. } => "splitDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Resample2dDynamic { .. } => "resample2dDynamic",
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::TileDynamic { .. } => "tileDynamic",
             Operation::ScatterND { .. } => "scatterND",
             Operation::GatherND { .. } => "gatherND",
             Operation::IsNaN { .. } => "isNaN",
@@ -1212,6 +1322,48 @@ impl Operation {
             Operation::Softsign { input, .. } => vec![*input],
             Operation::Gelu { input, .. } => vec![*input],
             Operation::Shape { input, .. } => vec![*input],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range {
+                start,
+                limit,
+                delta,
+                ..
+            } => vec![*start, *limit, *delta],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ModulusFloor { a, b, .. } | Operation::ModulusTruncate { a, b, .. } => {
+                vec![*a, *b]
+            }
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeTo2d { input, .. } | Operation::Resample2dDynamic { input, .. } => {
+                vec![*input]
+            }
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeDynamic {
+                input, new_shape, ..
+            }
+            | Operation::ExpandDynamic {
+                input, new_shape, ..
+            } => vec![*input, *new_shape],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SliceDynamic {
+                input,
+                starts,
+                sizes,
+                ..
+            } => vec![*input, *starts, *sizes],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::PadDynamic {
+                input,
+                beginning_padding,
+                ending_padding,
+                ..
+            } => vec![*input, *beginning_padding, *ending_padding],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SplitDynamic { input, splits, .. } => vec![*input, *splits],
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::TileDynamic {
+                input, repetitions, ..
+            } => vec![*input, *repetitions],
             Operation::ScatterND {
                 input,
                 indices,
@@ -1324,6 +1476,18 @@ impl Operation {
             Operation::Softsign { outputs, .. } => outputs,
             Operation::Gelu { outputs, .. } => outputs,
             Operation::Shape { outputs, .. } => outputs,
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range { outputs, .. }
+            | Operation::ModulusFloor { outputs, .. }
+            | Operation::ModulusTruncate { outputs, .. }
+            | Operation::ReshapeTo2d { outputs, .. }
+            | Operation::ReshapeDynamic { outputs, .. }
+            | Operation::ExpandDynamic { outputs, .. }
+            | Operation::SliceDynamic { outputs, .. }
+            | Operation::PadDynamic { outputs, .. }
+            | Operation::SplitDynamic { outputs, .. }
+            | Operation::Resample2dDynamic { outputs, .. }
+            | Operation::TileDynamic { outputs, .. } => outputs,
             Operation::ScatterND { outputs, .. } => outputs,
             Operation::GatherND { outputs, .. } => outputs,
             Operation::IsNaN { outputs, .. } => outputs,
@@ -1445,6 +1609,22 @@ impl Operation {
             Operation::Unsqueeze { options, .. } => opt_label!(options),
             Operation::Tile { options, .. } => opt_label!(options),
             Operation::Triangular { options, .. } => opt_label!(options),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range { options, .. }
+            | Operation::ModulusFloor { options, .. }
+            | Operation::ModulusTruncate { options, .. }
+            | Operation::ReshapeDynamic { options, .. }
+            | Operation::ExpandDynamic { options, .. }
+            | Operation::PadDynamic { options, .. }
+            | Operation::TileDynamic { options, .. } => opt_label!(options),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SplitDynamic { options, .. } => opt_label!(options),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeTo2d { options, .. } => opt_label!(options),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SliceDynamic { options, .. } => opt_label!(options),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Resample2dDynamic { options, .. } => opt_label!(options),
         }
     }
 
@@ -2183,6 +2363,115 @@ impl Operation {
             Operation::Gelu { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range {
+                start,
+                limit,
+                delta,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*start, *limit, *delta],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ModulusFloor { a, b, options, .. }
+            | Operation::ModulusTruncate { a, b, options, .. } => (
+                tag.clone(),
+                vec![*a, *b],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeTo2d { input, options, .. } => (
+                tag.clone(),
+                vec![*input],
+                OO::Operator(MLOperatorOptions {
+                    label: options
+                        .as_ref()
+                        .map(|options| options.label.clone())
+                        .unwrap_or_default(),
+                }),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::ReshapeDynamic {
+                input,
+                new_shape,
+                options,
+                ..
+            }
+            | Operation::ExpandDynamic {
+                input,
+                new_shape,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*input, *new_shape],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SliceDynamic {
+                input,
+                starts,
+                sizes,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*input, *starts, *sizes],
+                OO::Operator(MLOperatorOptions {
+                    label: options
+                        .as_ref()
+                        .map(|options| options.label.clone())
+                        .unwrap_or_default(),
+                }),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::PadDynamic {
+                input,
+                beginning_padding,
+                ending_padding,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*input, *beginning_padding, *ending_padding],
+                OO::Operator(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::SplitDynamic {
+                input,
+                splits,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*input, *splits],
+                OO::Split(options.clone().unwrap_or_default()),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Resample2dDynamic { input, options, .. } => (
+                tag.clone(),
+                vec![*input],
+                OO::Operator(MLOperatorOptions {
+                    label: options
+                        .as_ref()
+                        .map(|options| options.label.clone())
+                        .unwrap_or_default(),
+                }),
+            ),
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::TileDynamic {
+                input,
+                repetitions,
+                options,
+                ..
+            } => (
+                tag.clone(),
+                vec![*input, *repetitions],
                 OO::Operator(options.clone().unwrap_or_default()),
             ),
             Operation::Shape { input, options, .. } => (

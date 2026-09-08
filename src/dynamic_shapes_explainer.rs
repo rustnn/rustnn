@@ -2,6 +2,14 @@
 //
 // SPDX-License-Identifier: Apache-2
 
+use crate::{
+    mlcontext::MLOperand,
+    operator_options::{
+        MLOperatorOptions, MLResample2dDynamicOptions, MLReshapeTo2dOptions, MLSliceDynamicOptions,
+        MLSplitOptions, MLSqueezeOptions,
+    },
+};
+
 // From https://github.com/webmachinelearning/webnn/pull/945.
 pub trait DynamicShapeBuilder {
     // Read an operand's shape as a runtime uint32 1-D tensor.
@@ -145,3 +153,5 @@ pub trait DynamicShapeBuilder {
         options: MLOperatorOptions,
     ) -> MLOperand;
 }
+
+//impl DynamicShapeBuilder for
