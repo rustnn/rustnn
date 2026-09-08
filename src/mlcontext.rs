@@ -305,6 +305,19 @@ pub struct MLOperandDescriptor {
     shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
 }
 
+impl From<&MLOperandDescriptor> for MLDynamicOperandDescriptor {
+    fn from(val: &MLOperandDescriptor) -> Self {
+        MLDynamicOperandDescriptor {
+            data_type: val.data_type,
+            shape: val
+                .shape
+                .iter()
+                .map(|s| MLDimension::Static(*s as u32))
+                .collect(),
+        }
+    }
+}
+
 impl From<&MLOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         OperandDescriptor {
@@ -344,6 +357,28 @@ impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
                 .collect(),
             pending_permutation: Default::default(),
         }
+    }
+}
+
+impl MLDynamicOperandDescriptor {
+    pub fn new(data_type: MLOperandDataType, shape: Vec<MLDimension>) -> Self {
+        Self { data_type, shape }
+    }
+
+    pub fn data_type(&self) -> MLOperandDataType {
+        self.data_type
+    }
+
+    pub fn shape(&self) -> &[MLDimension] {
+        &self.shape
+    }
+
+    pub fn set_data_type(&mut self, data_type: MLOperandDataType) {
+        self.data_type = data_type;
+    }
+
+    pub fn set_shape(&mut self, shape: Vec<MLDimension>) {
+        self.shape = shape;
     }
 }
 
