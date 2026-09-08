@@ -22,6 +22,8 @@ use webnn_graph::serialize::SerializeOptions;
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
 use crate::graph_recorder::GraphRecorder;
+#[cfg(feature = "dynamic-inputs")]
+use crate::mlcontext::MLDynamicOperandDescriptor;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
@@ -2486,6 +2488,21 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         operand.data_type(graph)
     }
 
+    #[cfg(feature = "dynamic-inputs")]
+    pub fn dynamic_input(
+        &mut self,
+        name: &str,
+        descriptor: &MLDynamicOperandDescriptor,
+    ) -> crate::error::Result<MLOperand> {
+        debug!("Adding dynamic input {name:?} {descriptor:?}");
+        let id = self
+            .recorder
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .add_input(name.to_string(), descriptor.into());
+        Ok(MLOperand { id: id as usize })
+    }
+
     /// Declare a named graph input. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-input>
     ///
     /// The name is the key used for the input tensor in [`MLContext::dispatch`].
@@ -3586,9 +3603,7 @@ mod test {
     };
 
     #[cfg(feature = "dynamic-inputs")]
-    use crate::{
-        dynamic_shapes_explainer::DynamicShapeBuilder, graph::Dimension, operators::Operation,
-    };
+    use crate::{graph::Dimension, operators::Operation};
 
     #[cfg(feature = "dynamic-inputs")]
     #[test]
