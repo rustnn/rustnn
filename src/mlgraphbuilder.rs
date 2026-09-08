@@ -62,7 +62,7 @@ pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
 #[cfg(feature = "dynamic-inputs")]
 impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'builder> {
-    fn shape_with_options(&mut self, _: MLOperand, _: MLOperatorOptions) -> MLOperand {
+    fn shape_with_options(&mut self, _: MLOperand, _: MLOperatorOptions) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn range_with_options(
@@ -71,7 +71,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn modulus_floor_with_options(
@@ -79,7 +79,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn modulus_truncate_with_options(
@@ -87,10 +87,10 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
-    fn squeeze_with_options(&mut self, _: MLOperand, _: MLSqueezeOptions) -> MLOperand {
+    fn squeeze_with_options(&mut self, _: MLOperand, _: MLSqueezeOptions) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn unsqueeze_with_options(
@@ -98,10 +98,14 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: &[u32],
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
-    fn reshape_to_2d_with_options(&mut self, _: MLOperand, _: MLReshapeTo2dOptions) -> MLOperand {
+    fn reshape_to_2d_with_options(
+        &mut self,
+        _: MLOperand,
+        _: MLReshapeTo2dOptions,
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn reshape_dynamic_with_options(
@@ -109,7 +113,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn expand_dynamic_with_options(
@@ -117,7 +121,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn slice_dynamic_with_options(
@@ -126,7 +130,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLSliceDynamicOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn pad_dynamic_with_options(
@@ -135,7 +139,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn split_dynamic_with_options(
@@ -143,14 +147,14 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLSplitOptions,
-    ) -> Vec<MLOperand> {
+    ) -> Result<Vec<MLOperand>> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn resample_2d_dynamic_with_options(
         &mut self,
         _: MLOperand,
         _: MLResample2dDynamicOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
     fn tile_dynamic_with_options(
@@ -158,7 +162,7 @@ impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'build
         _: MLOperand,
         _: MLOperand,
         _: MLOperatorOptions,
-    ) -> MLOperand {
+    ) -> Result<MLOperand> {
         unimplemented!("dynamic-shape operation is not implemented")
     }
 }
