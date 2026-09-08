@@ -1112,7 +1112,7 @@ fn shape_op_shape(input: MLOperand, graph: &GraphInfo) -> Result<OperandDescript
     let operand = get_operand(input, graph)?;
     let rank = operand.descriptor.shape.len() as u32;
     Ok(OperandDescriptor {
-        data_type: DataType::Int64,
+        data_type: DataType::Uint32,
         shape: vec![Dimension::Static(rank)],
         pending_permutation: vec![],
     })
@@ -2997,6 +2997,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     impl_unary_op!(softsign, softsign_with_options, Softsign);
     impl_unary_op!(is_nan, is_nan_with_options, IsNaN);
     impl_unary_op!(is_infinite, is_infinite_with_options, IsInfinite);
+    // TODO: put this under the feature dynamic-inputs and DynamicShapeBuilder?
     impl_unary_op!(shape, shape_with_options, Shape);
     impl_unary_op!(
         triangular,
@@ -3344,6 +3345,52 @@ mod test {
         },
         mlgraphbuilder::MLGraphBuilder,
     };
+
+    #[cfg(feature = "dynamic-inputs")]
+    use crate::{
+        dynamic_shapes_explainer::DynamicShapeBuilder, graph::Dimension, operators::Operation,
+    };
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn shape_records_shape_operation_and_returns_rank_tensor() {
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+        let descriptor = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![2, 3, 4],
+        );
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let input = builder.input("input", &descriptor).unwrap();
+        let output = builder.shape(input).unwrap();
+        let two = builder
+            .constant_from_value(crate::operator_enums::MLOperandDataType::Uint32, 2u32)
+            .unwrap();
+        let two_x_output = builder.mul(output, two).unwrap();
+        let graph = builder.graph.as_ref().unwrap();
+
+        assert_eq!(output.id, 1);
+        assert_eq!(
+            graph.operands[output.id].descriptor.data_type,
+            crate::DataType::Uint32
+        );
+        assert_eq!(
+            graph.operands[output.id].descriptor.shape,
+            vec![Dimension::Static(3)]
+        );
+        assert!(matches!(
+            graph.operations.as_slice(),
+            [Operation::Shape { input: 0, options: Some(options), outputs }] if options.label.is_empty() && outputs == &vec![1]
+        ));
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("out1", output);
+        outputs.insert("out2", two_x_output);
+        builder.build(&outputs).unwrap();
+    }
 
     #[test]
     fn add_inputs() {
