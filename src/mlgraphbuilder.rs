@@ -44,109 +44,233 @@ use crate::{
 pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
 #[cfg(feature = "dynamic-inputs")]
+macro_rules! add_dynamic_single_output {
+    ($builder:expr, $operation:ident { $($field:ident: $value:expr),* $(,)? }) => {{
+        let output_id = $builder
+            .graph
+            .as_ref()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .operands
+            .len() as u32;
+        $builder.add_single_output_operation(Operation::$operation {
+            $($field: $value,)*
+            outputs: vec![output_id],
+        })
+    }};
+}
+
+#[cfg(feature = "dynamic-inputs")]
 impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'builder> {
-    fn shape_with_options(&mut self, _: MLOperand, _: MLOperatorOptions) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+    fn shape_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            Shape {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn range_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        start: MLOperand,
+        limit: MLOperand,
+        delta: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            Range {
+                start: start.id as u32,
+                limit: limit.id as u32,
+                delta: delta.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn modulus_floor_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        a: MLOperand,
+        b: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            ModulusFloor {
+                a: a.id as u32,
+                b: b.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn modulus_truncate_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        a: MLOperand,
+        b: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            ModulusTruncate {
+                a: a.id as u32,
+                b: b.id as u32,
+                options: Some(options)
+            }
+        )
     }
-    fn squeeze_with_options(&mut self, _: MLOperand, _: MLSqueezeOptions) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+    fn squeeze_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLSqueezeOptions,
+    ) -> Result<MLOperand> {
+        self.unary_same_shape_operation(input, options, |input, output, options| {
+            Operation::Squeeze {
+                input,
+                options,
+                outputs: vec![output],
+            }
+        })
     }
     fn unsqueeze_with_options(
         &mut self,
-        _: MLOperand,
-        _: &[u32],
-        _: MLOperatorOptions,
+        input: MLOperand,
+        axes: &[u32],
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            Unsqueeze {
+                input: input.id as u32,
+                options: Some(crate::operator_options::MLUnsqueezeOptions {
+                    axes: axes.to_vec(),
+                    label: options.label
+                })
+            }
+        )
     }
     fn reshape_to_2d_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLReshapeTo2dOptions,
+        input: MLOperand,
+        options: MLReshapeTo2dOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            ReshapeTo2d {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn reshape_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        input: MLOperand,
+        new_shape: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            ReshapeDynamic {
+                input: input.id as u32,
+                new_shape: new_shape.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn expand_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        input: MLOperand,
+        new_shape: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            ExpandDynamic {
+                input: input.id as u32,
+                new_shape: new_shape.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn slice_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLSliceDynamicOptions,
+        input: MLOperand,
+        starts: MLOperand,
+        sizes: MLOperand,
+        options: MLSliceDynamicOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            SliceDynamic {
+                input: input.id as u32,
+                starts: starts.id as u32,
+                sizes: sizes.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn pad_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        input: MLOperand,
+        beginning_padding: MLOperand,
+        ending_padding: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            PadDynamic {
+                input: input.id as u32,
+                beginning_padding: beginning_padding.id as u32,
+                ending_padding: ending_padding.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn split_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLSplitOptions,
+        input: MLOperand,
+        splits: MLOperand,
+        options: MLSplitOptions,
     ) -> Result<Vec<MLOperand>> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            SplitDynamic {
+                input: input.id as u32,
+                splits: splits.id as u32,
+                options: Some(options)
+            }
+        )
+        .map(|output| vec![output])
     }
     fn resample_2d_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLResample2dDynamicOptions,
+        input: MLOperand,
+        options: MLResample2dDynamicOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            Resample2dDynamic {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
     }
     fn tile_dynamic_with_options(
         &mut self,
-        _: MLOperand,
-        _: MLOperand,
-        _: MLOperatorOptions,
+        input: MLOperand,
+        repetitions: MLOperand,
+        options: MLOperatorOptions,
     ) -> Result<MLOperand> {
-        unimplemented!("dynamic-shape operation is not implemented")
+        add_dynamic_single_output!(
+            self,
+            TileDynamic {
+                input: input.id as u32,
+                repetitions: repetitions.id as u32,
+                options: Some(options)
+            }
+        )
     }
 }
 
