@@ -296,6 +296,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     fn backend_statistics(&self) -> Option<BackendStatistics> {
         Some(BackendStatistics::Coreml(self.statistics))
     }
+
     fn accelerated(&self) -> bool {
         self.device_type != DeviceType::Cpu
     }
