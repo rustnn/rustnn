@@ -2595,8 +2595,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id: id as usize })
     }
 
-    /// Scalar constant from a single value. Not implemented yet; use
-    /// [`Self::constant_from_slice`] with an empty shape instead.
+    /// Scalar constant from a single value.
     pub fn constant_from_value<T: bytemuck::Pod>(
         &mut self,
         data_type: MLOperandDataType,
