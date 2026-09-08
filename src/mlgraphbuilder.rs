@@ -2607,12 +2607,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
-    pub fn constant_from_value<T>(
+    pub fn constant_from_value<T: bytemuck::Pod>(
         &mut self,
-        _data_type: MLOperandDataType,
-        _value: T,
+        data_type: MLOperandDataType,
+        value: T,
     ) -> crate::error::Result<MLOperand> {
-        todo!()
+        self.constant_from_slice::<T>(&MLOperandDescriptor::new(data_type, vec![]), &[value])
     }
 
     // internal methods
