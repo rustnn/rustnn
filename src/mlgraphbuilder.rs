@@ -6,6 +6,8 @@ use webnn_graph::serialize::SerializeOptions;
 
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
+#[cfg(feature = "dynamic-inputs")]
+use crate::mlcontext::MLDynamicOperandDescriptor;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
@@ -2485,6 +2487,31 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         operand.data_type(graph)
     }
 
+    #[cfg(feature = "dynamic-inputs")]
+    pub fn dynamic_input(
+        &mut self,
+        name: &str,
+        descriptor: &MLDynamicOperandDescriptor,
+    ) -> crate::error::Result<MLOperand> {
+        debug!("Adding dynamic input {name:?} {descriptor:?}");
+        let operand = Operand {
+            descriptor: descriptor.into(),
+            kind: OperandKind::Input,
+            name: Some(name.to_string()),
+        };
+
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+
+        let id = graph.operands.len();
+        graph.operands.push(operand);
+        graph.input_operands.push(id as u32);
+
+        Ok(MLOperand { id })
+    }
+
     pub fn input(
         &mut self,
         name: &str,
@@ -3347,9 +3374,7 @@ mod test {
     };
 
     #[cfg(feature = "dynamic-inputs")]
-    use crate::{
-        dynamic_shapes_explainer::DynamicShapeBuilder, graph::Dimension, operators::Operation,
-    };
+    use crate::{graph::Dimension, operators::Operation};
 
     #[cfg(feature = "dynamic-inputs")]
     #[test]

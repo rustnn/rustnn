@@ -9,8 +9,10 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
+use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
+use crate::operator_options::MLDimension;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
 use crate::backends::cann::CannContext;
@@ -311,6 +313,34 @@ impl From<&MLOperandDescriptor> for OperandDescriptor {
                 .shape
                 .iter()
                 .map(|s| Dimension::Static(*s as u32))
+                .collect(),
+            pending_permutation: Default::default(),
+        }
+    }
+}
+
+// https://github.com/webmachinelearning/webnn/pull/945
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
+pub struct MLDynamicOperandDescriptor {
+    data_type: MLOperandDataType,
+    shape: Vec<MLDimension>,
+}
+
+impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
+    fn from(val: &MLDynamicOperandDescriptor) -> Self {
+        OperandDescriptor {
+            data_type: val.data_type.into(),
+            shape: val
+                .shape
+                .iter()
+                .map(|s| match s {
+                    MLDimension::Static(s) => Dimension::Static(*s),
+                    MLDimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
+                        name: d.name.clone(),
+                        max_size: u32::MAX,
+                    }),
+                })
                 .collect(),
             pending_permutation: Default::default(),
         }
