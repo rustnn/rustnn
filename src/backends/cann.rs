@@ -79,6 +79,10 @@ impl ListDevices for CannContext {
 }
 
 impl<'context> MLBackendContext<'context> for CannContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        crate::tensor::BackendKind::Cann
+    }
+
     fn accelerated(&self) -> bool {
         true
     }

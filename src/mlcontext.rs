@@ -20,6 +20,8 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
+#[cfg(feature = "dynamic-inputs")]
+use crate::error::ShapeInferenceError;
 use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
@@ -33,6 +35,7 @@ use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
+use crate::tensor::BackendKind;
 use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
@@ -62,6 +65,10 @@ fn validate_unique_tensor_bindings(
     }
     Ok(())
 }
+
+#[cfg(feature = "dynamic-inputs")]
+/// This name is an invention of my own
+pub type MLNamedShapes<'names, 'shapes> = BTreeMap<&'names str, &'shapes [u32]>;
 
 pub use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::{
@@ -106,6 +113,18 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         inputs: &MLNamedTensors,
         outputs: &MLNamedTensors,
     ) -> Result<()>;
+
+    #[cfg(feature = "dynamic-inputs")]
+    fn compute_shapes(
+        &mut self,
+        input_shapes: &mut MLNamedShapes,
+    ) -> Result<MLNamedShapes<'_, '_>> {
+        Err(Box::new(ShapeInferenceError::ComputeShapesNotImplemented {
+            backend: self.backend_kind(),
+        })
+        .into())
+    }
+    fn backend_kind(&self) -> BackendKind;
 }
 
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
@@ -833,6 +852,15 @@ impl<'context> MLContext<'context> {
         max_shape: &[u64],
     ) -> Result<()> {
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    fn compute_shapes(
+        &mut self,
+        input_shapes: &mut MLNamedShapes,
+    ) -> Result<MLNamedShapes<'_, '_>> {
+        debug!("compute_shapes: {input_shapes:?}");
+        self.backend.compute_shapes(input_shapes)
     }
 }
 

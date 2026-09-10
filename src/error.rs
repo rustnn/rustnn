@@ -6,7 +6,7 @@
 //!
 //! All variants are `Send + Sync` so they compose with `anyhow` and similar crates.
 
-use crate::backend_selection::Backend;
+use crate::{backend_selection::Backend, tensor::BackendKind};
 use std::path::PathBuf;
 
 use crate::{
@@ -106,6 +106,8 @@ pub enum ShapeInferenceError {
         operation: Operation,
         input: (MLOperand, Operand),
     },
+    #[error("Backend {backend:?} does not implement MLGraph.compute_shapes")]
+    ComputeShapesNotImplemented { backend: BackendKind },
 }
 
 // TODO: use graph_operation_to_webnn_node for error reporting the problematic node?
@@ -396,6 +398,12 @@ pub enum Error {
     CudaError {
         #[from]
         source: DriverError,
+    },
+
+    #[error("Compute shapes  errror : {source}")]
+    ShapeInferenceError {
+        #[from]
+        source: Box<ShapeInferenceError>,
     },
 }
 
