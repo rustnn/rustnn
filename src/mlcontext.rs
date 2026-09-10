@@ -105,6 +105,15 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         //
         // We could do an ad-hoc interpreter of WebNN here with a very limited set of operations
         // and tensor sizes and use that for all implementations.
+        //
+        // Also, we currently throw away our graph after build.
+        // We would need to keep the parts needed for shape inference,
+        // which also means to preserve all constants that are used in this graph.
+        // An alternative, would be to perform symbolic shape inference and keep
+        // the shape expressions for the outputs.
+        // The dynamic shape variants of the operators that transform data into shape
+        // would require to trace symbols through tensor/array contents which z3
+        // (or our own bespoke symbolic shape inferred could do)
         Err(Box::new(ShapeInferenceError::ComputeShapesNotImplemented {
             backend: self.backend_kind(),
         })
