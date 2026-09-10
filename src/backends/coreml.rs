@@ -121,6 +121,10 @@ impl CoremlContext {
 }
 
 impl<'context> MLBackendContext<'context> for CoremlContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        crate::tensor::BackendKind::CoreML
+    }
+
     fn accelerated(&self) -> bool {
         self.device_type != DeviceType::Cpu
     }

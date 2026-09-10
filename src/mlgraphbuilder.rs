@@ -6,6 +6,8 @@ use webnn_graph::serialize::SerializeOptions;
 
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
+#[cfg(feature = "dynamic-inputs")]
+use crate::mlcontext::MLDynamicOperandDescriptor;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
@@ -35,7 +37,244 @@ use crate::{
     mlcontext::{MLBackendBuilder, MLContext},
 };
 
+#[cfg(feature = "dynamic-inputs")]
+use crate::{
+    dynamic_shapes_explainer::DynamicShapeBuilder,
+    operator_options::{MLResample2dDynamicOptions, MLReshapeTo2dOptions, MLSliceDynamicOptions},
+};
+
 pub type Result<T> = std::result::Result<T, GraphBuilderError>;
+
+#[cfg(feature = "dynamic-inputs")]
+macro_rules! add_dynamic_single_output {
+    ($builder:expr, $operation:ident { $($field:ident: $value:expr),* $(,)? }) => {{
+        let output_id = $builder
+            .graph
+            .as_ref()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .operands
+            .len() as u32;
+        $builder.add_single_output_operation(Operation::$operation {
+            $($field: $value,)*
+            outputs: vec![output_id],
+        })
+    }};
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl<'context, 'builder> DynamicShapeBuilder for MLGraphBuilder<'context, 'builder> {
+    fn shape_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            Shape {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn range_with_options(
+        &mut self,
+        start: MLOperand,
+        limit: MLOperand,
+        delta: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            Range {
+                start: start.id as u32,
+                limit: limit.id as u32,
+                delta: delta.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn modulus_floor_with_options(
+        &mut self,
+        a: MLOperand,
+        b: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            ModulusFloor {
+                a: a.id as u32,
+                b: b.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn modulus_truncate_with_options(
+        &mut self,
+        a: MLOperand,
+        b: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            ModulusTruncate {
+                a: a.id as u32,
+                b: b.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn squeeze_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLSqueezeOptions,
+    ) -> Result<MLOperand> {
+        self.unary_same_shape_operation(input, options, |input, output, options| {
+            Operation::Squeeze {
+                input,
+                options,
+                outputs: vec![output],
+            }
+        })
+    }
+    fn unsqueeze_with_options(
+        &mut self,
+        input: MLOperand,
+        axes: &[u32],
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            Unsqueeze {
+                input: input.id as u32,
+                options: Some(crate::operator_options::MLUnsqueezeOptions {
+                    axes: axes.to_vec(),
+                    label: options.label
+                })
+            }
+        )
+    }
+    fn reshape_to_2d_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLReshapeTo2dOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            ReshapeTo2d {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn reshape_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        new_shape: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            ReshapeDynamic {
+                input: input.id as u32,
+                new_shape: new_shape.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn expand_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        new_shape: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            ExpandDynamic {
+                input: input.id as u32,
+                new_shape: new_shape.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn slice_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        starts: MLOperand,
+        sizes: MLOperand,
+        options: MLSliceDynamicOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            SliceDynamic {
+                input: input.id as u32,
+                starts: starts.id as u32,
+                sizes: sizes.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn pad_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        beginning_padding: MLOperand,
+        ending_padding: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            PadDynamic {
+                input: input.id as u32,
+                beginning_padding: beginning_padding.id as u32,
+                ending_padding: ending_padding.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn split_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        splits: MLOperand,
+        options: MLSplitOptions,
+    ) -> Result<Vec<MLOperand>> {
+        add_dynamic_single_output!(
+            self,
+            SplitDynamic {
+                input: input.id as u32,
+                splits: splits.id as u32,
+                options: Some(options)
+            }
+        )
+        .map(|output| vec![output])
+    }
+    fn resample_2d_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        options: MLResample2dDynamicOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            Resample2dDynamic {
+                input: input.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+    fn tile_dynamic_with_options(
+        &mut self,
+        input: MLOperand,
+        repetitions: MLOperand,
+        options: MLOperatorOptions,
+    ) -> Result<MLOperand> {
+        add_dynamic_single_output!(
+            self,
+            TileDynamic {
+                input: input.id as u32,
+                repetitions: repetitions.id as u32,
+                options: Some(options)
+            }
+        )
+    }
+}
 
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context, 'builder> {
@@ -875,7 +1114,7 @@ fn shape_op_shape(input: MLOperand, graph: &GraphInfo) -> Result<OperandDescript
     let operand = get_operand(input, graph)?;
     let rank = operand.descriptor.shape.len() as u32;
     Ok(OperandDescriptor {
-        data_type: DataType::Int64,
+        data_type: DataType::Int64, // TODO: this is different from dynamic shape explainer: there u32
         shape: vec![Dimension::Static(rank)],
         pending_permutation: vec![],
     })
@@ -1995,6 +2234,20 @@ fn shape_inference_single_output(
         Operation::Gru { .. } | Operation::Lstm { .. } | Operation::LstmCell { .. } => {
             panic!("This method only supports single output ops. Use shape_inference_multi_output")
         }
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::Range { .. }
+        | Operation::ModulusFloor { .. }
+        | Operation::ModulusTruncate { .. }
+        | Operation::ReshapeTo2d { .. }
+        | Operation::ReshapeDynamic { .. }
+        | Operation::ExpandDynamic { .. }
+        | Operation::SliceDynamic { .. }
+        | Operation::PadDynamic { .. }
+        | Operation::SplitDynamic { .. }
+        | Operation::Resample2dDynamic { .. }
+        | Operation::TileDynamic { .. } => {
+            unimplemented!("dynamic-shape operation shape inference is not implemented")
+        }
     }
 }
 
@@ -2234,6 +2487,31 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         operand.data_type(graph)
     }
 
+    #[cfg(feature = "dynamic-inputs")]
+    pub fn dynamic_input(
+        &mut self,
+        name: &str,
+        descriptor: &MLDynamicOperandDescriptor,
+    ) -> crate::error::Result<MLOperand> {
+        debug!("Adding dynamic input {name:?} {descriptor:?}");
+        let operand = Operand {
+            descriptor: descriptor.into(),
+            kind: OperandKind::Input,
+            name: Some(name.to_string()),
+        };
+
+        let graph = self
+            .graph
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+
+        let id = graph.operands.len();
+        graph.operands.push(operand);
+        graph.input_operands.push(id as u32);
+
+        Ok(MLOperand { id })
+    }
+
     pub fn input(
         &mut self,
         name: &str,
@@ -2366,12 +2644,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
-    pub fn constant_from_value<T>(
+    pub fn constant_from_value<T: bytemuck::Pod>(
         &mut self,
-        _data_type: MLOperandDataType,
-        _value: T,
+        data_type: MLOperandDataType,
+        value: T,
     ) -> crate::error::Result<MLOperand> {
-        todo!()
+        self.constant_from_slice::<T>(&MLOperandDescriptor::new(data_type, vec![]), &[value])
     }
 
     // internal methods
@@ -2756,6 +3034,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     impl_unary_op!(softsign, softsign_with_options, Softsign);
     impl_unary_op!(is_nan, is_nan_with_options, IsNaN);
     impl_unary_op!(is_infinite, is_infinite_with_options, IsInfinite);
+    // TODO: put this under the feature dynamic-inputs and DynamicShapeBuilder?
     impl_unary_op!(shape, shape_with_options, Shape);
     impl_unary_op!(
         triangular,
@@ -3103,6 +3382,88 @@ mod test {
         },
         mlgraphbuilder::MLGraphBuilder,
     };
+
+    #[cfg(feature = "dynamic-inputs")]
+    use crate::{
+        mlcontext::{MLDynamicOperandDescriptor, MLNamedShapes},
+        operator_options::{MLDimension, MLDynamicDimension, MLOperatorOptions},
+    };
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn test_dynamic_input() {
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+
+        for descriptor in [
+            MLDynamicOperandDescriptor::new(
+                crate::operator_enums::MLOperandDataType::Float32,
+                vec![MLDimension::Dynamic(MLDynamicDimension {
+                    name: "fritz".to_string(),
+                    max_size: 10,
+                })],
+            ),
+            MLDynamicOperandDescriptor::new(
+                crate::operator_enums::MLOperandDataType::Float32,
+                vec![
+                    MLDimension::Dynamic(MLDynamicDimension {
+                        name: "fritz".to_string(),
+                        max_size: 10,
+                    }),
+                    MLDimension::Static(0),
+                ],
+            ),
+            (&MLOperandDescriptor::new(
+                crate::operator_enums::MLOperandDataType::Float32,
+                vec![2, 3, 4],
+            ))
+                .into(),
+        ]
+        .iter()
+        {
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let input = builder.dynamic_input("input", descriptor).unwrap();
+            let output = builder
+                .shape_with_options(
+                    input,
+                    MLOperatorOptions {
+                        label: "shape_op".to_string(),
+                    },
+                )
+                .unwrap();
+            let two = builder
+                .constant_from_value(crate::operator_enums::MLOperandDataType::Int64, 2u64) // TODO: this is different from dynamic shape explainer: there u32
+                .unwrap();
+            let two_x_output = builder.mul(output, two).unwrap();
+            insta::assert_debug_snapshot!(builder.graph);
+
+            let mut outputs = MLNamedOperands::new();
+            outputs.insert("out1", output);
+            outputs.insert("out2", two_x_output);
+            let mut graph = builder.build(&outputs).unwrap();
+
+            // transform descriptor into concrete shape. "fritz" is obviously 42
+            let concrete_shape: Vec<_> = descriptor
+                .shape()
+                .iter()
+                .map(|s| match s {
+                    MLDimension::Static(s) => *s,
+                    MLDimension::Dynamic(MLDynamicDimension { name, .. }) if name == "fritz" => 42,
+                    _ => unreachable!(),
+                })
+                .collect();
+
+            let mut shapes = MLNamedShapes::new();
+            shapes.insert("input", &concrete_shape);
+
+            //let output_shapes = context.compute_shapes(&mut graph, &shapes).unwrap();
+            //assert!(output_shapes.contains_key("out1"));
+            //assert!(output_shapes.contains_key("out2"));
+        }
+    }
 
     #[test]
     fn add_inputs() {

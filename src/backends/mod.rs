@@ -37,6 +37,10 @@ impl DisabledContext {
 }
 
 impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        panic!("RustNN is expected to never use a disabled backend")
+    }
+
     fn accelerated(&self) -> bool {
         panic!("RustNN is expected to never use a disabled backend")
     }

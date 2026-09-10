@@ -9,8 +9,12 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
+#[cfg(feature = "dynamic-inputs")]
+use crate::error::ShapeInferenceError;
+use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
+use crate::operator_options::MLDimension;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
 use crate::backends::cann::CannContext;
@@ -18,6 +22,7 @@ use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
+use crate::tensor::BackendKind;
 use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
@@ -30,6 +35,10 @@ pub use crate::mlcontextoptions::{
 pub type MLNamedTensors<'names> = BTreeMap<&'names str, &'names MLTensor>;
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedoperands>
 pub type MLNamedOperands<'names> = BTreeMap<&'names str, MLOperand>;
+
+#[cfg(feature = "dynamic-inputs")]
+/// This name is an invention of my own
+pub type MLNamedShapes<'names, 'shapes> = BTreeMap<&'names str, &'shapes [u32]>;
 
 pub use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::{
@@ -74,6 +83,43 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         inputs: &MLNamedTensors,
         outputs: &MLNamedTensors,
     ) -> Result<()>;
+
+    #[cfg(feature = "dynamic-inputs")]
+    fn compute_shapes(
+        &mut self,
+        graph: &mut MLGraph,
+        input_shapes: &MLNamedShapes,
+    ) -> Result<MLNamedShapes<'_, '_>> {
+        // It is very difficult to actually implement MLGraph.compute_shapes:
+        //
+        // TRT provides a function to get output shape given the input shapes without running inference
+        // but ONNX runtime does not (there are even operators like NonZero that require inference
+        // to know the output shape).
+        //
+        // Implementing compute_shapes basically requires to split up the graph
+        // into a inference time part and a shape inference time part.
+        // The logic in shape inference part would be artificially limited to avoid
+        // arbitrary complexity in compute shapes
+        //
+        // https://github.com/webmachinelearning/webnn/pull/945#discussion_r3969524029
+        //
+        // We could do an ad-hoc interpreter of WebNN here with a very limited set of operations
+        // and tensor sizes and use that for all implementations.
+        //
+        // Also, we currently throw away our graph after build.
+        // We would need to keep the parts needed for shape inference,
+        // which also means to preserve all constants that are used in this graph.
+        // An alternative, would be to perform symbolic shape inference and keep
+        // the shape expressions for the outputs.
+        // The dynamic shape variants of the operators that transform data into shape
+        // would require to trace symbols through tensor/array contents which z3
+        // (or our own bespoke symbolic shape inferred could do)
+        Err(Box::new(ShapeInferenceError::ComputeShapesNotImplemented {
+            backend: self.backend_kind(),
+        })
+        .into())
+    }
+    fn backend_kind(&self) -> BackendKind;
 }
 
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
@@ -303,6 +349,19 @@ pub struct MLOperandDescriptor {
     shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
 }
 
+impl From<&MLOperandDescriptor> for MLDynamicOperandDescriptor {
+    fn from(val: &MLOperandDescriptor) -> Self {
+        MLDynamicOperandDescriptor {
+            data_type: val.data_type,
+            shape: val
+                .shape
+                .iter()
+                .map(|s| MLDimension::Static(*s as u32))
+                .collect(),
+        }
+    }
+}
+
 impl From<&MLOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         OperandDescriptor {
@@ -314,6 +373,56 @@ impl From<&MLOperandDescriptor> for OperandDescriptor {
                 .collect(),
             pending_permutation: Default::default(),
         }
+    }
+}
+
+// https://github.com/webmachinelearning/webnn/pull/945
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
+pub struct MLDynamicOperandDescriptor {
+    data_type: MLOperandDataType,
+    shape: Vec<MLDimension>,
+}
+
+impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
+    fn from(val: &MLDynamicOperandDescriptor) -> Self {
+        OperandDescriptor {
+            data_type: val.data_type.into(),
+            shape: val
+                .shape
+                .iter()
+                .map(|s| match s {
+                    MLDimension::Static(s) => Dimension::Static(*s),
+                    MLDimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
+                        name: d.name.clone(),
+                        max_size: d.max_size,
+                    }),
+                })
+                .collect(),
+            pending_permutation: Default::default(),
+        }
+    }
+}
+
+impl MLDynamicOperandDescriptor {
+    pub fn new(data_type: MLOperandDataType, shape: Vec<MLDimension>) -> Self {
+        Self { data_type, shape }
+    }
+
+    pub fn data_type(&self) -> MLOperandDataType {
+        self.data_type
+    }
+
+    pub fn shape(&self) -> &[MLDimension] {
+        &self.shape
+    }
+
+    pub fn set_data_type(&mut self, data_type: MLOperandDataType) {
+        self.data_type = data_type;
+    }
+
+    pub fn set_shape(&mut self, shape: Vec<MLDimension>) {
+        self.shape = shape;
     }
 }
 
@@ -450,7 +559,7 @@ impl MLTensorDescriptor {
     }
 }
 
-// TODO: this is wrong. must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
+// TODO: this is wrong. Must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
 #[derive(Debug)]
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
@@ -621,6 +730,16 @@ impl<'context> MLContext<'context> {
         max_shape: &[u64],
     ) -> Result<()> {
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    pub fn compute_shapes(
+        &mut self,
+        graph: &mut MLGraph,
+        input_shapes: &MLNamedShapes,
+    ) -> Result<MLNamedShapes<'_, '_>> {
+        debug!("compute_shapes: {input_shapes:?}");
+        self.backend.compute_shapes(graph, input_shapes)
     }
 }
 

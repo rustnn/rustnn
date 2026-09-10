@@ -137,6 +137,10 @@ pub enum BackendKind {
     CoreML,
     /// NVIDIA TensorRT backend
     TensorRT,
+    /// Google LiteRT backend
+    LiteRT,
+    /// Huawei CANN backend
+    Cann,
 }
 
 impl std::fmt::Display for DeviceKind {
@@ -157,6 +161,8 @@ impl std::fmt::Display for BackendKind {
             BackendKind::OnnxGpu => write!(f, "onnx_gpu"),
             BackendKind::CoreML => write!(f, "coreml"),
             BackendKind::TensorRT => write!(f, "tensorrt"),
+            BackendKind::LiteRT => write!(f, "litert"),
+            BackendKind::Cann => write!(f, "cann"),
         }
     }
 }
@@ -195,6 +201,8 @@ mod tests {
         assert_eq!(BackendKind::OnnxGpu.to_string(), "onnx_gpu");
         assert_eq!(BackendKind::CoreML.to_string(), "coreml");
         assert_eq!(BackendKind::TensorRT.to_string(), "tensorrt");
+        assert_eq!(BackendKind::LiteRT.to_string(), "litert");
+        assert_eq!(BackendKind::Cann.to_string(), "cann");
     }
 
     #[test]

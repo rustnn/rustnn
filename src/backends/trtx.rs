@@ -666,6 +666,10 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
 
 #[allow(unused_variables)]
 impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        crate::tensor::BackendKind::TensorRT
+    }
+
     fn accelerated(&self) -> bool {
         true
     }

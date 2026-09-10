@@ -236,6 +236,66 @@ pub struct MLOperatorOptions {
     pub label: String,
 }
 
+// From https://github.com/webmachinelearning/webnn/pull/945.
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct MLReshapeTo2dOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default = "default_reshape_to_2d_axis")]
+    pub axis: u32,
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl Default for MLReshapeTo2dOptions {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            axis: default_reshape_to_2d_axis(),
+        }
+    }
+}
+
+#[cfg(feature = "dynamic-inputs")]
+fn default_reshape_to_2d_axis() -> u32 {
+    1
+}
+
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct MLSliceDynamicOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub strides: Vec<u32>,
+}
+
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MLResample2dDynamicOptions {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub scales: Vec<f32>,
+    #[serde(default)]
+    pub axes: Vec<u32>,
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl std::hash::Hash for MLResample2dDynamicOptions {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.label.hash(state);
+        self.mode.hash(state);
+        bytemuck::cast_slice::<f32, u8>(&self.scales).hash(state);
+        self.axes.hash(state);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Dictionaries extending MLOperatorOptions (spec order)
 // ---------------------------------------------------------------------------
