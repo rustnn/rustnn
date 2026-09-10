@@ -69,8 +69,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             .convert(&graph_info)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         let model = compile_model(
-            &converted.data,
-            converted.weights_data.as_deref(),
+            converted.data,
+            converted.weights_data,
             self.device_type,
             supports_in_memory_asset(&graph_info),
         )
@@ -482,5 +482,54 @@ mod test {
         let mut result = vec![0i32; 4];
         context.read_tensor(&out, &mut result).unwrap();
         assert_eq!(result, &[11, 22, 33, 44]);
+    }
+
+    /// Regression guard for the `rustnn_coreml_predict` output-provider lifetime
+    /// bug: the shim returned the prediction result through a plain `__bridge`
+    /// cast, so ARC deallocated it when the shim returned and the very next use
+    /// (reading outputs in `run_coreml_bytes`) SIGSEGVed. The crash only
+    /// manifests in optimized builds (`cargo test --release`); in debug builds
+    /// the freed memory happened to survive long enough to read.
+    #[test]
+    fn coreml_repeated_dispatch_provider_lifetime() {
+        let _ = pretty_env_logger::try_init();
+
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, [4].to_vec());
+        for _ in 0..5 {
+            let Some(mut context) = coreml_context() else {
+                return;
+            };
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let a = builder.input("a", &desc).unwrap();
+            let b = builder.input("b", &desc).unwrap();
+            let y = builder.add(a, b).unwrap();
+            let mut outputs = MLNamedOperands::new();
+            outputs.insert("y", y);
+            let mut graph = builder.build(&outputs).unwrap();
+
+            let mut io_desc = MLTensorDescriptor::from_operand_descriptor(&desc);
+            io_desc.set_writable(true);
+            io_desc.set_readable(true);
+
+            let a = context.create_tensor(&io_desc).unwrap();
+            let b = context.create_tensor(&io_desc).unwrap();
+            let out = context.create_tensor(&io_desc).unwrap();
+            context.write_tensor(&a, &[1.0f32, 2., 3., 4.]).unwrap();
+            context.write_tensor(&b, &[10.0f32, 20., 30., 40.]).unwrap();
+
+            let mut inputs = MLNamedTensors::new();
+            inputs.insert("a", &a);
+            inputs.insert("b", &b);
+            let mut out_bindings = MLNamedTensors::new();
+            out_bindings.insert("y", &out);
+
+            context
+                .dispatch(&mut graph, &inputs, &out_bindings)
+                .unwrap();
+
+            let mut result = vec![0.0f32; 4];
+            context.read_tensor(&out, &mut result).unwrap();
+            assert_eq!(result, &[11.0f32, 22., 33., 44.]);
+        }
     }
 }

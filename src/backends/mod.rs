@@ -17,6 +17,9 @@ pub mod litert;
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 pub mod cann;
 
+#[cfg(feature = "webnn-runtime")]
+pub mod webnn;
+
 #[derive(Debug)]
 pub(crate) struct DisabledContext {}
 

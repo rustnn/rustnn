@@ -198,6 +198,71 @@ impl TrtxConverter {
         cast_to_i32 == 1
     }
 
+    /// True when every consumer of `operand_id` is a `cast` (and there is at least one).
+    fn constant_only_feeds_casts(graph: &GraphInfo, operand_id: u32) -> bool {
+        let mut consumers = graph
+            .operations
+            .iter()
+            .filter(|op| op.input_operands().contains(&operand_id))
+            .peekable();
+        consumers.peek().is_some() && consumers.all(|op| op.op_type() == "cast")
+    }
+
+    /// True when `operand_id` is an int8/uint8/int4/uint4 constant with a consumer
+    /// other than quantizeLinear/dequantizeLinear (gather data, a uint8 mask that is
+    /// reshaped/expanded, integer arithmetic, ...). TensorRT's
+    /// QuantizedConstantValidator only allows kINT8/kINT4 constants directly before a
+    /// DQ or plugin, so such constants are widened to kINT32 (TRT's own suggestion for
+    /// non-quantized integer constants). Zero points stay kINT8: the Q/DQ paths run
+    /// them through an identity DQ, which is the accepted Constant -> DQ shape.
+    fn int8_family_constant_needs_int32_storage(graph: &GraphInfo, operand_id: u32) -> bool {
+        let Some(operand) = graph.operand(operand_id) else {
+            return false;
+        };
+        if operand.kind != OperandKind::Constant
+            || !matches!(
+                operand.descriptor.data_type,
+                DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4
+            )
+        {
+            return false;
+        }
+        graph.operations.iter().any(|op| {
+            op.input_operands().contains(&operand_id)
+                && !matches!(
+                    op,
+                    Operation::DequantizeLinear { .. } | Operation::QuantizeLinear { .. }
+                )
+        })
+    }
+
+    /// Constants no operation consumes. onnx2webnn registers every ONNX
+    /// initializer eagerly and some lowerings read them at conversion time
+    /// (Range bounds, GQA sequence lengths, pinned If gates), leaving dead
+    /// constants. TensorRT eliminates the dead constant layers, so they must not
+    /// be marked refittable nor refitted ("The weights cannot be refitted").
+    /// Their values cannot influence outputs, so skipping them is always sound,
+    /// including for cached engines.
+    pub fn unused_constant_operand_ids(graph: &GraphInfo) -> HashSet<u32> {
+        // Option operands (gemm.c, normalization scale/bias, RNN biases and
+        // states) count as consumers: a constant wrongly classified as dead is
+        // baked into the engine and then served stale to every cached build.
+        let consumed: HashSet<u32> = graph
+            .operations
+            .iter()
+            .flat_map(|op| op.all_input_operands())
+            .collect();
+        graph
+            .operands
+            .iter()
+            .enumerate()
+            .filter(|(id, operand)| {
+                operand.kind == OperandKind::Constant && !consumed.contains(&(*id as u32))
+            })
+            .map(|(id, _)| id as u32)
+            .collect()
+    }
+
     /// Parse WPT bigint / JSON integer clamp bound, saturating to `i64` range.
     fn parse_clamp_i64_bound(v: &serde_json::Value, default: i64) -> i64 {
         if let Some(s) = v.as_str() {
@@ -469,7 +534,7 @@ impl TrtxConverter {
 
     /// Cast BOOL tensor to Uint8 (false → 0, true → 1) per WebNN logical/comparison output type.
     ///
-    /// TensorRT 3.16+ restricts internal `kUINT8` to network I/O and DQ outputs; comparison only
+    /// TensorRT restricts internal `kUINT8` to network I/O and DQ outputs; comparison only
     /// produces 0/1, so we emit `kINT8` (WebNN-compatible for this value range).
     fn cast_bool_to_uint8<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
@@ -510,7 +575,7 @@ impl TrtxConverter {
 
     /// Promote uint8/int8 mask operands to float32 before TRT shuffle/resize/identity.
     ///
-    /// TensorRT 3.16+ allows UINT8 only at network I/O, not on internal broadcast ops.
+    /// TensorRT allows UINT8 only at network I/O, not on internal broadcast ops.
     /// Returns a promoted tensor when needed; callers use `promoted.as_ref().unwrap_or(input)`.
     fn promote_mask_for_trt_broadcast<'a>(
         graph: &GraphInfo,
@@ -621,6 +686,43 @@ impl TrtxConverter {
             })
     }
 
+    /// Materialize a computed uint8 value held in a float/int32 tensor. Graph
+    /// outputs become kUINT8 (legal at network I/O and matching the binding's
+    /// byte layout); internal tensors stay kINT32 because TensorRT rejects a
+    /// Cast-produced kUINT8 tensor anywhere else. Consumers read the
+    /// WebNN dtype and cast from whatever storage they find (`add_cast_op`, the
+    /// manual dequantize path, `cast_uint8_to_int32`).
+    fn store_uint8_result<'a>(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        output_id: u32,
+        value: &trtx::Tensor<'a>,
+    ) -> Result<trtx::Tensor<'a>, GraphError> {
+        let is_graph_output = graph
+            .operand(output_id)
+            .is_some_and(|o| o.kind == OperandKind::Output);
+        if is_graph_output {
+            return Self::cast_int32_to_uint8(network, value);
+        }
+        let map_err = |e: trtx::Error| GraphError::ConversionFailed {
+            format: "trtx".to_string(),
+            reason: format!("uint8 result as int32 storage: {e}"),
+        };
+        if value.get_type(&*network) == TrtDataType::kINT32 {
+            network
+                .add_identity(value)
+                .map_err(map_err)?
+                .output(&*network, 0)
+                .map_err(map_err)
+        } else {
+            network
+                .add_cast(value, TrtDataType::kINT32)
+                .map_err(map_err)?
+                .output(&*network, 0)
+                .map_err(map_err)
+        }
+    }
+
     /// Cast INT32 tensor to INT64 (WebNN argMin/argMax `outputDataType: int64`).
     fn cast_int32_to_int64<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
@@ -679,9 +781,13 @@ impl TrtxConverter {
                 ids.insert(id as u32);
             }
         }
+        // TensorRT folds `Cast(constant)` into a new constant, so a constant whose
+        // consumers are all casts loses its refit prototype ("The weights cannot be
+        // refitted"); e.g. a scalar fp16 epsilon cast to float32 in every layer norm.
         for (id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Constant
-                && Self::integer_constant_only_casts_to_int32(graph, id as u32)
+                && (Self::integer_constant_only_casts_to_int32(graph, id as u32)
+                    || Self::constant_only_feeds_casts(graph, id as u32))
             {
                 ids.insert(id as u32);
             }
@@ -879,7 +985,8 @@ impl TrtxConverter {
                 );
 
                 let promote_integer_cast_i32 =
-                    Self::integer_constant_only_casts_to_int32(graph, operand_id as u32);
+                    Self::integer_constant_only_casts_to_int32(graph, operand_id as u32)
+                        || Self::int8_family_constant_needs_int32_storage(graph, operand_id as u32);
 
                 // TensorRT add_constant does not support kINT64; bake int64/uint64 via add_small_constant_copied.
                 let promote_wide_int = matches!(
@@ -926,11 +1033,21 @@ impl TrtxConverter {
                             ),
                         }
                     })?;
-                    let i32_bytes = Self::int8_uint8_bytes_to_int32_le(
-                        data,
-                        operand.descriptor.data_type,
-                        element_count,
-                    );
+                    let i32_bytes: Vec<u8> = match operand.descriptor.data_type {
+                        DataType::Int4 => unpack_int4(data, element_count)
+                            .into_iter()
+                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .collect(),
+                        DataType::Uint4 => unpack_uint4(data, element_count)
+                            .into_iter()
+                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .collect(),
+                        _ => Self::int8_uint8_bytes_to_int32_le(
+                            data,
+                            operand.descriptor.data_type,
+                            element_count,
+                        ),
+                    };
                     non_refittable_constants.insert(operand_id as u32);
                     network.add_small_constant_copied(
                         &add_dims,
@@ -1007,6 +1124,16 @@ impl TrtxConverter {
                         reason: format!("Output operand {} not found in tensor map", operand_id),
                     }
                 })?;
+
+                // Computed uint8 values travel as kINT32 internally (see
+                // `store_uint8_result`); a network output may be kUINT8 and the
+                // binding expects one byte per element.
+                let expected = Self::webnn_to_trt_dtype(operand.descriptor.data_type)?;
+                if expected == TrtDataType::kUINT8
+                    && tensor.get_type(&*network) == TrtDataType::kINT32
+                {
+                    *tensor = Self::cast_int32_to_uint8(network, tensor)?;
+                }
 
                 let trt_io_name = io_binding_names
                     .get(&(operand_id as u32))
@@ -1210,8 +1337,8 @@ impl TrtxConverter {
             // Shape manipulation operations
             "slice" => Self::add_slice_op(network, tensor_map, operation)?,
             "split" => Self::add_split_op(network, tensor_map, operation)?,
-            "squeeze" => Self::add_squeeze_op(network, tensor_map, operation)?,
-            "unsqueeze" => Self::add_unsqueeze_op(network, tensor_map, operation)?,
+            "squeeze" => Self::add_squeeze_op(graph, network, tensor_map, operation)?,
+            "unsqueeze" => Self::add_unsqueeze_op(graph, network, tensor_map, operation)?,
             "expand" => Self::add_expand_op(graph, network, tensor_map, operation)?,
             "tile" => Self::add_tile_op(network, tensor_map, operation)?,
 
@@ -1524,19 +1651,26 @@ impl TrtxConverter {
                 });
         }
 
-        let mut resize_layer =
-            network
-                .add_resize(cur)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("{op_label} broadcast resize: {e}"),
-                })?;
-        resize_layer.set_output_dimensions(network, target_dims);
-        resize_layer
+        // Broadcast via a stride-0 Slice (same construction as add_expand_op):
+        // ISliceLayer preserves the element type (int32/int64 included), whereas
+        // IResizeLayer rejects integer inputs.
+        let start: Vec<i64> = vec![0i64; target_dims.len()];
+        let stride: Vec<i64> = dims
+            .iter()
+            .zip(target_dims.iter())
+            .map(|(&d, &t)| if d == t { 1 } else { 0 })
+            .collect();
+        let slice_layer = network
+            .add_slice(cur, &start, target_dims, &stride)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("{op_label} broadcast slice: {e}"),
+            })?;
+        slice_layer
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("{op_label} broadcast resize output: {e}"),
+                reason: format!("{op_label} broadcast slice output: {e}"),
             })
     }
 
@@ -1653,9 +1787,8 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get UINT8 elementwise output: {}", e),
             })?;
-        let output = Self::cast_int32_to_uint8(network, &i32_out)?;
-
         let output_id = operation.output_operands_slice()[0];
+        let output = Self::store_uint8_result(graph, network, output_id, &i32_out)?;
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -1722,7 +1855,7 @@ impl TrtxConverter {
     /// Add logical operation: broadcast inputs, cast to BOOL, elementwise kAND/kOR/kXOR, Uint8 output.
     ///
     /// TensorRT elementwise `kAND` / `kOR` / `kXOR` require BOOL inputs. [`ensure_broadcast_compatible`]
-    /// uses shuffle/resize, which reject internal UINT8/INT8 (TRT 3.16+), so mask operands are
+    /// uses shuffle/resize, which reject internal UINT8/INT8, so mask operands are
     /// promoted to Float32 before broadcast, then cast to BOOL.
     fn add_logical_binary_op<'a>(
         graph: &GraphInfo,
@@ -2927,20 +3060,21 @@ impl TrtxConverter {
                     });
                 }
             };
-            let output = if input.get_type(&*network) == TrtDataType::kUINT8 {
-                match fp_trt {
-                    TrtDataType::kFLOAT => Self::cast_to_float32(network, input)?,
-                    TrtDataType::kHALF => Self::cast_to_float16(network, input)?,
-                    _ => unreachable!(),
-                }
-            } else {
-                Self::trtx_int8_uint8_identity_dequantize(
+            let output = match input.get_type(&*network) {
+                TrtDataType::kINT8 => Self::trtx_int8_uint8_identity_dequantize(
                     network,
                     input,
                     fp_trt,
                     "cast integer to float",
                     input_dtype,
-                )?
+                )?,
+                // kUINT8 (network input) or an already widened storage type
+                // (int32/float mask promoted upstream): a plain cast is exact.
+                _ => match fp_trt {
+                    TrtDataType::kFLOAT => Self::cast_to_float32(network, input)?,
+                    TrtDataType::kHALF => Self::cast_to_float16(network, input)?,
+                    _ => unreachable!(),
+                },
             };
             tensor_map.insert(output_id, output);
             return Ok(());
@@ -2996,8 +3130,67 @@ impl TrtxConverter {
             return Ok(());
         }
 
+        // TensorRT rejects internal kUINT8 tensors unless a Constant or
+        // Dequantize layer produces them, and int8 tensors may only feed DQ. An
+        // integer tensor narrowed to int8/uint8/int4/uint4 solely to be dequantized
+        // (packed-weight unpacking: GatherBlockQuantized nibbles, MatMulNBits) or to
+        // serve as a quantize/dequantize zero point (DynamicQuantizeLinear) can skip
+        // the cast: both manual paths cast any integer input to float, and the values
+        // are integral and in range by construction.
+        let narrow_int_target = matches!(
+            target_dtype,
+            DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4
+        );
+        let input_is_wide_int = matches!(
+            input.get_type(&*network),
+            TrtDataType::kINT32 | TrtDataType::kINT64
+        );
+        if narrow_int_target && input_is_wide_int && output_operand.kind != OperandKind::Output {
+            let mut consumers = graph
+                .operations
+                .iter()
+                .filter(|op| op.input_operands().contains(&output_id))
+                .peekable();
+            let only_dequantize_input = consumers.peek().is_some()
+                && consumers.all(|op| {
+                    let ins = op.input_operands();
+                    let is_zero_point = ins.get(2) == Some(&output_id) && ins[1] != output_id;
+                    match op {
+                        Operation::DequantizeLinear { .. } => {
+                            (ins.first() == Some(&output_id) && !ins[1..].contains(&output_id))
+                                || (is_zero_point && ins[0] != output_id)
+                        }
+                        Operation::QuantizeLinear { .. } => is_zero_point && ins[0] != output_id,
+                        _ => false,
+                    }
+                });
+            if only_dequantize_input {
+                let output = network
+                    .add_identity(input)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("cast to {target_dtype:?} before dequantize: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("cast to {target_dtype:?} before dequantize output: {e}"),
+                    })?;
+                tensor_map.insert(output_id, output);
+                return Ok(());
+            }
+        }
+
         // Non-int8/uint8 or scalar promoted: direct cast.
-        let trt_dtype = Self::webnn_to_trt_dtype(target_dtype)?;
+        let mut trt_dtype = Self::webnn_to_trt_dtype(target_dtype)?;
+        // Internal uint8 tensors follow the converter's mask convention and are
+        // stored as kINT8 (see `cast_bool_to_uint8`): TensorRT rejects a
+        // Cast-produced kUINT8 tensor that is not network I/O, and Shuffle accepts
+        // Int8 but not UInt8. Consumers read the WebNN dtype and reinterpret.
+        // Graph outputs keep kUINT8 so the binding's byte layout is exact.
+        if target_dtype == DataType::Uint8 && output_operand.kind != OperandKind::Output {
+            trt_dtype = TrtDataType::kINT8;
+        }
 
         let layer =
             network
@@ -3576,6 +3769,21 @@ impl TrtxConverter {
         webnn_integer_dtype: DataType,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
         let input_ty = tensor.get_type(&*network);
+        // IDequantizeLayer rejects kUINT8 inputs (only FP8/FP4/INT4/INT8). A plain
+        // Cast is a legal kUINT8 consumer and exact for 0..255; the values are
+        // already unsigned, so no sign-reinterpret fixup applies.
+        if input_ty == TrtDataType::kUINT8 {
+            return match dq_out_ty {
+                TrtDataType::kFLOAT => Self::cast_to_float32(network, tensor),
+                TrtDataType::kHALF => Self::cast_to_float16(network, tensor),
+                other => Err(GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!(
+                        "{label} identity DQ expects kFLOAT/kHALF output, got {other:?}"
+                    ),
+                }),
+            };
+        }
         // Always use a **scalar** (0D) scale for identity DQ. Matching zp rank (e.g. `[1,1]`) hits
         // TensorRT `ScaleMode is illegal`; per-tensor scale broadcasts. Myelin: data rank >= scale rank.
         let scale_shape: Vec<i64> = vec![];
@@ -3619,52 +3827,6 @@ impl TrtxConverter {
         match (webnn_integer_dtype, input_ty) {
             (DataType::Uint8, TrtDataType::kINT8) => {
                 Self::trtx_int8_dq_reinterpret_uint8_storage(network, &dq_out, dq_out_ty, label)
-            }
-            (DataType::Uint8, TrtDataType::kUINT8) => {
-                let dq_dims =
-                    dq_out
-                        .dimensions(&*network)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("{label} kUINT8 DQ+128 dimensions: {e}"),
-                        })?;
-                let bias_shape: Vec<i64> = if dq_dims.is_empty() {
-                    vec![]
-                } else {
-                    vec![1_i64; dq_dims.len()]
-                };
-                let bias_bytes: Vec<u8> = match dq_out_ty {
-                    TrtDataType::kFLOAT => 128.0f32.to_le_bytes().to_vec(),
-                    TrtDataType::kHALF => f16::from_f32(128.0f32).to_le_bytes().to_vec(),
-                    _ => {
-                        return Err(GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("{label} kUINT8 DQ+128: unexpected DQ dtype"),
-                        });
-                    }
-                };
-                let bias_t = network
-                    .add_small_constant_copied(&bias_shape, &bias_bytes, dq_out_ty, None)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("{label} kUINT8 +128 bias: {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("{label} kUINT8 +128 tensor: {e}"),
-                    })?;
-                network
-                    .add_elementwise(&dq_out, &bias_t, ElementWiseOperation::kSUM)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("{label} kUINT8 +128 sum: {e}"),
-                    })?
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("{label} kUINT8 +128 output: {e}"),
-                    })
             }
             _ => Ok(dq_out),
         }
@@ -3929,6 +4091,7 @@ impl TrtxConverter {
         out_dtype: DataType,
         fp_trt: TrtDataType,
         out_trt: TrtDataType,
+        output_id: u32,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
         let in_operand = graph
             .operand(in_id)
@@ -4086,6 +4249,7 @@ impl TrtxConverter {
             fp_trt,
             out_trt,
             out_dtype,
+            output_id,
         )
     }
 
@@ -4406,6 +4570,7 @@ impl TrtxConverter {
         fp_trt: TrtDataType,
         out_trt: TrtDataType,
         out_dtype: DataType,
+        output_id: u32,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
         let (qmin_f32, qmax_f32) = match out_dtype {
             DataType::Int8 => (-128.0_f32, 127.0_f32),
@@ -4604,6 +4769,11 @@ impl TrtxConverter {
             );
         }
 
+        // A uint8 result may only be a kUINT8 tensor at network I/O.
+        if out_dtype == DataType::Uint8 {
+            return Self::store_uint8_result(graph, network, output_id, &clamped);
+        }
+
         let out = network
             .add_cast(&clamped, out_trt)
             .map_err(|e| GraphError::ConversionFailed {
@@ -4727,6 +4897,7 @@ impl TrtxConverter {
                 out_dtype,
                 fp_trt,
                 out_trt,
+                output_id,
             )?;
             tensor_map.insert(output_id, out);
             return Ok(());
@@ -4797,16 +4968,18 @@ impl TrtxConverter {
                 )?;
                 Self::add_quantize_linear_elementwise_manual(
                     graph, network, in_id, sc_id, zid, input, &scale_a, &zp_a, fp_trt, out_trt,
-                    out_dtype,
+                    out_dtype, output_id,
                 )?
             } else {
                 let (zdt, zp_bytes): (TrtDataType, &[u8]) = match out_dtype {
                     DataType::Int8 => (TrtDataType::kINT8, &[0u8][..]),
-                    DataType::Uint8 => (TrtDataType::kUINT8, &[0u8][..]),
+                    // A kUINT8 constant may only feed Cast, never the identity DQ the
+                    // manual path uses; a zero byte reads identically as kINT8.
+                    DataType::Uint8 => (TrtDataType::kINT8, &[0u8][..]),
                     // Scalar default zp `[0]` must not use kINT4 with `add_small_constant_copied` (trtx-rs
                     // byte-size check). kINT8 zero is fine: manual path casts zp to float.
                     DataType::Int4 => (TrtDataType::kINT8, &[0u8][..]),
-                    DataType::Uint4 => (TrtDataType::kUINT8, &[0u8][..]),
+                    DataType::Uint4 => (TrtDataType::kINT8, &[0u8][..]),
                     DataType::Int32 | DataType::Uint32 => {
                         (TrtDataType::kINT32, &[0u8, 0u8, 0u8, 0u8][..])
                     }
@@ -4877,7 +5050,7 @@ impl TrtxConverter {
                 )?;
                 Self::add_quantize_linear_elementwise_manual(
                     graph, network, in_id, sc_id, in_id, input, &scale_a, &zp_a, fp_trt, out_trt,
-                    out_dtype,
+                    out_dtype, output_id,
                 )?
             };
             tensor_map.insert(output_id, out);
@@ -5022,10 +5195,17 @@ impl TrtxConverter {
         // same-rank scale (e.g. [1,2] on a [5,2] weight) miscomputes elements outside the first
         // block, so restrict IDequantizeLayer to per-tensor scales and route per-channel/block
         // scales through the deterministic manual elementwise (cast * broadcast-scale) path.
+        // Uint8 is also excluded: its constants are stored as kINT8 raw bytes, so a
+        // direct IDequantizeLayer reads values >= 128 as negative (off by -256). The
+        // manual path applies the +256 reinterpret fix (trtx_int8_dq_reinterpret_uint8_storage).
         let use_idq = Self::trtx_input_supports_idq_dequantize(&*network, input)
             && !matches!(
                 input_operand.descriptor.data_type,
-                DataType::Int32 | DataType::Uint32 | DataType::Int4 | DataType::Uint4
+                DataType::Int32
+                    | DataType::Uint32
+                    | DataType::Int4
+                    | DataType::Uint4
+                    | DataType::Uint8
             )
             && Self::trtx_dq_scale_idq_compatible(&in_shape_web, &sc_shape_web)
             && Self::trtx_scale_is_per_tensor_broadcast(&sc_shape_web);
@@ -5843,13 +6023,21 @@ impl TrtxConverter {
             .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
 
-        // For NCHW: normalize over H, W (axes 2,3)
-        // For NHWC: normalize over H, W (axes 1,2)
-        let axes = if layout == "nchw" {
-            vec![2u32, 3u32]
+        // Normalize over the spatial axes: everything after (N, C) for NCHW, and
+        // everything between N and the trailing C for NHWC. Derive them from the
+        // rank so 3-D (N, C, L) audio inputs and 5-D volumes work too.
+        let rank = input_dims.len() as u32;
+        let axes: Vec<u32> = if layout == "nchw" {
+            (2..rank).collect()
         } else {
-            vec![1u32, 2u32]
+            (1..rank.saturating_sub(1)).collect()
         };
+        if axes.is_empty() {
+            return Err(GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("InstanceNorm: input rank {rank} has no spatial axes"),
+            });
+        }
 
         // Compute mean: E[x]
         let mut axes_mask: u32 = 0;
@@ -7620,52 +7808,33 @@ impl TrtxConverter {
 
     /// Add squeeze operation (remove dimensions of size 1)
     fn add_squeeze_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
     ) -> Result<(), GraphError> {
-        let input = tensor_map
-            .get(&operation.input_operands()[0])
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", operation.input_operands()[0]),
-            })?;
-
-        // Get axes from attributes (optional - if not provided, squeeze all size-1 dims)
-        let _axes_opt = operation.attributes().get("axes");
-
-        // For squeeze, we need to reshape the tensor to remove dimensions of size 1
-        // We'll use IShuffleLayer with setReshapeDimensions
-        let layer = network
-            .add_shuffle(input)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add shuffle layer for squeeze: {}", e),
-            })?;
-
-        // Note: Setting reshape dimensions requires accessing layer methods
-        // This is a simplified implementation - full implementation requires
-        // calling layer.set_reshape_dimensions() with the squeezed shape
-        // For now, this creates the layer structure correctly
-
-        let output = layer
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
-            })?;
-
-        let output_ids = operation.output_operands_slice();
-        let output_id = output_ids[0];
-        tensor_map.insert(output_id, output);
-        Ok(())
+        Self::add_reshape_to_output_shape_op(graph, network, tensor_map, operation, "squeeze")
     }
 
     /// Add unsqueeze operation (add dimensions of size 1)
     fn add_unsqueeze_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
+    ) -> Result<(), GraphError> {
+        Self::add_reshape_to_output_shape_op(graph, network, tensor_map, operation, "unsqueeze")
+    }
+
+    /// Reshape the input to the operation's output descriptor shape. Squeeze and
+    /// unsqueeze are pure reshapes whose target shape the graph builder already
+    /// inferred from the axes, so the output descriptor is authoritative.
+    fn add_reshape_to_output_shape_op<'a>(
+        graph: &GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
+        operation: &Operation,
+        op_label: &str,
     ) -> Result<(), GraphError> {
         let input = tensor_map
             .get(&operation.input_operands()[0])
@@ -7674,48 +7843,42 @@ impl TrtxConverter {
                 reason: format!("Input operand {} not found", operation.input_operands()[0]),
             })?;
 
-        // Get axes from attributes
-        let axes_value =
-            operation
-                .attributes()
-                .get("axes")
-                .ok_or_else(|| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "Unsqueeze operation missing 'axes' attribute".to_string(),
-                })?;
-
-        let _axes: Vec<u32> = if let Some(arr) = axes_value.as_array() {
-            arr.iter()
-                .filter_map(|v| v.as_u64().map(|u| u as u32))
-                .collect()
-        } else {
-            return Err(GraphError::ConversionFailed {
+        let output_ids = operation.output_operands_slice();
+        let output_id = output_ids[0];
+        let out_operand = graph
+            .operand(output_id)
+            .ok_or_else(|| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: "Invalid 'axes' attribute format".to_string(),
-            });
-        };
+                reason: format!("{op_label}: output operand {output_id} not found"),
+            })?;
+        // An empty shape is a valid reshape to a rank-0 scalar.
+        let dims: Vec<i64> = out_operand
+            .descriptor
+            .static_or_max_shape()
+            .iter()
+            .map(|&d| d as i64)
+            .collect();
 
-        // Use IShuffleLayer to add dimensions
-        let layer = network
+        let mut layer = network
             .add_shuffle(input)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add shuffle layer for unsqueeze: {}", e),
+                reason: format!("Failed to add shuffle layer for {op_label}: {e}"),
             })?;
-
-        // Note: Setting reshape dimensions requires accessing layer methods
-        // Full implementation requires calling layer.set_reshape_dimensions()
-        // with the expanded shape (inserting 1s at specified axes)
+        layer
+            .set_reshape_dimensions(network, &dims)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to set {op_label} reshape dimensions: {e}"),
+            })?;
 
         let output = layer
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
+                reason: format!("Failed to get layer output: {e}"),
             })?;
 
-        let output_ids = operation.output_operands_slice();
-        let output_id = output_ids[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -8374,6 +8537,28 @@ impl TrtxConverter {
         clamp_max_val: i32,
         label: &str,
     ) -> Result<trtx::Tensor<'a>, GraphError> {
+        // The clamp bounds below are kINT32 and TensorRT elementwise kMIN/kMAX
+        // require identical input types; int64 indices (Range/position ids, cast
+        // chains) are narrowed first. Every dimension fits in i32.
+        let indices_i32: Option<trtx::Tensor<'a>> =
+            if indices.get_type(&*network) == TrtDataType::kINT64 {
+                Some(
+                    network
+                        .add_cast(indices, TrtDataType::kINT32)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("{label}: int64 indices to int32: {e}"),
+                        })?
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("{label}: int64 indices to int32 output: {e}"),
+                        })?,
+                )
+            } else {
+                None
+            };
+        let indices: &trtx::Tensor<'a> = indices_i32.as_ref().unwrap_or(indices);
         let num_elements: usize = if indices_shape_i64.is_empty() {
             1
         } else {
@@ -9547,6 +9732,7 @@ impl TrtxConverter {
     /// Clamp int8/uint8 via INT32 (TRT rejects UINT8/kINT8 constants on elementwise MIN/MAX).
     #[allow(clippy::too_many_arguments)]
     fn add_clamp_int8_uint8_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -9565,6 +9751,7 @@ impl TrtxConverter {
         let i32_in = Self::cast_quantized_int8_uint8_to_int32(network, input, input_dtype)?;
         let clamped_i32 =
             Self::trtx_clamp_i32_tensor(network, &i32_in, broadcast_shape, min_i, max_i)?;
+        let output_id = operation.output_operands_slice()[0];
         let output = match input_dtype {
             DataType::Int8 => network
                 .add_cast(&clamped_i32, TrtDataType::kINT8)
@@ -9577,10 +9764,9 @@ impl TrtxConverter {
                     format: "trtx".to_string(),
                     reason: format!("clamp i32->int8 output: {e}"),
                 })?,
-            DataType::Uint8 => Self::cast_int32_to_uint8(network, &clamped_i32)?,
+            DataType::Uint8 => Self::store_uint8_result(graph, network, output_id, &clamped_i32)?,
             _ => unreachable!(),
         };
-        let output_id = operation.output_operands_slice()[0];
         tensor_map.insert(output_id, output);
         Ok(())
     }
@@ -9855,6 +10041,7 @@ impl TrtxConverter {
                 (min_i, max_i)
             };
             return Self::add_clamp_int8_uint8_op(
+                graph,
                 network,
                 tensor_map,
                 operation,
@@ -10730,7 +10917,7 @@ impl TrtxConverter {
 
     /// Add pad operation (pad tensor with constant/edge/reflection values)
     fn add_pad_op<'a>(
-        _graph: &GraphInfo,
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -10858,7 +11045,7 @@ impl TrtxConverter {
                 .all(|wi| pre_padding[wi] == 0 && post_padding[wi] == 0)
         };
 
-        // `IPaddingLayer` / 4D shuffle path rejects UINT8, INT32, INT64 (TRT 3.16+).
+        // `IPaddingLayer` / 4D shuffle path rejects UINT8, INT32, INT64.
         let input_trt_dtype = input.get_type(&*network);
         let ipadding_dtype_ok = Self::trtx_ipadding_layer_supports_dtype(input_trt_dtype);
 
@@ -10873,7 +11060,7 @@ impl TrtxConverter {
             let in_id = operation.input_operands()[0];
             let out_id = operation.output_operands_slice()[0];
 
-            // UINT8 internal concat tensors do not expose dimensions (TRT 3.16+); pad via INT32.
+            // UINT8 internal concat tensors do not expose dimensions; pad via INT32.
             let uint8_i32_holder;
             let (start_key, pad_via_int32) = if input_trt_dtype == TrtDataType::kUINT8 {
                 let i32_in = Self::cast_uint8_to_int32(network, input)?;
@@ -10932,7 +11119,7 @@ impl TrtxConverter {
                     })?;
             if pad_via_int32 {
                 let _ = tensor_map.remove(&start_key);
-                final_t = Self::cast_int32_to_uint8(network, &final_t)?;
+                final_t = Self::store_uint8_result(graph, network, out_id, &final_t)?;
             }
             tensor_map.insert(out_id, final_t);
             return Ok(());
@@ -14038,10 +14225,12 @@ impl TrtxConverter {
         layer.set_resize_mode(network, resize_mode);
         // WebNN `resample2d` uses the half-pixel grid; TensorRT default is kASYMMETRIC.
         layer.set_coordinate_transformation(network, ResizeCoordinateTransformation::kHALF_PIXEL);
-        // WebNN nearest: `ceil(coord - 0.5)` == `floor(coord + 0.5)` on the sampling grid; TRT default
-        // `kFLOOR` uses `floor(coord)` and mis-aligns upsampling (e.g. 2x nearest on float grid).
+        // Nearest rounding: ONNX/ORT `round_prefer_floor` is `ceil(coord - 0.5)`,
+        // i.e. ties resolve downward -> kHALF_DOWN. TRT's default `kFLOOR` uses
+        // `floor(coord)` and mis-aligns upsampling; kHALF_UP flips every tie
+        // (e.g. 1.5x upsample or 2x downsample on the half-pixel grid).
         if resize_mode == ResizeMode::kNEAREST {
-            layer.set_nearest_rounding(network, ResizeRoundMode::kHALF_UP);
+            layer.set_nearest_rounding(network, ResizeRoundMode::kHALF_DOWN);
         }
 
         let output = layer
@@ -15087,6 +15276,51 @@ mod tests {
         let m = TrtxConverter::engine_io_binding_names(&graph);
         assert_eq!(m.get(&0).map(String::as_str), Some("lhs"));
         assert_eq!(m.get(&2).map(String::as_str), Some("sum"));
+    }
+
+    #[test]
+    fn test_unused_constants_count_option_operands_as_consumers() {
+        use crate::graph::to_dimension_vector;
+        use crate::graph::{Operand, OperandDescriptor, OperandKind};
+        use crate::operator_options::MLGemmOptions;
+        use crate::operators::Operation;
+        let desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(&[2, 2]),
+            pending_permutation: vec![],
+        };
+        let operand = |kind: OperandKind| Operand {
+            kind,
+            descriptor: desc.clone(),
+            name: None,
+        };
+        let graph = GraphInfo {
+            operands: vec![
+                operand(OperandKind::Input),
+                operand(OperandKind::Constant),
+                operand(OperandKind::Constant),
+                operand(OperandKind::Output),
+                operand(OperandKind::Constant),
+            ],
+            input_operands: vec![0],
+            output_operands: vec![3],
+            operations: vec![Operation::Gemm {
+                a: 0,
+                b: 1,
+                options: Some(MLGemmOptions {
+                    c: Some(2),
+                    ..Default::default()
+                }),
+                outputs: vec![3],
+            }],
+            constant_operand_ids_to_handles: Default::default(),
+            id_to_constant_tensor_operand_map: Default::default(),
+            quantized: false,
+        };
+        let unused = TrtxConverter::unused_constant_operand_ids(&graph);
+        assert!(!unused.contains(&1), "positional constant b is consumed");
+        assert!(!unused.contains(&2), "option constant c is consumed");
+        assert!(unused.contains(&4), "dangling constant is dead");
     }
 
     #[test]

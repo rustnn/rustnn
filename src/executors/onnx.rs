@@ -27,7 +27,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
         info!("Loading onnxruntime");
         let _is_initial_load = ort::init()
             .with_name("rustnn")
-            .with_execution_providers([ort::ep::CPUExecutionProvider::default().build()])
+            .with_execution_providers([ort::ep::CPU::default().build()])
             .with_telemetry(false)
             .commit();
 

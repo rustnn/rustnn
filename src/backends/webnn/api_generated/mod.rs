@@ -1,0 +1,88 @@
+// Generated WebNN bindings, copied from web-sys so they can be used with
+// upstream wasm-bindgen before WebNN lands there.
+#![allow(non_snake_case)]
+
+macro_rules! generated_modules {
+    ($($module:ident),+ $(,)?) => {
+        $(
+            mod $module;
+            #[allow(unused_imports)]
+            pub use $module::*;
+        )+
+    };
+}
+
+generated_modules!(
+    gen_Ml,
+    gen_MlArgMinMaxOptions,
+    gen_MlBatchNormalizationOptions,
+    gen_MlBatchNormalizationSupportLimits,
+    gen_MlBinarySupportLimits,
+    gen_MlClampOptions,
+    gen_MlConcatSupportLimits,
+    gen_MlContext,
+    gen_MlContextLostInfo,
+    gen_MlContextOptions,
+    gen_MlConv2dFilterOperandLayout,
+    gen_MlConv2dOptions,
+    gen_MlConv2dSupportLimits,
+    gen_MlConvTranspose2dFilterOperandLayout,
+    gen_MlConvTranspose2dOptions,
+    gen_MlCumulativeSumOptions,
+    gen_MlEluOptions,
+    gen_MlGatherOptions,
+    gen_MlGatherSupportLimits,
+    gen_MlGemmOptions,
+    gen_MlGemmSupportLimits,
+    gen_MlGraph,
+    gen_MlGraphBuilder,
+    gen_MlGruCellOptions,
+    gen_MlGruCellSupportLimits,
+    gen_MlGruOptions,
+    gen_MlGruSupportLimits,
+    gen_MlGruWeightLayout,
+    gen_MlHardSigmoidOptions,
+    gen_MlInputOperandLayout,
+    gen_MlInstanceNormalizationOptions,
+    gen_MlInterpolationMode,
+    gen_MlLayerNormalizationOptions,
+    gen_MlLeakyReluOptions,
+    gen_MlLinearOptions,
+    gen_MlLogicalNotSupportLimits,
+    gen_MlLstmCellOptions,
+    gen_MlLstmCellSupportLimits,
+    gen_MlLstmOptions,
+    gen_MlLstmSupportLimits,
+    gen_MlLstmWeightLayout,
+    gen_MlNormalizationSupportLimits,
+    gen_MlOperand,
+    gen_MlOperandDataType,
+    gen_MlOperandDescriptor,
+    gen_MlOperatorOptions,
+    gen_MlOpSupportLimits,
+    gen_MlPadOptions,
+    gen_MlPaddingMode,
+    gen_MlPool2dOptions,
+    gen_MlPowerPreference,
+    gen_MlPreluSupportLimits,
+    gen_MlQuantizeDequantizeLinearSupportLimits,
+    gen_MlRankRange,
+    gen_MlRecurrentNetworkActivation,
+    gen_MlRecurrentNetworkDirection,
+    gen_MlReduceOptions,
+    gen_MlResample2dOptions,
+    gen_MlReverseOptions,
+    gen_MlRoundingType,
+    gen_MlScatterOptions,
+    gen_MlScatterSupportLimits,
+    gen_MlSingleInputSupportLimits,
+    gen_MlSliceOptions,
+    gen_MlSplitOptions,
+    gen_MlSplitSupportLimits,
+    gen_MlTensor,
+    gen_MlTensorDescriptor,
+    gen_MlTensorLimits,
+    gen_MlTransposeOptions,
+    gen_MlTriangularOptions,
+    gen_MlWhereSupportLimits,
+);

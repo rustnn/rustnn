@@ -44,6 +44,15 @@ pub struct MLGraphBuilder<'context, 'builder> {
     graph: Option<GraphInfo>,
 }
 
+#[derive(Debug)]
+struct UncompiledBackendBuilder;
+
+impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for UncompiledBackendBuilder {
+    fn build(&mut self, _graph: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
+        panic!("the graph-recording builder cannot create a runtime graph")
+    }
+}
+
 pub(crate) fn get_operand(input: MLOperand, graph: &GraphInfo) -> Result<&Operand> {
     graph
         .operands
@@ -1990,6 +1999,15 @@ fn shape_inference_single_output(
 }
 
 impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
+    /// Create a builder that records a backend-agnostic [`GraphInfo`] without creating a runtime
+    /// backend. This is used by tooling that serializes or forwards the recorded graph itself.
+    pub fn new_uncompiled() -> MLGraphBuilder<'static, 'static> {
+        MLGraphBuilder {
+            backend: Box::new(UncompiledBackendBuilder),
+            graph: Some(Default::default()),
+        }
+    }
+
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
     where
         'context: 'builder,
@@ -2103,6 +2121,15 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         &mut self,
         outputs: &'_ MLNamedOperands,
     ) -> crate::error::Result<MLGraph<'context>> {
+        let graph = self.finish_graph_info(outputs)?;
+        self.backend.build(graph)
+    }
+
+    /// Finalize the recorded graph and return it without compiling it for a runtime backend.
+    pub fn finish_graph_info(
+        &mut self,
+        outputs: &'_ MLNamedOperands,
+    ) -> crate::error::Result<GraphInfo> {
         trace!("Trying to build graph for outputs {outputs:?}");
         // spec: If outputs is empty, then return a new promise in realm rejected with a TypeError.
         if outputs.is_empty() {
@@ -2176,7 +2203,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             });
         }
 
-        self.backend.build(graph)
+        Ok(graph)
     }
 
     /// Debug tool to check operand shape
@@ -2291,14 +2318,28 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         descriptor: &MLOperandDescriptor,
         values: &[T],
     ) -> crate::error::Result<MLOperand> {
+        trace!(
+            "constant_from_slice: {descriptor:?} size={} bytes",
+            descriptor.rustnn_required_bytes()
+        );
+        self.constant_from_bytes(descriptor, bytemuck::cast_slice::<T, u8>(values).to_vec())
+    }
+
+    /// Register a constant from raw little-endian bytes, taking ownership of
+    /// the buffer. Unlike [`Self::constant_from_slice`] this makes no copy:
+    /// weight tensors reach hundreds of MB and every extra copy of them stays
+    /// live for the whole backend compile.
+    pub fn constant_from_bytes(
+        &mut self,
+        descriptor: &MLOperandDescriptor,
+        data: Vec<u8>,
+    ) -> crate::error::Result<MLOperand> {
         let required_size = descriptor.rustnn_required_bytes();
-        let provided_size = std::mem::size_of_val(values);
-        trace!("constant_from_slice: {descriptor:?} size={required_size} bytes");
-        if required_size != provided_size {
+        if required_size != data.len() {
             return Err(GraphBuilderError::WrongConstantSize {
                 descriptor: descriptor.clone(),
                 required_size,
-                provided_size,
+                provided_size: data.len(),
             }
             .into());
         }
@@ -2318,13 +2359,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         graph
             .id_to_constant_tensor_operand_map
             .insert(id as u32, format!("{id}"));
-        graph.constant_operand_ids_to_handles.insert(
-            id as u32,
-            crate::ConstantData {
-                data: bytemuck::cast_slice::<T, u8>(values).to_vec(),
-                label: None,
-            },
-        );
+        graph
+            .constant_operand_ids_to_handles
+            .insert(id as u32, crate::ConstantData { data, label: None });
 
         Ok(MLOperand { id })
     }

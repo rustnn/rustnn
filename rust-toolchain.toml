@@ -1,0 +1,10 @@
+[toolchain]
+# When bumping the Rust version, also update:
+# - Cargo.toml (rust-version)
+# - .github/workflows/ci.yml (dtolnay/rust-toolchain@1.X.Y)
+# - .github/workflows/wpt-conformance.yml
+# - .github/workflows/wpt-conformance-nightly.yml
+# - .github/workflows/rustnnpt-gate.yml
+# Note: .github/workflows/publish.yml intentionally uses `stable`.
+channel = "1.97.0"
+components = ["rustfmt", "clippy", "rust-src"]

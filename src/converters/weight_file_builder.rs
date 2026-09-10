@@ -9,11 +9,8 @@ const FILE_VERSION: u32 = 2;
 /// Matches the enum from Chromium's graph_builder_coreml.cc.
 pub mod blob_data_type {
     pub const FLOAT16: u32 = 1;
-    #[allow(dead_code)]
     pub const FLOAT32: u32 = 2;
-    #[allow(dead_code)]
     pub const UINT8: u32 = 3;
-    #[allow(dead_code)]
     pub const INT8: u32 = 4;
 }
 
@@ -98,6 +95,13 @@ impl WeightFileBuilder {
 
         self.entry_count += 1;
         Ok(metadata_offset)
+    }
+
+    /// Pre-allocate for the expected payload volume. Weight files reach
+    /// hundreds of MB; growing by amortized doubling briefly holds ~3x the
+    /// final size during the last realloc.
+    pub fn reserve(&mut self, additional: usize) {
+        self.data.reserve(additional);
     }
 
     /// Returns the file offset for a previously added weight.

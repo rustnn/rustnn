@@ -1453,6 +1453,70 @@ impl Operation {
         self.inputs()
     }
 
+    /// Operand ids passed through options rather than positional arguments
+    /// (e.g. `gemm.c`, `batchNormalization.scale`).
+    pub fn option_operands(&self) -> Vec<OperandIndex> {
+        match self {
+            Operation::BatchNormalization {
+                options: Some(o), ..
+            } => [o.scale, o.bias].into_iter().flatten().collect(),
+            Operation::Conv2d {
+                options: Some(o), ..
+            } => o.bias.into_iter().collect(),
+            Operation::ConvTranspose2d {
+                options: Some(o), ..
+            } => o.bias.into_iter().collect(),
+            Operation::Gemm {
+                options: Some(o), ..
+            } => o.c.into_iter().collect(),
+            Operation::Gru {
+                options: Some(o), ..
+            } => [o.bias, o.recurrent_bias, o.initial_hidden_state]
+                .into_iter()
+                .flatten()
+                .collect(),
+            Operation::GruCell {
+                options: Some(o), ..
+            } => [o.bias, o.recurrent_bias].into_iter().flatten().collect(),
+            Operation::InstanceNormalization {
+                options: Some(o), ..
+            } => [o.scale, o.bias].into_iter().flatten().collect(),
+            Operation::LayerNormalization {
+                options: Some(o), ..
+            } => [o.scale, o.bias].into_iter().flatten().collect(),
+            Operation::Lstm {
+                options: Some(o), ..
+            } => [
+                o.bias,
+                o.recurrent_bias,
+                o.peephole_weight,
+                o.initial_hidden_state,
+                o.initial_cell_state,
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            Operation::LstmCell {
+                options: Some(o), ..
+            } => [o.bias, o.recurrent_bias, o.peephole_weight]
+                .into_iter()
+                .flatten()
+                .collect(),
+            _ => vec![],
+        }
+    }
+
+    /// Every operand this operation reads: [`Self::inputs`] plus [`Self::option_operands`].
+    pub fn all_input_operands(&self) -> Vec<OperandIndex> {
+        let mut ids = self.inputs();
+        for id in self.option_operands() {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+
     /// Legacy attributes. Derived from this operation.
     pub fn attributes(&self) -> OperatorOptions {
         self.to_legacy().2

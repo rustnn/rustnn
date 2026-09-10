@@ -1601,6 +1601,94 @@ pub struct WptExecuteArtifacts {
     pub webnn_text: Option<String>,
 }
 
+/// Build a backend-agnostic graph from a WPT graph without creating a native runtime context.
+/// Browser tests use this to forward the graph to the WebNN converter.
+#[allow(dead_code)] // Used by the wasm browser WPT harness via #[path].
+pub fn compile_wpt_graph(graph: &WptGraph) -> Result<rustnn::GraphInfo, String> {
+    let mut builder = MLGraphBuilder::new_uncompiled();
+    let mut operand_map: HashMap<String, MLOperand> = HashMap::new();
+    let mut name_to_id: HashMap<String, u32> = HashMap::new();
+    let mut operand_names: HashSet<String> = graph.inputs.keys().cloned().collect();
+    let mut next_operand_id = 0u32;
+
+    for (name, spec) in &graph.inputs {
+        let operand = if spec.constant && should_inline_constant(spec) {
+            add_constant_operand(&mut builder, spec)?
+        } else {
+            builder
+                .input(name, &wpt_operand_descriptor(spec))
+                .map_err(|error| error.to_string())?
+        };
+        register_operand(
+            name.clone(),
+            operand,
+            &mut operand_map,
+            &mut name_to_id,
+            &mut next_operand_id,
+            &mut operand_names,
+        );
+    }
+
+    for op in &graph.operators {
+        let op_name = op.name.as_str();
+        let call_args = build_method_args(op_name, op, &name_to_id, &operand_map, &operand_names)?;
+        let result = invoke_builder_method(&mut builder, op_name, &call_args)?;
+        let out_names = output_names(op);
+
+        match result {
+            InvokeResult::Multi(results) if MULTI_OUTPUT_OPS.contains(&op_name) => {
+                if results.len() != out_names.len() {
+                    return Err(format!(
+                        "{op_name}: expected {} outputs, got {}",
+                        out_names.len(),
+                        results.len()
+                    ));
+                }
+                for (out_name, operand) in out_names.into_iter().zip(results) {
+                    register_operand(
+                        out_name,
+                        operand,
+                        &mut operand_map,
+                        &mut name_to_id,
+                        &mut next_operand_id,
+                        &mut operand_names,
+                    );
+                }
+            }
+            InvokeResult::Single(result) if out_names.len() == 1 => register_operand(
+                out_names[0].clone(),
+                result,
+                &mut operand_map,
+                &mut name_to_id,
+                &mut next_operand_id,
+                &mut operand_names,
+            ),
+            InvokeResult::Single(_) => {
+                return Err(format!(
+                    "{op_name}: expected {} outputs, got 1",
+                    out_names.len()
+                ));
+            }
+            InvokeResult::Multi(_) => {
+                return Err(format!("{op_name}: unexpected multi-output result"));
+            }
+        }
+    }
+
+    let mut outputs = MLNamedOperands::new();
+    for name in graph.expected_outputs.keys() {
+        outputs.insert(
+            name.as_str(),
+            *operand_map
+                .get(name)
+                .ok_or_else(|| format!("missing operand for expected output '{name}'"))?,
+        );
+    }
+    builder
+        .finish_graph_info(&outputs)
+        .map_err(|error| error.to_string())
+}
+
 /// Execute a WPT graph through [`MLGraphBuilder`] and [`MLContext::dispatch`].
 pub fn execute_wpt_graph(
     context: &mut MLContext,

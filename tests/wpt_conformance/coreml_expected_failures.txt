@@ -39,8 +39,6 @@ coreml::pad::pad_float32_4D_tensor_options_mode__edge_
 coreml::pad::pad_float32_4D_tensor_options_mode__reflection_
 coreml::pad::pad_int64_2D_tensor_with_options_value_as_bigint
 coreml::qdq_subgraph::quantized_convTranspose2d
-coreml::reduce_log_sum_exp::reduceLogSumExp_avoids_overflows_caused_by_taking_the_exp_of_large_inputs
-coreml::reduce_log_sum_exp::reduceLogSumExp_avoids_underflows_caused_by_taking_the_log_of_small_inputs
 coreml::relu::relu_int32_4D_tensor
 coreml::relu::relu_int64_4D_tensor
 coreml::resample2d::resample2d_upsample__float32_4D_tensor_options_axes__0__1_
