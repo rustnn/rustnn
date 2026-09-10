@@ -53,6 +53,10 @@ pub trait DynamicShapeBuilder {
         options: MLOperatorOptions,
     ) -> Result<MLOperand>;
 
+    // TODO: the operands below allow to transform data into shape. This requires that
+    // even compute_shape should be capable to run full inference or it defers this to
+    // the backend framework where there might be inconsistent behavio
+
     // Rank-changing operators (the seam where dynamic rank originates).
     fn squeeze(&mut self, input: MLOperand) -> Result<MLOperand> {
         self.squeeze_with_options(input, MLSqueezeOptions::default())

@@ -881,6 +881,10 @@ impl ListDevices for LiteRtContext {
 }
 
 impl<'context> MLBackendContext<'context> for LiteRtContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        crate::tensor::BackendKind::LiteRT
+    }
+
     fn accelerated(&self) -> bool {
         self.device_type != DeviceType::Cpu
     }

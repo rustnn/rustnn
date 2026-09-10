@@ -684,6 +684,14 @@ impl ListDevices for OrtContext {
 }
 
 impl<'context> MLBackendContext<'context> for OrtContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        let device = self.env.devices().nth(self.device_idx).unwrap();
+        match device.hardware_device().ty() {
+            DeviceType::CPU => crate::tensor::BackendKind::OnnxCpu,
+            DeviceType::GPU | DeviceType::NPU => crate::tensor::BackendKind::OnnxGpu,
+        }
+    }
+
     fn accelerated(&self) -> bool {
         let device = self.env.devices().nth(self.device_idx).unwrap();
         device.hardware_device().ty() != DeviceType::CPU
