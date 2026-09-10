@@ -117,8 +117,24 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
     #[cfg(feature = "dynamic-inputs")]
     fn compute_shapes(
         &mut self,
-        input_shapes: &mut MLNamedShapes,
+        graph: &mut MLGraph,
+        input_shapes: &MLNamedShapes,
     ) -> Result<MLNamedShapes<'_, '_>> {
+        // It is very difficult to actually implement MLGraph.compute_shapes:
+        //
+        // TRT provides a function to get output shape given the input shapes without running inference
+        // but ONNX runtime does not (there are even operators like NonZero that require inference
+        // to know the output shape).
+        //
+        // Implementing compute_shapes basically requires to split up the graph
+        // into a inference time part and a shape inference time part.
+        // The logic in shape inference part would be artificially limited to avoid
+        // arbitrary complexity in compute shapes
+        //
+        // https://github.com/webmachinelearning/webnn/pull/945#discussion_r3969524029
+        //
+        // We could do an ad-hoc interpreter of WebNN here with a very limited set of operations
+        // and tensor sizes and use that for all implementations.
         Err(Box::new(ShapeInferenceError::ComputeShapesNotImplemented {
             backend: self.backend_kind(),
         })
@@ -651,7 +667,7 @@ impl MLTensorDescriptor {
 /// Create it with [`MLContext::create`], build graphs with [`MLGraphBuilder::new`], create
 /// tensors with [`MLContext::create_tensor`], and run graphs with [`MLContext::dispatch`].
 /// The context is `Send + Sync`, so it can be shared behind a `Mutex` across threads.
-// TODO: this is wrong. must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
+// TODO: this is wrong. Must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
 #[derive(Debug)]
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
@@ -855,12 +871,13 @@ impl<'context> MLContext<'context> {
     }
 
     #[cfg(feature = "dynamic-inputs")]
-    fn compute_shapes(
+    pub fn compute_shapes(
         &mut self,
-        input_shapes: &mut MLNamedShapes,
+        graph: &mut MLGraph,
+        input_shapes: &MLNamedShapes,
     ) -> Result<MLNamedShapes<'_, '_>> {
         debug!("compute_shapes: {input_shapes:?}");
-        self.backend.compute_shapes(input_shapes)
+        self.backend.compute_shapes(graph, input_shapes)
     }
 }
 
