@@ -3375,7 +3375,7 @@ mod test {
 
     #[cfg(feature = "dynamic-inputs")]
     use crate::{
-        mlcontext::MLDynamicOperandDescriptor,
+        mlcontext::{MLDynamicOperandDescriptor, MLNamedShapes},
         operator_options::{MLDimension, MLDynamicDimension, MLOperatorOptions},
     };
 
@@ -3433,7 +3433,25 @@ mod test {
             let mut outputs = MLNamedOperands::new();
             outputs.insert("out1", output);
             outputs.insert("out2", two_x_output);
-            builder.build(&outputs).unwrap();
+            let mut graph = builder.build(&outputs).unwrap();
+
+            // transform descriptor into concrete shape. "fritz" is obviously 42
+            let concrete_shape: Vec<_> = descriptor
+                .shape()
+                .iter()
+                .map(|s| match s {
+                    MLDimension::Static(s) => *s,
+                    MLDimension::Dynamic(MLDynamicDimension { name, .. }) if name == "fritz" => 42,
+                    _ => unreachable!(),
+                })
+                .collect();
+
+            let mut shapes = MLNamedShapes::new();
+            shapes.insert("input", &concrete_shape);
+
+            //let output_shapes = context.compute_shapes(&mut graph, &shapes).unwrap();
+            //assert!(output_shapes.contains_key("out1"));
+            //assert!(output_shapes.contains_key("out2"));
         }
     }
 
