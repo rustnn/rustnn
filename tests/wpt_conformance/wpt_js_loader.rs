@@ -89,6 +89,47 @@ pub fn ensure_wpt_cache(wpt_dir: &Path) -> Result<(), String> {
     fetch_wpt_cache(wpt_dir)
 }
 
+/// Verify the WPT checkout at `wpt_dir` matches the pinned `WPT_REVISION` file.
+///
+/// Returns `None` when the checkout matches the pin, or `Some(warning)` on a
+/// mismatch or when the revision cannot be determined (e.g. `WPT_DIR` is not a
+/// git checkout, or the pin file is missing/invalid).
+pub fn check_wpt_revision(wpt_dir: &Path) -> Option<String> {
+    let pinned = std::fs::read_to_string(repo_root().join("WPT_REVISION"))
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit()));
+    let Some(pinned) = pinned else {
+        return Some(
+            "WPT_REVISION file is missing or invalid; cannot verify the WPT checkout".to_string(),
+        );
+    };
+
+    let actual = Command::new("git")
+        .arg("-C")
+        .arg(wpt_dir)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_lowercase());
+    let Some(actual) = actual else {
+        return Some(format!(
+            "cannot determine the WPT checkout revision at {} (is it a git checkout?)",
+            wpt_dir.display()
+        ));
+    };
+
+    if actual.starts_with(&pinned) {
+        None
+    } else {
+        Some(format!(
+            "WPT checkout ({actual}) does not match pinned WPT_REVISION ({pinned}); run `make fetch-wpt`"
+        ))
+    }
+}
+
 /// Load the full WPT conformance corpus in one Node.js invocation.
 pub fn load_wpt_corpus(wpt_dir: &Path) -> Result<WptCorpus, String> {
     ensure_wpt_cache(wpt_dir)?;

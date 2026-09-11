@@ -107,6 +107,7 @@ When `WPT_BACKEND` is unset, all **available** backends register trials. Unavail
 | `WPT_REPORT_HTML` | (derived from JSON path) | HTML report path; set to empty string to disable |
 | `WPT_AUDIT` | (off) | Enable per-pass error metrics collection (see [Audit mode](#audit-mode)) |
 | `WPT_AUDIT_JSON` | `reports/wpt-trtx-audit.json` | Output path for audit JSON |
+| `WPT_STRICT_REVISION` | (off) | When set to `1`, a mismatch between the checkout and `WPT_REVISION` is a hard failure instead of a warning |
 
 ## Tolerance
 
@@ -188,10 +189,36 @@ Report schema: per-file summaries, per-case status (`pass`/`fail`/`skip`), durat
 | `wpt_context_pool.rs` | Optional per-thread `MLContext` reuse |
 | `wpt_config.rs` | Compile-time options (`REUSE_ML_CONTEXT`) |
 | `tolerance.rs` | ULP/ATOL/RTOL validation |
+| `expected_failures.rs` | Loads `{backend}_expected_failures.txt` allowlists |
 | `wpt_audit.rs` | Per-pass error metrics (`WPT_AUDIT`) |
 | `wpt_report.rs` | Structured JSON/HTML reports (`WPT_REPORT_JSON`) |
 | `wpt_types.rs` | Corpus JSON types |
 | `wpt_tensor.rs` | Tensor packing and dtype conversion |
+
+## Failure tracking
+
+A test is either passing or failing:
+
+- **Passing** → a PASS snapshot (`tests/snapshots/run_wpt_conformance__{backend}_{test}.snap`).
+  Used by `onnx`, `trtx`, and `litert`. CoreML produces no snapshots.
+- **Failing** → listed in `tests/wpt_conformance/{backend}_expected_failures.txt`
+  (one `{backend}::{operation}::{name}` per line). Used by `coreml` and `litert`.
+  The test still runs, but its failure is non-fatal.
+
+The WPT corpus is pinned by the `WPT_REVISION` file (a commit SHA checked out by
+`make fetch-wpt`), so CI is reproducible. At startup the harness compares the
+checkout's `HEAD` against `WPT_REVISION` and prints a warning on a mismatch (or
+when the revision cannot be determined). Set `WPT_STRICT_REVISION=1` to turn that
+warning into a hard failure. Regenerate against the pinned corpus with:
+
+```bash
+make wpt-sync-onnx     # ONNX PASS snapshots
+make wpt-sync-litert   # LiteRT PASS snapshots + expected-failures
+make wpt-sync-coreml   # macOS: coreml expected-failures
+make wpt-sync-trtx     # TensorRT PASS snapshots (requires a GPU)
+```
+
+A scheduled workflow (`.github/workflows/snapshot-sync.yml`) runs these and opens a PR.
 
 ## Troubleshooting
 
