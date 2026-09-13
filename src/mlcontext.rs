@@ -31,6 +31,23 @@ pub type MLNamedTensors<'names> = BTreeMap<&'names str, &'names MLTensor>;
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedoperands>
 pub type MLNamedOperands<'names> = BTreeMap<&'names str, MLOperand>;
 
+fn validate_unique_tensor_bindings(
+    inputs: &MLNamedTensors,
+    outputs: &MLNamedTensors,
+) -> Result<()> {
+    let mut all_tensor_ids = HashMap::new();
+    for (&name, &tensor) in inputs.iter().chain(outputs.iter()) {
+        if let Some(other_name) = all_tensor_ids.insert(tensor.id, name) {
+            return Err(Error::DuplicateTensorBinding {
+                aliased_tensor: tensor.clone(),
+                first_binding: other_name.to_string(),
+                other_binding: name.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::{
     backend_selection::{select_backend, select_backend_by_gpu},
@@ -541,16 +558,7 @@ impl<'context> MLContext<'context> {
         debug!("Dispatch {graph:?}, inputs={inputs:?}, outputs={outputs:?}");
         //https://www.w3.org/TR/webnn/#dom-mlcontext-dispatch
         // spec: 4. If allTensors contains any duplicate items, then throw a TypeError.
-        let mut all_tensor_ids = HashMap::new();
-        for (&name, &tensor) in inputs.iter().chain(outputs.iter()) {
-            if let Some(other_name) = all_tensor_ids.insert(name, tensor.id) {
-                return Err(Error::DuplicateTensorBinding {
-                    aliased_tensor: tensor.clone(),
-                    first_binding: other_name.to_string(),
-                    other_binding: name.to_string(),
-                });
-            }
-        }
+        validate_unique_tensor_bindings(inputs, outputs)?;
 
         graph.verify_dispatch_bindings(inputs, outputs)?;
         self.backend.dispatch(graph, inputs, outputs)
@@ -737,20 +745,64 @@ webnn_graph "sample_graph" v1 {
         dbg!(&context);
         let desc = rw_tensor_desc([2, 2].to_vec());
 
-        let tensor = context.create_tensor(&desc).unwrap();
+        let input_tensor = context.create_tensor(&desc).unwrap();
+        let output_tensor = context.create_tensor(&desc).unwrap();
         let mut inputs = MLNamedTensors::new();
-        inputs.insert("lhs", &tensor);
+        inputs.insert("lhs", &input_tensor);
         let mut outputs = MLNamedTensors::new();
-        outputs.insert("sum", &tensor);
+        outputs.insert("sum", &output_tensor);
 
         let upload = vec![1.0f32, 2., 3., 4.];
         let upload_f64 = vec![1.0, 2., 3., 4.];
         let mut download = vec![0.0f32; 4];
-        context.write_tensor(&tensor, &upload_f64).unwrap_err();
-        context.write_tensor(&tensor, &upload).unwrap();
+        context
+            .write_tensor(&input_tensor, &upload_f64)
+            .unwrap_err();
+        context.write_tensor(&input_tensor, &upload).unwrap();
         context.dispatch(&mut graph, &inputs, &outputs).unwrap();
-        context.read_tensor(&tensor, &mut download).unwrap();
+        context.read_tensor(&output_tensor, &mut download).unwrap();
         assert_eq!(&vec![2.0f32, 3., 4., 5.], &download);
+    }
+
+    #[test]
+    fn test_dispatch_rejects_tensor_bound_as_input_and_output() {
+        let descriptor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+        let tensor = MLTensor {
+            id: 7,
+            constant: false,
+            descriptor,
+        };
+        let inputs = MLNamedTensors::from([("lhs", &tensor)]);
+        let outputs = MLNamedTensors::from([("sum", &tensor)]);
+
+        let err = validate_unique_tensor_bindings(&inputs, &outputs).unwrap_err();
+        std::assert_matches!(
+            err,
+            crate::error::Error::DuplicateTensorBinding {
+                first_binding,
+                other_binding,
+                ..
+            } if first_binding == "lhs" && other_binding == "sum"
+        );
+    }
+
+    #[test]
+    fn test_dispatch_allows_same_name_for_distinct_input_and_output_tensors() {
+        let descriptor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+        let input_tensor = MLTensor {
+            id: 7,
+            constant: false,
+            descriptor: descriptor.clone(),
+        };
+        let output_tensor = MLTensor {
+            id: 8,
+            constant: false,
+            descriptor,
+        };
+        let inputs = MLNamedTensors::from([("value", &input_tensor)]);
+        let outputs = MLNamedTensors::from([("value", &output_tensor)]);
+
+        validate_unique_tensor_bindings(&inputs, &outputs).unwrap();
     }
 
     #[cfg(feature = "trtx-runtime")]
@@ -793,11 +845,12 @@ webnn_graph "sample_graph" v1 {
         };
 
         let desc = rw_tensor_desc([2, 2].to_vec());
-        let tensor = context.create_tensor(&desc).unwrap();
+        let input_tensor = context.create_tensor(&desc).unwrap();
+        let output_tensor = context.create_tensor(&desc).unwrap();
         let mut inputs = MLNamedTensors::new();
-        inputs.insert("invalid_input", &tensor);
+        inputs.insert("invalid_input", &input_tensor);
         let mut outputs = MLNamedTensors::new();
-        outputs.insert("sum", &tensor);
+        outputs.insert("sum", &output_tensor);
 
         let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
         std::assert_matches!(
@@ -814,11 +867,12 @@ webnn_graph "sample_graph" v1 {
         };
 
         let desc = rw_tensor_desc([2, 3].to_vec());
-        let tensor = context.create_tensor(&desc).unwrap();
+        let input_tensor = context.create_tensor(&desc).unwrap();
+        let output_tensor = context.create_tensor(&desc).unwrap();
         let mut inputs = MLNamedTensors::new();
-        inputs.insert("lhs", &tensor);
+        inputs.insert("lhs", &input_tensor);
         let mut outputs = MLNamedTensors::new();
-        outputs.insert("sum", &tensor);
+        outputs.insert("sum", &output_tensor);
 
         let err = context.dispatch(&mut graph, &inputs, &outputs).unwrap_err();
         std::assert_matches!(
