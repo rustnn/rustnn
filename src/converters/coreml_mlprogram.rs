@@ -8135,7 +8135,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
 
             // Special handling for resample2d: lower to CoreML upsample ops.
-            // Only handles 4D NCHW inputs (default WebNN layout) with scales or sizes.
+            // MIL only upsamples the final two dimensions, so transpose arbitrary
+            // WebNN axes into those positions before upsampling and transpose back.
             if op_type_lower == "resample2d" {
                 if op.input_operands().is_empty() || op.output_operand().is_none() {
                     return Err(GraphError::ConversionFailed {
@@ -8161,27 +8162,54 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 };
 
                 let input_shape = input_operand.descriptor.static_or_max_shape();
-                if input_shape.len() < 4 {
+                if input_shape.len() != 4 {
                     return Err(GraphError::ConversionFailed {
                         format: "coreml_mlprogram".to_string(),
                         reason: format!(
-                            "resample2d requires 4D NCHW input, got {}D",
+                            "resample2d requires a 4D input, got {}D",
                             input_shape.len()
                         ),
                     });
                 }
 
-                // Resolve axes: default to [2, 3] (NCHW H, W) when unspecified.
+                // Resolve axes: default to [2, 3]. Preserve the WebNN axes order:
+                // axes[0] maps to MIL height and axes[1] maps to MIL width.
                 let axes: Vec<u32> = if opts.axes.is_empty() {
                     vec![2, 3]
                 } else {
                     opts.axes.clone()
                 };
-                let is_nhwc = axes.len() == 2 && axes[0] == 1 && axes[1] == 2;
+                if axes.len() != 2
+                    || axes[0] >= input_shape.len() as u32
+                    || axes[1] >= input_shape.len() as u32
+                    || axes[0] == axes[1]
+                {
+                    return Err(GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!(
+                            "resample2d requires two distinct axes for rank {}, got {:?}",
+                            input_shape.len(),
+                            axes
+                        ),
+                    });
+                }
 
-                // Determine input name and NCHW-relative H/W dims + their input sizes.
-                // For NHWC [N,H,W,C] (axes=[1,2]): transpose input to NCHW first.
-                // For NCHW (axes=[2,3] or [3,2]): use as-is.
+                let spatial_permutation: Vec<u32> = (0..input_shape.len() as u32)
+                    .filter(|axis| !axes.contains(axis))
+                    .chain(axes.iter().copied())
+                    .collect();
+                let inverse_permutation: Vec<u32> = (0..input_shape.len() as u32)
+                    .map(|axis| {
+                        spatial_permutation
+                            .iter()
+                            .position(|&candidate| candidate == axis)
+                            .expect("spatial permutation contains every input axis")
+                            as u32
+                    })
+                    .collect();
+                let identity_permutation: Vec<u32> = (0..input_shape.len() as u32).collect();
+                let needs_spatial_transpose = spatial_permutation != identity_permutation;
+
                 let input_name_raw =
                     Self::output_name_for_operand(graph_info, input_id, &operand_name_overrides);
                 let (output_name, output_type) =
@@ -8196,88 +8224,71 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         })?;
                 let dtype = Self::mil_data_type(&input_operand.descriptor.data_type)?;
 
-                // For NHWC: emit pre-transpose (NHWC→NCHW) and record post-transpose.
-                let (upsample_input_name, upsample_output_name, upsample_output_type) = if is_nhwc {
-                    let nchw_perm = [0u32, 3, 1, 2];
-                    let nchw_in_shape =
-                        Self::permute_graph_shape(&input_operand.descriptor.shape, &nchw_perm);
-                    let nchw_in_dims = Self::mil_dimensions_from_graph_shape(&nchw_in_shape, false);
-                    let nchw_in_name = format!("{}_rs_in_nchw", output_name);
-                    let nchw_in_type = NamedValueType {
-                        name: nchw_in_name.clone(),
-                        r#type: Some(ValueType {
-                            r#type: Some(
-                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                    TensorType {
-                                        rank: nchw_in_dims.len() as i64,
-                                        data_type: dtype,
-                                        dimensions: nchw_in_dims,
-                                        attributes: HashMap::new(),
-                                    },
+                let (upsample_input_name, upsample_output_name, upsample_output_type) =
+                    if needs_spatial_transpose {
+                        let spatial_input_shape = Self::permute_graph_shape(
+                            &input_operand.descriptor.shape,
+                            &spatial_permutation,
+                        );
+                        let spatial_input_dims =
+                            Self::mil_dimensions_from_graph_shape(&spatial_input_shape, false);
+                        let spatial_input_name = format!("{}_rs_in_spatial", output_name);
+                        let spatial_input_type = NamedValueType {
+                            name: spatial_input_name.clone(),
+                            r#type: Some(ValueType {
+                                r#type: Some(
+                                    crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                        TensorType {
+                                            rank: spatial_input_dims.len() as i64,
+                                            data_type: dtype,
+                                            dimensions: spatial_input_dims,
+                                            attributes: HashMap::new(),
+                                        },
+                                    ),
                                 ),
-                            ),
-                        }),
-                    };
-                    let mut pre_tp: HashMap<String, Argument> = HashMap::new();
-                    pre_tp.insert("x".to_string(), Self::create_name_argument(input_name_raw));
-                    pre_tp.insert(
-                        "perm".to_string(),
-                        Self::create_immediate_int_array(&nchw_perm),
-                    );
-                    main_block.operations.push(Self::create_mil_operation(
-                        "transpose",
-                        pre_tp,
-                        vec![nchw_in_type],
-                    ));
+                            }),
+                        };
+                        let mut pre_tp: HashMap<String, Argument> = HashMap::new();
+                        pre_tp.insert("x".to_string(), Self::create_name_argument(input_name_raw));
+                        pre_tp.insert(
+                            "perm".to_string(),
+                            Self::create_immediate_int_array(&spatial_permutation),
+                        );
+                        main_block.operations.push(Self::create_mil_operation(
+                            "transpose",
+                            pre_tp,
+                            vec![spatial_input_type],
+                        ));
 
-                    // Upsample intermediate is in NCHW; post-transpose to NHWC
-                    let nchw_out_perm = [0u32, 3, 1, 2];
-                    let nchw_out_shape =
-                        Self::permute_graph_shape(&output_operand.descriptor.shape, &nchw_out_perm);
-                    let nchw_out_dims =
-                        Self::mil_dimensions_from_graph_shape(&nchw_out_shape, false);
-                    let nchw_out_name = format!("{}_rs_out_nchw", output_name);
-                    let nchw_out_type = NamedValueType {
-                        name: nchw_out_name.clone(),
-                        r#type: Some(ValueType {
-                            r#type: Some(
-                                crate::protos::coreml::mil_spec::value_type::Type::TensorType(
-                                    TensorType {
-                                        rank: nchw_out_dims.len() as i64,
-                                        data_type: dtype,
-                                        dimensions: nchw_out_dims,
-                                        attributes: HashMap::new(),
-                                    },
+                        let spatial_output_shape = Self::permute_graph_shape(
+                            &output_operand.descriptor.shape,
+                            &spatial_permutation,
+                        );
+                        let spatial_output_dims =
+                            Self::mil_dimensions_from_graph_shape(&spatial_output_shape, false);
+                        let spatial_output_name = format!("{}_rs_out_spatial", output_name);
+                        let spatial_output_type = NamedValueType {
+                            name: spatial_output_name.clone(),
+                            r#type: Some(ValueType {
+                                r#type: Some(
+                                    crate::protos::coreml::mil_spec::value_type::Type::TensorType(
+                                        TensorType {
+                                            rank: spatial_output_dims.len() as i64,
+                                            data_type: dtype,
+                                            dimensions: spatial_output_dims,
+                                            attributes: HashMap::new(),
+                                        },
+                                    ),
                                 ),
-                            ),
-                        }),
+                            }),
+                        };
+                        (spatial_input_name, spatial_output_name, spatial_output_type)
+                    } else {
+                        (input_name_raw, output_name.clone(), output_type.clone())
                     };
-                    (nchw_in_name, nchw_out_name, nchw_out_type)
-                } else {
-                    (input_name_raw, output_name.clone(), output_type.clone())
-                };
 
-                // Map scale factors using the resolved axes.
-                // For axes=[a0, a1]: sizes[0]/scales[0] applies to dim a0,
-                //                    sizes[1]/scales[1] applies to dim a1.
-                // For NHWC (axes=[1,2]): H=dim1, W=dim2 of original input.
-                // For NCHW (axes=[2,3]):  H=dim2, W=dim3.
-                // For swapped NCHW (axes=[3,2]): sizes[0]→W(dim3), sizes[1]→H(dim2).
-                let (axis0, axis1) = if is_nhwc {
-                    (1usize, 2usize)
-                } else if axes.len() >= 2 {
-                    (axes[0] as usize, axes[1] as usize)
-                } else {
-                    (2usize, 3usize)
-                };
-                // H is the lower-numbered spatial dimension, W is the higher.
-                let (h_dim, w_dim, h_idx, w_idx) = if axis0 <= axis1 {
-                    (axis0, axis1, 0usize, 1usize)
-                } else {
-                    (axis1, axis0, 1usize, 0usize)
-                };
-                let raw_input_h = input_shape.get(h_dim).copied().unwrap_or(1) as f32;
-                let raw_input_w = input_shape.get(w_dim).copied().unwrap_or(1) as f32;
+                let raw_input_h = input_shape[axes[0] as usize] as f32;
+                let raw_input_w = input_shape[axes[1] as usize] as f32;
 
                 // WebNN: when `sizes` is provided it takes precedence and `scales` is ignored.
                 let sizes_valid = opts.sizes.as_ref().map(|s| s.len() >= 2).unwrap_or(false);
@@ -8289,12 +8300,12 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         });
                     }
                     let sizes = opts.sizes.as_ref().unwrap();
-                    let sh = sizes.get(h_idx).copied().unwrap_or(1) as f32 / raw_input_h;
-                    let sw = sizes.get(w_idx).copied().unwrap_or(1) as f32 / raw_input_w;
+                    let sh = sizes[0] as f32 / raw_input_h;
+                    let sw = sizes[1] as f32 / raw_input_w;
                     (sh, sw)
                 } else if !opts.scales.is_empty() {
-                    let sh = opts.scales.get(h_idx).copied().unwrap_or(1.0);
-                    let sw = opts.scales.get(w_idx).copied().unwrap_or(1.0);
+                    let sh = opts.scales.first().copied().unwrap_or(1.0);
+                    let sw = opts.scales.get(1).copied().unwrap_or(1.0);
                     (sh, sw)
                 } else {
                     (1.0, 1.0)
@@ -8344,9 +8355,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     vec![upsample_output_type],
                 ));
 
-                // For NHWC: post-transpose NCHW→NHWC
-                if is_nhwc {
-                    let post_perm = [0u32, 2, 3, 1];
+                if needs_spatial_transpose {
                     let mut post_tp: HashMap<String, Argument> = HashMap::new();
                     post_tp.insert(
                         "x".to_string(),
@@ -8354,7 +8363,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     );
                     post_tp.insert(
                         "perm".to_string(),
-                        Self::create_immediate_int_array(&post_perm),
+                        Self::create_immediate_int_array(&inverse_permutation),
                     );
                     main_block.operations.push(Self::create_mil_operation(
                         "transpose",
@@ -10321,27 +10330,16 @@ mod tests {
         let converted = CoremlMlProgramConverter
             .convert(graph)
             .expect("CoreML conversion should succeed");
-        let model = Model::decode(converted.data.as_slice()).expect("decode CoreML model");
-        let program = match model.r#type.expect("model type") {
-            crate::protos::coreml::specification::model::Type::MlProgram(program) => program,
-            _ => panic!("expected MLProgram model"),
-        };
-        program
-            .functions
-            .get("main")
-            .expect("main function")
-            .block_specializations
-            .get("CoreML7")
-            .expect("CoreML7 block")
+        decode_main_block(&converted.data)
             .operations
             .iter()
             .map(|op| op.r#type.clone())
             .collect()
     }
 
-    #[test]
-    fn test_shape_lowers_to_mil_shape() {
-        let graph = GraphInfo {
+    fn shape_graph(input_shape: Vec<crate::graph::Dimension>, data_type: DataType) -> GraphInfo {
+        let rank = input_shape.len() as u32;
+        GraphInfo {
             input_operands: vec![0],
             output_operands: vec![1],
             operands: vec![
@@ -10350,7 +10348,7 @@ mod tests {
                     kind: OperandKind::Input,
                     descriptor: OperandDescriptor {
                         data_type: DataType::Float32,
-                        shape: s(&[2, 3, 4]),
+                        shape: input_shape,
                         pending_permutation: vec![],
                     },
                 },
@@ -10358,8 +10356,8 @@ mod tests {
                     name: Some("shape".to_string()),
                     kind: OperandKind::Output,
                     descriptor: OperandDescriptor {
-                        data_type: DataType::Int64,
-                        shape: s(&[3]),
+                        data_type,
+                        shape: s(&[rank]),
                         pending_permutation: vec![],
                     },
                 },
@@ -10374,9 +10372,203 @@ mod tests {
             constant_operand_ids_to_handles: HashMap::new(),
             id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_shape_lowers_to_mil_shape() {
+        // Imported ONNX shape tensors use int64; the dynamic-shape proposal
+        // uses uint32. Both must retain MIL shape's native int32 result type.
+        // This does not change the existing public builder's int64 contract.
+        for data_type in [DataType::Int64, DataType::Uint32] {
+            let graph = shape_graph(s(&[2, 3, 4]), data_type);
+            let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
+            let block = decode_main_block(&converted.data);
+            let shape = block
+                .operations
+                .iter()
+                .find(|op| op.r#type == mil_ops::SHAPE)
+                .expect("MIL shape operation");
+            let Some(crate::protos::coreml::mil_spec::value_type::Type::TensorType(output)) = shape
+                .outputs[0]
+                .r#type
+                .as_ref()
+                .and_then(|ty| ty.r#type.as_ref())
+            else {
+                panic!("shape output must be a tensor");
+            };
+            assert_eq!(
+                output.data_type,
+                crate::protos::coreml::mil_spec::DataType::Int32 as i32
+            );
+            assert_eq!(output.rank, 1);
+            assert_eq!(graph.operands[1].descriptor.data_type, data_type);
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    #[test]
+    fn test_shape_unsqueeze_returns_exact_integer_values() {
+        use crate::mlcontext::{
+            Backend, MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+            MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+        };
+        use crate::operator_enums::MLOperandDataType;
+
+        for data_type in [MLOperandDataType::Int64, MLOperandDataType::Uint32] {
+            let mut context = MLContext::create(
+                &MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::Coreml),
+            )
+            .expect("CPU CoreML context");
+            let input_desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 3, 4]);
+            let output_desc = MLOperandDescriptor::new(data_type, vec![1, 3]);
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let input = builder.input("input", &input_desc).unwrap();
+            let shape = builder.shape(input).unwrap();
+            let shape = if data_type == MLOperandDataType::Uint32 {
+                builder.cast(shape, data_type).unwrap()
+            } else {
+                shape
+            };
+            let output = builder
+                .unsqueeze_with_options(
+                    shape,
+                    crate::operator_options::MLUnsqueezeOptions {
+                        axes: vec![0],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let mut graph = builder
+                .build(&MLNamedOperands::from([("expanded_shape", output)]))
+                .expect("compile shape model locally");
+
+            let mut input_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&input_desc);
+            input_tensor_desc.set_writable(true);
+            let input_tensor = context.create_tensor(&input_tensor_desc).unwrap();
+            let mut output_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&output_desc);
+            output_tensor_desc.set_readable(true);
+            let output_tensor = context.create_tensor(&output_tensor_desc).unwrap();
+
+            // Reuse the compiled model while changing data, not dimensions.
+            // Exercise dispatch/readback too: the int64 API result needs widening
+            // from CoreML's int32 proxy, whereas uint32 keeps the 4-byte layout.
+            for value in [-7.0f32, 0.0, 9.0] {
+                context.write_tensor(&input_tensor, &[value; 24]).unwrap();
+                context
+                    .dispatch(
+                        &mut graph,
+                        &MLNamedTensors::from([("input", &input_tensor)]),
+                        &MLNamedTensors::from([("expanded_shape", &output_tensor)]),
+                    )
+                    .unwrap();
+                match data_type {
+                    MLOperandDataType::Int64 => {
+                        let mut actual = [0i64; 3];
+                        context.read_tensor(&output_tensor, &mut actual).unwrap();
+                        assert_eq!(actual, [2, 3, 4]);
+                    }
+                    MLOperandDataType::Uint32 => {
+                        let mut actual = [0u32; 3];
+                        context.read_tensor(&output_tensor, &mut actual).unwrap();
+                        assert_eq!(actual, [2, 3, 4]);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn immediate_int_values(argument: &Argument) -> Vec<i32> {
+        let binding = argument.arguments.first().expect("argument binding");
+        let value = match binding.binding.as_ref().expect("binding value") {
+            crate::protos::coreml::mil_spec::argument::binding::Binding::Value(value) => value,
+            _ => panic!("expected immediate argument"),
+        };
+        let immediate = match value.value.as_ref().expect("argument value") {
+            crate::protos::coreml::mil_spec::value::Value::ImmediateValue(immediate) => immediate,
+            _ => panic!("expected immediate value"),
+        };
+        let tensor = match immediate.value.as_ref().expect("immediate tensor") {
+            crate::protos::coreml::mil_spec::value::immediate_value::Value::Tensor(tensor) => {
+                tensor
+            }
+            _ => panic!("expected tensor value"),
+        };
+        match tensor.value.as_ref().expect("tensor payload") {
+            crate::protos::coreml::mil_spec::tensor_value::Value::Ints(values) => {
+                values.values.clone()
+            }
+            _ => panic!("expected integer tensor"),
+        }
+    }
+
+    #[test]
+    fn test_resample2d_moves_arbitrary_axes_to_spatial_dimensions() {
+        let graph = GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[3, 2, 1, 1]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[6, 4, 1, 1]),
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![op_from_operator_options(
+                "resample2d",
+                vec![0],
+                Some(1),
+                vec![],
+                OperatorOptions::from_json_with_op_type(
+                    "resample2d",
+                    &serde_json::json!({ "axes": [0, 1], "sizes": [6, 4] }),
+                )
+                .expect("resample2d options"),
+            )],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
         };
 
-        assert_eq!(main_operation_types(&graph), vec![mil_ops::SHAPE]);
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("CoreML resample2d conversion");
+        let main_block = decode_main_block(&converted.data);
+        let transposes: Vec<_> = main_block
+            .operations
+            .iter()
+            .filter(|op| op.r#type == "transpose")
+            .collect();
+        assert_eq!(transposes.len(), 2, "expected pre/post transposes");
+        assert_eq!(
+            immediate_int_values(transposes[0].inputs.get("perm").expect("pre perm")),
+            [2, 3, 0, 1]
+        );
+        assert_eq!(
+            immediate_int_values(transposes[1].inputs.get("perm").expect("post perm")),
+            [2, 3, 0, 1]
+        );
+        assert!(
+            main_block
+                .operations
+                .iter()
+                .any(|op| op.r#type == mil_ops::UPSAMPLE_NEAREST_NEIGHBOR)
+        );
     }
 
     fn reduce_log_sum_exp_graph(
@@ -10441,6 +10633,72 @@ mod tests {
                 "squeeze",
             ]
         );
+    }
+
+    #[test]
+    fn test_coreml_conv2d_reads_webnn_padding_option() {
+        let graph = GraphInfo {
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[1, 1, 3, 3]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("filter".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[1, 1, 1, 1]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("output".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[1, 1, 6, 10]),
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![op_from_operator_options(
+                "conv2d",
+                vec![0, 1],
+                Some(2),
+                vec![],
+                OperatorOptions::from_json_with_op_type(
+                    "conv2d",
+                    &serde_json::json!({ "padding": [1, 2, 3, 4] }),
+                )
+                .expect("conv2d options"),
+            )],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("CoreML conv2d conversion");
+        let main_block = decode_main_block(&converted.data);
+        let conv = main_block
+            .operations
+            .iter()
+            .find(|op| op.r#type == mil_ops::CONV)
+            .expect("conv operation");
+        assert_eq!(
+            immediate_int_values(conv.inputs.get("pad").expect("MIL pad input")),
+            [1, 2, 3, 4]
+        );
+        assert!(!conv.inputs.contains_key("pads"));
     }
 
     #[test]
@@ -11173,7 +11431,7 @@ mod tests {
             constant_operand_ids_to_handles: HashMap::from([(
                 0,
                 ConstantData {
-                    data: [0_i64, 1_i64]
+                    data: [0_i64, -2_i64]
                         .into_iter()
                         .flat_map(i64::to_le_bytes)
                         .collect(),
@@ -11211,6 +11469,45 @@ mod tests {
             panic!("select condition should be a named bool value");
         };
         assert_eq!(condition_name, "condition_bool_3");
+
+        #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+        {
+            use crate::backend_selection::DeviceType;
+            use crate::executors::coreml::{CoremlByteInput, compile_model, run_coreml_bytes};
+
+            let model = compile_model(
+                converted.data,
+                converted.weights_data,
+                DeviceType::Cpu,
+                false,
+            )
+            .expect("compile integer-mask select locally");
+            let when_true = [10.0f32, 20.0];
+            let when_false = [30.0f32, 40.0];
+            let inputs = HashMap::from([
+                (
+                    "when_true".to_string(),
+                    CoremlByteInput {
+                        descriptor: &graph.operands[1].descriptor,
+                        data: bytemuck::cast_slice(&when_true),
+                    },
+                ),
+                (
+                    "when_false".to_string(),
+                    CoremlByteInput {
+                        descriptor: &graph.operands[2].descriptor,
+                        data: bytemuck::cast_slice(&when_false),
+                    },
+                ),
+            ]);
+            let outputs =
+                HashMap::from([("result".to_string(), graph.operands[3].descriptor.clone())]);
+            let actual = run_coreml_bytes(&model, &inputs, &outputs).unwrap();
+            assert_eq!(
+                actual["result"],
+                bytemuck::cast_slice::<f32, u8>(&[30.0f32, 20.0])
+            );
+        }
     }
 
     /// Unpack a scalar immediate int argument (e.g. the `axis` input of a
