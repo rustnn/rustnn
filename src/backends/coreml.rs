@@ -32,6 +32,28 @@ fn tensor_byte_len(descriptor: &MLTensorDescriptor) -> usize {
     descriptor.rustnn_required_bytes()
 }
 
+/// Bind CoreML to the active tensor extents, not the graph's allocation bounds.
+fn runtime_input_descriptor(
+    graph_descriptor: &crate::graph::OperandDescriptor,
+    shape: &[u64],
+) -> crate::error::Result<crate::graph::OperandDescriptor> {
+    let shape = shape
+        .iter()
+        .map(|&size| {
+            u32::try_from(size)
+                .map(crate::graph::Dimension::Static)
+                .map_err(|_| Error::GraphDispatchError {
+                    source: format!("runtime input dimension {size} exceeds u32::MAX").into(),
+                })
+        })
+        .collect::<crate::error::Result<Vec<_>>>()?;
+    Ok(crate::graph::OperandDescriptor {
+        data_type: graph_descriptor.data_type,
+        shape,
+        pending_permutation: graph_descriptor.pending_permutation.clone(),
+    })
+}
+
 /// Host tensor storage for the CoreML backend (mirrors `OrtTensor`).
 #[derive(Debug)]
 pub(crate) struct CoremlTensor {
@@ -220,15 +242,35 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                         source: "MLGraph is not a CoreML model graph".into(),
                     })?;
 
+            let runtime_descriptors = graph
+                .input_descriptors
+                .iter()
+                .map(|(name, descriptor)| {
+                    let tensor =
+                        inputs
+                            .get(name.as_str())
+                            .ok_or_else(|| Error::GraphDispatchError {
+                                source: format!("missing input '{name}' for CoreML dispatch")
+                                    .into(),
+                            })?;
+                    Ok((
+                        name.clone(),
+                        runtime_input_descriptor(descriptor, tensor.shape())?,
+                    ))
+                })
+                .collect::<crate::error::Result<HashMap<_, _>>>()?;
+
             let mut byte_inputs: HashMap<String, CoremlByteInput> =
                 HashMap::with_capacity(graph.input_descriptors.len());
-            for (name, descriptor) in graph.input_descriptors.iter() {
+            for (name, descriptor) in &runtime_descriptors {
                 let tensor =
                     inputs
                         .get(name.as_str())
                         .ok_or_else(|| Error::GraphDispatchError {
                             source: format!("missing input '{name}' for CoreML dispatch").into(),
                         })?;
+                // OperandDescriptor uses checked usize arithmetic, including on
+                // arm64_32; do not truncate a u64 element count before checking.
                 let logical =
                     descriptor
                         .byte_length()
@@ -300,7 +342,9 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             };
             let effective = expanded.as_deref().unwrap_or(data.as_slice());
 
-            if effective.len() < logical {
+            // Do not silently truncate a maximum-sized result to an active
+            // output binding: successful dispatch must return the exact size.
+            if effective.len() != logical {
                 return Err(Error::GraphDispatchError {
                     source: format!(
                         "output '{name}': CoreML produced {} bytes, descriptor expects {logical}",
@@ -383,6 +427,261 @@ mod test {
             Ok(ctx) => Some(ctx),
             Err(crate::error::Error::NoBackendAvailableForBackendHint { .. }) => None,
             Err(e) => panic!("unexpected context creation error: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn runtime_descriptor_checks_dimensions_and_byte_length() {
+        use crate::graph::{DataType, OperandDescriptor, to_dimension_vector};
+        let descriptor = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: to_dimension_vector(&[8, 4]),
+            pending_permutation: vec![1, 0],
+        };
+        let active = super::runtime_input_descriptor(&descriptor, &[2, 4]).unwrap();
+        assert_eq!(active.shape, to_dimension_vector(&[2, 4]));
+        assert_eq!(active.byte_length(), Some(32));
+        assert_eq!(active.pending_permutation, descriptor.pending_permutation);
+        assert!(super::runtime_input_descriptor(&descriptor, &[u64::from(u32::MAX) + 1]).is_err());
+        let overflowing = super::runtime_input_descriptor(
+            &descriptor,
+            &[u64::from(u32::MAX), u64::from(u32::MAX), 4],
+        )
+        .unwrap();
+        assert_eq!(overflowing.byte_length(), None);
+        let scalar = super::runtime_input_descriptor(&descriptor, &[]).unwrap();
+        assert_eq!(scalar.byte_length(), Some(4));
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    fn check_dynamic_gather_dispatch(op_name: &str) {
+        use crate::graph::{
+            DataType, Dimension, DynamicDimension, Operand, OperandDescriptor, OperandKind,
+        };
+        use crate::operators::Operation;
+
+        let dim = Dimension::Dynamic(DynamicDimension {
+            name: "count".into(),
+            max_size: 4,
+        });
+        let index_shape = if op_name == "gather" {
+            vec![dim.clone()]
+        } else {
+            vec![dim.clone(), Dimension::Static(2)]
+        };
+        let output_shape = if op_name == "gatherND" {
+            vec![dim]
+        } else {
+            vec![dim, Dimension::Static(2)]
+        };
+        let operation = match op_name {
+            "gather" => Operation::Gather {
+                input: 0,
+                indices: 1,
+                batch_dimensions: None,
+                options: None,
+                outputs: vec![2],
+            },
+            "gatherElements" => Operation::GatherElements {
+                input: 0,
+                indices: 1,
+                batch_dimensions: None,
+                options: None,
+                outputs: vec![2],
+            },
+            "gatherND" => Operation::GatherND {
+                input: 0,
+                indices: 1,
+                options: None,
+                outputs: vec![2],
+            },
+            _ => unreachable!(),
+        };
+        let operand = |name: &str, kind, data_type, shape| Operand {
+            name: Some(name.into()),
+            kind,
+            descriptor: OperandDescriptor {
+                data_type,
+                shape,
+                pending_permutation: vec![],
+            },
+        };
+        let graph_info = crate::GraphInfo {
+            operands: vec![
+                operand(
+                    "table",
+                    OperandKind::Input,
+                    DataType::Float32,
+                    crate::graph::to_dimension_vector(&[4, 2]),
+                ),
+                operand("indices", OperandKind::Input, DataType::Int64, index_shape),
+                operand(
+                    "result",
+                    OperandKind::Output,
+                    DataType::Float32,
+                    output_shape,
+                ),
+            ],
+            operations: vec![operation],
+            input_operands: vec![0, 1],
+            output_operands: vec![2],
+            ..Default::default()
+        };
+        let mut context = MLContext::create(
+            &MLContextOptions::new(MLPowerPreference::Default, false)
+                .with_rustnn_backend_hint(Backend::Coreml),
+        )
+        .unwrap();
+        let mut graph = MLGraphBuilder::new(&mut context)
+            .unwrap()
+            .build_graph_info(graph_info)
+            .unwrap();
+        let table = context
+            .create_tensor(
+                &MLTensorDescriptor::new(MLOperandDataType::Float32, vec![4, 2]).to_writable(),
+            )
+            .unwrap();
+        context
+            .write_tensor(&table, &[10.0f32, 11., 20., 21., 30., 31., 40., 41.])
+            .unwrap();
+        let (all_indices, all_expected): (&[i64], &[f32]) = match op_name {
+            "gather" => (
+                &[0, -1, 100, -100],
+                &[10., 11., 40., 41., 40., 41., 10., 11.],
+            ),
+            "gatherElements" => (
+                &[0, -1, -1, 0, 100, -100, -100, 100],
+                &[10., 41., 40., 11., 40., 11., 10., 41.],
+            ),
+            "gatherND" => (&[0, -1, -1, 0, 100, -100, -100, 100], &[11., 40., 40., 11.]),
+            _ => unreachable!(),
+        };
+        // Reuse one compiled model while growing and shrinking active dimensions.
+        // Each dispatch binds fresh, immutable-shape MLTensors.
+        for count in [1u64, 4, 2, 1] {
+            let index_shape = if op_name == "gather" {
+                vec![count]
+            } else {
+                vec![count, 2]
+            };
+            let output_shape = if op_name == "gatherND" {
+                vec![count]
+            } else {
+                vec![count, 2]
+            };
+            let index_count = index_shape.iter().product::<u64>() as usize;
+            let output_count = output_shape.iter().product::<u64>() as usize;
+            let indices = context
+                .create_tensor(
+                    &MLTensorDescriptor::new(MLOperandDataType::Int64, index_shape).to_writable(),
+                )
+                .unwrap();
+            let output = context
+                .create_tensor(
+                    &MLTensorDescriptor::new(MLOperandDataType::Float32, output_shape.clone())
+                        .to_readable(),
+                )
+                .unwrap();
+            context
+                .write_tensor(&indices, &all_indices[..index_count])
+                .unwrap();
+            context
+                .dispatch(
+                    &mut graph,
+                    &MLNamedTensors::from([("table", &table), ("indices", &indices)]),
+                    &MLNamedTensors::from([("result", &output)]),
+                )
+                .unwrap();
+            let mut result = vec![f32::NAN; output_count];
+            context.read_tensor(&output, &mut result).unwrap();
+            assert_eq!(output.shape(), output_shape);
+            assert_eq!(
+                result,
+                all_expected[..output_count],
+                "{op_name} active count {count}"
+            );
+        }
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn coreml_dynamic_gather_dispatch() {
+        check_dynamic_gather_dispatch("gather");
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn coreml_dynamic_gather_elements_dispatch() {
+        check_dynamic_gather_dispatch("gatherElements");
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn coreml_dynamic_gather_nd_dispatch() {
+        check_dynamic_gather_dispatch("gatherND");
+    }
+
+    #[test]
+    fn coreml_scalar_gather_returns_scalar_values() {
+        for constant_index in [false, true] {
+            let mut context = MLContext::create(
+                &MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::Coreml),
+            )
+            .unwrap();
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let data_desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![3]);
+            let index_desc = MLOperandDescriptor::new(MLOperandDataType::Int32, vec![]);
+            let data = builder.input("data", &data_desc).unwrap();
+            let index = if constant_index {
+                builder.constant_from_slice(&index_desc, &[-1i32]).unwrap()
+            } else {
+                builder.input("index", &index_desc).unwrap()
+            };
+            let result = builder.gather(data, index).unwrap();
+            let mut graph = builder
+                .build(&MLNamedOperands::from([("result", result)]))
+                .unwrap();
+            let data = context
+                .create_tensor(
+                    &MLTensorDescriptor::from_operand_descriptor(&data_desc).to_writable(),
+                )
+                .unwrap();
+            let index = context
+                .create_tensor(
+                    &MLTensorDescriptor::from_operand_descriptor(&index_desc).to_writable(),
+                )
+                .unwrap();
+            let result = context
+                .create_tensor(
+                    &MLTensorDescriptor::new(MLOperandDataType::Float32, vec![]).to_readable(),
+                )
+                .unwrap();
+            context.write_tensor(&data, &[10.0f32, 20., 30.]).unwrap();
+            let cases: &[(i32, f32)] = if constant_index {
+                &[(-1, 30.)]
+            } else {
+                &[(0, 10.), (2, 30.), (-1, 30.), (-100, 10.), (100, 30.)]
+            };
+            for &(value, expected) in cases {
+                context.write_tensor(&index, &value.to_le_bytes()).unwrap();
+                let inputs = if constant_index {
+                    MLNamedTensors::from([("data", &data)])
+                } else {
+                    MLNamedTensors::from([("data", &data), ("index", &index)])
+                };
+                context
+                    .dispatch(
+                        &mut graph,
+                        &inputs,
+                        &MLNamedTensors::from([("result", &result)]),
+                    )
+                    .unwrap();
+                let mut bytes = [0u8; 4];
+                context.read_tensor(&result, &mut bytes).unwrap();
+                assert!(result.shape().is_empty());
+                assert_eq!(f32::from_le_bytes(bytes), expected, "scalar index {value}");
+            }
         }
     }
 
