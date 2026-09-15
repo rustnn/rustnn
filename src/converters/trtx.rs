@@ -8481,6 +8481,30 @@ impl TrtxConverter {
             .collect()
     }
 
+    /// Clamp WebNN scatterND coordinates and translate negative indices from the end of each
+    /// indexed dimension into the non-negative coordinates required by TensorRT IScatterLayer.
+    #[cfg(test)]
+    fn normalize_scatter_nd_index_values(
+        values: &[i32],
+        k: usize,
+        dimension_sizes: &[i32],
+    ) -> Vec<i32> {
+        values
+            .chunks(k)
+            .flat_map(|chunk| {
+                chunk.iter().enumerate().map(|(j, &value)| {
+                    let dimension_size = dimension_sizes[j];
+                    let clamped = value.clamp(-dimension_size, dimension_size - 1);
+                    if clamped < 0 {
+                        clamped + dimension_size
+                    } else {
+                        clamped
+                    }
+                })
+            })
+            .collect()
+    }
+
     fn add_int32_constant_tensor<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
         dims: &[i64],
@@ -9089,9 +9113,10 @@ impl TrtxConverter {
                 ),
             })?;
 
-        // WebNN clamps out-of-range scatterND indices to [0, dim-1] per indexed dimension, but
-        // TensorRT's IScatterLayer silently ignores out-of-bound writes. Clamp the indices first:
-        // index component j addresses data dimension j, so its valid maximum is data_dims[j] - 1.
+        // TensorRT scatterND does not interpret negative coordinates from the end of a dimension.
+        // First clamp each WebNN coordinate to [-dim, dim - 1], then translate negative values by
+        // adding the corresponding dimension size. The resulting [0, dim - 1] coordinates also
+        // prevent TensorRT from silently ignoring out-of-range writes.
         let data_dims = data
             .dimensions(&*network)
             .map_err(|e| GraphError::ConversionFailed {
@@ -9109,39 +9134,62 @@ impl TrtxConverter {
             Some(k) if k > 0 && matches!(idx_type, TrtDataType::kINT32 | TrtDataType::kINT64) => {
                 let k = k as usize;
                 let idx_rank = idx_dims.len().max(1);
-                let bound_vals: Vec<i64> = (0..k)
-                    .map(|j| (data_dims.get(j).copied().unwrap_or(1) - 1).max(0))
+                let dimension_sizes: Vec<i64> = (0..k)
+                    .map(|j| data_dims.get(j).copied().unwrap_or(1).max(1))
                     .collect();
+                let min_vals: Vec<i64> = dimension_sizes.iter().map(|&dim| -dim).collect();
+                let max_vals: Vec<i64> = dimension_sizes.iter().map(|&dim| dim - 1).collect();
                 let mut bound_shape: Vec<i64> = vec![1i64; idx_rank];
                 if let Some(last) = bound_shape.last_mut() {
                     *last = k as i64;
                 }
                 let zero_shape: Vec<i64> = vec![1i64; idx_rank];
-                let (bound_bytes, zero_bytes): (Vec<u8>, Vec<u8>) =
+                let encode_values = |values: &[i64]| -> Vec<u8> {
                     if idx_type == TrtDataType::kINT64 {
-                        (
-                            bound_vals.iter().flat_map(|&v| v.to_le_bytes()).collect(),
-                            0i64.to_le_bytes().to_vec(),
-                        )
+                        values.iter().flat_map(|&v| v.to_le_bytes()).collect()
                     } else {
-                        (
-                            bound_vals
-                                .iter()
-                                .flat_map(|&v| (v as i32).to_le_bytes())
-                                .collect(),
-                            0i32.to_le_bytes().to_vec(),
-                        )
-                    };
-                let bound_t = network
-                    .add_small_constant_copied(&bound_shape, &bound_bytes, idx_type, None)
+                        values
+                            .iter()
+                            .flat_map(|&v| (v as i32).to_le_bytes())
+                            .collect()
+                    }
+                };
+                let min_bytes = encode_values(&min_vals);
+                let max_bytes = encode_values(&max_vals);
+                let dimension_bytes = encode_values(&dimension_sizes);
+                let zero_bytes = encode_values(&[0]);
+                let min_t = network
+                    .add_small_constant_copied(&bound_shape, &min_bytes, idx_type, None)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index bound constant: {e}"),
+                        reason: format!("scatterND index minimum constant: {e}"),
                     })?
                     .output(&*network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index bound output: {e}"),
+                        reason: format!("scatterND index minimum output: {e}"),
+                    })?;
+                let max_t = network
+                    .add_small_constant_copied(&bound_shape, &max_bytes, idx_type, None)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index maximum constant: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND index maximum output: {e}"),
+                    })?;
+                let dimension_t = network
+                    .add_small_constant_copied(&bound_shape, &dimension_bytes, idx_type, None)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND dimension constant: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND dimension output: {e}"),
                     })?;
                 let zero_t = network
                     .add_small_constant_copied(&zero_shape, &zero_bytes, idx_type, None)
@@ -9154,29 +9202,62 @@ impl TrtxConverter {
                         format: "trtx".to_string(),
                         reason: format!("scatterND index zero output: {e}"),
                     })?;
-                let maxed = network
-                    .add_elementwise(indices, &zero_t, ElementWiseOperation::kMAX)
+                let clamped_upper = network
+                    .add_elementwise(indices, &max_t, ElementWiseOperation::kMIN)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index max(0): {e}"),
+                        reason: format!("scatterND index clamp upper: {e}"),
                     })?
                     .output(&*network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index max output: {e}"),
+                        reason: format!("scatterND index clamp upper output: {e}"),
                     })?;
                 let clamped = network
-                    .add_elementwise(&maxed, &bound_t, ElementWiseOperation::kMIN)
+                    .add_elementwise(&clamped_upper, &min_t, ElementWiseOperation::kMAX)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index min(bound): {e}"),
+                        reason: format!("scatterND index clamp lower: {e}"),
                     })?
                     .output(&*network, 0)
                     .map_err(|e| GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("scatterND index min output: {e}"),
+                        reason: format!("scatterND index clamp lower output: {e}"),
                     })?;
-                Some(clamped)
+                let is_negative = network
+                    .add_elementwise(&clamped, &zero_t, ElementWiseOperation::kLESS)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND negative index comparison: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND negative index comparison output: {e}"),
+                    })?;
+                let normalized_negative = network
+                    .add_elementwise(&clamped, &dimension_t, ElementWiseOperation::kSUM)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND negative index translation: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND negative index translation output: {e}"),
+                    })?;
+                let normalized = network
+                    .add_select(&is_negative, &normalized_negative, &clamped)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND normalized index select: {e}"),
+                    })?
+                    .output(&*network, 0)
+                    .map_err(|e| GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("scatterND normalized index select output: {e}"),
+                    })?;
+                Some(normalized)
             }
             _ => None,
         };
@@ -15236,6 +15317,14 @@ mod tests {
         assert_eq!(
             TrtxConverter::engine_binding_name(42).as_str(),
             "webnn_operand_42"
+        );
+    }
+
+    #[test]
+    fn test_normalize_scatter_nd_negative_indices_by_dimension() {
+        assert_eq!(
+            TrtxConverter::normalize_scatter_nd_index_values(&[-1, -2, -4, 7, -8, 2], 2, &[3, 4],),
+            vec![2, 2, 0, 3, 0, 2]
         );
     }
 
