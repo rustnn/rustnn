@@ -166,9 +166,7 @@ litert::reverse::reverse_float32_2D_input_with_default_options
 litert::reverse::reverse_float32_4D_input_options_axes___
 litert::reverse::reverse_float32_4D_input_options_axes__3__1_
 litert::scatterElements::scatterElements_float32_tensors_along_axis_0
-litert::scatterElements::scatterElements_float32_tensors_along_axis_0_and_constant_indices
 litert::scatterElements::scatterElements_float32_tensors_along_axis_1
-litert::scatterElements::scatterElements_float32_tensors_along_axis_1_and_constant_indices
 litert::subgraph::conv2d_default___prelu
 litert::subgraph::conv2d_default___softmax
 litert::subgraph::conv2d_with_options_inputLayout__nchw____softmax
