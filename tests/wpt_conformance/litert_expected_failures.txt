@@ -185,7 +185,6 @@ litert::subgraph::convTranspose2d_default___linear
 litert::subgraph::convTranspose2d_default___prelu
 litert::subgraph::convTranspose2d_default___relu
 litert::subgraph::convTranspose2d_default___sigmoid
-litert::subgraph::convTranspose2d_default___softmax
 litert::subgraph::convTranspose2d_default___softplus
 litert::subgraph::convTranspose2d_default___softsign
 litert::subgraph::convTranspose2d_with_options_inputLayout_nchw___softmax
