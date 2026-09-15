@@ -1,0 +1,10 @@
+---
+source: tests/run_wpt_conformance.rs
+expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
+---
+(
+    "scatterND.https.any.js",
+    "scatterND 4D float32 tensors by negative indices",
+    "onnx",
+    "PASS",
+)

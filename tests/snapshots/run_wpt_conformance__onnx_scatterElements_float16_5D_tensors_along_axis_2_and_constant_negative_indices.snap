@@ -4,7 +4,7 @@ expression: "(&file_name, &test_name, &backend_prefix, \"PASS\")"
 ---
 (
     "scatterElements.https.any.js",
-    "scatterElements float16 tensors along axis 0 and constant indices",
+    "scatterElements float16 5D tensors along axis 2 and constant negative indices",
     "onnx",
     "PASS",
 )
