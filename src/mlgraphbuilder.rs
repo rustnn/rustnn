@@ -2428,12 +2428,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     /// Scalar constant from a single value. Not implemented yet; use
     /// [`Self::constant_from_slice`] with an empty shape instead.
-    pub fn constant_from_value<T>(
+    pub fn constant_from_value<T: bytemuck::Pod>(
         &mut self,
-        _data_type: MLOperandDataType,
-        _value: T,
+        data_type: MLOperandDataType,
+        value: T,
     ) -> crate::error::Result<MLOperand> {
-        todo!()
+        self.constant_from_slice::<T>(&MLOperandDescriptor::new(data_type, vec![]), &[value])
     }
 
     // internal methods
