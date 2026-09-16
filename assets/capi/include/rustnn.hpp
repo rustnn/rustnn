@@ -12,6 +12,8 @@
 
 namespace rustnn {
 
+inline void initializeLogger() { rustnn_init_logger(); }
+
 class Error : public std::runtime_error {
 public:
   explicit Error(const std::string &message) : std::runtime_error(message) {}
@@ -35,6 +37,17 @@ enum class DataType {
   Uint8 = RustnnDataType_Uint8,
   Int4 = RustnnDataType_Int4,
   Uint4 = RustnnDataType_Uint4,
+};
+
+enum class PowerPreference {
+  Default = RustnnPowerPreference_Default,
+  HighPerformance = RustnnPowerPreference_HighPerformance,
+  LowPower = RustnnPowerPreference_LowPower,
+};
+
+struct ContextOptions {
+  PowerPreference power_preference = PowerPreference::Default;
+  bool accelerated = false;
 };
 
 struct OperatorOptions {
@@ -68,6 +81,35 @@ private:
   RustnnOperandDescriptor *value_ = nullptr;
 };
 
+class TensorDescriptor {
+public:
+  TensorDescriptor(DataType data_type, const std::vector<std::uint64_t> &shape,
+                   bool readable, bool writable) {
+    check(rustnn_tensor_descriptor_create(static_cast<RustnnDataType>(data_type),
+                                          shape.data(), shape.size(), readable,
+                                          writable, &value_));
+  }
+
+  ~TensorDescriptor() { rustnn_tensor_descriptor_destroy(value_); }
+  TensorDescriptor(const TensorDescriptor &) = delete;
+  TensorDescriptor &operator=(const TensorDescriptor &) = delete;
+
+  TensorDescriptor(TensorDescriptor &&other) noexcept
+      : value_(std::exchange(other.value_, nullptr)) {}
+
+  TensorDescriptor &operator=(TensorDescriptor &&other) noexcept {
+    if (this != &other) {
+      rustnn_tensor_descriptor_destroy(value_);
+      value_ = std::exchange(other.value_, nullptr);
+    }
+    return *this;
+  }
+
+private:
+  friend class Context;
+  RustnnTensorDescriptor *value_ = nullptr;
+};
+
 class Operand {
 public:
   ~Operand() { rustnn_operand_destroy(value_); }
@@ -90,9 +132,125 @@ private:
   RustnnOperand *value_ = nullptr;
 };
 
+class Graph {
+public:
+  ~Graph() { rustnn_graph_destroy(value_); }
+  Graph(const Graph &) = delete;
+  Graph &operator=(const Graph &) = delete;
+
+  Graph(Graph &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+
+  Graph &operator=(Graph &&other) noexcept {
+    if (this != &other) {
+      rustnn_graph_destroy(value_);
+      value_ = std::exchange(other.value_, nullptr);
+    }
+    return *this;
+  }
+
+private:
+  friend class Context;
+  friend class GraphBuilder;
+  explicit Graph(RustnnGraph *value) : value_(value) {}
+  RustnnGraph *value_ = nullptr;
+};
+
+class Tensor {
+public:
+  ~Tensor() { rustnn_tensor_destroy(value_); }
+  Tensor(const Tensor &) = delete;
+  Tensor &operator=(const Tensor &) = delete;
+
+  Tensor(Tensor &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+
+  Tensor &operator=(Tensor &&other) noexcept {
+    if (this != &other) {
+      rustnn_tensor_destroy(value_);
+      value_ = std::exchange(other.value_, nullptr);
+    }
+    return *this;
+  }
+
+private:
+  friend class Context;
+  explicit Tensor(RustnnTensor *value) : value_(value) {}
+  RustnnTensor *value_ = nullptr;
+};
+
+class Context {
+public:
+  explicit Context(const ContextOptions &options = {}) {
+    const RustnnContextOptions raw_options{
+        static_cast<RustnnPowerPreference>(options.power_preference),
+        options.accelerated};
+    check(rustnn_context_create(&raw_options, &value_));
+  }
+
+  ~Context() { rustnn_context_destroy(value_); }
+  Context(const Context &) = delete;
+  Context &operator=(const Context &) = delete;
+
+  Context(Context &&other) noexcept : value_(std::exchange(other.value_, nullptr)) {}
+
+  Context &operator=(Context &&other) noexcept {
+    if (this != &other) {
+      rustnn_context_destroy(value_);
+      value_ = std::exchange(other.value_, nullptr);
+    }
+    return *this;
+  }
+
+  Tensor createTensor(const TensorDescriptor &descriptor) {
+    RustnnTensor *tensor = nullptr;
+    check(rustnn_context_create_tensor(value_, descriptor.value_, &tensor));
+    return Tensor(tensor);
+  }
+
+  template <typename T>
+  void writeTensor(const Tensor &tensor, const std::vector<T> &data) {
+    static_assert(std::is_trivially_copyable_v<T>, "tensor elements must be plain data");
+    check(rustnn_context_write_tensor(value_, tensor.value_, data.data(),
+                                      data.size() * sizeof(T)));
+  }
+
+  template <typename T>
+  std::vector<T> readTensor(const Tensor &tensor, std::size_t element_count) {
+    static_assert(std::is_trivially_copyable_v<T>, "tensor elements must be plain data");
+    std::vector<T> data(element_count);
+    check(rustnn_context_read_tensor(value_, tensor.value_, data.data(),
+                                     data.size() * sizeof(T)));
+    return data;
+  }
+
+  void dispatch(Graph &graph,
+                const std::vector<std::pair<std::string, const Tensor *>> &inputs,
+                const std::vector<std::pair<std::string, const Tensor *>> &outputs) {
+    std::vector<RustnnNamedTensor> named_inputs;
+    named_inputs.reserve(inputs.size());
+    for (const auto &[name, tensor] : inputs) {
+      named_inputs.push_back({name.c_str(), tensor != nullptr ? tensor->value_ : nullptr});
+    }
+    std::vector<RustnnNamedTensor> named_outputs;
+    named_outputs.reserve(outputs.size());
+    for (const auto &[name, tensor] : outputs) {
+      named_outputs.push_back({name.c_str(), tensor != nullptr ? tensor->value_ : nullptr});
+    }
+    check(rustnn_context_dispatch(value_, graph.value_, named_inputs.data(),
+                                  named_inputs.size(), named_outputs.data(),
+                                  named_outputs.size()));
+  }
+
+private:
+  friend class GraphBuilder;
+  RustnnContext *value_ = nullptr;
+};
+
 class GraphBuilder {
 public:
   GraphBuilder() { check(rustnn_graph_builder_create_uncompiled(&value_)); }
+  explicit GraphBuilder(Context &context) {
+    check(rustnn_graph_builder_create(context.value_, &value_));
+  }
   ~GraphBuilder() { rustnn_graph_builder_destroy(value_); }
   GraphBuilder(const GraphBuilder &) = delete;
   GraphBuilder &operator=(const GraphBuilder &) = delete;
@@ -255,6 +413,19 @@ public:
     std::string result(text);
     rustnn_string_destroy(text);
     return result;
+  }
+
+  Graph build(const std::vector<std::pair<std::string, const Operand *>> &outputs) {
+    std::vector<RustnnNamedOperand> named;
+    named.reserve(outputs.size());
+    for (const auto &[name, operand] : outputs) {
+      named.push_back({name.c_str(), operand != nullptr ? operand->value_ : nullptr});
+    }
+    RustnnGraph *graph = nullptr;
+    RustnnStatus status =
+        rustnn_graph_builder_build(&value_, named.data(), named.size(), &graph);
+    check(status);
+    return Graph(graph);
   }
 
 private:

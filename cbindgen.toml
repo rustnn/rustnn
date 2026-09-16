@@ -15,11 +15,18 @@ exclude = [
 include = [
     "RustnnStatus",
     "RustnnDataType",
+    "RustnnPowerPreference",
     "RustnnUnaryOperation",
     "RustnnBinaryOperation",
     "RustnnOperandDescriptor",
+    "RustnnTensorDescriptor",
     "RustnnOperand",
     "RustnnGraphBuilder",
+    "RustnnContext",
+    "RustnnGraph",
+    "RustnnTensor",
     "RustnnNamedOperand",
+    "RustnnNamedTensor",
+    "RustnnContextOptions",
     "RustnnOperatorOptions",
 ]

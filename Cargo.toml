@@ -34,7 +34,7 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-cli
 
 [features]
 default = []
-capi = []
+capi = ["dep:pretty_env_logger"]
 dynamic-inputs = []
 coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray"]
@@ -159,7 +159,7 @@ webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch 
 
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true }
 log = "0.4.29"
-pretty_env_logger = "0.5.0"
+pretty_env_logger = { version = "0.5.0", optional = true }
 seahash = "4.1.0"
 dirs = "6.0.0"
 zstd = { version = "0.13", optional = true }

@@ -107,7 +107,8 @@ system library and aborts. See [Getting Started](docs/user-guide/getting-started
 The `capi` feature provides:
 
 - A generated C11 header at `<rustnn/rustnn.h>` with opaque handles, status
-  codes, concrete graph operations, and `_with_options` variants.
+  codes, logger initialization, concrete graph operations, and `_with_options`
+  variants.
 - A header-only C++17 RAII wrapper at `<rustnn/rustnn.hpp>`. The wrapper uses
   only the generated C API and does not depend on Rust implementation details.
 - `pkg-config` and CMake package metadata generated and installed by
@@ -117,7 +118,9 @@ Install a local development package with cargo-c:
 
 ```bash
 cargo install cargo-c
-cargo cinstall --features capi --prefix="$PWD/target/rustnn-capi-install"
+cargo cinstall \
+  --features capi,onnx-runtime \
+  --prefix="$PWD/target/rustnn-capi-install"
 ```
 
 A consuming CMake project can then use:
@@ -127,7 +130,9 @@ find_package(rustnn CONFIG REQUIRED)
 target_link_libraries(my_application PRIVATE rustnn::rustnn)
 ```
 
-The repository includes equivalent C and C++ graph-construction examples.
+The repository includes equivalent C and C++ examples that construct, compile,
+and dispatch a small arithmetic graph. At least one runtime backend feature is
+required to run them.
 See the **[C/C++ examples guide](examples/capi/README.md)** for API usage,
 ownership rules, package layout, and exact build and run commands.
 

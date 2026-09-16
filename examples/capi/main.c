@@ -15,8 +15,16 @@ static int check(RustnnStatus status) {
 }
 
 int main(void) {
+  rustnn_init_logger();
+
+  RustnnContext *context = NULL;
   RustnnGraphBuilder *builder = NULL;
+  RustnnGraph *graph = NULL;
   RustnnOperandDescriptor *matrix = NULL;
+  RustnnTensorDescriptor *input_tensor_descriptor = NULL;
+  RustnnTensorDescriptor *output_tensor_descriptor = NULL;
+  RustnnTensor *input_tensor = NULL;
+  RustnnTensor *output_tensor = NULL;
   RustnnOperand *input = NULL;
   RustnnOperand *bias = NULL;
   RustnnOperand *scale = NULL;
@@ -32,8 +40,10 @@ int main(void) {
   const RustnnOperatorOptions add_options = {"add bias"};
   const RustnnOperatorOptions multiply_options = {"scale values"};
   const RustnnOperatorOptions relu_options = {"clamp negatives"};
+  const RustnnContextOptions context_options = {RustnnPowerPreference_Default, false};
 
-  if (!check(rustnn_graph_builder_create_uncompiled(&builder)) ||
+  if (!check(rustnn_context_create(&context_options, &context)) ||
+      !check(rustnn_graph_builder_create(context, &builder)) ||
       !check(rustnn_operand_descriptor_create(RustnnDataType_Float32, shape, 2, &matrix)) ||
       !check(rustnn_graph_builder_input(builder, "input", matrix, &input)) ||
       !check(rustnn_graph_builder_constant(builder, matrix, bias_values,
@@ -75,10 +85,51 @@ int main(void) {
     goto cleanup;
   }
   puts(webnn_text);
+
+  if (!check(rustnn_graph_builder_build(&builder, outputs, 1, &graph)) ||
+      !check(rustnn_tensor_descriptor_create(RustnnDataType_Float32, shape, 2, false,
+                                             true, &input_tensor_descriptor)) ||
+      !check(rustnn_tensor_descriptor_create(RustnnDataType_Float32, shape, 2, true,
+                                             false, &output_tensor_descriptor)) ||
+      !check(rustnn_context_create_tensor(context, input_tensor_descriptor,
+                                          &input_tensor)) ||
+      !check(rustnn_context_create_tensor(context, output_tensor_descriptor,
+                                          &output_tensor))) {
+    goto cleanup;
+  }
+
+  const float input_values[] = {1.0f, -3.0f, 2.0f, -10.0f};
+  float output_values[4] = {0};
+  const float expected_values[] = {4.0f, 0.0f, 10.0f, 0.0f};
+  const RustnnNamedTensor inputs[] = {{"input", input_tensor}};
+  const RustnnNamedTensor tensor_outputs[] = {{"output", output_tensor}};
+  if (!check(rustnn_context_write_tensor(context, input_tensor, input_values,
+                                         sizeof(input_values))) ||
+      !check(rustnn_context_dispatch(context, graph, inputs, 1, tensor_outputs, 1)) ||
+      !check(rustnn_context_read_tensor(context, output_tensor, output_values,
+                                        sizeof(output_values)))) {
+    goto cleanup;
+  }
+  for (size_t index = 0; index < 4; ++index) {
+    if (output_values[index] != expected_values[index]) {
+      fprintf(stderr, "unexpected output value at index %zu\n", index);
+      goto cleanup;
+    }
+  }
+  printf("dispatch output:");
+  for (size_t index = 0; index < 4; ++index) {
+    printf(" %g", output_values[index]);
+  }
+  printf("\n");
   result = EXIT_SUCCESS;
 
 cleanup:
   rustnn_string_destroy(webnn_text);
+  rustnn_tensor_destroy(output_tensor);
+  rustnn_tensor_destroy(input_tensor);
+  rustnn_tensor_descriptor_destroy(output_tensor_descriptor);
+  rustnn_tensor_descriptor_destroy(input_tensor_descriptor);
+  rustnn_graph_destroy(graph);
   rustnn_operand_destroy(output);
   rustnn_operand_destroy(scaled);
   rustnn_operand_destroy(shifted);
@@ -87,5 +138,6 @@ cleanup:
   rustnn_operand_destroy(input);
   rustnn_operand_descriptor_destroy(matrix);
   rustnn_graph_builder_destroy(builder);
+  rustnn_context_destroy(context);
   return result;
 }

@@ -22,7 +22,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
-use crate::mlcontext::{MLNamedOperands, MLOperand, MLOperandDescriptor};
+use crate::mlcontext::{
+    MLContext, MLContextOptions, MLGraph, MLNamedOperands, MLNamedTensors, MLOperand,
+    MLOperandDescriptor, MLPowerPreference, MLTensor, MLTensorDescriptor,
+};
 use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::MLOperatorOptions;
@@ -51,6 +54,24 @@ pub enum RustnnDataType {
     Uint8 = 7,
     Int4 = 8,
     Uint4 = 9,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustnnPowerPreference {
+    Default = 0,
+    HighPerformance = 1,
+    LowPower = 2,
+}
+
+impl From<RustnnPowerPreference> for MLPowerPreference {
+    fn from(value: RustnnPowerPreference) -> Self {
+        match value {
+            RustnnPowerPreference::Default => Self::Default,
+            RustnnPowerPreference::HighPerformance => Self::HighPerformance,
+            RustnnPowerPreference::LowPower => Self::LowPower,
+        }
+    }
 }
 
 impl From<RustnnDataType> for MLOperandDataType {
@@ -140,13 +161,29 @@ pub enum RustnnBinaryOperation {
 }
 
 pub struct RustnnOperandDescriptor(MLOperandDescriptor);
+pub struct RustnnTensorDescriptor(MLTensorDescriptor);
 pub struct RustnnOperand(MLOperand);
 pub struct RustnnGraphBuilder(MLGraphBuilder<'static, 'static>);
+pub struct RustnnContext(MLContext<'static>);
+pub struct RustnnGraph(MLGraph<'static>);
+pub struct RustnnTensor(MLTensor);
 
 #[repr(C)]
 pub struct RustnnNamedOperand {
     pub name: *const c_char,
     pub operand: *const RustnnOperand,
+}
+
+#[repr(C)]
+pub struct RustnnNamedTensor {
+    pub name: *const c_char,
+    pub tensor: *const RustnnTensor,
+}
+
+#[repr(C)]
+pub struct RustnnContextOptions {
+    pub power_preference: RustnnPowerPreference,
+    pub accelerated: bool,
 }
 
 /// Options shared by the unary and binary operations exposed by this ABI.
@@ -254,6 +291,15 @@ pub extern "C" fn rustnn_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
 }
 
+/// Install rustnn's `pretty_env_logger` global logger if no logger is installed yet.
+///
+/// Set `RUST_LOG` before calling this function. Repeated calls are safe; calls made after another
+/// global logger has already been installed have no effect.
+#[unsafe(no_mangle)]
+pub extern "C" fn rustnn_init_logger() {
+    let _ = pretty_env_logger::try_init();
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_operand_descriptor_create(
     data_type: RustnnDataType,
@@ -287,6 +333,182 @@ pub unsafe extern "C" fn rustnn_operand_descriptor_destroy(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_tensor_descriptor_create(
+    data_type: RustnnDataType,
+    shape: *const u64,
+    shape_len: usize,
+    readable: bool,
+    writable: bool,
+    output: *mut *mut RustnnTensorDescriptor,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        let shape = match unsafe { input_slice(shape, shape_len, "shape") } {
+            Ok(shape) => shape,
+            Err(status) => return status,
+        };
+        let mut descriptor = MLTensorDescriptor::new(data_type.into(), shape.to_vec());
+        descriptor.set_readable(readable);
+        descriptor.set_writable(writable);
+        *output = Box::into_raw(Box::new(RustnnTensorDescriptor(descriptor)));
+        RustnnStatus::Success
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_tensor_descriptor_destroy(descriptor: *mut RustnnTensorDescriptor) {
+    if !descriptor.is_null() {
+        drop(unsafe { Box::from_raw(descriptor) });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_create(
+    options: *const RustnnContextOptions,
+    output: *mut *mut RustnnContext,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        let (power_preference, accelerated) = if options.is_null() {
+            (MLPowerPreference::Default, false)
+        } else {
+            let options = unsafe { &*options };
+            (options.power_preference.into(), options.accelerated)
+        };
+        match MLContext::create(&MLContextOptions::new(power_preference, accelerated)) {
+            Ok(context) => {
+                *output = Box::into_raw(Box::new(RustnnContext(context)));
+                RustnnStatus::Success
+            }
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_destroy(context: *mut RustnnContext) {
+    if !context.is_null() {
+        drop(unsafe { Box::from_raw(context) });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_create_tensor(
+    context: *mut RustnnContext,
+    descriptor: *const RustnnTensorDescriptor,
+    output: *mut *mut RustnnTensor,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let context = match unsafe { required_mut(context, "context") } {
+            Ok(context) => context,
+            Err(status) => return status,
+        };
+        let descriptor = match unsafe { required_ref(descriptor, "descriptor") } {
+            Ok(descriptor) => descriptor,
+            Err(status) => return status,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        match context.0.create_tensor(&descriptor.0) {
+            Ok(tensor) => {
+                *output = Box::into_raw(Box::new(RustnnTensor(tensor)));
+                RustnnStatus::Success
+            }
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_tensor_destroy(tensor: *mut RustnnTensor) {
+    if !tensor.is_null() {
+        drop(unsafe { Box::from_raw(tensor) });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_write_tensor(
+    context: *mut RustnnContext,
+    tensor: *const RustnnTensor,
+    data: *const c_void,
+    data_len: usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let context = match unsafe { required_mut(context, "context") } {
+            Ok(context) => context,
+            Err(status) => return status,
+        };
+        let tensor = match unsafe { required_ref(tensor, "tensor") } {
+            Ok(tensor) => tensor,
+            Err(status) => return status,
+        };
+        let data = match unsafe { input_slice(data.cast::<u8>(), data_len, "data") } {
+            Ok(data) => data,
+            Err(status) => return status,
+        };
+        match context.0.write_tensor(&tensor.0, data) {
+            Ok(()) => RustnnStatus::Success,
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_read_tensor(
+    context: *mut RustnnContext,
+    tensor: *const RustnnTensor,
+    data: *mut c_void,
+    data_len: usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let context = match unsafe { required_mut(context, "context") } {
+            Ok(context) => context,
+            Err(status) => return status,
+        };
+        let tensor = match unsafe { required_ref(tensor, "tensor") } {
+            Ok(tensor) => tensor,
+            Err(status) => return status,
+        };
+        if data_len != 0 && data.is_null() {
+            set_error("data must not be null when its length is non-zero");
+            return RustnnStatus::NullPointer;
+        }
+        let data = if data_len == 0 {
+            &mut []
+        } else {
+            unsafe { slice::from_raw_parts_mut(data.cast::<u8>(), data_len) }
+        };
+        match context.0.read_tensor(&tensor.0, data) {
+            Ok(()) => RustnnStatus::Success,
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_create_uncompiled(
     output: *mut *mut RustnnGraphBuilder,
 ) -> RustnnStatus {
@@ -299,6 +521,46 @@ pub unsafe extern "C" fn rustnn_graph_builder_create_uncompiled(
             MLGraphBuilder::new_uncompiled(),
         )));
         RustnnStatus::Success
+    })
+}
+
+#[unsafe(no_mangle)]
+/// Create a runtime-backed builder that exclusively borrows `context`.
+///
+/// The context must remain alive and must not be used until this builder is
+/// consumed by `rustnn_graph_builder_build` or destroyed.
+pub unsafe extern "C" fn rustnn_graph_builder_create(
+    context: *mut RustnnContext,
+    output: *mut *mut RustnnGraphBuilder,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let context = match unsafe { required_mut(context, "context") } {
+            Ok(context) => context,
+            Err(status) => return status,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        match MLGraphBuilder::new(&mut context.0) {
+            Ok(builder) => {
+                // The C API requires the context to outlive the builder and graph. The context is
+                // heap allocated, so its address remains stable; the caller-visible lifetime is
+                // enforced by the documented handle ownership rules.
+                let builder = unsafe {
+                    std::mem::transmute::<MLGraphBuilder<'_, '_>, MLGraphBuilder<'static, 'static>>(
+                        builder,
+                    )
+                };
+                *output = Box::into_raw(Box::new(RustnnGraphBuilder(builder)));
+                RustnnStatus::Success
+            }
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
     })
 }
 
@@ -1810,6 +2072,140 @@ pub unsafe extern "C" fn rustnn_graph_builder_shape_with_options(
             output,
         )
     }
+}
+
+/// Compile a runtime-backed builder and consume it, setting `builder` to null.
+/// The originating context must outlive the returned graph.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_build(
+    builder: *mut *mut RustnnGraphBuilder,
+    outputs: *const RustnnNamedOperand,
+    outputs_len: usize,
+    graph: *mut *mut RustnnGraph,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder_slot = match unsafe { required_mut(builder, "builder") } {
+            Ok(builder) => builder,
+            Err(status) => return status,
+        };
+        if builder_slot.is_null() {
+            set_error("builder must not be null");
+            return RustnnStatus::NullPointer;
+        }
+        let graph = match unsafe { required_mut(graph, "graph") } {
+            Ok(graph) => graph,
+            Err(status) => return status,
+        };
+        *graph = ptr::null_mut();
+        let mut owned_builder = unsafe { Box::from_raw(*builder_slot) };
+        *builder_slot = ptr::null_mut();
+        let outputs = match unsafe { input_slice(outputs, outputs_len, "outputs") } {
+            Ok(outputs) => outputs,
+            Err(status) => return status,
+        };
+        let mut named: MLNamedOperands<'_> = BTreeMap::new();
+        for output in outputs {
+            let name = match unsafe { input_str(output.name, "output name") } {
+                Ok(name) => name,
+                Err(status) => return status,
+            };
+            let operand = match unsafe { required_ref(output.operand, "output operand") } {
+                Ok(operand) => operand.0,
+                Err(status) => return status,
+            };
+            if named.insert(name, operand).is_some() {
+                set_error(format!("duplicate output name: {name}"));
+                return RustnnStatus::InvalidArgument;
+            }
+        }
+
+        match owned_builder.0.build(&named) {
+            Ok(built_graph) => {
+                *graph = Box::into_raw(Box::new(RustnnGraph(built_graph)));
+                RustnnStatus::Success
+            }
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_destroy(graph: *mut RustnnGraph) {
+    if !graph.is_null() {
+        drop(unsafe { Box::from_raw(graph) });
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_context_dispatch(
+    context: *mut RustnnContext,
+    graph: *mut RustnnGraph,
+    inputs: *const RustnnNamedTensor,
+    inputs_len: usize,
+    outputs: *const RustnnNamedTensor,
+    outputs_len: usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let context = match unsafe { required_mut(context, "context") } {
+            Ok(context) => context,
+            Err(status) => return status,
+        };
+        let graph = match unsafe { required_mut(graph, "graph") } {
+            Ok(graph) => graph,
+            Err(status) => return status,
+        };
+        let inputs = match unsafe { input_slice(inputs, inputs_len, "inputs") } {
+            Ok(inputs) => inputs,
+            Err(status) => return status,
+        };
+        let outputs = match unsafe { input_slice(outputs, outputs_len, "outputs") } {
+            Ok(outputs) => outputs,
+            Err(status) => return status,
+        };
+        let mut named_inputs: MLNamedTensors<'_> = BTreeMap::new();
+        for input in inputs {
+            let name = match unsafe { input_str(input.name, "input name") } {
+                Ok(name) => name,
+                Err(status) => return status,
+            };
+            let tensor = match unsafe { required_ref(input.tensor, "input tensor") } {
+                Ok(tensor) => &tensor.0,
+                Err(status) => return status,
+            };
+            if named_inputs.insert(name, tensor).is_some() {
+                set_error(format!("duplicate input name: {name}"));
+                return RustnnStatus::InvalidArgument;
+            }
+        }
+        let mut named_outputs: MLNamedTensors<'_> = BTreeMap::new();
+        for output in outputs {
+            let name = match unsafe { input_str(output.name, "output name") } {
+                Ok(name) => name,
+                Err(status) => return status,
+            };
+            let tensor = match unsafe { required_ref(output.tensor, "output tensor") } {
+                Ok(tensor) => &tensor.0,
+                Err(status) => return status,
+            };
+            if named_outputs.insert(name, tensor).is_some() {
+                set_error(format!("duplicate output name: {name}"));
+                return RustnnStatus::InvalidArgument;
+            }
+        }
+        match context
+            .0
+            .dispatch(&mut graph.0, &named_inputs, &named_outputs)
+        {
+            Ok(()) => RustnnStatus::Success,
+            Err(error) => {
+                set_error(error);
+                RustnnStatus::Error
+            }
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
