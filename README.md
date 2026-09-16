@@ -93,6 +93,45 @@ Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
 `$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
 system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).
 
+**For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
+
+## C and C++ APIs
+
+> [!WARNING]
+> The C ABI and C++ wrapper are experimental and are not stable. Like rustnn's
+> Rust APIs, they may change without backward compatibility. This especially
+> applies to future APIs for host pointers and buffer ownership, GPU-to-host
+> synchronization, and asynchronous execution. Pin a rustnn version or commit
+> and expect to rebuild consumers when updating it.
+
+The `capi` feature provides:
+
+- A generated C11 header at `<rustnn/rustnn.h>` with opaque handles, status
+  codes, concrete graph operations, and `_with_options` variants.
+- A header-only C++17 RAII wrapper at `<rustnn/rustnn.hpp>`. The wrapper uses
+  only the generated C API and does not depend on Rust implementation details.
+- `pkg-config` and CMake package metadata generated and installed by
+  [cargo-c](https://github.com/lu-zero/cargo-c).
+
+Install a local development package with cargo-c:
+
+```bash
+cargo install cargo-c
+cargo cinstall --features capi --prefix="$PWD/target/rustnn-capi-install"
+```
+
+A consuming CMake project can then use:
+
+```cmake
+find_package(rustnn CONFIG REQUIRED)
+target_link_libraries(my_application PRIVATE rustnn::rustnn)
+```
+
+The repository includes equivalent C and C++ graph-construction examples.
+See the **[C/C++ examples guide](examples/capi/README.md)** for API usage,
+ownership rules, package layout, and exact build and run commands.
+
+
 ## Features
 
 | Feature | Backend |
