@@ -105,6 +105,8 @@
 
 pub mod backend_selection;
 pub mod backends;
+#[cfg(feature = "capi")]
+pub mod capi;
 pub mod converters;
 pub mod debug;
 pub mod error;
