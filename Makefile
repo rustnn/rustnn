@@ -11,6 +11,9 @@ TEST_FILTER ?=
 LITERT_PATH ?= target/graph.tflite
 CANN_PATH ?= target/graph.cann
 OHOS_SDK_NATIVE ?=
+CAPI_PREFIX ?= $(CURDIR)/target/rustnn-capi-install
+CAPI_EXAMPLE_BUILD_DIR ?= $(CURDIR)/target/examples/capi
+CAPI_RUST_LOG ?= info
 
 ORT_VERSION ?= 1.29.0
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
@@ -91,7 +94,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
 	webnn-chromedriver test-webnn-wpt-chrome test-webnn-wpt-chrome-headless \
 	onnxruntime-download onnx onnx-validate coreml coreml-validate litert cann \
-	cann-build cann-device-test validate-cann-env validate-all-env
+	cann-build cann-device-test validate-cann-env validate-all-env capi-examples
 
 clean:
 	$(CARGO) clean
@@ -304,6 +307,16 @@ onnx: onnxruntime-download
 onnx-validate: onnx
 	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
 
+# Build, install, and execute the C and C++ API examples with ONNX Runtime.
+capi-examples: onnxruntime-download
+	$(ORT_ENV_VARS) $(CARGO) cinstall --features capi,onnx-runtime --prefix="$(CAPI_PREFIX)"
+	cmake -S examples/capi -B "$(CAPI_EXAMPLE_BUILD_DIR)" \
+		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_PREFIX_PATH="$(CAPI_PREFIX)"
+	cmake --build "$(CAPI_EXAMPLE_BUILD_DIR)" --parallel
+	RUST_LOG="$(CAPI_RUST_LOG)" $(ORT_ENV_VARS) "$(CAPI_EXAMPLE_BUILD_DIR)/rustnn_c_example"
+	RUST_LOG="$(CAPI_RUST_LOG)" $(ORT_ENV_VARS) "$(CAPI_EXAMPLE_BUILD_DIR)/rustnn_cpp_example"
+
 coreml:
 	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
 	@echo "CoreML graph written to $(COREML_PATH)"
@@ -423,6 +436,9 @@ help:
 	@echo "  onnxruntime-download - Download ONNX Runtime"
 	@echo "  onnx               - Convert graph to ONNX format"
 	@echo "  onnx-validate      - Convert and validate ONNX graph"
+	@echo ""
+	@echo "C and C++ API:"
+	@echo "  capi-examples      - Install the C API and build/run both dispatch examples"
 	@echo ""
 	@echo "WPT Conformance:"
 	@echo "  fetch-wpt          - Download/update WPT corpus (.cache/wpt)"

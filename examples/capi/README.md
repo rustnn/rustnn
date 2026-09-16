@@ -8,7 +8,7 @@ Run from repo root
 cargo cinstall \
   --features capi,trtx-runtime \
   --prefix="$(pwd)/target/rustnn-capi-install"
-cmake -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -S examples/capi/ -B build \
+cmake -GNinja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -S examples/capi/ -B build \
  -DCMAKE_PREFIX_PATH=$(pwd)/target/rustnn-capi-install
 cmake --build build
 ```

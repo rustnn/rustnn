@@ -136,6 +136,7 @@ required to run them.
 See the **[C/C++ examples guide](examples/capi/README.md)** for API usage,
 ownership rules, package layout, and exact build and run commands.
 
+**For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
 
 ## Features
 
