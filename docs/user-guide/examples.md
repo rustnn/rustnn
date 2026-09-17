@@ -11,6 +11,12 @@ fast.
 | `fast_style_transfer_builder_api.rs` | Builds the fast style transfer network with the builder API (`conv2d`, `conv_transpose2d`, instance normalization with a fallback composed from reductions, `pad`), downloads the weights from the WebNN test-data repository, and pipelines inferences over pre-allocated tensors | `cargo run --release --features native-examples,onnx-runtime --example fast_style_transfer_builder_api -- --input photo.jpg --output styled.png` |
 | `smollm_mlcontext.rs` | Text generation with SmolLM-135M from an onnx2webnn export: loads `.webnn` plus weights, uses dynamic tensor shapes for the KV cache (`rustnn_set_tensor_capacity`, `rustnn_resize_tensor`) and a tokenizer | `cargo run --release --features native-examples,onnx-runtime,dynamic-inputs --example smollm_mlcontext -- --model model.webnn --tokenizer tokenizer.json --max-new-tokens 32` |
 | `resnet50_webnn_rust.rs` | ResNet-50 classification and a latency benchmark from a `.webnn` export, with ImageNet preprocessing of a JPEG or PNG input | `cargo run --release --features onnx-runtime --example resnet50_webnn_rust -- --model resnet50_Opset16.webnn --input cat.jpg --labels examples/imagenet_classes.txt --bench` |
+
+The `.webnn` models for the SmolLM and ResNet-50 examples are not in the repository. Produce
+them with [onnx2webnn](https://github.com/rustnn/onnx2webnn) from the ONNX model (ResNet-50
+from the ONNX model zoo, SmolLM-135M from its Hugging Face ONNX export); the tool writes the
+`.webnn` file with its `manifest.json` and `model.weights` sidecars, and the tokenizer comes
+from the Hugging Face repository. The fast style transfer example downloads its own weights.
 | `gpt2_webnn_rust.rs`, `smollm_webnn_rust.rs` | Older generation loops built on the legacy executor path (`ConverterRegistry` plus `run_onnx_with_inputs`) instead of `MLContext` | `cargo run --features onnx-runtime --example smollm_webnn_rust -- --help` |
 
 Replace `onnx-runtime` with `trtx-runtime` to run the same programs on TensorRT-RTX. All of
@@ -29,15 +35,19 @@ Other files in `examples/`:
 ## Recipes
 
 The snippets assume the imports from [Getting Started](getting-started.md) and a `context`
-created there. `F32` abbreviates `MLOperandDataType::Float32`.
+created there.
 
 ### Linear layer
 
 ```rust
+use rustnn::operator_enums::MLOperandDataType::Float32;
+
+let weights = [0.5f32; 12];
+let biases = [0.1f32; 3];
 let mut builder = MLGraphBuilder::new(&mut context)?;
-let x = builder.input("x", &MLOperandDescriptor::new(F32, vec![1, 4]))?;
-let weight = builder.constant_from_slice(&MLOperandDescriptor::new(F32, vec![4, 3]), &weights)?;
-let bias = builder.constant_from_slice(&MLOperandDescriptor::new(F32, vec![3]), &biases)?;
+let x = builder.input("x", &MLOperandDescriptor::new(Float32, vec![1, 4]))?;
+let weight = builder.constant_from_slice(&MLOperandDescriptor::new(Float32, vec![4, 3]), &weights)?;
+let bias = builder.constant_from_slice(&MLOperandDescriptor::new(Float32, vec![3]), &biases)?;
 let product = builder.matmul(x, weight)?;
 let shifted = builder.add(product, bias)?;   // bias broadcasts over the batch dimension
 let y = builder.relu(shifted)?;
@@ -48,6 +58,8 @@ Each call borrows the builder mutably, so keep intermediate operands in variable
 nesting calls.
 
 ### Options
+
+`x`, `filter` and `bias` are operands recorded on `builder` as in the previous recipe.
 
 ```rust
 use rustnn::operator_options::{MLConv2dOptions, MLReduceOptions};
@@ -128,6 +140,8 @@ features are enabled, `trtx`, `litert` and `cann`.
 ### Pick the backend
 
 ```rust
+use rustnn::backend_selection::{Backend, BackendDevice};
+
 let options = MLContextOptions::new(MLPowerPreference::Default, true)
     .with_rustnn_backend_hint(Backend::Onnx);
 let context = MLContext::create(&options)?;

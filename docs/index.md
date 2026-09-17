@@ -21,7 +21,8 @@ notice and the crate is not meant for production use.
 - **Graph interchange.** Loads `.webnn` text and JSON graphs written by the
   [webnn-graph](https://github.com/rustnn/webnn-graph) crate and by
   [onnx2webnn](https://github.com/rustnn/onnx2webnn), saves graphs with `.safetensors`
-  weights, and exports ONNX and CoreML models.
+  weights, and exports ONNX and CoreML models and, with their features, TensorRT engines,
+  TFLite and CANN models.
 - **Conformance.** The upstream WebNN Web Platform Tests run in-repo against every backend on
   each pull request; the nightly [WPT dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
   shows per-operation results.
@@ -72,7 +73,9 @@ fn main() -> rustnn::error::Result<()> {
 
 Build it with a runtime feature, for example `cargo run --features onnx-runtime`, with the ONNX
 Runtime shared library reachable through `ORT_DYLIB_PATH` (see
-[Getting Started](user-guide/getting-started.md)).
+[Getting Started](user-guide/getting-started.md)). This API is on the `main` branch; the
+`rustnn` crate published on crates.io (0.5.x) predates it, so depend on the git repository until
+the next release.
 
 ## Documentation map
 

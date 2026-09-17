@@ -28,8 +28,11 @@ webnn_graph "sample_graph" v1 {
 - Data types use the short spellings `f32`, `f16`, `i32`, `u32`, `i64`, `u64`, `i8`, `u8`,
   `i4`, `u4`.
 - Dynamic dimensions are written as `dyn("name", maxSize)` inside the shape, for example
-  `f32[dyn("batch", 8), 128]` (the JSON form is `{ "name": "batch", "maxSize": 8 }`).
-  Only inputs may be dynamic; loading them requires the `dynamic-inputs` feature.
+  `f32[dyn("batch", 8), 128]` (the JSON form is `{ "name": "batch", "maxSize": 8 }`). They are
+  declared on inputs and propagate through shape inference to intermediate operands and
+  outputs; constants must be static (the parser rejects `dyn` in `consts`). Loading them
+  requires the `dynamic-inputs` feature; see
+  [Flexible Input Shapes](../development/flexible-input-shapes.md).
 - Constant initializers: `@scalar(v)` fills every element, `@bytes(...)` lists the raw bytes of
   a small tensor, and `@weights("tensor-name")` refers to data stored next to the graph (see
   below).
@@ -96,7 +99,7 @@ same text without writing files, which is useful for debugging a graph under con
 
 | Format | Content | Sidecar |
 |---|---|---|
-| `onnx` | ONNX `ModelProto` bytes | `rustnn_external_weights.data` next to the model when initializers are large (`ONNX_EXTERNAL_WEIGHTS_FILENAME`) |
+| `onnx` | ONNX `ModelProto` bytes | `rustnn_external_weights.data` (`ONNX_EXTERNAL_WEIGHTS_FILENAME`): every initializer stored as raw bytes is moved there, whatever its size, so the file is written for almost every graph and must stay next to the model |
 | `coreml` | CoreML MLProgram `.mlmodel` | weights blob for float16 models |
 | `trtx` | serialized TensorRT engine (`trtx-runtime`) | - |
 | `litert` | TFLite flatbuffer (`litert-runtime`) | - |

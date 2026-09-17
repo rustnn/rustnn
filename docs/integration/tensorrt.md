@@ -13,7 +13,7 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
 |---|---|
 | `trtx-runtime` | The backend and converter; pulls in `trtx`, `cudarc` and `zstd-cache-compression` |
 | `trtx-runtime-mock` | Builds the converter and the `--run-trtx` CLI path against the mock `trtx` API, without TensorRT |
-| `trtx-enterprise` | `trtx-runtime` linked against the enterprise TensorRT library, for validation only |
+| `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`, `nvonnxparser`) instead of the TensorRT-RTX libraries; RTX-only features such as CUDA graphs and the JIT runtime cache are compiled out. For validation only |
 | `zstd-cache-compression` | Compresses the on-disk caches; enabled by `trtx-runtime` |
 
 ## Requirements

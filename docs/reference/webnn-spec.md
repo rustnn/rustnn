@@ -12,19 +12,19 @@ once, then `search-bs search --name webnn "<term>"`.
 |---|---|---|
 | `navigator.ml.createContext(options)` | `MLContext::create(&MLContextOptions)` | Selects a backend from the hints; see [Backends](../user-guide/backends.md) |
 | `MLContextOptions` (`powerPreference`, `accelerated`) | `MLContextOptions::new(MLPowerPreference, accelerated)` plus `rustnn_` extensions (backend hint, TensorRT options) | |
-| `MLContext.opSupportLimits()` | `MLContext::op_support_limits` | Returns the generic limits; per-backend limits are a known gap |
-| `MLContext.lost`, `destroy()` | `lost()`, `destroy()` | Stubs; contexts are not lost outside the browser |
+| `MLContext.opSupportLimits()` | `MLContext::op_support_limits` | Not implemented (`todo!()`); the generated [operator support report](../development/backend-operator-support.md) and the WPT dashboard are the current substitute |
+| `MLContext.lost`, `destroy()` | `lost()`, `destroy()` | Not implemented (`todo!()`); resources are released by `Drop` |
 | `MLGraphBuilder(context)` | `MLGraphBuilder::new(&mut context)` | One graph per builder |
 | `builder.input(name, descriptor)` | `input(&str, &MLOperandDescriptor)` | |
-| `builder.constant(descriptor, buffer)` | `constant_from_slice`, `constant_from_vec`, `constant_from_bytes`, `constant_from_value` | Bytes are checked against the descriptor |
-| `builder.<op>(...)` | `snake_case` method, `<op>_with_options` for the options dictionary | `where` is `where_`; see the operation table in the [API Overview](../user-guide/api-reference.md) |
-| `MLOperand.dataType`, `shape` | `data_type()`, `shape()` | Shapes are `Vec<u32>`; dynamic dimensions need the `dynamic-inputs` feature |
+| `builder.constant(descriptor, buffer)` | `constant_from_slice`, `constant_from_vec`, `constant_from_bytes` | Bytes are checked against the descriptor; `constant_from_value` and `constant_from_tensor` are not implemented |
+| `builder.<op>(...)` | `snake_case` method, `<op>_with_options` for the options dictionary | `where` is `where_`; the recurrent operations only have the `_with_options` form; see the operation table in the [API Overview](../user-guide/api-reference.md) |
+| `MLOperand.dataType`, `shape` | `builder.rustnn_operand_shape(op)` / `rustnn_operand_data_type(op)` while recording, or `op.shape(&graph_info)` / `op.data_type(&graph_info)` | The operand is an index into the builder's graph, so lookups need the builder or the `GraphInfo`. Shapes are `Vec<u64>`; dynamic dimensions report their maximum size and need the `dynamic-inputs` feature |
 | `builder.build(outputs)` | `build(&MLNamedOperands)` | Compiles on the selected backend |
 | `MLTensorDescriptor` (`readable`, `writable`) | `MLTensorDescriptor::new(...).to_readable().to_writable()` | |
 | `context.createTensor`, `writeTensor`, `readTensor` | `create_tensor`, `write_tensor`, `read_tensor` | Synchronous; there are no promises |
 | `context.dispatch(graph, inputs, outputs)` | `dispatch(&mut graph, &MLNamedTensors, &MLNamedTensors)` | Binding checks in `src/runtime_checks.rs` |
 | `MLGraph.destroy()`, `MLTensor.destroy()` | `Drop` | |
-| `createConstantTensor`, `createContext(gpuDevice)` | `create_constant_tensor`, `create_from_gpu_device` | Not implemented; return an error |
+| `createConstantTensor`, `createContext(gpuDevice)` | `create_constant_tensor`, `create_from_gpu_device` | Not implemented (`todo!()`); use `constant_from_slice` and `MLContext::create` |
 
 ## Enumerations and dictionaries
 

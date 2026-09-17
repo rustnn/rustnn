@@ -26,19 +26,24 @@ rustnn is a development release (`0.5.x`). APIs change without notice.
 - **Graph interchange.** Loads `.webnn` text and JSON graphs from
   [webnn-graph](https://github.com/rustnn/webnn-graph) and
   [onnx2webnn](https://github.com/rustnn/onnx2webnn), saves graphs with `.safetensors` weights,
-  exports ONNX and CoreML models.
+  exports ONNX and CoreML models and, with their features, TensorRT engines, TFLite and CANN
+  models.
 - **Conformance.** The upstream WebNN Web Platform Tests run in-repo against the backends on
   every pull request; the nightly [dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
   shows per-operation results.
 
 Python users: the [pywebnn](https://github.com/rustnn/pywebnn) package wraps rustnn. This
-repository contains no Python code.
+repository contains no Python API; the scripts under `examples/experimental/` only run exported
+ONNX models for parity checks.
 
 ## Quick start
 
+The WebNN API below lives on `main` and is not yet published; the `rustnn` crate on crates.io
+(0.5.x) is the earlier converter and loader crate without `MLContext`. Use the git dependency:
+
 ```toml
 [dependencies]
-rustnn = { version = "0.5", features = ["onnx-runtime"] }
+rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }
 ```
 
 ```rust
@@ -81,9 +86,11 @@ fn main() -> rustnn::error::Result<()> {
 }
 ```
 
-The ONNX Runtime backend loads the shared library from `ORT_DYLIB_PATH`; in a clone,
-`make onnxruntime-download` fetches a matching release. See
-[Getting Started](docs/user-guide/getting-started.md).
+The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DYLIB_PATH`; in
+a clone, `make onnxruntime-download` fetches a matching release into `target/onnxruntime/`.
+Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
+`$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
+system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).
 
 ## Features
 
@@ -95,6 +102,9 @@ The ONNX Runtime backend loads the shared library from `ORT_DYLIB_PATH`; in a cl
 | `litert-runtime` | LiteRT / TensorFlow Lite; needs `flatc` at build time |
 | `cann-runtime` | Huawei CANN on OpenHarmony; `cann-runtime-mock` for validation |
 | `dynamic-inputs` | Dynamic dimensions bounded by a maximum size |
+| `webnn-runtime` | Browser WebNN bindings for `wasm32-unknown-unknown` (in progress) |
+| `trtx-enterprise` | The TensorRT backend linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features such as CUDA graphs are compiled out. Used for validation, not a supported deployment target |
+| `native-examples` | Compiles the large example programs |
 
 Full list and environment variables: crate docs (`make docs-api`) or
 [Backends](docs/user-guide/backends.md).
@@ -111,7 +121,7 @@ cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx 
 ## Documentation
 
 - [Documentation site](https://rustnn.github.io/rustnn/) with the user guide, architecture and development pages
-- [Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/) (rustdoc)
+- Rust API reference: `make docs-api` writes it to `target/doc/rustnn/index.html`; the site publishes it under [`/api/`](https://rustnn.github.io/rustnn/api/rustnn/) (docs.rs still shows the 0.5.x crate)
 - [Backend Operator Support](docs/development/backend-operator-support.md), generated from the converters
 - [WPT conformance dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
 - [Changelog](CHANGELOG.md)

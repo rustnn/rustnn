@@ -113,8 +113,8 @@ The text report shows a table with these columns:
 Example:
 ```
 Filename                           Lines  Missed Lines  Cover
-rustnn/src/shape_inference.rs      2090          275   86.84%
-rustnn/src/graph.rs                 175            5   97.14%
+rustnn/src/shape_inference.rs      <n>           <m>   <pct>%
+rustnn/src/graph.rs                <n>           <m>   <pct>%
 ```
 
 ### HTML Report
@@ -193,9 +193,10 @@ For GitHub Actions or other CI systems:
 ## Coverage Goals
 
 **Project Goals:**
-- Overall line coverage: >60% (current: 47.25%)
-- Core modules (graph, shape_inference, validator): >80%
-- New code: >70% coverage required
+- Overall line coverage above 60%; the current figure comes from `make coverage` or the
+  Codecov dashboard, not from this page.
+- Core modules (graph, shape_inference, validator) above 80%.
+- New code above 70%.
 
 **Current Focus Areas:**
 1. Converters (ONNX, CoreML) - Low coverage due to integration testing needs

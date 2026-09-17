@@ -78,9 +78,10 @@ runtime feature. `Int4` and `Uint4` constants cannot be written to `.safetensors
 
 The loader resolves `@weights(...)` references through the `webnn-graph` crate. It looks next
 to the graph file for a `manifest.json` plus `model.weights` pair (onnx2webnn layout) or for the
-`.safetensors` file written by `rustnn_save_webnn`. Identifiers that contain `.` or `:` (ONNX
-node names) are sanitized to `_` on import. Shape inference runs on import, so a loaded graph
-carries complete descriptors.
+`.safetensors` file written by `rustnn_save_webnn`. Identifiers from ONNX exports are sanitized
+on import: `.` becomes `_` and `::` becomes `__`, in declarations, references and weight lookups
+alike (details in [Graph Files and Weights](../reference/graph-files.md)). Shape inference runs
+on import, so a loaded graph carries complete descriptors.
 
 ## Caching
 
@@ -114,9 +115,9 @@ start cold. Details are in [TensorRT-RTX](../integration/tensorrt.md).
 ## Threads
 
 `MLContext` is `Send + Sync`. `dispatch`, `write_tensor` and `read_tensor` take `&mut self`,
-so concurrent use goes through a `Mutex<MLContext>`; the WPT harness reuses one context per
-thread. A builder borrows the context mutably until `build`, so record graphs before sharing
-the context.
+so concurrent use goes through a `Mutex<MLContext>`. Concurrent use of several contexts is not
+validated; the WPT harness runs single-threaded (`--test-threads 1`). A builder borrows the
+context mutably until `build`, so record graphs before sharing the context.
 
 ## Precision notes
 
@@ -124,8 +125,9 @@ the context.
   float16.
 - CoreML computes integer operations in float32; values near the int32 and int64 limits lose
   precision. Rank is limited to 5.
-- LiteRT rejects some data type and operation combinations up front; see
-  `dtype_unsupported_for_op` in `src/backends/litert.rs`.
+- LiteRT rejects some data type and operation combinations at build time; the
+  [operator support report](../development/backend-operator-support.md) and the WPT dashboard
+  show what runs, and the [LiteRT page](../integration/litert.md) describes the policy.
 - The WPT tolerances applied per operation are in `tests/wpt_conformance/tolerance.rs`; the
   audit mode described in the [WPT Conformance Guide](../testing/wpt-test-guide.md) reports how
   much of the tolerance each passing case uses.

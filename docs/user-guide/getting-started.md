@@ -18,26 +18,47 @@ contains paths longer than 260 characters.
 
 ## Add the crate
 
+The WebNN API described on this site is on the `main` branch and not yet published. The
+`rustnn` crate on crates.io (0.5.x) is the earlier converter and loader crate without
+`MLContext`; the docs.rs pages describe that release. Use the git dependency until the next
+publish:
+
 ```toml
 [dependencies]
-rustnn = { version = "0.5", features = ["onnx-runtime"] }
-```
-
-For unreleased changes use the git dependency:
-
-```toml
 rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }
 ```
 
 Features select backends. Without one the crate validates and converts graphs but cannot
-execute them. The full feature list is in the crate documentation
-([rustdoc](https://rustnn.github.io/rustnn/api/rustnn/)) and in [Backends](backends.md).
+execute them. The full feature list is in the crate documentation (`make docs-api` in a clone
+writes it to `target/doc/rustnn/index.html`; the site publishes it under `/api/`) and in
+[Backends](backends.md).
 
 ## Provide ONNX Runtime
 
 The `onnx-runtime` feature loads the ONNX Runtime shared library at run time from the path in
-`ORT_DYLIB_PATH`. In a clone of the repository, `make onnxruntime-download` fetches the release
-pinned in the Makefile into `target/onnxruntime/`. Then point the variable at the library:
+`ORT_DYLIB_PATH`. The `ort` crate rustnn is built against requires ONNX Runtime 1.29; the
+library in Windows `System32` is older (1.17) and the process aborts with a `BadVersion` panic
+from `ort` when it is picked up, so set the variable before every run.
+
+Download the pinned release. In a clone with `make` installed:
+
+```bash
+make onnxruntime-download          # into target/onnxruntime/
+```
+
+Without `make`, fetch the same archive from the ONNX Runtime GitHub release
+`v1.29.0` and unpack it into `target/onnxruntime/`; the archive names are
+`onnxruntime-linux-x64-1.29.0.tgz`, `onnxruntime-osx-arm64-1.29.0.tgz` and
+`onnxruntime-win-x64-1.29.0.zip`:
+
+```powershell
+# Windows PowerShell
+New-Item -ItemType Directory -Force target\onnxruntime | Out-Null
+Invoke-WebRequest https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-win-x64-1.29.0.zip -OutFile target\onnxruntime\ort.zip
+Expand-Archive target\onnxruntime\ort.zip -DestinationPath target\onnxruntime
+```
+
+Then point the variable at the library:
 
 ```bash
 # Linux
@@ -48,9 +69,10 @@ export ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-osx-arm64-1.29.0/lib/l
 export ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-win-x64-1.29.0/lib/onnxruntime.dll
 ```
 
-A library that is too old fails with a `BadVersion` error when the context is created. On
-Windows the `onnxruntime.dll` in `System32` is such a library, so always set `ORT_DYLIB_PATH`
-to a matching release.
+```powershell
+# Windows PowerShell
+$env:ORT_DYLIB_PATH = "$PWD\target\onnxruntime\onnxruntime-win-x64-1.29.0\lib\onnxruntime.dll"
+```
 
 ## First graph
 
@@ -103,7 +125,12 @@ fn main() -> rustnn::error::Result<()> {
 }
 ```
 
-Run it with a backend feature enabled, for example `cargo run --features onnx-runtime`.
+Run it with a backend feature enabled and `ORT_DYLIB_PATH` set in the same shell:
+
+```bash
+export ORT_DYLIB_PATH=...          # PowerShell: $env:ORT_DYLIB_PATH = "..."
+cargo run --features onnx-runtime
+```
 
 Points worth knowing:
 
@@ -129,9 +156,9 @@ use rustnn::load_graph_from_path;
 use rustnn::mlcontext::{MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference};
 
 let graph_info = load_graph_from_path("model.webnn")?;
-let mut context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true))?;
+let mut context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false))?;
 let mut builder = MLGraphBuilder::new(&mut context)?;
-let mut graph = builder.build_graph_info(graph_info)?;
+let graph = builder.build_graph_info(graph_info)?;
 // graph.input_descriptors and graph.output_descriptors list the names and shapes to bind.
 ```
 
@@ -142,7 +169,10 @@ and `toy_transformer.webnn` to try this with.
 ## Command line tool
 
 The `rustnn` binary validates a graph file, prints its inputs, outputs and dependency fan-out,
-and optionally exports or executes it. It needs a runtime feature at build time.
+and optionally exports or executes it. Validation and conversion need no runtime feature and
+no `ORT_DYLIB_PATH`; each `--run-*` flag exists only when its feature is compiled in
+(`--run-onnx` with `onnx-runtime`, `--run-trtx` with `trtx-runtime`, `--run-coreml` with
+`coreml-runtime` on macOS) and `--help` lists the flags of the current build.
 
 ```bash
 # Validate and describe
@@ -155,7 +185,7 @@ dot -Tpng target/graph.dot -o target/graph.png
 # Convert; formats are onnx, coreml and, with their features, trtx, litert and cann
 cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --convert-output target/graph.onnx
 
-# Convert and execute once with zeroed inputs
+# Convert and execute once with zeroed inputs (ORT_DYLIB_PATH must be set for --run-onnx)
 cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --run-onnx
 cargo run --features onnx-runtime,trtx-runtime -- examples/sample_graph.webnn --convert onnx --run-trtx
 cargo run --features coreml-runtime -- examples/sample_graph.webnn --convert coreml --run-coreml   # macOS

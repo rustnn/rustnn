@@ -51,11 +51,9 @@ it prints `[OK]` and `[FAIL]` lines per step.
 ## Supported operations
 
 The converter accepts the operations listed by `is_supported_op` in `src/converters/cann.rs`
-and rejects everything else at build time. The generated
-[operator support report](../development/backend-operator-support.md) shows the current set:
-element-wise arithmetic, `conv2d`, `maxPool2d`, `reduceSum`, `softmax`, `sigmoid`, `prelu`,
-`cast`, `concat`, `split`, `slice`, `reshape`, `transpose` and `resample2d` at the time of
-writing. There is no WPT run for CANN; conformance is checked with the device test.
+and rejects everything else at build time. The CANN column of the generated
+[operator support report](../development/backend-operator-support.md) is the current list.
+There is no WPT run for CANN; conformance is checked with the device test.
 
 ## Conversion without a device
 

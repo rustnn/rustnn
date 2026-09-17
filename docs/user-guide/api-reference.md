@@ -10,10 +10,11 @@ locally into `target/doc/rustnn/`).
 
 - JavaScript `camelCase` names become Rust `snake_case`: `reduceSum` is `reduce_sum`,
   `convTranspose2d` is `conv_transpose2d`, `where` is `where_`.
-- Every operation has two methods: `op(...)` with the required operands and arguments, and
+- Operations come in two forms: `op(...)` with the required operands and arguments, and
   `op_with_options(..., options)` taking the matching options struct from
   `rustnn::operator_options` (`MLConv2dOptions`, `MLReduceOptions`, ...). Operations without
-  spec options take `MLOperatorOptions`, which only carries the `label`.
+  spec options take `MLOperatorOptions`, which only carries the `label`. The recurrent
+  operations (`gru`, `gruCell`, `lstm`, `lstmCell`) exist only in the `_with_options` form.
 - Operand fields inside option structs (`MLConv2dOptions::bias`, `MLGemmOptions::c`, the
   quantization zero points) hold operand indices: pass `operand.rustnn_index()` or
   `operand.into()`.

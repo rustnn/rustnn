@@ -102,15 +102,11 @@ nav:
   - Reference:
       - WebNN Specification and rustnn: reference/webnn-spec.md
       - Graph Files and Weights: reference/graph-files.md
-      - WebNN Operators Explained: reference/operators-explanation.md
-      - IPC Design Notes: reference/ipc-design.md
       - Changelog: https://github.com/rustnn/rustnn/blob/main/CHANGELOG.md
 
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/rustnn/rustnn
-  version:
-    provider: mike
 
-copyright: Copyright &copy; 2025 Tarek Ziadé
+copyright: Copyright &copy; 2025-2026 Tarek Ziadé and contributors

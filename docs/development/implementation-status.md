@@ -42,9 +42,8 @@ Backend gaps, from the generated report:
 - LiteRT has no recurrent operations (`gru`, `gruCell`, `lstm`, `lstmCell`) and no
   `globalAveragePool`, `globalMaxPool`, `unsqueeze` or `shape`; several data type combinations
   are rejected up front (`dtype_unsupported_for_op` in `src/backends/litert.rs`).
-- CANN supports a small subset (arithmetic, `conv2d`, `maxPool2d`, `reduceSum`, `softmax`,
-  `sigmoid`, `prelu`, `cast`, `concat`, `split`, `slice`, `reshape`, `transpose`, `resample2d`);
-  `is_supported_op` in `src/converters/cann.rs` is the authoritative list.
+- CANN supports a small subset; the CANN column of the generated report is the list
+  (`is_supported_op` in `src/converters/cann.rs` is its source).
 
 "Supported" means the converter emits a lowering. Numerical conformance per case is what the
 WPT runs report; the remaining CoreML failures, for example, come from negative scatter indices
