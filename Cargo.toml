@@ -269,7 +269,7 @@ name = "rustnn"
 # depends on the target platform.
 version = "0.5.11"
 # Used to disable versioning links when installing the dynamic library
-versioning = false
+versioning = true
 # Instead of using semver, select a fixed number of version components for your SONAME version suffix:
 # Setting this to 1 with a version of 0.0.0 allows a suffix of `.so.0`
 # Setting this to 3 always includes the full version in the SONAME (indicate any update is ABI breaking)
@@ -284,7 +284,7 @@ import_library = true
 [package.metadata.capi.install.data]
 subdirectory = "rustnn"
 asset = [
-    { from = "cmake/rustnnConfig.cmake.in", to = "rustnn/cmake" },
-    { from = "cmake/rustnnConfig.cmake", to = "rustnn/cmake" },
-    { from = "cmake/rustnnConfigVersion.cmake", to = "rustnn/cmake" },
+    { from = "cmake/rustnnConfig.cmake.in", to = "../lib/cmake" },
+    { from = "cmake/rustnnConfig.cmake", to = "../lib/cmake" },
+    { from = "cmake/rustnnConfigVersion.cmake", to = "../lib/cmake" },
 ]
