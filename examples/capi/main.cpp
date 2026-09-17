@@ -9,7 +9,9 @@ int main() {
   try {
     rustnn::initializeLogger();
 
-    rustnn::Context context;
+    rustnn::ContextOptions context_options;
+    context_options.backend_hint = rustnn::Backend::Onnx;
+    rustnn::Context context(context_options);
     rustnn::GraphBuilder builder(context);
     rustnn::OperandDescriptor matrix(rustnn::DataType::Float32, {2, 2});
 

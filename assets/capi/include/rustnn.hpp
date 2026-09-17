@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -45,9 +46,44 @@ enum class PowerPreference {
   LowPower = RustnnPowerPreference_LowPower,
 };
 
+enum class Backend {
+  Automatic = RustnnBackend_Automatic,
+  Onnx = RustnnBackend_Onnx,
+  Trtx = RustnnBackend_Trtx,
+  Coreml = RustnnBackend_Coreml,
+  Litert = RustnnBackend_Litert,
+  Cann = RustnnBackend_Cann,
+};
+
+enum class DeviceType {
+  Cpu = RustnnDeviceType_Cpu,
+  Gpu = RustnnDeviceType_Gpu,
+  Npu = RustnnDeviceType_Npu,
+};
+
+struct BackendDevice {
+  Backend backend;
+  DeviceType device_type;
+  std::size_t device_index = 0;
+};
+
+struct TrtxOptions {
+  bool engine_caching = true;
+  bool runtime_cache = true;
+  bool fail_on_cache_miss = false;
+  bool cuda_graphs = true;
+};
+
+struct RustNNOptions {
+  TrtxOptions trtx;
+};
+
 struct ContextOptions {
   PowerPreference power_preference = PowerPreference::Default;
   bool accelerated = false;
+  Backend backend_hint = Backend::Automatic;
+  std::optional<BackendDevice> device_hint;
+  std::optional<RustNNOptions> rustnn_options;
 };
 
 struct OperatorOptions {
@@ -180,9 +216,31 @@ private:
 class Context {
 public:
   explicit Context(const ContextOptions &options = {}) {
+    const RustnnBackendDevice raw_device_hint{
+        options.device_hint.has_value()
+            ? static_cast<RustnnBackend>(options.device_hint->backend)
+            : RustnnBackend_Automatic,
+        options.device_hint.has_value()
+            ? static_cast<RustnnDeviceType>(options.device_hint->device_type)
+            : RustnnDeviceType_Cpu,
+        options.device_hint.has_value() ? options.device_hint->device_index : 0};
+    const TrtxOptions trtx = options.rustnn_options.has_value()
+                                  ? options.rustnn_options->trtx
+                                  : TrtxOptions{};
+    const RustnnOptions raw_rustnn_options{{
+        trtx.engine_caching,
+        trtx.runtime_cache,
+        trtx.fail_on_cache_miss,
+        trtx.cuda_graphs,
+    }};
     const RustnnContextOptions raw_options{
         static_cast<RustnnPowerPreference>(options.power_preference),
-        options.accelerated};
+        options.accelerated,
+        static_cast<RustnnBackend>(options.backend_hint),
+        options.device_hint.has_value(),
+        raw_device_hint,
+        options.rustnn_options.has_value(),
+        raw_rustnn_options};
     check(rustnn_context_create(&raw_options, &value_));
   }
 

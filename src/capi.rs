@@ -23,8 +23,9 @@ use std::ptr;
 use std::slice;
 
 use crate::mlcontext::{
-    MLContext, MLContextOptions, MLGraph, MLNamedOperands, MLNamedTensors, MLOperand,
-    MLOperandDescriptor, MLPowerPreference, MLTensor, MLTensorDescriptor,
+    Backend, BackendDevice, DeviceType, MLContext, MLContextOptions, MLGraph, MLNamedOperands,
+    MLNamedTensors, MLOperand, MLOperandDescriptor, MLPowerPreference, MLTensor,
+    MLTensorDescriptor, RustNNOptions, TrtxOptions,
 };
 use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::operator_enums::MLOperandDataType;
@@ -70,6 +71,52 @@ impl From<RustnnPowerPreference> for MLPowerPreference {
             RustnnPowerPreference::Default => Self::Default,
             RustnnPowerPreference::HighPerformance => Self::HighPerformance,
             RustnnPowerPreference::LowPower => Self::LowPower,
+        }
+    }
+}
+
+/// Runtime implementation requested for an [`RustnnContextOptions`] context.
+/// `Automatic` leaves backend selection to rustnn.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RustnnBackend {
+    #[default]
+    Automatic = 0,
+    Onnx = 1,
+    Trtx = 2,
+    Coreml = 3,
+    Litert = 4,
+    Cann = 5,
+}
+
+impl RustnnBackend {
+    fn hint(self) -> Option<Backend> {
+        match self {
+            Self::Automatic => None,
+            Self::Onnx => Some(Backend::Onnx),
+            Self::Trtx => Some(Backend::Trtx),
+            Self::Coreml => Some(Backend::Coreml),
+            Self::Litert => Some(Backend::Litert),
+            Self::Cann => Some(Backend::Cann),
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RustnnDeviceType {
+    #[default]
+    Cpu = 0,
+    Gpu = 1,
+    Npu = 2,
+}
+
+impl From<RustnnDeviceType> for DeviceType {
+    fn from(value: RustnnDeviceType) -> Self {
+        match value {
+            RustnnDeviceType::Cpu => Self::Cpu,
+            RustnnDeviceType::Gpu => Self::Gpu,
+            RustnnDeviceType::Npu => Self::Npu,
         }
     }
 }
@@ -180,10 +227,73 @@ pub struct RustnnNamedTensor {
     pub tensor: *const RustnnTensor,
 }
 
+/// A concrete backend device. `device_index` is the ONNX execution-provider
+/// device index or TensorRT CUDA device index. It must be zero for the other
+/// backends, whose Rust device variants do not carry an index.
 #[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RustnnBackendDevice {
+    pub backend: RustnnBackend,
+    pub device_type: RustnnDeviceType,
+    pub device_index: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RustnnTrtxOptions {
+    pub engine_caching: bool,
+    pub runtime_cache: bool,
+    pub fail_on_cache_miss: bool,
+    pub cuda_graphs: bool,
+}
+
+impl Default for RustnnTrtxOptions {
+    fn default() -> Self {
+        let defaults = TrtxOptions::default();
+        Self {
+            engine_caching: defaults.engine_caching,
+            runtime_cache: defaults.runtime_cache,
+            fail_on_cache_miss: defaults.fail_on_cache_miss,
+            cuda_graphs: defaults.cuda_graphs,
+        }
+    }
+}
+
+/// RustNN-specific backend options. The other backend option structures in the
+/// Rust API are currently empty, so TensorRT is the only member with settings.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RustnnOptions {
+    pub trtx: RustnnTrtxOptions,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RustnnContextOptions {
     pub power_preference: RustnnPowerPreference,
     pub accelerated: bool,
+    /// `Automatic` corresponds to no Rust backend hint.
+    pub backend_hint: RustnnBackend,
+    /// Whether `device_hint` should override automatic device selection.
+    pub has_device_hint: bool,
+    pub device_hint: RustnnBackendDevice,
+    /// Whether `rustnn_options` should replace the Rust defaults.
+    pub has_rustnn_options: bool,
+    pub rustnn_options: RustnnOptions,
+}
+
+impl Default for RustnnContextOptions {
+    fn default() -> Self {
+        Self {
+            power_preference: RustnnPowerPreference::Default,
+            accelerated: false,
+            backend_hint: RustnnBackend::Automatic,
+            has_device_hint: false,
+            device_hint: RustnnBackendDevice::default(),
+            has_rustnn_options: false,
+            rustnn_options: RustnnOptions::default(),
+        }
+    }
 }
 
 /// Options shared by the unary and binary operations exposed by this ABI.
@@ -228,6 +338,79 @@ unsafe fn required_mut<'a, T>(value: *mut T, name: &str) -> Result<&'a mut T, Ru
     } else {
         Ok(unsafe { &mut *value })
     }
+}
+
+fn backend_device_from_c(device: RustnnBackendDevice) -> Result<BackendDevice, RustnnStatus> {
+    let device_type = device.device_type.into();
+    match device.backend {
+        RustnnBackend::Automatic => {
+            set_error("device_hint.backend must name a concrete backend");
+            Err(RustnnStatus::InvalidArgument)
+        }
+        RustnnBackend::Onnx => Ok(BackendDevice::Onnx {
+            ep_device_idx: device.device_index,
+            device_type,
+        }),
+        RustnnBackend::Trtx => {
+            if device.device_type != RustnnDeviceType::Gpu {
+                set_error("a TensorRT device hint must use the GPU device type");
+                return Err(RustnnStatus::InvalidArgument);
+            }
+            let cuda_device_idx = match u32::try_from(device.device_index) {
+                Ok(index) => index,
+                Err(_) => {
+                    set_error("TensorRT device index does not fit in uint32_t");
+                    return Err(RustnnStatus::InvalidArgument);
+                }
+            };
+            Ok(BackendDevice::Trtx { cuda_device_idx })
+        }
+        RustnnBackend::Coreml => {
+            if device.device_index != 0 {
+                set_error("CoreML device hints do not support a non-zero device index");
+                return Err(RustnnStatus::InvalidArgument);
+            }
+            Ok(BackendDevice::Coreml { device_type })
+        }
+        RustnnBackend::Litert => {
+            if device.device_index != 0 {
+                set_error("LiteRT device hints do not support a non-zero device index");
+                return Err(RustnnStatus::InvalidArgument);
+            }
+            Ok(BackendDevice::LiteRt { device_type })
+        }
+        RustnnBackend::Cann => {
+            if device.device_index != 0 {
+                set_error("CANN device hints do not support a non-zero device index");
+                return Err(RustnnStatus::InvalidArgument);
+            }
+            Ok(BackendDevice::Cann { device_type })
+        }
+    }
+}
+
+fn context_options_from_c(
+    options: &RustnnContextOptions,
+) -> Result<MLContextOptions, RustnnStatus> {
+    let mut converted = MLContextOptions::new(options.power_preference.into(), options.accelerated);
+    if let Some(backend) = options.backend_hint.hint() {
+        converted = converted.with_rustnn_backend_hint(backend);
+    }
+    if options.has_device_hint {
+        converted = converted.with_rustnn_device_hint(backend_device_from_c(options.device_hint)?);
+    }
+    if options.has_rustnn_options {
+        converted = converted.with_rustnn_options(RustNNOptions {
+            trtx: TrtxOptions {
+                engine_caching: options.rustnn_options.trtx.engine_caching,
+                runtime_cache: options.rustnn_options.trtx.runtime_cache,
+                fail_on_cache_miss: options.rustnn_options.trtx.fail_on_cache_miss,
+                cuda_graphs: options.rustnn_options.trtx.cuda_graphs,
+            },
+            ..RustNNOptions::default()
+        });
+    }
+    Ok(converted)
 }
 
 unsafe fn input_slice<'a, T>(
@@ -366,6 +549,12 @@ pub unsafe extern "C" fn rustnn_tensor_descriptor_destroy(descriptor: *mut Rustn
     }
 }
 
+/// Returns context options initialized to the same defaults as the Rust API.
+#[unsafe(no_mangle)]
+pub extern "C" fn rustnn_context_options_default() -> RustnnContextOptions {
+    RustnnContextOptions::default()
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_create(
     options: *const RustnnContextOptions,
@@ -377,13 +566,16 @@ pub unsafe extern "C" fn rustnn_context_create(
             Err(status) => return status,
         };
         *output = ptr::null_mut();
-        let (power_preference, accelerated) = if options.is_null() {
-            (MLPowerPreference::Default, false)
+        let options = if options.is_null() {
+            MLContextOptions::new(MLPowerPreference::Default, false)
         } else {
             let options = unsafe { &*options };
-            (options.power_preference.into(), options.accelerated)
+            match context_options_from_c(options) {
+                Ok(options) => options,
+                Err(status) => return status,
+            }
         };
-        match MLContext::create(&MLContextOptions::new(power_preference, accelerated)) {
+        match MLContext::create(&options) {
             Ok(context) => {
                 *output = Box::into_raw(Box::new(RustnnContext(context)));
                 RustnnStatus::Success
@@ -2353,6 +2545,101 @@ pub unsafe extern "C" fn rustnn_string_destroy(value: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_options_defaults_match_rust_defaults() {
+        let options = rustnn_context_options_default();
+        assert_eq!(options.backend_hint, RustnnBackend::Automatic);
+        assert!(!options.has_device_hint);
+        assert!(!options.has_rustnn_options);
+        assert_eq!(options.rustnn_options.trtx, RustnnTrtxOptions::default());
+
+        let converted = context_options_from_c(&options).unwrap();
+        assert_eq!(converted.power_preference, MLPowerPreference::Default);
+        assert!(!converted.accelerated);
+        assert_eq!(converted.backend_hint, None);
+        assert_eq!(converted.device_hint, None);
+        assert_eq!(converted.rustnn_options, RustNNOptions::default());
+    }
+
+    #[test]
+    fn context_options_convert_all_hints_and_backend_options() {
+        let options = RustnnContextOptions {
+            power_preference: RustnnPowerPreference::HighPerformance,
+            accelerated: true,
+            backend_hint: RustnnBackend::Trtx,
+            has_device_hint: true,
+            device_hint: RustnnBackendDevice {
+                backend: RustnnBackend::Trtx,
+                device_type: RustnnDeviceType::Gpu,
+                device_index: 3,
+            },
+            has_rustnn_options: true,
+            rustnn_options: RustnnOptions {
+                trtx: RustnnTrtxOptions {
+                    engine_caching: false,
+                    runtime_cache: false,
+                    fail_on_cache_miss: true,
+                    cuda_graphs: false,
+                },
+            },
+        };
+
+        let converted = context_options_from_c(&options).unwrap();
+        assert_eq!(
+            converted.power_preference,
+            MLPowerPreference::HighPerformance
+        );
+        assert!(converted.accelerated);
+        assert_eq!(converted.backend_hint, Some(Backend::Trtx));
+        assert_eq!(
+            converted.device_hint,
+            Some(BackendDevice::Trtx { cuda_device_idx: 3 })
+        );
+        assert_eq!(
+            converted.rustnn_options.trtx,
+            TrtxOptions {
+                engine_caching: false,
+                runtime_cache: false,
+                fail_on_cache_miss: true,
+                cuda_graphs: false,
+            }
+        );
+    }
+
+    #[test]
+    fn context_options_reject_invalid_device_hint() {
+        let options = RustnnContextOptions {
+            has_device_hint: true,
+            device_hint: RustnnBackendDevice {
+                backend: RustnnBackend::Trtx,
+                device_type: RustnnDeviceType::Cpu,
+                device_index: 0,
+            },
+            ..RustnnContextOptions::default()
+        };
+        assert_eq!(
+            context_options_from_c(&options),
+            Err(RustnnStatus::InvalidArgument)
+        );
+    }
+
+    #[cfg(feature = "trtx-runtime-mock")]
+    #[test]
+    fn context_create_honors_backend_hint() {
+        unsafe {
+            let mut options = rustnn_context_options_default();
+            options.accelerated = true;
+            options.backend_hint = RustnnBackend::Trtx;
+            let mut context = ptr::null_mut();
+            assert_eq!(
+                rustnn_context_create(&options, &mut context),
+                RustnnStatus::Success
+            );
+            assert_eq!((*context).0.rustnn_backend(), Backend::Trtx);
+            rustnn_context_destroy(context);
+        }
+    }
 
     #[test]
     fn builds_and_serializes_an_arithmetic_graph() {

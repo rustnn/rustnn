@@ -16,6 +16,8 @@ include = [
     "RustnnStatus",
     "RustnnDataType",
     "RustnnPowerPreference",
+    "RustnnBackend",
+    "RustnnDeviceType",
     "RustnnUnaryOperation",
     "RustnnBinaryOperation",
     "RustnnOperandDescriptor",
@@ -27,6 +29,9 @@ include = [
     "RustnnTensor",
     "RustnnNamedOperand",
     "RustnnNamedTensor",
+    "RustnnBackendDevice",
+    "RustnnTrtxOptions",
+    "RustnnOptions",
     "RustnnContextOptions",
     "RustnnOperatorOptions",
 ]

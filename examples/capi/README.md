@@ -145,6 +145,24 @@ The C API follows these conventions:
   for dynamically selected operations; named functions are preferable when
   the operation is known at compile time.
 
+Initialize `RustnnContextOptions` with `rustnn_context_options_default()` so
+backend-specific settings retain the Rust API defaults. `backend_hint` selects
+a backend while still letting that backend select its device:
+
+```c
+RustnnContextOptions options = rustnn_context_options_default();
+options.accelerated = true;
+options.backend_hint = RustnnBackend_Trtx;
+RustnnContext *context = NULL;
+RustnnStatus status = rustnn_context_create(&options, &context);
+```
+
+For an exact device, set `has_device_hint` and fill `device_hint`. ONNX uses
+`device_index` as its execution-provider device index and TensorRT uses it as
+the CUDA device index. CoreML, LiteRT, and CANN currently require index zero.
+Set `has_rustnn_options` to override the RustNN-specific defaults in
+`rustnn_options`; currently only TensorRT has non-empty backend options.
+
 A minimal concrete operation looks like this:
 
 ```c
@@ -185,6 +203,17 @@ auto input = builder.input("input", matrix);
 auto bias = builder.constant<float>(matrix, {1.0f, 2.0f, 3.0f, 4.0f});
 auto sum = builder.add(input, bias, rustnn::OperatorOptions{"add bias"});
 auto graph = builder.build({{"sum", &sum}});
+```
+
+Backend and device selection are also available through `rustnn::ContextOptions`:
+
+```cpp
+rustnn::ContextOptions options;
+options.accelerated = true;
+options.backend_hint = rustnn::Backend::Trtx;
+options.device_hint = rustnn::BackendDevice{
+    rustnn::Backend::Trtx, rustnn::DeviceType::Gpu, 0};
+rustnn::Context context(options);
 ```
 
 The generic `unary()` and `binary()` methods remain available when an operation

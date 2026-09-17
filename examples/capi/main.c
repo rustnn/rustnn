@@ -40,7 +40,8 @@ int main(void) {
   const RustnnOperatorOptions add_options = {"add bias"};
   const RustnnOperatorOptions multiply_options = {"scale values"};
   const RustnnOperatorOptions relu_options = {"clamp negatives"};
-  const RustnnContextOptions context_options = {RustnnPowerPreference_Default, false};
+  RustnnContextOptions context_options = rustnn_context_options_default();
+  context_options.backend_hint = RustnnBackend_Onnx;
 
   if (!check(rustnn_context_create(&context_options, &context)) ||
       !check(rustnn_graph_builder_create(context, &builder)) ||
