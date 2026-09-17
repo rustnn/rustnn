@@ -1,7 +1,8 @@
 # Relocatable cargo-c package configuration. The same file is installed as
 # rustnnConfig.cmake; the .in copy is provided for projects that want to adapt it.
-get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 
+message(FATAL_ERROR "PACKAGE_PREFIX_DIR=${PACKAGE_PREFIX_DIR}")
 find_path(RUSTNN_INCLUDE_DIR
   NAMES rustnn/rustnn.h rustnn/rustnn.hpp
   HINTS "${PACKAGE_PREFIX_DIR}/include"
