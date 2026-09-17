@@ -80,7 +80,7 @@ struct RustNNOptions {
 
 struct ContextOptions {
   PowerPreference power_preference = PowerPreference::Default;
-  bool accelerated = false;
+  bool accelerated = true;
   Backend backend_hint = Backend::Automatic;
   std::optional<BackendDevice> device_hint;
   std::optional<RustNNOptions> rustnn_options;
