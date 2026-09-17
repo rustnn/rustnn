@@ -20,11 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep the pinned Rust version in sync with rust-toolchain.toml.
+      # Keep the pinned Rust version and components in sync with rust-toolchain.toml. Installing
+      # the components here avoids the implicit rustup sync on the first cargo call, which has
+      # failed with a component file conflict.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy, rust-src
           targets: wasm32-unknown-unknown
 
       - name: Install protobuf compiler (Linux)
