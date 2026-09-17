@@ -41,7 +41,7 @@ int main(void) {
   const RustnnOperatorOptions multiply_options = {"scale values"};
   const RustnnOperatorOptions relu_options = {"clamp negatives"};
   RustnnContextOptions context_options = rustnn_context_options_default();
-  context_options.backend_hint = RustnnBackend_Onnx;
+  context_options.backend_hint = RustnnBackend_Automatic;
 
   if (!check(rustnn_context_create(&context_options, &context)) ||
       !check(rustnn_graph_builder_create(context, &builder)) ||

@@ -10,7 +10,7 @@ int main() {
     rustnn::initializeLogger();
 
     rustnn::MLContextOptions context_options;
-    context_options.backend_hint = rustnn::Backend::Onnx;
+    context_options.backend_hint = rustnn::Backend::Automatic;
     rustnn::MLContext context(context_options);
     rustnn::MLGraphBuilder builder(context);
     rustnn::MLOperandDescriptor matrix(rustnn::MLOperandDataType::Float32, {2, 2});
