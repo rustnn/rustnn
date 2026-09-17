@@ -9,22 +9,22 @@ int main() {
   try {
     rustnn::initializeLogger();
 
-    rustnn::ContextOptions context_options;
+    rustnn::MLContextOptions context_options;
     context_options.backend_hint = rustnn::Backend::Onnx;
-    rustnn::Context context(context_options);
-    rustnn::GraphBuilder builder(context);
-    rustnn::OperandDescriptor matrix(rustnn::DataType::Float32, {2, 2});
+    rustnn::MLContext context(context_options);
+    rustnn::MLGraphBuilder builder(context);
+    rustnn::MLOperandDescriptor matrix(rustnn::MLOperandDataType::Float32, {2, 2});
 
     auto input = builder.input("input", matrix);
     auto bias = builder.constant<float>(matrix, {1.0f, 2.0f, 3.0f, 4.0f});
     auto scale = builder.constant<float>(matrix, {2.0f, 2.0f, 2.0f, 2.0f});
 
-    auto shifted = builder.add(input, bias, rustnn::OperatorOptions{"add bias"});
+    auto shifted = builder.add(input, bias, rustnn::MLOperatorOptions{"add bias"});
     auto scaled =
-        builder.multiply(shifted, scale, rustnn::OperatorOptions{"scale values"});
-    auto output = builder.relu(scaled, rustnn::OperatorOptions{"clamp negatives"});
+        builder.multiply(shifted, scale, rustnn::MLOperatorOptions{"scale values"});
+    auto output = builder.relu(scaled, rustnn::MLOperatorOptions{"clamp negatives"});
 
-    const auto shape = builder.shape(output);
+    const auto shape = builder.operandShape(output);
     std::cout << "output shape:";
     for (std::uint64_t dimension : shape) {
       std::cout << ' ' << dimension;
@@ -32,9 +32,9 @@ int main() {
     std::cout << "\n\n" << builder.webnnText({{"output", &output}}) << '\n';
 
     auto graph = builder.build({{"output", &output}});
-    rustnn::TensorDescriptor input_descriptor(rustnn::DataType::Float32, {2, 2},
+    rustnn::MLTensorDescriptor input_descriptor(rustnn::MLOperandDataType::Float32, {2, 2},
                                               false, true);
-    rustnn::TensorDescriptor output_descriptor(rustnn::DataType::Float32, {2, 2},
+    rustnn::MLTensorDescriptor output_descriptor(rustnn::MLOperandDataType::Float32, {2, 2},
                                                true, false);
     auto input_tensor = context.createTensor(input_descriptor);
     auto output_tensor = context.createTensor(output_descriptor);

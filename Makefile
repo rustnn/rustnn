@@ -312,6 +312,7 @@ capi-examples: onnxruntime-download
 	$(ORT_ENV_VARS) $(CARGO) cinstall --features capi,onnx-runtime --prefix="$(CAPI_PREFIX)"
 	cmake -S examples/capi -B "$(CAPI_EXAMPLE_BUILD_DIR)" \
 		-DCMAKE_BUILD_TYPE=RelWithDebInfo \
+		-DCMAKE_EXPORT_COMPILE_COMMANDS=YES \
 		-DCMAKE_PREFIX_PATH="$(CAPI_PREFIX)"
 	cmake --build "$(CAPI_EXAMPLE_BUILD_DIR)" --parallel
 	RUST_LOG="$(CAPI_RUST_LOG)" $(ORT_ENV_VARS) "$(CAPI_EXAMPLE_BUILD_DIR)/rustnn_c_example"

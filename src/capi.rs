@@ -29,7 +29,13 @@ use crate::mlcontext::{
 };
 use crate::mlgraphbuilder::MLGraphBuilder;
 use crate::operator_enums::MLOperandDataType;
-use crate::operator_options::MLOperatorOptions;
+use crate::operator_options::{
+    MLClampOptions, MLConv2dOptions, MLConvTranspose2dOptions, MLEluOptions, MLGatherOptions,
+    MLGemmOptions, MLHardSigmoidOptions, MLInstanceNormalizationOptions,
+    MLLayerNormalizationOptions, MLLeakyReluOptions, MLLinearOptions, MLOperatorOptions,
+    MLPool2dOptions, MLReduceOptions, MLResample2dOptions, MLReverseOptions, MLSqueezeOptions,
+    MLTransposeOptions, MLTriangularOptions, MLUnsqueezeOptions,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,6 +189,35 @@ pub enum RustnnUnaryOperation {
     IsNan,
     IsInfinite,
     Shape,
+    Elu,
+    HardSigmoid,
+    HardSwish,
+    LeakyRelu,
+    Linear,
+    Clamp,
+    InstanceNormalization,
+    LayerNormalization,
+    Resample2d,
+    Reverse,
+    Triangular,
+    AveragePool2d,
+    MaxPool2d,
+    L2Pool2d,
+    GlobalAveragePool,
+    GlobalMaxPool,
+    ReduceSum,
+    ReduceMean,
+    ReduceMax,
+    ReduceMin,
+    ReduceProduct,
+    ReduceL1,
+    ReduceL2,
+    ReduceLogSum,
+    ReduceLogSumExp,
+    ReduceSumSquare,
+    Transpose,
+    Squeeze,
+    Unsqueeze,
 }
 
 #[repr(C)]
@@ -205,6 +240,22 @@ pub enum RustnnBinaryOperation {
     LogicalOr,
     LogicalXor,
     Matmul,
+    Gemm,
+    Conv2d,
+    ConvTranspose2d,
+    Gather,
+    GatherElements,
+    GatherNd,
+    Prelu,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustnnTernaryOperation {
+    BatchNormalization,
+    Where,
+    ScatterElements,
+    ScatterNd,
 }
 
 pub struct RustnnOperandDescriptor(MLOperandDescriptor);
@@ -286,7 +337,7 @@ impl Default for RustnnContextOptions {
     fn default() -> Self {
         Self {
             power_preference: RustnnPowerPreference::Default,
-            accelerated: false,
+            accelerated: true,
             backend_hint: RustnnBackend::Automatic,
             has_device_hint: false,
             device_hint: RustnnBackendDevice::default(),
@@ -469,6 +520,139 @@ fn return_operand<E: std::fmt::Display>(
     }
 }
 
+/// Build a specialized Rust options dictionary when the C entry point only carries the common
+/// `MLOperatorOptions` label.
+macro_rules! options_with_label {
+    ($option_type:ty, $options:expr) => {{
+        let mut specialized = <$option_type>::default();
+        specialized.label = $options.label;
+        specialized
+    }};
+}
+
+unsafe fn unary_builder_call<F>(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+    call: F,
+) -> RustnnStatus
+where
+    F: FnOnce(
+        &mut MLGraphBuilder<'static, 'static>,
+        MLOperand,
+    ) -> crate::mlgraphbuilder::Result<MLOperand>,
+{
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(builder) => builder,
+            Err(status) => return status,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(input) => input.0,
+            Err(status) => return status,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        return_operand(call(&mut builder.0, input), output)
+    })
+}
+
+unsafe fn unary_u32_slice_builder_call<F>(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    values: *const u32,
+    values_len: usize,
+    values_name: &str,
+    output: *mut *mut RustnnOperand,
+    call: F,
+) -> RustnnStatus
+where
+    F: FnOnce(
+        &mut MLGraphBuilder<'static, 'static>,
+        MLOperand,
+        Vec<u32>,
+    ) -> crate::mlgraphbuilder::Result<MLOperand>,
+{
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(builder) => builder,
+            Err(status) => return status,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(input) => input.0,
+            Err(status) => return status,
+        };
+        let values = match unsafe { input_slice(values, values_len, values_name) } {
+            Ok(values) => values.to_vec(),
+            Err(status) => return status,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        return_operand(call(&mut builder.0, input, values), output)
+    })
+}
+
+unsafe fn operand_handles(
+    inputs: *const *const RustnnOperand,
+    inputs_len: usize,
+) -> Result<Vec<MLOperand>, RustnnStatus> {
+    let handles = unsafe { input_slice(inputs, inputs_len, "inputs")? };
+    handles
+        .iter()
+        .map(|&input| unsafe { required_ref(input, "input operand") }.map(|input| input.0))
+        .collect()
+}
+
+unsafe fn output_slots<'a>(
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    required: usize,
+) -> Result<&'a mut [*mut RustnnOperand], RustnnStatus> {
+    if outputs_capacity < required {
+        set_error(format!(
+            "outputs_capacity {outputs_capacity} is smaller than required {required}"
+        ));
+        return Err(RustnnStatus::InvalidArgument);
+    }
+    if required != 0 && outputs.is_null() {
+        set_error("outputs must not be null when outputs are required");
+        return Err(RustnnStatus::NullPointer);
+    }
+    let slots = if outputs_capacity == 0 {
+        &mut []
+    } else {
+        unsafe { slice::from_raw_parts_mut(outputs, outputs_capacity) }
+    };
+    slots.fill(ptr::null_mut());
+    Ok(slots)
+}
+
+fn return_operands<E: std::fmt::Display>(
+    result: Result<Vec<MLOperand>, E>,
+    output_slots: &mut [*mut RustnnOperand],
+    outputs_len: &mut usize,
+) -> RustnnStatus {
+    match result {
+        Ok(operands) => {
+            *outputs_len = operands.len();
+            for (slot, operand) in output_slots.iter_mut().zip(operands) {
+                *slot = Box::into_raw(Box::new(RustnnOperand(operand)));
+            }
+            RustnnStatus::Success
+        }
+        Err(error) => {
+            set_error(error);
+            RustnnStatus::Error
+        }
+    }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rustnn_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
@@ -567,7 +751,7 @@ pub unsafe extern "C" fn rustnn_context_create(
         };
         *output = ptr::null_mut();
         let options = if options.is_null() {
-            MLContextOptions::new(MLPowerPreference::Default, false)
+            MLContextOptions::new(MLPowerPreference::Default, true)
         } else {
             let options = unsafe { &*options };
             match context_options_from_c(options) {
@@ -879,6 +1063,35 @@ pub unsafe extern "C" fn rustnn_graph_builder_unary(
             RustnnUnaryOperation::IsNan => builder.0.is_nan(input),
             RustnnUnaryOperation::IsInfinite => builder.0.is_infinite(input),
             RustnnUnaryOperation::Shape => builder.0.shape(input),
+            RustnnUnaryOperation::Elu => builder.0.elu(input),
+            RustnnUnaryOperation::HardSigmoid => builder.0.hard_sigmoid(input),
+            RustnnUnaryOperation::HardSwish => builder.0.hard_swish(input),
+            RustnnUnaryOperation::LeakyRelu => builder.0.leaky_relu(input),
+            RustnnUnaryOperation::Linear => builder.0.linear(input),
+            RustnnUnaryOperation::Clamp => builder.0.clamp(input),
+            RustnnUnaryOperation::InstanceNormalization => builder.0.instance_normalization(input),
+            RustnnUnaryOperation::LayerNormalization => builder.0.layer_normalization(input),
+            RustnnUnaryOperation::Resample2d => builder.0.resample2d(input),
+            RustnnUnaryOperation::Reverse => builder.0.reverse(input),
+            RustnnUnaryOperation::Triangular => builder.0.triangular(input),
+            RustnnUnaryOperation::AveragePool2d => builder.0.average_pool2d(input),
+            RustnnUnaryOperation::MaxPool2d => builder.0.max_pool2d(input),
+            RustnnUnaryOperation::L2Pool2d => builder.0.l2_pool2d(input),
+            RustnnUnaryOperation::GlobalAveragePool => builder.0.global_average_pool(input),
+            RustnnUnaryOperation::GlobalMaxPool => builder.0.global_max_pool(input),
+            RustnnUnaryOperation::ReduceSum => builder.0.reduce_sum(input),
+            RustnnUnaryOperation::ReduceMean => builder.0.reduce_mean(input),
+            RustnnUnaryOperation::ReduceMax => builder.0.reduce_max(input),
+            RustnnUnaryOperation::ReduceMin => builder.0.reduce_min(input),
+            RustnnUnaryOperation::ReduceProduct => builder.0.reduce_product(input),
+            RustnnUnaryOperation::ReduceL1 => builder.0.reduce_l1(input),
+            RustnnUnaryOperation::ReduceL2 => builder.0.reduce_l2(input),
+            RustnnUnaryOperation::ReduceLogSum => builder.0.reduce_log_sum(input),
+            RustnnUnaryOperation::ReduceLogSumExp => builder.0.reduce_log_sum_exp(input),
+            RustnnUnaryOperation::ReduceSumSquare => builder.0.reduce_sum_square(input),
+            RustnnUnaryOperation::Transpose => builder.0.transpose(input),
+            RustnnUnaryOperation::Squeeze => builder.0.squeeze(input),
+            RustnnUnaryOperation::Unsqueeze => builder.0.unsqueeze(input),
         };
         return_operand(result, output)
     })
@@ -928,6 +1141,58 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary(
             RustnnBinaryOperation::LogicalOr => builder.0.logical_or(lhs, rhs),
             RustnnBinaryOperation::LogicalXor => builder.0.logical_xor(lhs, rhs),
             RustnnBinaryOperation::Matmul => builder.0.matmul(lhs, rhs),
+            RustnnBinaryOperation::Gemm => builder.0.gemm(lhs, rhs),
+            RustnnBinaryOperation::Conv2d => builder.0.conv2d(lhs, rhs),
+            RustnnBinaryOperation::ConvTranspose2d => builder.0.conv_transpose2d(lhs, rhs),
+            RustnnBinaryOperation::Gather => builder.0.gather(lhs, rhs),
+            RustnnBinaryOperation::GatherElements => builder.0.gather_elements(lhs, rhs),
+            RustnnBinaryOperation::GatherNd => builder.0.gather_nd(lhs, rhs),
+            RustnnBinaryOperation::Prelu => builder.0.prelu(lhs, rhs),
+        };
+        return_operand(result, output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_ternary(
+    builder: *mut RustnnGraphBuilder,
+    operation: RustnnTernaryOperation,
+    first: *const RustnnOperand,
+    second: *const RustnnOperand,
+    third: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(builder) => builder,
+            Err(status) => return status,
+        };
+        let first = match unsafe { required_ref(first, "first") } {
+            Ok(operand) => operand.0,
+            Err(status) => return status,
+        };
+        let second = match unsafe { required_ref(second, "second") } {
+            Ok(operand) => operand.0,
+            Err(status) => return status,
+        };
+        let third = match unsafe { required_ref(third, "third") } {
+            Ok(operand) => operand.0,
+            Err(status) => return status,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(output) => output,
+            Err(status) => return status,
+        };
+        *output = ptr::null_mut();
+        let result = match operation {
+            RustnnTernaryOperation::BatchNormalization => {
+                builder.0.batch_normalization(first, second, third)
+            }
+            RustnnTernaryOperation::Where => builder.0.where_(first, second, third),
+            RustnnTernaryOperation::ScatterElements => {
+                builder.0.scatter_elements(first, second, third)
+            }
+            RustnnTernaryOperation::ScatterNd => builder.0.scatter_nd(first, second, third),
         };
         return_operand(result, output)
     })
@@ -985,6 +1250,101 @@ pub unsafe extern "C" fn rustnn_graph_builder_unary_with_options(
             RustnnUnaryOperation::IsNan => builder.0.is_nan_with_options(input, options),
             RustnnUnaryOperation::IsInfinite => builder.0.is_infinite_with_options(input, options),
             RustnnUnaryOperation::Shape => builder.0.shape_with_options(input, options),
+            RustnnUnaryOperation::Elu => builder
+                .0
+                .elu_with_options(input, options_with_label!(MLEluOptions, options)),
+            RustnnUnaryOperation::HardSigmoid => builder.0.hard_sigmoid_with_options(
+                input,
+                options_with_label!(MLHardSigmoidOptions, options),
+            ),
+            RustnnUnaryOperation::HardSwish => builder
+                .0
+                .hard_swish_with_options(input, options_with_label!(MLOperatorOptions, options)),
+            RustnnUnaryOperation::LeakyRelu => builder
+                .0
+                .leaky_relu_with_options(input, options_with_label!(MLLeakyReluOptions, options)),
+            RustnnUnaryOperation::Linear => builder
+                .0
+                .linear_with_options(input, options_with_label!(MLLinearOptions, options)),
+            RustnnUnaryOperation::Clamp => builder
+                .0
+                .clamp_with_options(input, options_with_label!(MLClampOptions, options)),
+            RustnnUnaryOperation::InstanceNormalization => {
+                builder.0.instance_normalization_with_options(
+                    input,
+                    options_with_label!(MLInstanceNormalizationOptions, options),
+                )
+            }
+            RustnnUnaryOperation::LayerNormalization => builder.0.layer_normalization_with_options(
+                input,
+                options_with_label!(MLLayerNormalizationOptions, options),
+            ),
+            RustnnUnaryOperation::Resample2d => builder
+                .0
+                .resample2d_with_options(input, options_with_label!(MLResample2dOptions, options)),
+            RustnnUnaryOperation::Reverse => builder
+                .0
+                .reverse_with_options(input, options_with_label!(MLReverseOptions, options)),
+            RustnnUnaryOperation::Triangular => builder
+                .0
+                .triangular_with_options(input, options_with_label!(MLTriangularOptions, options)),
+            RustnnUnaryOperation::AveragePool2d => builder
+                .0
+                .average_pool2d_with_options(input, options_with_label!(MLPool2dOptions, options)),
+            RustnnUnaryOperation::MaxPool2d => builder
+                .0
+                .max_pool2d_with_options(input, options_with_label!(MLPool2dOptions, options)),
+            RustnnUnaryOperation::L2Pool2d => builder
+                .0
+                .l2_pool2d_with_options(input, options_with_label!(MLPool2dOptions, options)),
+            RustnnUnaryOperation::GlobalAveragePool => builder.0.global_average_pool_with_options(
+                input,
+                options_with_label!(MLPool2dOptions, options),
+            ),
+            RustnnUnaryOperation::GlobalMaxPool => builder
+                .0
+                .global_max_pool_with_options(input, options_with_label!(MLPool2dOptions, options)),
+            RustnnUnaryOperation::ReduceSum => builder
+                .0
+                .reduce_sum_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceMean => builder
+                .0
+                .reduce_mean_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceMax => builder
+                .0
+                .reduce_max_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceMin => builder
+                .0
+                .reduce_min_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceProduct => builder
+                .0
+                .reduce_product_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceL1 => builder
+                .0
+                .reduce_l1_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceL2 => builder
+                .0
+                .reduce_l2_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceLogSum => builder
+                .0
+                .reduce_log_sum_with_options(input, options_with_label!(MLReduceOptions, options)),
+            RustnnUnaryOperation::ReduceLogSumExp => builder.0.reduce_log_sum_exp_with_options(
+                input,
+                options_with_label!(MLReduceOptions, options),
+            ),
+            RustnnUnaryOperation::ReduceSumSquare => builder.0.reduce_sum_square_with_options(
+                input,
+                options_with_label!(MLReduceOptions, options),
+            ),
+            RustnnUnaryOperation::Transpose => builder
+                .0
+                .transpose_with_options(input, options_with_label!(MLTransposeOptions, options)),
+            RustnnUnaryOperation::Squeeze => builder
+                .0
+                .squeeze_with_options(input, options_with_label!(MLSqueezeOptions, options)),
+            RustnnUnaryOperation::Unsqueeze => builder
+                .0
+                .unsqueeze_with_options(input, options_with_label!(MLUnsqueezeOptions, options)),
         };
         return_operand(result, output)
     })
@@ -1049,12 +1409,49 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary_with_options(
                 builder.0.logical_xor_with_options(lhs, rhs, options)
             }
             RustnnBinaryOperation::Matmul => builder.0.matmul_with_options(lhs, rhs, options),
+            RustnnBinaryOperation::Gemm => {
+                builder
+                    .0
+                    .gemm_with_options(lhs, rhs, options_with_label!(MLGemmOptions, options))
+            }
+            RustnnBinaryOperation::Conv2d => builder.0.conv2_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLConv2dOptions, options),
+            ),
+            RustnnBinaryOperation::ConvTranspose2d => builder.0.conv_transpose2d_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLConvTranspose2dOptions, options),
+            ),
+            RustnnBinaryOperation::Gather => builder.0.gather_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLGatherOptions, options),
+            ),
+            RustnnBinaryOperation::GatherElements => builder.0.gather_elements_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLGatherOptions, options),
+            ),
+            RustnnBinaryOperation::GatherNd => builder.0.gather_nd_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLOperatorOptions, options),
+            ),
+            RustnnBinaryOperation::Prelu => builder.0.prelu_with_options(
+                lhs,
+                rhs,
+                options_with_label!(MLOperatorOptions, options),
+            ),
         };
         return_operand(result, output)
     })
 }
 
 // Named entry points mirror the corresponding public `MLGraphBuilder` methods.
+// Keep the ABI declarations explicit: cbindgen does not guarantee expansion of arbitrary
+// function-generating macros.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_add(
     builder: *mut RustnnGraphBuilder,
@@ -2266,6 +2663,1102 @@ pub unsafe extern "C" fn rustnn_graph_builder_shape_with_options(
     }
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_elu(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Elu, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_hard_sigmoid(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::HardSigmoid, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_hard_swish(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::HardSwish, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_leaky_relu(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::LeakyRelu, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_linear(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Linear, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_clamp(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Clamp, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_instance_normalization(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(
+            builder,
+            RustnnUnaryOperation::InstanceNormalization,
+            input,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_layer_normalization(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(
+            builder,
+            RustnnUnaryOperation::LayerNormalization,
+            input,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_resample2d(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Resample2d, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reverse(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Reverse, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_triangular(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Triangular, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_average_pool2d(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(builder, RustnnUnaryOperation::AveragePool2d, input, output)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_max_pool2d(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::MaxPool2d, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_l2_pool2d(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::L2Pool2d, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_global_average_pool(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(
+            builder,
+            RustnnUnaryOperation::GlobalAveragePool,
+            input,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_global_max_pool(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(builder, RustnnUnaryOperation::GlobalMaxPool, input, output)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceSum, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_mean(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMean, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_max(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMax, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_min(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMin, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_product(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceProduct, input, output)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_l1(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceL1, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_l2(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceL2, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceLogSum, input, output)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum_exp(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(
+            builder,
+            RustnnUnaryOperation::ReduceLogSumExp,
+            input,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum_square(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_unary(
+            builder,
+            RustnnUnaryOperation::ReduceSumSquare,
+            input,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_transpose(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Transpose, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_squeeze(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Squeeze, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_unsqueeze(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Unsqueeze, input, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gemm(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Gemm, lhs, rhs, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_conv2d(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Conv2d, lhs, rhs, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_conv_transpose2d(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_binary(
+            builder,
+            RustnnBinaryOperation::ConvTranspose2d,
+            lhs,
+            rhs,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gather(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Gather, lhs, rhs, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gather_elements(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_binary(
+            builder,
+            RustnnBinaryOperation::GatherElements,
+            lhs,
+            rhs,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gather_nd(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_binary(builder, RustnnBinaryOperation::GatherNd, lhs, rhs, output)
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_prelu(
+    builder: *mut RustnnGraphBuilder,
+    lhs: *const RustnnOperand,
+    rhs: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Prelu, lhs, rhs, output) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_batch_normalization(
+    builder: *mut RustnnGraphBuilder,
+    first: *const RustnnOperand,
+    second: *const RustnnOperand,
+    third: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_ternary(
+            builder,
+            RustnnTernaryOperation::BatchNormalization,
+            first,
+            second,
+            third,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_where(
+    builder: *mut RustnnGraphBuilder,
+    first: *const RustnnOperand,
+    second: *const RustnnOperand,
+    third: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_ternary(
+            builder,
+            RustnnTernaryOperation::Where,
+            first,
+            second,
+            third,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_scatter_elements(
+    builder: *mut RustnnGraphBuilder,
+    first: *const RustnnOperand,
+    second: *const RustnnOperand,
+    third: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_ternary(
+            builder,
+            RustnnTernaryOperation::ScatterElements,
+            first,
+            second,
+            third,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_scatter_nd(
+    builder: *mut RustnnGraphBuilder,
+    first: *const RustnnOperand,
+    second: *const RustnnOperand,
+    third: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        rustnn_graph_builder_ternary(
+            builder,
+            RustnnTernaryOperation::ScatterNd,
+            first,
+            second,
+            third,
+            output,
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_arg_min(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    axis: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_builder_call(builder, input, output, |builder, input| {
+            builder.arg_min(input, axis)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_arg_max(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    axis: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_builder_call(builder, input, output, |builder, input| {
+            builder.arg_max(input, axis)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_cast(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    data_type: RustnnDataType,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_builder_call(builder, input, output, |builder, input| {
+            builder.cast(input, data_type.into())
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_cumulative_sum(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    axis: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_builder_call(builder, input, output, |builder, input| {
+            builder.cumulative_sum(input, axis)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_softmax(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    axis: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_builder_call(builder, input, output, |builder, input| {
+            builder.softmax(input, axis)
+        })
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_expand(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    new_shape: *const u32,
+    new_shape_len: usize,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_u32_slice_builder_call(
+            builder,
+            input,
+            new_shape,
+            new_shape_len,
+            "new_shape",
+            output,
+            |builder, input, shape| {
+                builder.expand(
+                    input,
+                    shape
+                        .into_iter()
+                        .map(crate::operator_options::MLDimension::Static)
+                        .collect(),
+                )
+            },
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_reshape(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    new_shape: *const u32,
+    new_shape_len: usize,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_u32_slice_builder_call(
+            builder,
+            input,
+            new_shape,
+            new_shape_len,
+            "new_shape",
+            output,
+            |builder, input, shape| {
+                builder.reshape(
+                    input,
+                    shape
+                        .into_iter()
+                        .map(crate::operator_options::MLDimension::Static)
+                        .collect(),
+                )
+            },
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_tile(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    repetitions: *const u32,
+    repetitions_len: usize,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    unsafe {
+        unary_u32_slice_builder_call(
+            builder,
+            input,
+            repetitions,
+            repetitions_len,
+            "repetitions",
+            output,
+            |builder, input, repetitions| builder.tile(input, repetitions),
+        )
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_pad(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    beginning_padding: *const u32,
+    beginning_padding_len: usize,
+    ending_padding: *const u32,
+    ending_padding_len: usize,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let beginning = match unsafe {
+            input_slice(
+                beginning_padding,
+                beginning_padding_len,
+                "beginning_padding",
+            )
+        } {
+            Ok(v) => v.to_vec(),
+            Err(s) => return s,
+        };
+        let ending =
+            match unsafe { input_slice(ending_padding, ending_padding_len, "ending_padding") } {
+                Ok(v) => v.to_vec(),
+                Err(s) => return s,
+            };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        return_operand(builder.0.pad(input, beginning, ending), output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_slice(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    starts: *const u32,
+    starts_len: usize,
+    sizes: *const u32,
+    sizes_len: usize,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let starts = match unsafe { input_slice(starts, starts_len, "starts") } {
+            Ok(v) => v.to_vec(),
+            Err(s) => return s,
+        };
+        let sizes = match unsafe { input_slice(sizes, sizes_len, "sizes") } {
+            Ok(v) => v
+                .iter()
+                .copied()
+                .map(crate::operator_options::MLDimension::Static)
+                .collect::<Vec<_>>(),
+            Err(s) => return s,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        return_operand(builder.0.slice(input, &starts, &sizes), output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_concat(
+    builder: *mut RustnnGraphBuilder,
+    inputs: *const *const RustnnOperand,
+    inputs_len: usize,
+    axis: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let inputs = match unsafe { operand_handles(inputs, inputs_len) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        return_operand(builder.0.concat(&inputs, axis), output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_quantize_linear(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    scale: *const RustnnOperand,
+    zero_point: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let scale = match unsafe { required_ref(scale, "scale") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        let result = if zero_point.is_null() {
+            builder.0.quantize_linear(input, scale)
+        } else {
+            builder
+                .0
+                .quantize_linear_with_zeropoint(input, scale, unsafe { (*zero_point).0 })
+        };
+        return_operand(result, output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_dequantize_linear(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    scale: *const RustnnOperand,
+    zero_point: *const RustnnOperand,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let scale = match unsafe { required_ref(scale, "scale") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        let result = if zero_point.is_null() {
+            builder.0.dequantize_linear(input, scale)
+        } else {
+            builder
+                .0
+                .dequantize_linear_with_zeropoint(input, scale, unsafe { (*zero_point).0 })
+        };
+        return_operand(result, output)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_split(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    splits: *const u32,
+    splits_len: usize,
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    outputs_len: *mut usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let splits = match unsafe { input_slice(splits, splits_len, "splits") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let slots = match unsafe { output_slots(outputs, outputs_capacity, splits.len()) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let outputs_len = match unsafe { required_mut(outputs_len, "outputs_len") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *outputs_len = 0;
+        return_operands(builder.0.split(input, splits), slots, outputs_len)
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_split_equal(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    num_splits: u32,
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    outputs_len: *mut usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let slots = match unsafe { output_slots(outputs, outputs_capacity, num_splits as usize) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let outputs_len = match unsafe { required_mut(outputs_len, "outputs_len") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *outputs_len = 0;
+        return_operands(
+            builder
+                .0
+                .split_equal_with_options(input, num_splits, Default::default()),
+            slots,
+            outputs_len,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gru(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    weight: *const RustnnOperand,
+    recurrent_weight: *const RustnnOperand,
+    steps: u32,
+    hidden_size: u32,
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    outputs_len: *mut usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let weight = match unsafe { required_ref(weight, "weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let recurrent = match unsafe { required_ref(recurrent_weight, "recurrent_weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let slots = match unsafe { output_slots(outputs, outputs_capacity, 1) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let outputs_len = match unsafe { required_mut(outputs_len, "outputs_len") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *outputs_len = 0;
+        return_operands(
+            builder.0.gru_with_options(
+                input,
+                weight,
+                recurrent,
+                steps,
+                hidden_size,
+                Default::default(),
+            ),
+            slots,
+            outputs_len,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_gru_cell(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    weight: *const RustnnOperand,
+    recurrent_weight: *const RustnnOperand,
+    hidden_state: *const RustnnOperand,
+    hidden_size: u32,
+    output: *mut *mut RustnnOperand,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let weight = match unsafe { required_ref(weight, "weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let recurrent = match unsafe { required_ref(recurrent_weight, "recurrent_weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let hidden = match unsafe { required_ref(hidden_state, "hidden_state") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let output = match unsafe { required_mut(output, "output") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *output = ptr::null_mut();
+        return_operand(
+            builder.0.gru_cell_with_options(
+                input,
+                weight,
+                recurrent,
+                hidden,
+                hidden_size,
+                Default::default(),
+            ),
+            output,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_lstm(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    weight: *const RustnnOperand,
+    recurrent_weight: *const RustnnOperand,
+    steps: u32,
+    hidden_size: u32,
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    outputs_len: *mut usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let weight = match unsafe { required_ref(weight, "weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let recurrent = match unsafe { required_ref(recurrent_weight, "recurrent_weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let slots = match unsafe { output_slots(outputs, outputs_capacity, 2) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let outputs_len = match unsafe { required_mut(outputs_len, "outputs_len") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *outputs_len = 0;
+        return_operands(
+            builder.0.lstm_with_options(
+                input,
+                weight,
+                recurrent,
+                steps,
+                hidden_size,
+                Default::default(),
+            ),
+            slots,
+            outputs_len,
+        )
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rustnn_graph_builder_lstm_cell(
+    builder: *mut RustnnGraphBuilder,
+    input: *const RustnnOperand,
+    weight: *const RustnnOperand,
+    recurrent_weight: *const RustnnOperand,
+    hidden_state: *const RustnnOperand,
+    cell_state: *const RustnnOperand,
+    hidden_size: u32,
+    outputs: *mut *mut RustnnOperand,
+    outputs_capacity: usize,
+    outputs_len: *mut usize,
+) -> RustnnStatus {
+    ffi_call(|| {
+        let builder = match unsafe { required_mut(builder, "builder") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let input = match unsafe { required_ref(input, "input") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let weight = match unsafe { required_ref(weight, "weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let recurrent = match unsafe { required_ref(recurrent_weight, "recurrent_weight") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let hidden = match unsafe { required_ref(hidden_state, "hidden_state") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let cell = match unsafe { required_ref(cell_state, "cell_state") } {
+            Ok(v) => v.0,
+            Err(s) => return s,
+        };
+        let slots = match unsafe { output_slots(outputs, outputs_capacity, 2) } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        let outputs_len = match unsafe { required_mut(outputs_len, "outputs_len") } {
+            Ok(v) => v,
+            Err(s) => return s,
+        };
+        *outputs_len = 0;
+        return_operands(
+            builder.0.lstm_cell_with_options(
+                input,
+                weight,
+                recurrent,
+                hidden,
+                cell,
+                hidden_size,
+                Default::default(),
+            ),
+            slots,
+            outputs_len,
+        )
+    })
+}
+
 /// Compile a runtime-backed builder and consume it, setting `builder` to null.
 /// The originating context must outlive the returned graph.
 #[unsafe(no_mangle)]
@@ -2546,6 +4039,31 @@ pub unsafe extern "C" fn rustnn_string_destroy(value: *mut c_char) {
 mod tests {
     use super::*;
 
+    unsafe fn make_test_input(
+        builder: *mut RustnnGraphBuilder,
+        name: &CStr,
+        shape: &[u64],
+    ) -> (*mut RustnnOperandDescriptor, *mut RustnnOperand) {
+        let mut descriptor = ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                rustnn_operand_descriptor_create(
+                    RustnnDataType::Float32,
+                    shape.as_ptr(),
+                    shape.len(),
+                    &mut descriptor,
+                )
+            },
+            RustnnStatus::Success
+        );
+        let mut input = ptr::null_mut();
+        assert_eq!(
+            unsafe { rustnn_graph_builder_input(builder, name.as_ptr(), descriptor, &mut input) },
+            RustnnStatus::Success
+        );
+        (descriptor, input)
+    }
+
     #[test]
     fn context_options_defaults_match_rust_defaults() {
         let options = rustnn_context_options_default();
@@ -2556,7 +4074,7 @@ mod tests {
 
         let converted = context_options_from_c(&options).unwrap();
         assert_eq!(converted.power_preference, MLPowerPreference::Default);
-        assert!(!converted.accelerated);
+        assert!(converted.accelerated);
         assert_eq!(converted.backend_hint, None);
         assert_eq!(converted.device_hint, None);
         assert_eq!(converted.rustnn_options, RustNNOptions::default());
@@ -2702,6 +4220,126 @@ mod tests {
             rustnn_operand_destroy(sum);
             rustnn_operand_destroy(rhs);
             rustnn_operand_destroy(lhs);
+            rustnn_operand_descriptor_destroy(descriptor);
+            rustnn_graph_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn exposes_all_default_unary_operation_families() {
+        unsafe {
+            let mut builder = ptr::null_mut();
+            assert_eq!(
+                rustnn_graph_builder_create_uncompiled(&mut builder),
+                RustnnStatus::Success
+            );
+            let (descriptor, input) = make_test_input(builder, c"input", &[1, 1, 2, 2]);
+            let operations = [
+                RustnnUnaryOperation::Elu,
+                RustnnUnaryOperation::HardSigmoid,
+                RustnnUnaryOperation::HardSwish,
+                RustnnUnaryOperation::LeakyRelu,
+                RustnnUnaryOperation::Linear,
+                RustnnUnaryOperation::Clamp,
+                RustnnUnaryOperation::InstanceNormalization,
+                RustnnUnaryOperation::LayerNormalization,
+                RustnnUnaryOperation::Resample2d,
+                RustnnUnaryOperation::Reverse,
+                RustnnUnaryOperation::Triangular,
+                RustnnUnaryOperation::AveragePool2d,
+                RustnnUnaryOperation::MaxPool2d,
+                RustnnUnaryOperation::L2Pool2d,
+                RustnnUnaryOperation::GlobalAveragePool,
+                RustnnUnaryOperation::GlobalMaxPool,
+                RustnnUnaryOperation::ReduceSum,
+                RustnnUnaryOperation::ReduceMean,
+                RustnnUnaryOperation::ReduceMax,
+                RustnnUnaryOperation::ReduceMin,
+                RustnnUnaryOperation::ReduceProduct,
+                RustnnUnaryOperation::ReduceL1,
+                RustnnUnaryOperation::ReduceL2,
+                RustnnUnaryOperation::ReduceLogSum,
+                RustnnUnaryOperation::ReduceLogSumExp,
+                RustnnUnaryOperation::ReduceSumSquare,
+                RustnnUnaryOperation::Transpose,
+                RustnnUnaryOperation::Squeeze,
+                RustnnUnaryOperation::Unsqueeze,
+            ];
+            for operation in operations {
+                let mut output = ptr::null_mut();
+                assert_eq!(
+                    rustnn_graph_builder_unary(builder, operation, input, &mut output),
+                    RustnnStatus::Success,
+                    "{operation:?}: {}",
+                    CStr::from_ptr(rustnn_last_error_message()).to_string_lossy()
+                );
+                rustnn_operand_destroy(output);
+            }
+            rustnn_operand_destroy(input);
+            rustnn_operand_descriptor_destroy(descriptor);
+            rustnn_graph_builder_destroy(builder);
+        }
+    }
+
+    #[test]
+    fn exposes_parameterized_and_multi_output_operations() {
+        unsafe {
+            let mut builder = ptr::null_mut();
+            assert_eq!(
+                rustnn_graph_builder_create_uncompiled(&mut builder),
+                RustnnStatus::Success
+            );
+            let (descriptor, input) = make_test_input(builder, c"input", &[2, 2]);
+
+            let new_shape = [4];
+            let mut reshaped = ptr::null_mut();
+            assert_eq!(
+                rustnn_graph_builder_reshape(
+                    builder,
+                    input,
+                    new_shape.as_ptr(),
+                    new_shape.len(),
+                    &mut reshaped,
+                ),
+                RustnnStatus::Success
+            );
+
+            let splits = [2, 2];
+            let mut split_outputs = [ptr::null_mut(); 2];
+            let mut split_outputs_len = 0;
+            assert_eq!(
+                rustnn_graph_builder_split(
+                    builder,
+                    reshaped,
+                    splits.as_ptr(),
+                    splits.len(),
+                    split_outputs.as_mut_ptr(),
+                    split_outputs.len(),
+                    &mut split_outputs_len,
+                ),
+                RustnnStatus::Success
+            );
+            assert_eq!(split_outputs_len, 2);
+
+            let concat_inputs = [split_outputs[0].cast_const(), split_outputs[1].cast_const()];
+            let mut concatenated = ptr::null_mut();
+            assert_eq!(
+                rustnn_graph_builder_concat(
+                    builder,
+                    concat_inputs.as_ptr(),
+                    concat_inputs.len(),
+                    0,
+                    &mut concatenated,
+                ),
+                RustnnStatus::Success
+            );
+
+            rustnn_operand_destroy(concatenated);
+            for output in split_outputs {
+                rustnn_operand_destroy(output);
+            }
+            rustnn_operand_destroy(reshaped);
+            rustnn_operand_destroy(input);
             rustnn_operand_descriptor_destroy(descriptor);
             rustnn_graph_builder_destroy(builder);
         }

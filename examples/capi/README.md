@@ -141,9 +141,17 @@ The C API follows these conventions:
 - `RustnnOperatorOptions` supplies the WebNN operator label. Operations are
   available both with default options, such as `rustnn_graph_builder_add()`,
   and explicitly as `rustnn_graph_builder_add_with_options()`.
-- `rustnn_graph_builder_unary()` and `rustnn_graph_builder_binary()` are useful
-  for dynamically selected operations; named functions are preferable when
-  the operation is known at compile time.
+- `rustnn_graph_builder_unary()`, `rustnn_graph_builder_binary()`, and
+  `rustnn_graph_builder_ternary()` expose all operations whose required inputs
+  are only operands. Their operation enums include activation, normalization,
+  convolution, pooling, reduction, gather/scatter, and matrix operations.
+- Operations with additional required arguments use typed entry points such as
+  `rustnn_graph_builder_arg_max()`, `rustnn_graph_builder_cast()`,
+  `rustnn_graph_builder_concat()`, `rustnn_graph_builder_pad()`,
+  `rustnn_graph_builder_split()`, and `rustnn_graph_builder_lstm()`.
+- The C ABI covers all 101 operation variants available from Rust
+  `MLGraphBuilder`; it invokes those builder methods directly and does not use
+  a JSON operation bridge.
 
 Initialize `RustnnContextOptions` with `rustnn_context_options_default()` so
 backend-specific settings retain the Rust API defaults. `backend_hint` selects
@@ -175,7 +183,7 @@ if (status != RustnnStatus_Success) {
 }
 ```
 
-Tensor execution uses `rustnn_context_create_tensor()`,
+MLTensor execution uses `rustnn_context_create_tensor()`,
 `rustnn_context_write_tensor()`, `rustnn_context_dispatch()`, and
 `rustnn_context_read_tensor()`. See [`main.c`](main.c) for complete graph
 compilation, error handling, dispatch, and cleanup.
@@ -196,29 +204,33 @@ Call `rustnn::initializeLogger()` after setting `RUST_LOG` to initialize logging
 through the C API.
 
 ```cpp
-rustnn::Context context;
-rustnn::GraphBuilder builder(context);
-rustnn::OperandDescriptor matrix(rustnn::DataType::Float32, {2, 2});
+rustnn::MLContext context;
+rustnn::MLGraphBuilder builder(context);
+rustnn::MLOperandDescriptor matrix(rustnn::MLOperandDataType::Float32, {2, 2});
 auto input = builder.input("input", matrix);
 auto bias = builder.constant<float>(matrix, {1.0f, 2.0f, 3.0f, 4.0f});
-auto sum = builder.add(input, bias, rustnn::OperatorOptions{"add bias"});
+auto sum = builder.add(input, bias, rustnn::MLOperatorOptions{"add bias"});
 auto graph = builder.build({{"sum", &sum}});
 ```
 
-Backend and device selection are also available through `rustnn::ContextOptions`:
+Backend and device selection are also available through `rustnn::MLContextOptions`:
 
 ```cpp
-rustnn::ContextOptions options;
+rustnn::MLContextOptions options;
 options.accelerated = true;
 options.backend_hint = rustnn::Backend::Trtx;
 options.device_hint = rustnn::BackendDevice{
     rustnn::Backend::Trtx, rustnn::DeviceType::Gpu, 0};
-rustnn::Context context(options);
+rustnn::MLContext context(options);
 ```
 
 The generic `unary()` and `binary()` methods remain available when an operation
-is selected dynamically. `Context::createTensor()`, `writeTensor()`,
-`dispatch()`, and `readTensor()` wrap the corresponding C execution APIs. See
+is selected dynamically. Named methods cover all 101 Rust `MLGraphBuilder`
+operation variants, including typed overloads for parameterized operations and
+`std::vector<rustnn::MLOperand>` results for split and recurrent operations.
+`MLContext::createTensor()`, `writeTensor()`, `dispatch()`, and `readTensor()`
+wrap the corresponding C execution APIs. `operandShape()` queries an operand's
+inferred dimensions, while `shape()` creates the WebNN shape operation. See
 [`main.cpp`](main.cpp) for the complete example.
 
 ## Consuming rustnn from another CMake project
