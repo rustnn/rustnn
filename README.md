@@ -174,7 +174,6 @@ cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx 
 
 ## Contributing
 
-<<<<<<< HEAD
 Contributions welcome! Please see:
 
 - [AGENTS.md](AGENTS.md) - Project architecture and conventions

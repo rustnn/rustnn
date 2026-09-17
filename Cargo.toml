@@ -284,7 +284,7 @@ import_library = true
 [package.metadata.capi.install.data]
 subdirectory = "rustnn"
 asset = [
-    { from = "cmake/rustnnConfig.cmake.in", to = "../lib/cmake" },
-    { from = "cmake/rustnnConfig.cmake", to = "../lib/cmake" },
-    { from = "cmake/rustnnConfigVersion.cmake", to = "../lib/cmake" },
+    { from = "cmake/rustnnConfig.cmake.in", to = "rustnn/cmake" },
+    { from = "cmake/rustnnConfig.cmake", to = "rustnn/cmake" },
+    { from = "cmake/rustnnConfigVersion.cmake", to = "rustnn/cmake" },
 ]
