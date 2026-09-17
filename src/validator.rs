@@ -1,3 +1,12 @@
+//! Structural validation of a [`GraphInfo`], modelled on Chromium's WebNN graph checks.
+//!
+//! [`GraphValidator`] checks operand counts and tensor byte limits from
+//! [`ContextProperties`], input/output naming, constant data sizes, operand production order
+//! and quantization constraints. It returns [`ValidationArtifacts`] with the named input and
+//! output descriptors that the CLI and the legacy executors use to bind tensors. The
+//! validator inspects positional operands; operands referenced only from options (for
+//! example `gemm.c`) are not checked.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::error::GraphError;

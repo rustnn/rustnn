@@ -1,3 +1,10 @@
+//! Runtime shape checks for tensors bound to a graph with static or dynamic dimensions.
+//!
+//! [`RuntimeShapeState`] validates that bound tensors match the graph's descriptors: same
+//! rank, static dimensions equal, dynamic dimensions within `max_size`, and dimensions that
+//! share a name agree across all inputs and outputs. Used by `MLContext::dispatch` and the
+//! `*_checked` executor functions.
+
 use std::collections::HashMap;
 
 use crate::error::GraphError;

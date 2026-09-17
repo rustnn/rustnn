@@ -1,517 +1,131 @@
 # Advanced Topics
 
-Advanced usage patterns and best practices for the WebNN Python API.
+## Backend hints and options
 
-## Performance Optimization
+`MLContextOptions` carries the two WebNN hints and three rustnn extensions:
 
-### Graph Compilation
+```rust
+use rustnn::mlcontext::{
+    Backend, BackendDevice, MLContext, MLContextOptions, MLPowerPreference, RustNNOptions,
+};
 
-Compile graphs once and reuse them:
+// Restrict selection to one backend; fails if it cannot serve the hints.
+let options = MLContextOptions::new(MLPowerPreference::HighPerformance, true)
+    .with_rustnn_backend_hint(Backend::Trtx);
 
-```python
-import webnn
+// Use exactly this device: no availability check, no fallback.
+let options = MLContextOptions::new(MLPowerPreference::Default, true)
+    .with_rustnn_device_hint(BackendDevice::Trtx { cuda_device_idx: 1 });
 
-class ModelCache:
-    def __init__(self):
-        self.ml = webnn.ML()
-        self.context = self.ml.create_context()
-        self.graphs = {}
-
-    def get_or_build_graph(self, name, builder_fn):
-        """Cache compiled graphs for reuse."""
-        if name not in self.graphs:
-            builder = self.context.create_graph_builder()
-            output = builder_fn(builder)
-            self.graphs[name] = builder.build({name: output})
-        return self.graphs[name]
-
-# Usage
-cache = ModelCache()
-
-def build_relu(builder):
-    x = builder.input("x", [100], "float32")
-    return builder.relu(x)
-
-# First call: compiles the graph
-graph1 = cache.get_or_build_graph("relu", build_relu)
-
-# Second call: returns cached graph (fast!)
-graph2 = cache.get_or_build_graph("relu", build_relu)
-assert graph1 is graph2
+// Backend tuning. The option structs are `#[non_exhaustive]`: start from `Default` and set fields.
+let mut tuning = RustNNOptions::default();
+tuning.trtx.cuda_graphs = false;
+tuning.trtx.fail_on_cache_miss = true;   // ahead-of-time flows: never build, only load cached engines
+let options = MLContextOptions::new(MLPowerPreference::Default, true).with_rustnn_options(tuning);
+let context = MLContext::create(&options)?;
 ```
 
-### Memory-Efficient Constants
+`TrtxOptions` has `engine_caching`, `runtime_cache`, `fail_on_cache_miss` and `cuda_graphs`;
+the ONNX Runtime, CoreML and LiteRT option structs exist but have no fields yet.
 
-For large constant tensors, use the most memory-efficient data type:
+## Dynamic shapes
 
-```python
-import webnn
-import numpy as np
+Dynamic dimensions are opt-in through the `dynamic-inputs` Cargo feature. Without it, loading
+a graph with a dynamic dimension fails with `GraphError::DynamicInputsFeatureDisabled`.
 
-ml = webnn.ML()
-context = ml.create_context()
-builder = context.create_graph_builder()
+- In graph files a dynamic dimension is `{ "name": "seq", "maxSize": 4096 }` (JSON) or the
+  equivalent `.webnn` text; onnx2webnn exports produce them for symbolic ONNX dimensions. In the
+  graph model this is `Dimension::Dynamic(DynamicDimension { name, max_size })`. Constants must
+  stay static.
+- Builder descriptors (`MLOperandDescriptor`) are static. Graphs with dynamic inputs come from
+  files and are compiled with `MLGraphBuilder::build_graph_info`.
+- Tensors bound to dynamic inputs or outputs are created with a starting shape, given a
+  capacity for the largest shape they will take, and resized before each dispatch:
 
-# Use float16 instead of float32 to halve memory usage
-large_weights = np.random.randn(1000, 1000).astype('float16')
-weights_op = builder.constant(large_weights)
+```rust
+let mut mask = context.create_tensor(
+    &MLTensorDescriptor::new(MLOperandDataType::Int64, vec![1, 1]).to_writable(),
+)?;
+context.rustnn_set_tensor_capacity(&mut mask, &[1, 4096])?;
 
-print(f"Memory saved: {large_weights.nbytes / 1024 / 1024:.2f} MB vs "
-      f"{(large_weights.nbytes * 2) / 1024 / 1024:.2f} MB for float32")
+for step in 1..=steps {
+    context.rustnn_resize_tensor(&mut mask, &[1, step])?;   // active shape, within capacity
+    context.write_tensor(&mask, &mask_values[..step as usize])?;
+    context.dispatch(&mut graph, &inputs, &outputs)?;
+}
 ```
 
-## Integration with Other Libraries
-
-### NumPy Integration with Execution
-
-Seamless conversion between NumPy and WebNN:
-
-```python
-import webnn
-import numpy as np
-
-ml = webnn.ML()
-context = ml.create_context(accelerated=False)
-builder = context.create_graph_builder()
-
-# Build a simple matmul with NumPy weights
-x = builder.input("x", [1, 100], "float32")
-weights = np.random.randn(100, 50).astype('float32') * 0.01
-bias = np.zeros(50, dtype='float32')
-
-w_op = builder.constant(weights)
-b_op = builder.constant(bias)
-
-output = builder.add(builder.matmul(x, w_op), b_op)
-graph = builder.build({"output": output})
-
-# Execute with NumPy input
-x_data = np.random.randn(1, 100).astype('float32')
-results = context.compute(graph, {"x": x_data})
-
-print(f"Input shape: {x_data.shape}")
-print(f"Output shape: {results['output'].shape}")
-print(f"Result is NumPy array: {isinstance(results['output'], np.ndarray)}")
-```
-
-### ONNX Integration
-
-Load existing ONNX models and convert them:
-
-```python
-import webnn
-import numpy as np
-# Note: This is a conceptual example. Full ONNX loading
-# would require parsing the ONNX protobuf format.
-
-def load_onnx_weights(onnx_path):
-    """
-    Conceptual example of loading ONNX weights.
-    In practice, you'd use onnx.load() to parse the model.
-    """
-    # This is a simplified example
-    weights = {
-        'fc1': np.random.randn(784, 128).astype('float32'),
-        'fc1_bias': np.zeros(128, dtype='float32'),
-        'fc2': np.random.randn(128, 10).astype('float32'),
-        'fc2_bias': np.zeros(10, dtype='float32'),
-    }
-    return weights
-
-def build_from_onnx_weights(weights):
-    ml = webnn.ML()
-    context = ml.create_context()
-    builder = context.create_graph_builder()
-
-    # Build graph using ONNX weights
-    x = builder.input("input", [1, 784], "float32")
-
-    w1 = builder.constant(weights['fc1'])
-    b1 = builder.constant(weights['fc1_bias'])
-    h1 = builder.matmul(x, w1)
-    h1 = builder.add(h1, b1)
-    h1 = builder.relu(h1)
-
-    w2 = builder.constant(weights['fc2'])
-    b2 = builder.constant(weights['fc2_bias'])
-    output = builder.matmul(h1, w2)
-    output = builder.add(output, b2)
-
-    return builder.build({"output": output})
-
-weights = load_onnx_weights("model.onnx")
-graph = build_from_onnx_weights(weights)
-```
-
-## Graph Introspection and Execution
-
-Inspect and analyze compiled graphs, then execute them:
-
-```python
-import webnn
-import numpy as np
-
-ml = webnn.ML()
-context = ml.create_context(accelerated=False)
-builder = context.create_graph_builder()
-
-# Build a complex graph
-x = builder.input("x", [2, 3], "float32")
-y = builder.input("y", [3, 4], "float32")
-z = builder.matmul(x, y)
-w = builder.relu(z)
-output = builder.sigmoid(w)
-
-graph = builder.build({"final": output})
-
-# Inspect the graph
-print("Graph Analysis:")
-print(f"  Inputs: {graph.get_input_names()}")
-print(f"  Outputs: {graph.get_output_names()}")
-print(f"  Total operands: {graph.operand_count}")
-print(f"  Total operations: {graph.operation_count}")
-
-# Execute the graph
-x_data = np.random.randn(2, 3).astype('float32')
-y_data = np.random.randn(3, 4).astype('float32')
-results = context.compute(graph, {"x": x_data, "y": y_data})
-
-print(f"\nExecution:")
-print(f"  Output shape: {results['final'].shape}")
-print(f"  Output range: [{results['final'].min():.4f}, {results['final'].max():.4f}]")
-```
-
-## Custom Graph Patterns
-
-### Residual Connections
-
-```python
-import webnn
-import numpy as np
-
-def residual_block(builder, x, hidden_size):
-    """Create a residual block: output = relu(x + fc(x))"""
-
-    # Linear transformation
-    w = builder.constant(np.random.randn(hidden_size, hidden_size).astype('float32') * 0.01)
-    transformed = builder.matmul(x, w)
-
-    # Add residual connection
-    residual = builder.add(x, transformed)
-
-    # Activation
-    output = builder.relu(residual)
-
-    return output
-
-ml = webnn.ML()
-context = ml.create_context()
-builder = context.create_graph_builder()
-
-x = builder.input("x", [1, 128], "float32")
-y = residual_block(builder, x, 128)
-graph = builder.build({"output": y})
-
-context.convert_to_onnx(graph, "residual.onnx")
-```
-
-### Attention Mechanism (Simplified)
-
-```python
-import webnn
-import numpy as np
-
-def scaled_dot_product_attention(builder, query, key, value, d_k):
-    """
-    Simplified attention mechanism (without softmax for now).
-    attention = (query @ key.T) @ value
-    """
-    # Transpose key (conceptually)
-    key_t = key  # In practice, you'd need to handle transposition
-
-    # Attention scores: query @ key.T
-    scores = builder.matmul(query, key_t)
-
-    # Apply scaling factor (as a constant multiply)
-    scale = 1.0 / np.sqrt(d_k)
-    scale_tensor = builder.constant(np.full_like(scores, scale))
-    scaled_scores = builder.mul(scores, scale_tensor)
-
-    # Attention output: scores @ value
-    output = builder.matmul(scaled_scores, value)
-
-    return output
-```
-
-## Error Handling Strategies
-
-### Comprehensive Error Handling
-
-```python
-import webnn
-import sys
-import traceback
-
-def safe_graph_export(graph_fn, output_path):
-    """
-    Safely build and export a graph with comprehensive error handling.
-    """
-    try:
-        ml = webnn.ML()
-        context = ml.create_context()
-        builder = context.create_graph_builder()
-
-        # Build the graph
-        try:
-            output = graph_fn(builder)
-            graph = builder.build({"output": output})
-        except ValueError as e:
-            print(f" Graph validation failed: {e}", file=sys.stderr)
-            traceback.print_exc()
-            return False
-
-        # Export to ONNX
-        try:
-            context.convert_to_onnx(graph, output_path)
-            print(f"[OK] Successfully exported to {output_path}")
-            return True
-        except IOError as e:
-            print(f" File I/O error: {e}", file=sys.stderr)
-            return False
-        except RuntimeError as e:
-            print(f" Conversion failed: {e}", file=sys.stderr)
-            return False
-
-    except Exception as e:
-        print(f" Unexpected error: {e}", file=sys.stderr)
-        traceback.print_exc()
-        return False
-
-# Usage
-def my_graph(builder):
-    x = builder.input("x", [10], "float32")
-    return builder.relu(x)
-
-success = safe_graph_export(my_graph, "model.onnx")
-sys.exit(0 if success else 1)
-```
-
-## Testing Graphs
-
-### Unit Testing WebNN Graphs
-
-```python
-import unittest
-import webnn
-import numpy as np
-import os
-
-class TestWebNNGraphs(unittest.TestCase):
-    def setUp(self):
-        """Set up test fixtures."""
-        self.ml = webnn.ML()
-        self.context = self.ml.create_context()
-
-    def test_simple_relu(self):
-        """Test ReLU graph creation and export."""
-        builder = self.context.create_graph_builder()
-        x = builder.input("x", [10], "float32")
-        y = builder.relu(x)
-        graph = builder.build({"y": y})
-
-        self.assertEqual(graph.operand_count, 2)
-        self.assertEqual(graph.operation_count, 1)
-        self.assertIn("x", graph.get_input_names())
-        self.assertIn("y", graph.get_output_names())
-
-    def test_onnx_export(self):
-        """Test ONNX export functionality."""
-        builder = self.context.create_graph_builder()
-        x = builder.input("x", [10], "float32")
-        y = builder.relu(x)
-        graph = builder.build({"y": y})
-
-        output_path = "test_model.onnx"
-        try:
-            self.context.convert_to_onnx(graph, output_path)
-            self.assertTrue(os.path.exists(output_path))
-            self.assertGreater(os.path.getsize(output_path), 0)
-        finally:
-            if os.path.exists(output_path):
-                os.remove(output_path)
-
-    def test_invalid_shape(self):
-        """Test that invalid shapes raise errors."""
-        builder = self.context.create_graph_builder()
-
-        # This should work
-        x = builder.input("x", [10, 20], "float32")
-
-        # Empty shape is valid (scalar)
-        scalar = builder.input("scalar", [], "float32")
-
-    def test_multiple_outputs(self):
-        """Test graphs with multiple outputs."""
-        builder = self.context.create_graph_builder()
-        x = builder.input("x", [10], "float32")
-
-        y1 = builder.relu(x)
-        y2 = builder.sigmoid(x)
-
-        graph = builder.build({"relu": y1, "sigmoid": y2})
-
-        outputs = graph.get_output_names()
-        self.assertIn("relu", outputs)
-        self.assertIn("sigmoid", outputs)
-
-if __name__ == '__main__':
-    unittest.main()
-```
-
-## Debugging Tips
-
-### Verbose Graph Building
-
-```python
-import webnn
-
-class VerboseBuilder:
-    """Wrapper that logs all operations."""
-
-    def __init__(self, context):
-        self.context = context
-        self.builder = context.create_graph_builder()
-        self.op_count = 0
-
-    def input(self, name, shape, dtype="float32"):
-        result = self.builder.input(name, shape, dtype)
-        print(f"[{self.op_count}] INPUT: {name} {shape} {dtype}")
-        self.op_count += 1
-        return result
-
-    def constant(self, value, **kwargs):
-        result = self.builder.constant(value, **kwargs)
-        print(f"[{self.op_count}] CONSTANT: shape={value.shape}")
-        self.op_count += 1
-        return result
-
-    def relu(self, x):
-        result = self.builder.relu(x)
-        print(f"[{self.op_count}] RELU")
-        self.op_count += 1
-        return result
-
-    def matmul(self, a, b):
-        result = self.builder.matmul(a, b)
-        print(f"[{self.op_count}] MATMUL")
-        self.op_count += 1
-        return result
-
-    # Add other operations as needed...
-
-    def build(self, outputs):
-        print(f"\nBuilding graph with {len(outputs)} output(s)...")
-        return self.builder.build(outputs)
-
-# Usage
-ml = webnn.ML()
-context = ml.create_context()
-builder = VerboseBuilder(context)
-
-x = builder.input("x", [10], "float32")
-y = builder.relu(x)
-graph = builder.build({"y": y})
-```
-
-Output:
-```
-[0] INPUT: x [10] float32
-[1] RELU
-
-Building graph with 1 output(s)...
-```
-
-## Platform-Specific Features
-
-### Backend Selection and Execution
-
-Choose the best backend for your platform and execute models:
-
-```python
-import webnn
-import numpy as np
-import platform
-
-ml = webnn.ML()
-
-# Try GPU/NPU acceleration first
-context = ml.create_context(accelerated=True, power_preference="high-performance")
-print(f"Platform: {platform.system()}")
-print(f"Accelerated: {context.accelerated}")
-
-# Build a simple graph
-builder = context.create_graph_builder()
-x = builder.input("x", [10], "float32")
-y = builder.relu(x)
-graph = builder.build({"y": y})
-
-# Execute on selected backend
-x_data = np.array([-5, -3, -1, 0, 1, 3, 5, 7, 9, 11], dtype=np.float32)
-results = context.compute(graph, {"x": x_data})
-
-print(f"Result: {results['y']}")
-
-# Export for different platforms
-context.convert_to_onnx(graph, "model.onnx")
-print("[OK] Exported ONNX (cross-platform)")
-
-if platform.system() == "Darwin":
-    try:
-        context.convert_to_coreml(graph, "model.mlmodel")
-        print("[OK] Exported CoreML (macOS GPU/Neural Engine)")
-    except Exception as e:
-        print(f" CoreML export: {e}")
-```
-
-## Best Practices Summary
-
-1. **Compile once, reuse**: Cache compiled graphs
-2. **Use appropriate data types**: float16 for memory efficiency
-3. **Handle errors gracefully**: Wrap operations in try-except blocks
-4. **Test thoroughly**: Write unit tests for your graphs
-5. **Validate shapes**: Check tensor dimensions before building
-6. **Profile performance**: Measure compilation and export times
-7. **Document graphs**: Add comments explaining graph structure
-8. **Use type hints**: Leverage Python type hints for better IDE support
-
-```python
-from typing import Dict
-import webnn
-import numpy as np
-
-def build_classifier(
-    input_size: int,
-    hidden_size: int,
-    num_classes: int
-) -> webnn.MLGraph:
-    """
-    Build a simple classifier graph.
-
-    Args:
-        input_size: Size of input features
-        hidden_size: Size of hidden layer
-        num_classes: Number of output classes
-
-    Returns:
-        Compiled MLGraph ready for export
-    """
-    ml = webnn.ML()
-    context = ml.create_context()
-    builder = context.create_graph_builder()
-
-    # Build model...
-    x = builder.input("input", [1, input_size], "float32")
-    # ... rest of the model
-
-    return graph
-```
+`dispatch` checks the active shapes against the graph's dimension bounds and requires equal
+values for dynamic dimensions that share a name. `examples/smollm_mlcontext.rs` runs a KV
+cache this way. The checked legacy executors (`run_onnx_with_inputs_checked` and friends)
+apply the same rules to one-shot runs; see [Flexible Input Shapes](../development/flexible-input-shapes.md).
+
+## Saving and exporting graphs
+
+| Goal | Call |
+|---|---|
+| Save the graph under construction as `.webnn` text plus `.safetensors` weights | `builder.rustnn_save_webnn(&outputs, "model.webnn")` |
+| Inspect the graph so far as `.webnn` text | `builder.rustnn_webnn_text_for_outputs(&outputs)` |
+| Get the finished `GraphInfo` without compiling | `builder.finish_graph_info(&outputs)` |
+| Convert a `GraphInfo` to ONNX, CoreML, TensorRT engine, TFLite or CANN bytes | `ConverterRegistry::with_defaults().convert("onnx", &graph_info)` |
+| Write the ONNX sidecar for large models | `converted.weights_data` into `ONNX_EXTERNAL_WEIGHTS_FILENAME` next to the model |
+| Graphviz | `rustnn::graph_to_dot(&graph_info)` or the CLI `--export-dot` |
+
+`MLGraphBuilder::new_uncompiled()` records without a backend, so conversion tools need no
+runtime feature. `Int4` and `Uint4` constants cannot be written to `.safetensors`.
+
+## Loading external weights
+
+The loader resolves `@weights(...)` references through the `webnn-graph` crate. It looks next
+to the graph file for a `manifest.json` plus `model.weights` pair (onnx2webnn layout) or for the
+`.safetensors` file written by `rustnn_save_webnn`. Identifiers that contain `.` or `:` (ONNX
+node names) are sanitized to `_` on import. Shape inference runs on import, so a loaded graph
+carries complete descriptors.
+
+## Caching
+
+The TensorRT-RTX backend caches two things under the platform cache directory
+(`~/.cache/rustnn/` on Linux, `~/Library/Caches/rustnn/` on macOS, `%LOCALAPPDATA%\rustnn\` on
+Windows):
+
+| Category | Content | Key |
+|---|---|---|
+| `trtx` | Serialized engines with stripped, refittable weights | Hash of the graph topology, non-refittable constants and the converter sources |
+| `trtx-jit` | The TensorRT runtime (JIT kernel) cache shared by all engines | Global |
+
+Because weights are refitted after loading, a cached engine serves every model with the same
+topology. Entries are zstd compressed and written atomically. Disable caching with
+`TrtxOptions::engine_caching` and `TrtxOptions::runtime_cache`; delete the directories to
+start cold. Details are in [TensorRT-RTX](../integration/tensorrt.md).
+
+## Debugging
+
+| Setting | Effect |
+|---|---|
+| `RUST_LOG=info` (or `debug`, `trace`) | Library logging through the `log` crate: selected device, cache hits, per-dispatch shapes. Programs need a logger such as `pretty_env_logger` |
+| `RUSTNN_DEBUG=1` | Enables the `debug_print!` output of converters |
+| `RUSTNN_DEBUG=2` with `RUSTNN_DEBUG_ONNX_DIR=<dir>` | Also writes the converted ONNX model of every build for inspection in Netron or ONNX Runtime |
+| `RUSTNN_TRTX_LOG_VERBOSITY=verbose` | TensorRT logger level (`internal_error`, `error`, `warning`, `info`, `verbose`) |
+| `TRTX_JSON_DUMP_PATH=<dir>` | Writes TensorRT engine layer JSON per built engine |
+| `builder.rustnn_operand_shape(op)` | Shape of an operand while recording |
+| `cargo run --features onnx-runtime -- graph.webnn --export-dot graph.dot` | Graph structure as Graphviz |
+| `make test-wpt-op OP=<operation>` | Runs the WPT conformance cases of one operation, printing expected and actual values on failure |
+
+## Threads
+
+`MLContext` is `Send + Sync`. `dispatch`, `write_tensor` and `read_tensor` take `&mut self`,
+so concurrent use goes through a `Mutex<MLContext>`; the WPT harness reuses one context per
+thread. A builder borrows the context mutably until `build`, so record graphs before sharing
+the context.
+
+## Precision notes
+
+- TensorRT-RTX keeps float32 math at full precision (TF32 disabled) and runs float16 graphs in
+  float16.
+- CoreML computes integer operations in float32; values near the int32 and int64 limits lose
+  precision. Rank is limited to 5.
+- LiteRT rejects some data type and operation combinations up front; see
+  `dtype_unsupported_for_op` in `src/backends/litert.rs`.
+- The WPT tolerances applied per operation are in `tests/wpt_conformance/tolerance.rs`; the
+  audit mode described in the [WPT Conformance Guide](../testing/wpt-test-guide.md) reports how
+  much of the tolerance each passing case uses.

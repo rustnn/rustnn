@@ -1,3 +1,12 @@
+//! NVIDIA TensorRT-RTX backend (`trtx-runtime` and `trtx-runtime-mock` features).
+//!
+//! Graphs are lowered with [`TrtxConverter`] straight into a TensorRT network, built into an
+//! engine, and executed with device tensors on a CUDA stream. Constants are marked
+//! refittable and set after the build, so engines are cached by topology (not weights) in
+//! the `trtx` cache category; the TensorRT runtime (JIT) cache lives in `trtx-jit`. Cache keys
+//! include a hash of the converter sources so converter edits invalidate stale engines.
+//! Behaviour is tuned with [`TrtxOptions`]; `TRTX_JSON_DUMP_PATH` dumps engine layer JSON.
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;

@@ -16,6 +16,12 @@
  * limitations under the License.
  */
 
+//! Conversion between [`GraphInfo`] and the `webnn-graph` JSON AST (`GraphJson`).
+//!
+//! [`from_graph_json`] imports a parsed `.webnn` or JSON graph, inlining constants and
+//! inferring missing shapes; [`to_graph_json`] exports a graph for serialization. Both keep
+//! the `quantized` marker of the interchange format.
+
 use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{

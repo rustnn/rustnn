@@ -1,3 +1,11 @@
+//! Persistent on-disk caches used by backends (currently TensorRT engines and its runtime
+//! cache).
+//!
+//! Entries live under `<platform cache dir>/rustnn/<category>/<key>`, for example
+//! `~/.cache/rustnn/trtx` on Linux or `%LOCALAPPDATA%\rustnn\trtx` on Windows. Writes go
+//! through a temporary file and an atomic rename. With the `zstd-cache-compression` feature
+//! entries are stored compressed with a `.zstd` suffix.
+
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::{Read, Write};

@@ -2,8 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2
 
+//! Options for [`crate::mlcontext::MLContext::create`].
+//!
+//! [`MLContextOptions`] carries the two WebNN hints (`powerPreference`, `accelerated`) plus
+//! rustnn extensions: a backend or device hint that overrides automatic selection, and
+//! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`].
+
 use crate::mlcontext::{Backend, BackendDevice};
 
+/// WebNN power preference hint. <https://www.w3.org/TR/webnn/#enumdef-mlpowerpreference>
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub enum MLPowerPreference {
     #[default]
@@ -29,6 +36,7 @@ pub struct MLContextOptions {
 }
 
 impl MLContextOptions {
+    /// Options with the WebNN hints only; backend selection is automatic.
     pub fn new(power_preference: MLPowerPreference, accelerated: bool) -> Self {
         Self {
             power_preference,
@@ -55,16 +63,20 @@ impl MLContextOptions {
         self.accelerated = accelerated;
     }
 
+    /// Restrict selection to one backend; creation fails with
+    /// [`crate::error::Error::NoBackendAvailableForBackendHint`] if it cannot serve the hints.
     pub fn with_rustnn_backend_hint(mut self, backend: Backend) -> Self {
         self.backend_hint = Some(backend);
         self
     }
 
+    /// Use exactly this device, skipping selection (no availability check, no fallback).
     pub fn with_rustnn_device_hint(mut self, device: BackendDevice) -> Self {
         self.device_hint = Some(device);
         self
     }
 
+    /// Attach backend-specific tuning options.
     pub fn with_rustnn_options(mut self, options: RustNNOptions) -> Self {
         self.rustnn_options = options;
         self

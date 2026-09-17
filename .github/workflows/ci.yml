@@ -118,6 +118,10 @@ jobs:
       - name: Run cargo test (library only, CANN mock)
         run: cargo test --lib --features cann-runtime-mock
 
+      - name: Build Rust API docs (rustdoc warnings are errors)
+        if: runner.os == 'Linux'
+        run: make docs-api
+
       - name: Check backend operator report is up to date
         if: runner.os == 'Linux'
         run: |

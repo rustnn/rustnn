@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 """
-Generate docs/development/backend-operator-support.md from converter sources.
+Generate docs/development/backend-operator-support.md from the converter sources.
 
-This script is intentionally source-driven to reduce documentation drift.
+The report is source-driven so that it cannot drift from the code: CI runs this script
+with --check and fails when the committed report differs from the generated one.
+
+Operation names come from `Operation::op_type()` in src/operators.rs. Per backend, an
+operation counts as supported when:
+
+- ONNX Runtime, LiteRT: the converter source references the `Operation::<Variant>`
+  (these converters dispatch on the enum and have no "unsupported operation" fallthrough
+  for referenced variants).
+- CoreML: as above, plus operation names the converter compares against its lower-cased
+  op type (`get_mil_op_type` keys, `op_type_lower == "..."`, `matches!(op_type_lower...)`).
+- TensorRT: the operation name is a key of the converter's `match op_type { ... }` table.
+- CANN: the variant is listed in `is_supported_op` in src/converters/cann.rs.
 """
 
 from __future__ import annotations
@@ -13,117 +25,41 @@ import re
 import sys
 from dataclasses import dataclass
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+OPERATORS_SRC = ROOT / "src/operators.rs"
 ONNX_SRC = ROOT / "src/converters/onnx.rs"
 COREML_SRC = ROOT / "src/converters/coreml_mlprogram.rs"
 TRTX_SRC = ROOT / "src/converters/trtx.rs"
+LITERT_SRC = ROOT / "src/converters/litert.rs"
+CANN_SRC = ROOT / "src/converters/cann.rs"
 OUTPUT = ROOT / "docs/development/backend-operator-support.md"
 
+# Builder entry points that are not graph operations.
+EXCLUDED_OPS = {"constant"}
 
-EXCLUDED_OPS = {
-    # Internal/pseudo ops, not user-facing WebNN operators.
-    "constant",
-    "shape",
+# Operations rustnn keeps beyond the current WebNN specification.
+EXTENSION_OPS = {
+    "shape": "rustnn extension used by onnx2webnn exports",
+    "squeeze": "removed from the WebNN spec (emulation appendix), kept for onnx2webnn",
+    "unsqueeze": "removed from the WebNN spec (emulation appendix), kept for onnx2webnn",
 }
 
-
-DISPLAY_OVERRIDES = {
-    "convtranspose2d": "convTranspose2d",
-    "averagepool2d": "averagePool2d",
-    "maxpool2d": "maxPool2d",
-    "globalaveragepool": "globalAveragePool",
-    "globalmaxpool": "globalMaxPool",
-    "batchnormalization": "batchNormalization",
-    "instancenormalization": "instanceNormalization",
-    "layernormalization": "layerNormalization",
-    "hardsigmoid": "hardSigmoid",
-    "hardswish": "hardSwish",
-    "leakyrelu": "leakyRelu",
-    "logicaland": "logicalAnd",
-    "logicalor": "logicalOr",
-    "logicalxor": "logicalXor",
-    "logicalnot": "logicalNot",
-    "greaterorequal": "greaterOrEqual",
-    "lesserorequal": "lesserOrEqual",
-    "quantizelinear": "quantizeLinear",
-    "dequantizelinear": "dequantizeLinear",
-    "scatterelements": "scatterElements",
-    "scatternd": "scatterND",
-    "gatherelements": "gatherElements",
-    "gathernd": "gatherND",
-    "argmax": "argMax",
-    "argmin": "argMin",
-    "roundeven": "roundEven",
-    "resample2d": "resample2d",
-    "cumulativesum": "cumulativeSum",
-    "isnan": "isNaN",
-    "isinfinite": "isInfinite",
-    "notequal": "notEqual",
-}
+OP_TYPE_MARKER = "pub fn op_type(&self) -> &'static str {"
+TRTX_MARKER = "match op_type {"
+COREML_MARKER = "let mil_type = match webnn_op.to_lowercase().as_str() {"
+CANN_MARKER = "pub(crate) fn is_supported_op(op: &Operation) -> bool {"
 
 
 @dataclass
-class BackendOps:
-    backend: str
-    converter_ops: list[str]
-    executor_ops: list[str]
-    converter_source: str
-    executor_source: str
+class Backend:
+    name: str
+    source: pathlib.Path
+    rule: str
+    supported: set[str]  # normalized operation names
 
 
-def _normalize(op: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", op.lower())
-
-
-def _display(op: str) -> str:
-    n = _normalize(op)
-    return DISPLAY_OVERRIDES.get(n, op)
-
-
-def _extract_quoted_ops(text: str, pattern: str) -> list[str]:
-    values: list[str] = []
-    for match in re.finditer(pattern, text, flags=re.MULTILINE):
-        values.append(match.group(1))
-    return values
-
-
-def _collect_from_matches_macro(text: str) -> list[str]:
-    values: list[str] = []
-    pattern = re.compile(r"matches!\(\s*op\.op_type\.as_str\(\),([\s\S]*?)\)")
-    for match in pattern.finditer(text):
-        block = match.group(1)
-        for q in re.finditer(r'"([A-Za-z0-9_]+)"', block):
-            values.append(q.group(1))
-    return values
-
-
-def parse_onnx_ops(text: str) -> list[str]:
-    ops: list[str] = []
-    ops.extend(
-        _extract_quoted_ops(text, r'op\.op_type\s*==\s*"([A-Za-z0-9_]+)"')
-    )
-    ops.extend(
-        _extract_quoted_ops(
-            text, r'op\.op_type\.eq_ignore_ascii_case\("([A-Za-z0-9_]+)"\)'
-        )
-    )
-    ops.extend(_collect_from_matches_macro(text))
-    return canonicalize_ops(ops)
-
-
-def parse_coreml_ops(text: str) -> list[str]:
-    marker = "let mil_type = match webnn_op.to_lowercase().as_str() {"
-    block = extract_brace_block_after_marker(text, marker)
-    ops = [q.group(1) for q in re.finditer(r'"([A-Za-z0-9_]+)"\s*=>', block)]
-    return canonicalize_ops(ops)
-
-
-def parse_trtx_ops(text: str) -> list[str]:
-    marker = "match op_type {"
-    block = extract_brace_block_after_marker(text, marker)
-    ops = [q.group(1) for q in re.finditer(r'"([A-Za-z0-9_]+)"\s*=>', block)]
-    return canonicalize_ops(ops)
+def normalize(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
 
 
 def extract_brace_block_after_marker(text: str, marker: str) -> str:
@@ -135,8 +71,7 @@ def extract_brace_block_after_marker(text: str, marker: str) -> str:
         raise RuntimeError(f"Could not find opening brace after marker: {marker}")
 
     depth = 0
-    i = brace_open
-    while i < len(text):
+    for i in range(brace_open, len(text)):
         ch = text[i]
         if ch == "{":
             depth += 1
@@ -144,113 +79,193 @@ def extract_brace_block_after_marker(text: str, marker: str) -> str:
             depth -= 1
             if depth == 0:
                 return text[brace_open + 1 : i]
-        i += 1
     raise RuntimeError(f"Unbalanced braces while parsing marker: {marker}")
 
 
-def canonicalize_ops(ops: list[str]) -> list[str]:
-    by_norm: dict[str, str] = {}
-    for raw in ops:
-        n = _normalize(raw)
-        if not n or n in EXCLUDED_OPS:
-            continue
-        current = by_norm.get(n)
-        if current is None:
-            by_norm[n] = raw
-            continue
-        # Prefer camelCase-ish forms over all-lower where available.
-        if any(c.isupper() for c in raw) and not any(c.isupper() for c in current):
-            by_norm[n] = raw
-
-    display_ops = [_display(v) for v in by_norm.values()]
-    return sorted(display_ops, key=lambda s: s.lower())
+def parse_operation_names(operators_text: str) -> dict[str, str]:
+    """Map `Operation` variant name -> WebNN operation name from `op_type()`."""
+    block = extract_brace_block_after_marker(operators_text, OP_TYPE_MARKER)
+    names: dict[str, str] = {}
+    for match in re.finditer(
+        r'Operation::([A-Za-z0-9]+)\s*\{\s*\.\.\s*\}\s*=>\s*"([A-Za-z0-9]+)"', block
+    ):
+        names[match.group(1)] = match.group(2)
+    if not names:
+        raise RuntimeError("No Operation variants found in op_type()")
+    return names
 
 
-def bullet_columns(items: list[str], cols: int = 3) -> str:
-    if not items:
-        return "- (none)\n"
-    rows = (len(items) + cols - 1) // cols
-    table: list[list[str]] = [["" for _ in range(cols)] for _ in range(rows)]
-    for idx, item in enumerate(items):
-        r = idx % rows
-        c = idx // rows
-        table[r][c] = f"`{item}`"
-    lines = []
-    for row in table:
-        vals = [v for v in row if v]
-        lines.append("- " + ", ".join(vals))
-    return "\n".join(lines) + "\n"
+def parse_variant_references(text: str, variants: dict[str, str]) -> set[str]:
+    """Operations whose `Operation::<Variant>` is referenced anywhere in `text`."""
+    found: set[str] = set()
+    for match in re.finditer(r"Operation::([A-Z][A-Za-z0-9]*)", text):
+        variant = match.group(1)
+        if variant in variants:
+            found.add(normalize(variants[variant]))
+    return found
 
 
-def render(backends: list[BackendOps]) -> str:
+def parse_dispatch_table(text: str, marker: str) -> set[str]:
+    """String keys of the match arms in the block after `marker` (e.g. `"add" =>`)."""
+    block = extract_brace_block_after_marker(text, marker)
+    keys = re.findall(r'"([A-Za-z0-9_]+)"\s*(?=\||=>)', block)
+    return {normalize(key) for key in keys}
+
+
+def parse_variant_list(text: str, marker: str, variants: dict[str, str]) -> set[str]:
+    """Variants listed inside the block after `marker` (e.g. a `matches!` gate)."""
+    block = extract_brace_block_after_marker(text, marker)
+    return parse_variant_references(block, variants)
+
+
+def extract_paren_block(text: str, start: int) -> str:
+    """Text inside the parentheses that open at or after `start`."""
+    paren_open = text.find("(", start)
+    if paren_open < 0:
+        raise RuntimeError("Could not find opening parenthesis")
+    depth = 0
+    for i in range(paren_open, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return text[paren_open + 1 : i]
+    raise RuntimeError("Unbalanced parentheses")
+
+
+def parse_op_name_comparisons(text: str, ident: str, known: set[str]) -> set[str]:
+    """Operation names compared against the lower-cased op type variable `ident`.
+
+    Covers `ident == "name"` and `matches!(ident.as_str(), "a" | "b")`. Only names that
+    are known operations are returned, so unrelated string literals are ignored.
+    """
+    found: set[str] = set()
+    for match in re.finditer(re.escape(ident) + r'\s*==\s*"([a-z0-9_]+)"', text):
+        found.add(normalize(match.group(1)))
+    for match in re.finditer(r"matches!\(\s*" + re.escape(ident) + r"(?:\.as_str\(\))?\s*,", text):
+        block = extract_paren_block(text, match.start())
+        for quoted in re.finditer(r'"([a-z0-9_]+)"', block):
+            found.add(normalize(quoted.group(1)))
+    return found & known
+
+
+def parse_coreml_ops(text: str, variants: dict[str, str]) -> set[str]:
+    """CoreML dispatches on the enum in some passes and on the lower-cased op name in others."""
+    known = {normalize(name) for name in variants.values()}
+    supported = parse_variant_references(text, variants)
+    supported |= parse_dispatch_table(text, COREML_MARKER) & known
+    supported |= parse_op_name_comparisons(text, "op_type_lower", known)
+    return supported
+
+
+def build_backends(variants: dict[str, str]) -> list[Backend]:
+    return [
+        Backend(
+            name="ONNX Runtime",
+            source=ONNX_SRC,
+            rule="`Operation` variants referenced by the converter",
+            supported=parse_variant_references(ONNX_SRC.read_text(encoding="utf-8"), variants),
+        ),
+        Backend(
+            name="CoreML",
+            source=COREML_SRC,
+            rule="`Operation` variants referenced by the converter, plus names in its op-type dispatch",
+            supported=parse_coreml_ops(COREML_SRC.read_text(encoding="utf-8"), variants),
+        ),
+        Backend(
+            name="TensorRT",
+            source=TRTX_SRC,
+            rule="keys of the `match op_type` dispatch table",
+            supported=parse_dispatch_table(TRTX_SRC.read_text(encoding="utf-8"), TRTX_MARKER),
+        ),
+        Backend(
+            name="LiteRT",
+            source=LITERT_SRC,
+            rule="`Operation` variants referenced by the converter",
+            supported=parse_variant_references(
+                LITERT_SRC.read_text(encoding="utf-8"), variants
+            ),
+        ),
+        Backend(
+            name="CANN",
+            source=CANN_SRC,
+            rule="variants accepted by `is_supported_op`",
+            supported=parse_variant_list(
+                CANN_SRC.read_text(encoding="utf-8"), CANN_MARKER, variants
+            ),
+        ),
+    ]
+
+
+def render(variants: dict[str, str], backends: list[Backend]) -> str:
+    operations = sorted(
+        (name for name in variants.values() if name.lower() not in EXCLUDED_OPS),
+        key=lambda s: s.lower(),
+    )
+    keys = {op: normalize(op) for op in operations}
+
     out: list[str] = []
     out.append("# Backend Operator Support Report")
     out.append("")
     out.append(
-        "This file is generated from converter sources by "
+        "This file is generated from the converter sources by "
         "`scripts/generate_backend_operator_report.py`."
     )
     out.append(
-        "Do not edit this file manually. Run `make docs-backend-ops` after backend changes."
+        "Do not edit it manually. Run `make docs-backend-ops` after backend changes; "
+        "CI fails on drift (`make docs-backend-ops-check`)."
     )
     out.append("")
+    out.append(
+        "Operation names are the WebNN builder names returned by `Operation::op_type()` "
+        "in `src/operators.rs`. \"Supported\" means the converter emits a lowering for the "
+        "operation. Data type restrictions, dynamic shape limits and known failing cases are "
+        "tracked per backend in `tests/wpt_conformance/*_expected_failures.txt` and on the "
+        "[WPT conformance dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)."
+    )
+    out.append("")
+    out.append("## Summary")
+    out.append("")
+    out.append("| Backend | Converter source | Detection rule | Supported |")
+    out.append("|---|---|---|---|")
     for b in backends:
-        out.append(f"## {b.backend}")
-        out.append("")
-        out.append(f"- Converter source: `{b.converter_source}`")
-        out.append(f"- Executor source: `{b.executor_source}`")
-        out.append(f"- Converter operator count: **{len(b.converter_ops)}**")
-        out.append(f"- Executor operator count: **{len(b.executor_ops)}**")
-        out.append("")
-        out.append("### Converter Operators")
-        out.append("")
-        out.append(bullet_columns(b.converter_ops).rstrip())
-        out.append("")
-        out.append("### Executor Operators")
-        out.append("")
-        if b.executor_ops == b.converter_ops:
-            out.append(
-                "Executor-level operator coverage follows converter coverage for this backend."
-            )
-            out.append("")
-        out.append(bullet_columns(b.executor_ops).rstrip())
-        out.append("")
+        count = sum(1 for op in operations if keys[op] in b.supported)
+        rel = b.source.relative_to(ROOT).as_posix()
+        out.append(f"| {b.name} | `{rel}` | {b.rule} | {count} of {len(operations)} |")
+    out.append("")
+    out.append("## Operation matrix")
+    out.append("")
+    header = "| Operation | " + " | ".join(b.name for b in backends) + " |"
+    out.append(header)
+    out.append("|---|" + "|".join(":-:" for _ in backends) + "|")
+    for op in operations:
+        cells = ["yes" if keys[op] in b.supported else "-" for b in backends]
+        out.append(f"| `{op}` | " + " | ".join(cells) + " |")
+    out.append("")
+    out.append("## Unsupported operations per backend")
+    out.append("")
+    for b in backends:
+        missing = [op for op in operations if keys[op] not in b.supported]
+        if missing:
+            out.append(f"- {b.name}: " + ", ".join(f"`{op}`" for op in missing))
+        else:
+            out.append(f"- {b.name}: none")
+    out.append("")
+    out.append("## Notes")
+    out.append("")
+    for op in operations:
+        note = EXTENSION_OPS.get(op.lower())
+        if note:
+            out.append(f"- `{op}`: {note}.")
+    out.append("")
     return "\n".join(out) + "\n"
 
 
 def build_report() -> str:
-    onnx_text = ONNX_SRC.read_text(encoding="utf-8")
-    coreml_text = COREML_SRC.read_text(encoding="utf-8")
-    trtx_text = TRTX_SRC.read_text(encoding="utf-8")
-
-    onnx_ops = parse_onnx_ops(onnx_text)
-    coreml_ops = parse_coreml_ops(coreml_text)
-    trtx_ops = parse_trtx_ops(trtx_text)
-
-    backends = [
-        BackendOps(
-            backend="ONNX Runtime Backend",
-            converter_ops=onnx_ops,
-            executor_ops=onnx_ops,
-            converter_source="src/converters/onnx.rs",
-            executor_source="src/executors/onnx.rs",
-        ),
-        BackendOps(
-            backend="CoreML MLProgram Backend",
-            converter_ops=coreml_ops,
-            executor_ops=coreml_ops,
-            converter_source="src/converters/coreml_mlprogram.rs",
-            executor_source="src/executors/coreml.rs",
-        ),
-        BackendOps(
-            backend="TensorRT Backend",
-            converter_ops=trtx_ops,
-            executor_ops=trtx_ops,
-            converter_source="src/converters/trtx.rs",
-            executor_source="src/executors/trtx.rs",
-        ),
-    ]
-    return render(backends)
+    variants = parse_operation_names(OPERATORS_SRC.read_text(encoding="utf-8"))
+    return render(variants, build_backends(variants))
 
 
 def main() -> int:

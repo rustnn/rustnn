@@ -1,1206 +1,144 @@
-# API Reference
+# API Overview
+
+This page explains how the WebNN API maps to Rust in rustnn and where to find each part. Exact
+signatures live in the generated [Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/)
+(`make docs-api` builds it locally into `target/doc/rustnn/`).
+
+## Conventions
+
+- JavaScript `camelCase` names become Rust `snake_case`: `reduceSum` is `reduce_sum`,
+  `convTranspose2d` is `conv_transpose2d`, `where` is `where_`.
+- Every operation has two methods: `op(...)` with the required operands and arguments, and
+  `op_with_options(..., options)` taking the matching options struct from
+  `rustnn::operator_options` (`MLConv2dOptions`, `MLReduceOptions`, ...). Operations without
+  spec options take `MLOperatorOptions`, which only carries the `label`.
+- Operand fields inside option structs (`MLConv2dOptions::bias`, `MLGemmOptions::c`, the
+  quantization zero points) hold operand indices: pass `operand.rustnn_index()` or
+  `operand.into()`.
+- Methods that are not part of the WebNN specification carry the `rustnn_` prefix.
+- The API is synchronous. `dispatch`, `read_tensor` and `write_tensor` return when the work is
+  done.
+- Results are `rustnn::error::Result<T>`, an alias for `Result<T, rustnn::error::Error>`.
+- Lifetimes tie the objects together: `MLGraphBuilder<'context, 'builder>` borrows the
+  `MLContext<'context>` mutably while recording, and `MLGraph<'context>` cannot outlive its
+  context.
+
+## Types
+
+| Type | Module | Role |
+|---|---|---|
+| `MLContext` | `rustnn::mlcontext` | Owns a backend device, its tensors and compiled graphs |
+| `MLContextOptions`, `MLPowerPreference`, `RustNNOptions`, `TrtxOptions` | `rustnn::mlcontext` (defined in `mlcontextoptions`) | WebNN hints plus rustnn backend, device and tuning hints |
+| `Backend`, `BackendDevice`, `DeviceType` | `rustnn::mlcontext` (defined in `backend_selection`) | Selected backend and device |
+| `MLGraphBuilder` | `rustnn::mlgraphbuilder`, re-exported from `mlcontext` | Records operations, compiles an `MLGraph` |
+| `MLOperand` | `rustnn::mlcontext` | Copyable handle to an operand of one builder; `rustnn_index()` is the index that option structs take |
+| `MLOperandDescriptor` | `rustnn::mlcontext` | Data type and shape (`Vec<u64>`) |
+| `MLGraph` | `rustnn::mlcontext` | Compiled graph with `input_descriptors` and `output_descriptors` |
+| `MLTensor`, `MLTensorDescriptor` | `rustnn::mlcontext` | Backend tensor and its shape, data type, `readable` and `writable` flags |
+| `MLNamedOperands`, `MLNamedTensors` | `rustnn::mlcontext` | `BTreeMap<&str, MLOperand>` and `BTreeMap<&str, &MLTensor>` |
+| `MLOperandDataType` and the other `ML*` enums | `rustnn::operator_enums` | Spec enums (`MLInputOperandLayout`, `MLPaddingMode`, ...) |
+| `ML*Options` | `rustnn::operator_options` | One struct per spec options dictionary |
+| `Operation` | `rustnn::operators` | The recorded operation enum, one variant per operation |
+| `GraphInfo`, `Operand`, `OperandDescriptor`, `Dimension`, `DataType` | `rustnn::graph` | Backend-agnostic graph model |
+| `Error`, `GraphBuilderError`, `ShapeInferenceError`, `GraphError` | `rustnn::error` | Error types, all `Send + Sync` |
+
+## MLContext
+
+| Method | Status | Notes |
+|---|---|---|
+| `MLContext::create(&options)` | implemented | Selects the backend; see [Backends](backends.md) |
+| `accelerated()` | implemented | Whether the selected device is not a CPU |
+| `create_tensor(&descriptor)` | implemented | Flags default to neither readable nor writable |
+| `write_tensor(&tensor, &[T])`, `read_tensor(&tensor, &mut [T])` | implemented | `T: bytemuck::Pod`; the byte size must equal `tensor.rustnn_required_bytes()` |
+| `dispatch(&mut graph, &inputs, &outputs)` | implemented | Validates bindings, then runs |
+| `rustnn_backend()`, `rustnn_device()`, `rustnn_device_type()` | extension | Inspect the selection |
+| `rustnn_set_tensor_capacity(&mut tensor, max_shape)`, `rustnn_resize_tensor(&mut tensor, shape)` | extension | Dynamic shapes; see [Advanced Topics](advanced.md) |
+| `create_from_gpu_device`, `lost`, `create_constant_tensor`, `destroy`, `op_support_limits` | not implemented (`todo!()`) | Tensors and contexts are released by `Drop` |
+
+## MLGraphBuilder
+
+| Method | Status | Notes |
+|---|---|---|
+| `MLGraphBuilder::new(&mut context)` | implemented | One builder compiles one graph |
+| `MLGraphBuilder::new_uncompiled()` | extension | Records a graph without a backend, for saving or converting |
+| `input(name, &descriptor)` | implemented | The name is the dispatch key |
+| `constant_from_slice(&descriptor, &[T])`, `constant_from_vec(&descriptor, Vec<T>)`, `constant_from_bytes(&descriptor, Vec<u8>)` | implemented | Byte size must match the descriptor; `constant_from_bytes` avoids a copy for large weights |
+| `constant_from_tensor`, `constant_from_value` | not implemented | Use `constant_from_slice` with an empty shape for scalars |
+| `build(&outputs)` | implemented | Names the outputs and compiles; fails on an empty map, an input or constant used as output, or two names for one operand |
+| `finish_graph_info(&outputs)` | extension | Returns the finished `GraphInfo` without compiling |
+| `build_graph_info(graph_info)` | extension | Compiles a complete `GraphInfo`, for example one loaded from a file |
+| `rustnn_save_webnn(&outputs, path)` | extension | Writes `.webnn` text plus a `.safetensors` weights file; the builder stays usable |
+| `rustnn_webnn_text_for_outputs(&outputs)` | extension | The `.webnn` text of the graph so far, for debugging |
+| `rustnn_operand_shape(operand)`, `rustnn_operand_data_type(operand)` | extension | Inspect operands while recording |
+
+Shape inference runs inside every operation method; a shape or data type conflict is returned
+from that call as `Error::GraphBuilderError` wrapping a `ShapeInferenceError`.
+
+### Operations
+
+The Rust method for each WebNN operation, grouped as in the specification. Required arguments
+follow the spec order; `a`, `b` stand for the two inputs of binary operations.
+
+| Group | Methods |
+|---|---|
+| Element-wise binary | `add`, `sub`, `mul`, `div`, `pow`, `max`, `min` |
+| Comparison and logical (`Uint8` results) | `equal`, `greater`, `greater_or_equal`, `lesser`, `lesser_or_equal`, `not_equal`, `logical_and`, `logical_or`, `logical_xor`, `logical_not` |
+| Element-wise unary | `abs`, `ceil`, `floor`, `round_even`, `neg`, `exp`, `log`, `sqrt`, `reciprocal`, `sin`, `cos`, `tan`, `erf`, `sign`, `identity`, `is_nan`, `is_infinite` |
+| Activations | `relu`, `sigmoid`, `tanh`, `softmax(input, axis)`, `softplus`, `softsign`, `elu`, `leaky_relu`, `prelu(input, slope)`, `gelu`, `hard_sigmoid`, `hard_swish`, `linear`, `clamp` |
+| Convolution and pooling | `conv2d(input, filter)`, `conv_transpose2d`, `average_pool2d`, `max_pool2d`, `l2_pool2d`, `global_average_pool`, `global_max_pool`, `resample2d` |
+| Normalization | `batch_normalization(input, mean, variance)`, `instance_normalization`, `layer_normalization` |
+| Reduction and indices | `reduce_sum`, `reduce_mean`, `reduce_max`, `reduce_min`, `reduce_product`, `reduce_l1`, `reduce_l2`, `reduce_log_sum`, `reduce_log_sum_exp`, `reduce_sum_square`, `arg_max`, `arg_min`, `cumulative_sum` |
+| Shape | `reshape(input, new_shape)`, `transpose`, `expand(input, new_shape)`, `squeeze`, `unsqueeze`, `concat(&[operands], axis)`, `split(input, &splits)`, `split_equal_with_options(input, count, options)`, `slice(input, &starts, &sizes)`, `pad`, `tile`, `reverse`, `triangular`, `cast(input, data_type)`, `shape` |
+| Gather and scatter | `gather(input, indices)`, `gather_elements`, `gather_nd`, `scatter_elements(input, indices, updates)`, `scatter_nd`, `where_(condition, true_value, false_value)` |
+| Matrix | `matmul`, `gemm` |
+| Quantization | `quantize_linear(input, scale)`, `quantize_linear_with_zeropoint(input, scale, zero_point)`, `dequantize_linear`, `dequantize_linear_with_zeropoint`, plus the `_with_options` forms |
+| Recurrent | `gru_with_options`, `gru_cell_with_options`, `lstm_with_options`, `lstm_cell_with_options` (only the options forms exist). `gru_with_options` returns the hidden state plus the sequence when `return_sequence` is set; `lstm_with_options` returns hidden state, cell state and optionally the sequence; `lstm_cell_with_options` returns hidden and cell state, all as `Vec<MLOperand>` |
+
+`globalAveragePool`, `globalMaxPool`, `squeeze` and `unsqueeze` are kept from earlier
+specification drafts; `shape` is a rustnn extension emitted by onnx2webnn. The per-backend
+support matrix is generated into
+[Backend Operator Support](../development/backend-operator-support.md).
+
+## Tensors
 
-Complete reference for the WebNN Python API.
+`MLTensorDescriptor` wraps an `MLOperandDescriptor` and two flags. `to_readable()` and
+`to_writable()` return flagged copies; `set_readable` and `set_writable` change a descriptor in
+place. `MLTensor` exposes `shape()`, `data_type()`, `readable()`, `writable()` and
+`rustnn_required_bytes()`. The spec's `destroy()` is not implemented: dropping the tensor
+releases it.
 
-## Module: `webnn`
+## Data types
 
-The main module exports all public classes and types.
+`MLOperandDataType` has `Float32`, `Float16`, `Int32`, `Uint32`, `Int64`, `Uint64`, `Int8`,
+`Uint8` and the rustnn extensions `Int4` and `Uint4`. Four-bit values are packed two per byte;
+`rustnn_storage_byte_length(elements)` returns the storage size for a count. The graph model
+uses `rustnn::graph::DataType` for the same set; conversions in both directions exist.
 
-```python
-import webnn
-```
+## Errors
 
----
+| Type | Returned by |
+|---|---|
+| `Error` | `MLContext` methods, `MLGraphBuilder::build`, `dispatch`, saving. Variants name the failing stage: `NoBackendAvailable`, `GraphBuildError`, `GraphDispatchError`, `WrongWriteSize`, `DuplicateTensorBinding`, ... |
+| `GraphBuilderError` | Recording: `GraphAlreadyBuilt`, `WrongConstantSize`, `RequestedInputAsOutput`, `DuplicateOutput`, shape inference failures |
+| `ShapeInferenceError` | Per-operation shape and data type checks |
+| `GraphError` | Loading, validation, conversion and the legacy executors |
 
-## Class: `ML`
+All error types are `Send + Sync` and compose with `anyhow` and similar crates.
 
-Entry point for the WebNN API. Provides methods to create execution contexts.
+## Graph model and legacy pipeline
 
-### Constructor
+`MLGraphBuilder` records into a `GraphInfo`: a `Vec<Operand>`, a `Vec<Operation>` and the
+constant data. Operands are referenced by index (`u32`). `Operation` is an enum with named
+operand fields and an `Option<ML*Options>` per variant; `Operation::op_type()` returns the
+WebNN name.
 
-```python
-ml = webnn.ML()
-```
+The same `GraphInfo` drives the file formats and the legacy pipeline:
 
-Creates a new ML namespace instance.
-
-### Methods
-
-#### `create_context(accelerated=True, power_preference="default")`
-
-Creates a new execution context following the [W3C WebNN Device Selection spec](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md).
-
-**Parameters:**
-
-- `accelerated` (bool): Request GPU/NPU acceleration. Default: `True`
-  - `True`: Platform selects GPU or NPU if available
-  - `False`: CPU-only execution
-- `power_preference` (str): Power/performance hint. Options: `"default"`, `"high-performance"`, `"low-power"`. Default: `"default"`
-  - `"low-power"`: Prefers NPU over GPU (Neural Engine on Apple Silicon)
-  - `"high-performance"`: Prefers GPU over NPU
-  - `"default"`: Platform decides (typically GPU > NPU > CPU)
-
-**Returns:** `MLContext`
-
-**Example:**
-
-```python
-ml = webnn.ML()
-
-# Request acceleration (default)
-context = ml.create_context(accelerated=True, power_preference="default")
-print(f"Accelerated: {context.accelerated}")  # Check actual capability
-
-# CPU-only execution
-context = ml.create_context(accelerated=False)
-```
-
-**Note:** Per the WebNN Device Selection Explainer, `accelerated` is a hint. The platform autonomously selects the actual device based on availability and runtime conditions.
-
----
-
-## Class: `MLContext`
-
-Represents an execution context for neural network operations.
-
-### Properties
-
-#### `accelerated` (bool, read-only)
-
-Indicates if GPU/NPU acceleration is available for this context.
-
-- `True`: Platform can provide GPU or NPU resources
-- `False`: Only CPU execution available
-
-This represents platform capability, not a guarantee of specific device allocation.
-
-#### `power_preference` (str, read-only)
-
-The power preference hint for this context.
-
-### Methods
-
-#### `create_graph_builder()`
-
-Creates a new graph builder for constructing computational graphs.
-
-**Returns:** `MLGraphBuilder`
-
-**Example:**
-
-```python
-builder = context.create_graph_builder()
-```
-
-#### `compute(graph, inputs, outputs=None)`
-
-Executes the graph with given inputs (placeholder implementation).
-
-**Parameters:**
-
-- `graph` (MLGraph): The compiled graph to execute
-- `inputs` (dict): Dictionary mapping input names to NumPy arrays
-- `outputs` (dict, optional): Pre-allocated output arrays
-
-**Returns:** dict - Dictionary mapping output names to result NumPy arrays
-
-**Example:**
-
-```python
-results = context.compute(graph, {
-    "input": np.array([[1, 2, 3]], dtype=np.float32)
-})
-```
-
-#### `convert_to_onnx(graph, output_path)`
-
-Converts the graph to ONNX format and saves it to a file.
-
-**Parameters:**
-
-- `graph` (MLGraph): The graph to convert
-- `output_path` (str): Path where the ONNX model will be saved
-
-**Example:**
-
-```python
-context.convert_to_onnx(graph, "model.onnx")
-```
-
-#### `convert_to_coreml(graph, output_path)`
-
-Converts the graph to CoreML format (macOS only).
-
-**Parameters:**
-
-- `graph` (MLGraph): The graph to convert
-- `output_path` (str): Path where the CoreML model will be saved
-
-**Note:** Only available on macOS. Supports limited operations (add, matmul).
-
-**Example:**
-
-```python
-context.convert_to_coreml(graph, "model.mlmodel")
-```
-
-#### `create_tensor(shape, data_type, readable=True, writable=True, exportable_to_gpu=False)`
-
-Creates an MLTensor for explicit tensor management.
-
-Following the [W3C WebNN MLTensor Explainer](https://github.com/webmachinelearning/webnn/blob/main/mltensor-explainer.md).
-
-**Parameters:**
-
-- `shape` (list[int]): Shape of the tensor
-- `data_type` (str): Data type (e.g., "float32")
-- `readable` (bool): If True, tensor data can be read back to CPU. Default: `True`
-- `writable` (bool): If True, tensor data can be written from CPU. Default: `True`
-- `exportable_to_gpu` (bool): If True, tensor can be exported for use as GPU texture. Default: `False`
-
-**Returns:** `MLTensor`
-
-**Example:**
-
-```python
-# Create default tensor (readable and writable)
-tensor = context.create_tensor([2, 3], "float32")
-
-# Create read-only tensor
-ro_tensor = context.create_tensor([2, 3], "float32", readable=True, writable=False)
-
-# Create write-only tensor
-wo_tensor = context.create_tensor([2, 3], "float32", readable=False, writable=True)
-
-# Create GPU-exportable tensor
-gpu_tensor = context.create_tensor([2, 3], "float32", exportable_to_gpu=True)
-```
-
-#### `read_tensor(tensor)`
-
-Reads data from an MLTensor into a numpy array.
-
-**Parameters:**
-
-- `tensor` (MLTensor): The tensor to read from (must have `readable=True`)
-
-**Returns:** `numpy.ndarray`
-
-**Raises:**
-
-- `RuntimeError`: If tensor is not readable or has been destroyed
-
-**Example:**
-
-```python
-tensor = context.create_tensor([2, 3], "float32")
-result = context.read_tensor(tensor)
-```
-
-#### `write_tensor(tensor, data)`
-
-Writes data from a numpy array into an MLTensor.
-
-**Parameters:**
-
-- `tensor` (MLTensor): The tensor to write to (must have `writable=True`)
-- `data` (numpy.ndarray): Data to write
-
-**Raises:**
-
-- `RuntimeError`: If tensor is not writable or has been destroyed
-- `ValueError`: If data shape doesn't match tensor shape
-
-**Example:**
-
-```python
-tensor = context.create_tensor([2, 3], "float32")
-data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
-context.write_tensor(tensor, data)
-```
-
-#### `dispatch(graph, inputs, outputs)`
-
-Dispatches graph execution asynchronously with MLTensor inputs/outputs.
-
-Following the [W3C WebNN MLTensor Explainer](https://github.com/webmachinelearning/webnn/blob/main/mltensor-explainer.md) timeline model.
-
-**Parameters:**
-
-- `graph` (MLGraph): The compiled graph to execute
-- `inputs` (dict): Dictionary mapping input names to MLTensor objects
-- `outputs` (dict): Dictionary mapping output names to MLTensor objects
-
-**Returns:** None (results are written to output tensors)
-
-**Example:**
-
-```python
-# Create tensors
-input_tensor = context.create_tensor([2, 3], "float32")
-output_tensor = context.create_tensor([2, 3], "float32")
-
-# Write input data
-input_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
-context.write_tensor(input_tensor, input_data)
-
-# Dispatch execution
-context.dispatch(graph, {"x": input_tensor}, {"output": output_tensor})
-
-# Read results
-result = context.read_tensor(output_tensor)
-```
-
----
-
-## Class: `MLTensor`
-
-Represents an opaque typed tensor for explicit resource management.
-
-Following the [W3C WebNN MLTensor Explainer](https://github.com/webmachinelearning/webnn/blob/main/mltensor-explainer.md).
-
-### Properties
-
-#### `shape` (list[int], read-only)
-
-The shape of the tensor.
-
-#### `data_type` (str, read-only)
-
-The data type of the tensor.
-
-#### `size` (int, read-only)
-
-The total number of elements in the tensor.
-
-#### `readable` (bool, read-only)
-
-Whether tensor data can be read back to CPU.
-
-#### `writable` (bool, read-only)
-
-Whether tensor data can be written from CPU.
-
-#### `exportable_to_gpu` (bool, read-only)
-
-Whether tensor can be exported for use as GPU texture.
-
-### Methods
-
-#### `destroy()`
-
-Explicitly destroys the tensor and releases its resources.
-
-After calling `destroy()`, the tensor cannot be used for any operations.
-
-**Raises:**
-
-- `RuntimeError`: If tensor is already destroyed
-
-**Example:**
-
-```python
-tensor = context.create_tensor([2, 3], "float32")
-# ... use tensor ...
-tensor.destroy()  # Explicit cleanup
-```
-
----
-
-## Class: `MLGraphBuilder`
-
-Builder for constructing computational graphs using a declarative API.
-
-### Input/Constant Operations
-
-#### `input(name, shape, data_type="float32")`
-
-Creates an input operand.
-
-**Parameters:**
-
-- `name` (str): Name of the input
-- `shape` (list[int]): Shape of the tensor
-- `data_type` (str): Data type. Options: `"float32"`, `"float16"`, `"int32"`, `"uint32"`, `"int8"`, `"uint8"`
-
-**Returns:** `MLOperand`
-
-**Example:**
-
-```python
-x = builder.input("x", [1, 3, 224, 224], "float32")
-```
-
-#### `constant(value, shape=None, data_type=None)`
-
-Creates a constant operand from a NumPy array or Python list.
-
-**Parameters:**
-
-- `value` (array-like): NumPy array or Python list
-- `shape` (list[int], optional): Shape override
-- `data_type` (str, optional): Data type override
-
-**Returns:** `MLOperand`
-
-**Example:**
-
-```python
-import numpy as np
-
-weights = builder.constant(np.random.randn(784, 10).astype('float32'))
-bias = builder.constant(np.zeros(10, dtype='float32'))
-```
-
-### Binary Operations
-
-All binary operations take two operands and return a new operand.
-
-#### `add(a, b)`
-
-Element-wise addition: `a + b`
-
-#### `sub(a, b)`
-
-Element-wise subtraction: `a - b`
-
-#### `mul(a, b)`
-
-Element-wise multiplication: `a * b`
-
-#### `div(a, b)`
-
-Element-wise division: `a / b`
-
-#### `matmul(a, b)`
-
-Matrix multiplication: `a @ b`
-
-**Example:**
-
-```python
-x = builder.input("x", [2, 3], "float32")
-y = builder.input("y", [2, 3], "float32")
-
-sum_result = builder.add(x, y)
-product = builder.mul(x, y)
-```
-
-### Convolution Operations
-
-#### `conv2d(input, filter, strides=None, dilations=None, pads=None, groups=None, input_layout=None, filter_layout=None)`
-
-2D convolution operation for neural networks.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D: batch, channels, height, width or batch, height, width, channels)
-- `filter` (MLOperand): Filter/kernel weights (4D constant tensor)
-- `strides` (list[int], optional): Stride along each spatial axis. Default: `[1, 1]`
-- `dilations` (list[int], optional): Dilation along each spatial axis. Default: `[1, 1]`
-- `pads` (list[int], optional): Padding `[begin_height, begin_width, end_height, end_width]`. Default: `[0, 0, 0, 0]`
-- `groups` (int, optional): Number of groups for grouped/depthwise convolution. Default: `1`
-- `input_layout` (str, optional): Input tensor layout, either `"nchw"` (channels-first) or `"nhwc"` (channels-last). Default: `"nchw"`
-- `filter_layout` (str, optional): Filter tensor layout: `"oihw"`, `"hwio"`, `"ohwi"`, or `"ihwo"`. Default: `"oihw"`
-
-**Returns:** MLOperand with output tensor
-
-**Shape Inference:**
-
-For NCHW input `[N, C_in, H_in, W_in]` and OIHW filter `[C_out, C_in/groups, K_h, K_w]`:
-
-```
-output_h = (H_in + pad_begin_h + pad_end_h - dilation_h * (K_h - 1) - 1) / stride_h + 1
-output_w = (W_in + pad_begin_w + pad_end_w - dilation_w * (K_w - 1) - 1) / stride_w + 1
-output_shape = [N, C_out, output_h, output_w]
-```
-
-**Example: Standard Convolution**
-
-```python
-# Input: [batch=1, channels=3, height=32, width=32] (RGB image)
-input_op = builder.input("input", [1, 3, 32, 32], "float32")
-
-# Filter: [out_channels=64, in_channels=3, height=3, width=3]
-filter_weights = np.random.randn(64, 3, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-# Apply conv2d with stride=2 and padding=1
-output = builder.conv2d(
-    input_op,
-    filter_op,
-    strides=[2, 2],
-    pads=[1, 1, 1, 1]
-)
-# Output shape: [1, 64, 16, 16]
-```
-
-**Example: Depthwise Convolution**
-
-```python
-# Depthwise convolution: each input channel is convolved separately
-input_op = builder.input("input", [1, 32, 28, 28], "float32")
-
-# Filter: [out_channels=32, in_channels=1, height=3, width=3]
-# groups=32 means 32 separate 1-channel convolutions
-filter_weights = np.random.randn(32, 1, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv2d(
-    input_op,
-    filter_op,
-    pads=[1, 1, 1, 1],
-    groups=32  # Depthwise: groups = input channels
-)
-# Output shape: [1, 32, 28, 28]
-```
-
-**Example: Dilated Convolution**
-
-```python
-# Dilated (atrous) convolution increases receptive field
-input_op = builder.input("input", [1, 3, 32, 32], "float32")
-filter_weights = np.random.randn(64, 3, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv2d(
-    input_op,
-    filter_op,
-    dilations=[2, 2],  # Dilation factor of 2
-    pads=[2, 2, 2, 2]  # Larger padding for dilated kernels
-)
-# Effective kernel size: 3 + (3-1)*2 = 5x5
-```
-
-**Example: NHWC Layout (Channels-Last)**
-
-```python
-# Input in NHWC format: [batch, height, width, channels]
-input_op = builder.input("input", [1, 32, 32, 3], "float32")
-filter_weights = np.random.randn(64, 3, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv2d(
-    input_op,
-    filter_op,
-    input_layout="nhwc",  # Channels-last input
-    pads=[1, 1, 1, 1]
-)
-# Output shape: [1, 32, 32, 64] (also NHWC)
-```
-
-#### `conv_transpose2d(input, filter, strides=None, dilations=None, pads=None, output_padding=None, output_sizes=None, groups=None, input_layout=None, filter_layout=None)`
-
-2D transposed convolution (deconvolution) operation for upsampling.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D)
-- `filter` (MLOperand): Filter weights (4D constant tensor)
-- `strides` (list[int], optional): Stride along each spatial axis. Default: `[1, 1]`
-- `dilations` (list[int], optional): Dilation along each spatial axis. Default: `[1, 1]`
-- `pads` (list[int], optional): Padding. Default: `[0, 0, 0, 0]`
-- `output_padding` (list[int], optional): Additional output padding. Default: `[0, 0]`
-- `output_sizes` (list[int], optional): Explicit output spatial dimensions. Default: `None` (computed)
-- `groups` (int, optional): Number of groups. Default: `1`
-- `input_layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-- `filter_layout` (str, optional): Filter layout. Default: `"oihw"`
-
-**Returns:** MLOperand with upsampled output tensor
-
-**Shape Inference:**
-
-For NCHW input `[N, C_in, H_in, W_in]` and OIHW filter `[C_in, C_out/groups, K_h, K_w]`:
-
-```
-output_h = (H_in - 1) * stride_h + effective_kernel_h - pad_begin_h - pad_end_h + output_pad_h
-output_w = (W_in - 1) * stride_w + effective_kernel_w - pad_begin_w - pad_end_w + output_pad_w
-output_shape = [N, C_out, output_h, output_w]
-```
-
-**Example: Basic Upsampling**
-
-```python
-# Upsample 14x14 to 29x29 with stride=2
-input_op = builder.input("input", [1, 64, 14, 14], "float32")
-filter_weights = np.random.randn(64, 32, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv_transpose2d(input_op, filter_op, strides=[2, 2])
-# Output shape: [1, 32, 29, 29]
-```
-
-**Example: With Output Padding**
-
-```python
-# Use output_padding to control exact output size
-input_op = builder.input("input", [1, 64, 14, 14], "float32")
-filter_weights = np.random.randn(64, 32, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv_transpose2d(
-    input_op,
-    filter_op,
-    strides=[2, 2],
-    output_padding=[1, 1]
-)
-# Output shape: [1, 32, 30, 30]
-```
-
-**Example: Explicit Output Sizes**
-
-```python
-# Specify exact output dimensions
-input_op = builder.input("input", [1, 64, 14, 14], "float32")
-filter_weights = np.random.randn(64, 32, 3, 3).astype(np.float32)
-filter_op = builder.constant(filter_weights)
-
-output = builder.conv_transpose2d(
-    input_op,
-    filter_op,
-    strides=[2, 2],
-    pads=[1, 1, 1, 1],
-    output_sizes=[28, 28]
-)
-# Output shape: [1, 32, 28, 28]
-```
-
-### Pooling Operations
-
-#### `average_pool2d(input, window_dimensions=None, strides=None, dilations=None, pads=None, layout=None)`
-
-2D average pooling operation for downsampling by computing the average of values in a pooling window.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D)
-- `window_dimensions` (list[int], optional): Pooling window size `[height, width]`. Default: `[1, 1]`
-- `strides` (list[int], optional): Stride along each spatial axis. Default: `[1, 1]`
-- `dilations` (list[int], optional): Dilation along each spatial axis. Default: `[1, 1]`
-- `pads` (list[int], optional): Padding `[begin_height, begin_width, end_height, end_width]`. Default: `[0, 0, 0, 0]`
-- `layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-
-**Returns:** `MLOperand` - Output tensor after pooling
-
-**Shape Inference:**
-
-For each spatial dimension:
-```
-output_size = floor((input_size + pad_begin + pad_end - effective_window_size) / stride) + 1
-```
-
-where `effective_window_size = (window_size - 1) * dilation + 1`
-
-**Example: Basic Average Pooling**
-
-```python
-# Input: [1, 64, 28, 28]
-input_op = builder.input("input", [1, 64, 28, 28], "float32")
-
-# Apply 2x2 average pooling with stride 2
-output = builder.average_pool2d(
-    input_op,
-    window_dimensions=[2, 2],
-    strides=[2, 2]
-)
-# Output shape: [1, 64, 14, 14]
-```
-
-**Example: Average Pooling with Padding**
-
-```python
-input_op = builder.input("input", [1, 64, 28, 28], "float32")
-
-output = builder.average_pool2d(
-    input_op,
-    window_dimensions=[3, 3],
-    strides=[2, 2],
-    pads=[1, 1, 1, 1]  # Padding on all sides
-)
-# Output shape: [1, 64, 14, 14]
-```
-
-**Example: NHWC Layout**
-
-```python
-# Input in NHWC format: [batch, height, width, channels]
-input_op = builder.input("input", [1, 28, 28, 64], "float32")
-
-output = builder.average_pool2d(
-    input_op,
-    window_dimensions=[2, 2],
-    strides=[2, 2],
-    layout="nhwc"
-)
-# Output shape: [1, 14, 14, 64] (also NHWC)
-```
-
-#### `max_pool2d(input, window_dimensions=None, strides=None, dilations=None, pads=None, layout=None)`
-
-2D max pooling operation for downsampling by taking the maximum value in a pooling window.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D)
-- `window_dimensions` (list[int], optional): Pooling window size `[height, width]`. Default: `[1, 1]`
-- `strides` (list[int], optional): Stride along each spatial axis. Default: `[1, 1]`
-- `dilations` (list[int], optional): Dilation along each spatial axis. Default: `[1, 1]`
-- `pads` (list[int], optional): Padding `[begin_height, begin_width, end_height, end_width]`. Default: `[0, 0, 0, 0]`
-- `layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-
-**Returns:** `MLOperand` - Output tensor after pooling
-
-**Shape Inference:**
-
-Same as `average_pool2d` - for each spatial dimension:
-```
-output_size = floor((input_size + pad_begin + pad_end - effective_window_size) / stride) + 1
-```
-
-**Example: Basic Max Pooling**
-
-```python
-# Input: [1, 64, 28, 28]
-input_op = builder.input("input", [1, 64, 28, 28], "float32")
-
-# Apply 2x2 max pooling with stride 2
-output = builder.max_pool2d(
-    input_op,
-    window_dimensions=[2, 2],
-    strides=[2, 2]
-)
-# Output shape: [1, 64, 14, 14]
-```
-
-**Example: Overlapping Max Pooling**
-
-```python
-input_op = builder.input("input", [1, 32, 14, 14], "float32")
-
-# Window size 2x2, stride 1x1 (overlapping windows)
-output = builder.max_pool2d(
-    input_op,
-    window_dimensions=[2, 2],
-    strides=[1, 1]
-)
-# Output shape: [1, 32, 13, 13]
-```
-
-**Example: Max Pooling with Padding**
-
-```python
-input_op = builder.input("input", [1, 64, 28, 28], "float32")
-
-output = builder.max_pool2d(
-    input_op,
-    window_dimensions=[3, 3],
-    strides=[2, 2],
-    pads=[1, 1, 1, 1]
-)
-# Output shape: [1, 64, 14, 14]
-```
-
-#### `global_average_pool(input, layout=None)`
-
-Global average pooling operation that reduces spatial dimensions to 1x1 by averaging over all spatial locations.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D)
-- `layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-
-**Returns:** `MLOperand` - Output tensor with spatial dimensions 1x1
-
-**Shape Inference:**
-
-- NCHW: `[N, C, H, W]` → `[N, C, 1, 1]`
-- NHWC: `[N, H, W, C]` → `[N, 1, 1, C]`
-
-**Example: Basic Global Average Pooling**
-
-```python
-# Input: [1, 64, 28, 28]
-input_op = builder.input("input", [1, 64, 28, 28], "float32")
-
-# Global average pool reduces spatial dimensions to 1x1
-output = builder.global_average_pool(input_op)
-# Output shape: [1, 64, 1, 1]
-```
-
-**Example: For Classification (Typical ResNet-style)**
-
-```python
-# After last conv layer: [1, 2048, 7, 7]
-features = builder.input("features", [1, 2048, 7, 7], "float32")
-
-# Global average pooling instead of flatten
-pooled = builder.global_average_pool(features)
-# Output shape: [1, 2048, 1, 1]
-
-# Reshape for fully connected layer
-flattened = builder.reshape(pooled, [1, 2048])
-```
-
-**Example: NHWC Layout**
-
-```python
-# Input in NHWC: [1, 28, 28, 64]
-input_op = builder.input("input", [1, 28, 28, 64], "float32")
-
-output = builder.global_average_pool(input_op, layout="nhwc")
-# Output shape: [1, 1, 1, 64]
-```
-
-#### `global_max_pool(input, layout=None)`
-
-Global max pooling operation that reduces spatial dimensions to 1x1 by taking the maximum value over all spatial locations.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor (4D)
-- `layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-
-**Returns:** `MLOperand` - Output tensor with spatial dimensions 1x1
-
-**Shape Inference:**
-
-Same as `global_average_pool`:
-- NCHW: `[N, C, H, W]` → `[N, C, 1, 1]`
-- NHWC: `[N, H, W, C]` → `[N, 1, 1, C]`
-
-**Example: Basic Global Max Pooling**
-
-```python
-# Input: [2, 128, 7, 7]
-input_op = builder.input("input", [2, 128, 7, 7], "float32")
-
-# Global max pool reduces spatial dimensions to 1x1
-output = builder.global_max_pool(input_op)
-# Output shape: [2, 128, 1, 1]
-```
-
-**Example: Multi-scale Feature Extraction**
-
-```python
-# Extract features at different scales
-input_op = builder.input("input", [1, 512, 14, 14], "float32")
-
-# Global max pooling captures strongest activations
-max_pooled = builder.global_max_pool(input_op)
-# Output shape: [1, 512, 1, 1]
-
-# Global average pooling captures average response
-avg_pooled = builder.global_average_pool(input_op)
-# Output shape: [1, 512, 1, 1]
-
-# Can concatenate both for richer representation
-```
-
-### Normalization Operations
-
-Normalization operations standardize activations to improve training stability and model performance.
-
-#### `batch_normalization(input, mean, variance, scale=None, bias=None, epsilon=1e-5, axis=1)`
-
-Batch normalization operation that normalizes the input across the batch dimension using pre-computed mean and variance statistics.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor to normalize
-- `mean` (MLOperand): Pre-computed mean values (1D tensor, size = channels)
-- `variance` (MLOperand): Pre-computed variance values (1D tensor, size = channels)
-- `scale` (MLOperand, optional): Learnable scale parameter (gamma)
-- `bias` (MLOperand, optional): Learnable bias parameter (beta)
-- `epsilon` (float, optional): Small constant for numerical stability. Default: `1e-5`
-- `axis` (int, optional): Feature axis along which normalization occurs. Default: `1`
-
-**Returns:** `MLOperand` - Normalized output tensor (same shape as input)
-
-**Shape Inference:**
-- Output shape = Input shape (preserves dimensions)
-
-**Formula:**
-```
-y = scale * ((x - mean) / sqrt(variance + epsilon)) + bias
-```
-
-**Example: Basic Batch Normalization**
-
-```python
-# Input: [2, 64, 28, 28] (batch=2, channels=64, height=28, width=28)
-input_op = builder.input("input", [2, 64, 28, 28], "float32")
-mean = builder.input("mean", [64], "float32")
-variance = builder.input("variance", [64], "float32")
-
-# Apply batch normalization
-output = builder.batch_normalization(input_op, mean, variance)
-# Output shape: [2, 64, 28, 28]
-```
-
-**Example: With Learnable Parameters**
-
-```python
-# Include scale and bias for training
-input_op = builder.input("input", [4, 128, 14, 14], "float32")
-mean = builder.input("mean", [128], "float32")
-variance = builder.input("variance", [128], "float32")
-scale = builder.input("scale", [128], "float32")  # gamma
-bias = builder.input("bias", [128], "float32")    # beta
-
-output = builder.batch_normalization(
-    input_op, mean, variance,
-    scale=scale, bias=bias,
-    epsilon=1e-5
-)
-```
-
-**Example: Custom Epsilon for Numerical Stability**
-
-```python
-# Use larger epsilon for very small variance values
-input_op = builder.input("input", [1, 256, 7, 7], "float32")
-mean = builder.input("mean", [256], "float32")
-variance = builder.input("variance", [256], "float32")
-
-output = builder.batch_normalization(
-    input_op, mean, variance,
-    epsilon=1e-3  # Larger epsilon for stability
-)
-```
-
-#### `instance_normalization(input, scale=None, bias=None, epsilon=1e-5, layout="nchw")`
-
-Instance normalization operation that normalizes each instance in a batch independently across spatial dimensions. Commonly used in style transfer and image generation tasks.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor to normalize (typically 4D: [N, C, H, W])
-- `scale` (MLOperand, optional): Learnable scale parameter (1D tensor, size = channels)
-- `bias` (MLOperand, optional): Learnable bias parameter (1D tensor, size = channels)
-- `epsilon` (float, optional): Small constant for numerical stability. Default: `1e-5`
-- `layout` (str, optional): `"nchw"` or `"nhwc"`. Default: `"nchw"`
-
-**Returns:** `MLOperand` - Normalized output tensor (same shape as input)
-
-**Shape Inference:**
-- Output shape = Input shape (preserves dimensions)
-
-**Formula:**
-```
-For each instance i and channel c:
-  y[i,c] = scale[c] * ((x[i,c] - mean[i,c]) / sqrt(variance[i,c] + epsilon)) + bias[c]
-```
-
-**Example: Basic Instance Normalization**
-
-```python
-# Input: [2, 64, 28, 28]
-input_op = builder.input("input", [2, 64, 28, 28], "float32")
-
-# Apply instance normalization (computes stats per instance)
-output = builder.instance_normalization(input_op)
-# Output shape: [2, 64, 28, 28]
-```
-
-**Example: With Scale and Bias (For Style Transfer)**
-
-```python
-# Instance norm with learnable parameters
-input_op = builder.input("input", [1, 32, 256, 256], "float32")
-scale = builder.input("scale", [32], "float32")
-bias = builder.input("bias", [32], "float32")
-
-output = builder.instance_normalization(
-    input_op,
-    scale=scale,
-    bias=bias,
-    epsilon=1e-5
-)
-```
-
-**Example: NHWC Layout**
-
-```python
-# Use NHWC layout (channels-last)
-input_op = builder.input("input", [2, 28, 28, 64], "float32")
-
-output = builder.instance_normalization(input_op, layout="nhwc")
-# Output shape: [2, 28, 28, 64]
-```
-
-#### `layer_normalization(input, scale=None, bias=None, epsilon=1e-5, axes=None)`
-
-Layer normalization operation that normalizes across feature dimensions within each example. Fundamental for transformer architectures and modern language models.
-
-**Parameters:**
-
-- `input` (MLOperand): Input tensor to normalize
-- `scale` (MLOperand, optional): Learnable scale parameter (gamma)
-- `bias` (MLOperand, optional): Learnable bias parameter (beta)
-- `epsilon` (float, optional): Small constant for numerical stability. Default: `1e-5`
-- `axes` (list[int], optional): Dimensions over which to compute normalization statistics. Default: `[-1]` (last dimension)
-
-**Returns:** `MLOperand` - Normalized output tensor (same shape as input)
-
-**Shape Inference:**
-- Output shape = Input shape (preserves dimensions)
-
-**Formula:**
-```
-y = scale * ((x - mean(x, axes)) / sqrt(variance(x, axes) + epsilon)) + bias
-```
-
-**Example: Basic Layer Normalization (2D)**
-
-```python
-# Input: [2, 512] (batch=2, features=512) - typical for transformers
-input_op = builder.input("input", [2, 512], "float32")
-
-# Normalize over last dimension (features)
-output = builder.layer_normalization(input_op)
-# Output shape: [2, 512]
-```
-
-**Example: With Scale and Bias (Transformer Block)**
-
-```python
-# Layer norm with learnable parameters
-input_op = builder.input("input", [4, 768], "float32")
-scale = builder.input("scale", [768], "float32")  # gamma
-bias = builder.input("bias", [768], "float32")    # beta
-
-output = builder.layer_normalization(
-    input_op,
-    scale=scale,
-    bias=bias,
-    epsilon=1e-12  # Common in transformers
-)
-```
-
-**Example: 3D Input (Sequence Data)**
-
-```python
-# Input: [batch, sequence_length, features]
-input_op = builder.input("input", [2, 10, 512], "float32")
-
-# Normalize over last dimension (feature dimension)
-output = builder.layer_normalization(input_op, axes=[-1])
-# Output shape: [2, 10, 512]
-```
-
-**Example: Multiple Axes Normalization**
-
-```python
-# Normalize over multiple dimensions
-input_op = builder.input("input", [2, 8, 256], "float32")
-
-# Normalize over last two dimensions
-output = builder.layer_normalization(input_op, axes=[-2, -1])
-# Output shape: [2, 8, 256]
-```
-
-**Example: Vision Transformer (ViT) Style**
-
-```python
-# Typical ViT layer normalization setup
-# Input: [batch, num_patches, embedding_dim]
-input_op = builder.input("patches", [1, 196, 768], "float32")
-scale = builder.input("ln_scale", [768], "float32")
-bias = builder.input("ln_bias", [768], "float32")
-
-# Normalize over embedding dimension
-normalized = builder.layer_normalization(
-    input_op,
-    scale=scale,
-    bias=bias,
-    axes=[-1],
-    epsilon=1e-6
-)
-# Output shape: [1, 196, 768]
-```
-
-### Unary Operations
-
-All unary operations take one operand and return a new operand.
-
-#### `relu(x)`
-
-Rectified Linear Unit activation: `max(0, x)`
-
-#### `sigmoid(x)`
-
-Sigmoid activation: `1 / (1 + exp(-x))`
-
-#### `tanh(x)`
-
-Hyperbolic tangent activation
-
-#### `softmax(x)`
-
-Softmax activation (normalizes to probability distribution)
-
-**Example:**
-
-```python
-x = builder.input("x", [1, 10], "float32")
-
-relu_out = builder.relu(x)
-sigmoid_out = builder.sigmoid(x)
-tanh_out = builder.tanh(x)
-softmax_out = builder.softmax(x)
-```
-
-### Shape Operations
-
-#### `reshape(x, new_shape)`
-
-Reshapes a tensor to a new shape.
-
-**Parameters:**
-
-- `x` (MLOperand): Input operand
-- `new_shape` (list[int]): New shape
-
-**Returns:** `MLOperand`
-
-**Example:**
-
-```python
-x = builder.input("x", [1, 784], "float32")
-reshaped = builder.reshape(x, [1, 28, 28, 1])
-```
-
-### Graph Building
-
-#### `build(outputs)`
-
-Compiles the graph and returns an immutable MLGraph.
-
-**Parameters:**
-
-- `outputs` (dict): Dictionary mapping output names to MLOperand objects
-
-**Returns:** `MLGraph`
-
-**Example:**
-
-```python
-x = builder.input("x", [2, 3], "float32")
-y = builder.relu(x)
-
-graph = builder.build({"output": y})
-```
-
----
-
-## Class: `MLOperand`
-
-Represents a tensor operand in the computational graph.
-
-### Properties
-
-#### `data_type` (str, read-only)
-
-The data type of the operand.
-
-#### `shape` (list[int], read-only)
-
-The shape of the operand.
-
-#### `name` (str | None, read-only)
-
-The name of the operand (if any).
-
-**Example:**
-
-```python
-x = builder.input("x", [2, 3], "float32")
-
-print(x.data_type)  # "float32"
-print(x.shape)      # [2, 3]
-print(x.name)       # "x"
-```
-
----
-
-## Class: `MLGraph`
-
-Represents a compiled, immutable computational graph.
-
-### Properties
-
-#### `operand_count` (int, read-only)
-
-The number of operands in the graph.
-
-#### `operation_count` (int, read-only)
-
-The number of operations in the graph.
-
-### Methods
-
-#### `get_input_names()`
-
-Returns the names of all input operands.
-
-**Returns:** list[str]
-
-#### `get_output_names()`
-
-Returns the names of all output operands.
-
-**Returns:** list[str]
-
-**Example:**
-
-```python
-graph = builder.build({"output": y})
-
-print(f"Operands: {graph.operand_count}")
-print(f"Operations: {graph.operation_count}")
-print(f"Inputs: {graph.get_input_names()}")
-print(f"Outputs: {graph.get_output_names()}")
-```
-
----
-
-## Data Types
-
-Supported data types:
-
-| Type | Description | Bytes per element |
-|------|-------------|-------------------|
-| `"float32"` | 32-bit floating point | 4 |
-| `"float16"` | 16-bit floating point | 2 |
-| `"int32"` | 32-bit signed integer | 4 |
-| `"uint32"` | 32-bit unsigned integer | 4 |
-| `"int8"` | 8-bit signed integer | 1 |
-| `"uint8"` | 8-bit unsigned integer | 1 |
-
----
-
-## Error Handling
-
-All operations can raise Python exceptions:
-
-```python
-try:
-    graph = builder.build({"output": invalid_operand})
-except ValueError as e:
-    print(f"Graph validation failed: {e}")
-
-try:
-    context.convert_to_onnx(graph, "/invalid/path.onnx")
-except IOError as e:
-    print(f"Failed to write file: {e}")
-
-try:
-    context.convert_to_coreml(graph, "model.mlmodel")
-except RuntimeError as e:
-    print(f"Conversion failed: {e}")
-```
-
-Common exceptions:
-- `ValueError`: Invalid graph structure or parameters
-- `IOError`: File I/O errors
-- `RuntimeError`: Conversion or execution failures
+| Item | Module | Purpose |
+|---|---|---|
+| `load_graph_from_path(path)` | `rustnn::loader` | Read `.webnn` text or JSON, resolve external weights, run shape inference |
+| `to_graph_json`, `from_graph_json` | `rustnn::webnn_json` | Convert between `GraphInfo` and the `webnn-graph` JSON model |
+| `GraphValidator::new(&graph, ContextProperties)` | `rustnn::validator` | Structural validation; returns `ValidationArtifacts` with named I/O descriptors |
+| `ConverterRegistry::with_defaults()` | `rustnn::converters` | `convert("onnx" / "coreml" / "trtx" / "litert" / "cann", &graph)` to a `ConvertedGraph` |
+| `run_onnx_with_inputs`, `run_trtx_with_inputs`, `run_coreml_with_inputs` | `rustnn::executors` | One-shot execution of converted bytes; used by the CLI, superseded by `MLContext` |
+| `graph_to_dot(&graph)` | `rustnn::graphviz` | Graphviz DOT export |

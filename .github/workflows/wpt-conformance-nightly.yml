@@ -48,6 +48,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y protobuf-compiler
 
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
       - name: Install MkDocs dependencies
         run: pip install -r docs/requirements.txt
 
@@ -80,6 +87,12 @@ jobs:
 
       - name: Build documentation site
         run: mkdocs build --strict --verbose
+
+      - name: Build Rust API documentation
+        run: make docs-api
+
+      - name: Embed Rust API documentation
+        run: cp -r target/doc site/api
 
       - name: Embed WPT conformance report
         run: bash scripts/embed_wpt_conformance_pages.sh site

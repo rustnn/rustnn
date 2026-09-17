@@ -1,3 +1,11 @@
+//! Error types.
+//!
+//! * [`enum@Error`] is returned by the WebNN API (`MLContext`, `MLGraphBuilder::build`, dispatch).
+//! * [`GraphBuilderError`] covers graph recording, including [`ShapeInferenceError`].
+//! * [`GraphError`] covers loading, validation, conversion and the legacy executors.
+//!
+//! All variants are `Send + Sync` so they compose with `anyhow` and similar crates.
+
 use crate::backend_selection::Backend;
 use std::path::PathBuf;
 

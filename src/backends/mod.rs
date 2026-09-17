@@ -1,3 +1,20 @@
+//! Execution backends behind [`crate::mlcontext::MLContext`].
+//!
+//! A backend implements the crate-private `MLBackendContext` and `MLBackendBuilder` traits:
+//! it owns device tensors, converts a graph with its converter from [`crate::converters`],
+//! compiles it once into an `MLGraph`, and executes `dispatch` calls against persistent
+//! tensors. Backends that are not compiled in are replaced by `DisabledContext` aliases so the
+//! selection code in [`crate::backend_selection`] type-checks under every feature set.
+//!
+//! | Module | Feature | Notes |
+//! |---|---|---|
+//! | `ort` | `onnx-runtime` | ONNX Runtime sessions; lists CPU/GPU/NPU execution-provider devices |
+//! | `trtx` | `trtx-runtime`, `trtx-runtime-mock` | TensorRT-RTX engines with refittable weights, engine and runtime caches, CUDA graphs |
+//! | `coreml` | `coreml-runtime` | CoreML MLProgram compiled on macOS; failing shims elsewhere |
+//! | `litert` | `litert-runtime` | LiteRT interpreter over a TFLite flatbuffer |
+//! | `cann` | `cann-runtime`, `cann-runtime-mock` | Huawei HiAI/CANN on OpenHarmony |
+//! | `webnn` | `webnn-runtime` | Browser WebNN through generated bindings (`wasm32`) |
+
 use crate::mlcontext::{self, RustNNOptions};
 
 pub mod caching;

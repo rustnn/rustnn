@@ -1,4 +1,10 @@
-// Allow clippy warnings in generated protobuf code
+//! Protobuf message types generated at build time.
+//!
+//! [`coreml`] is compiled by `build.rs` from `protos/coreml/*.proto` (CoreML model and MIL
+//! program schemas). [`onnx`] re-exports the ONNX protos of the `webnn-onnx-utils` crate so
+//! that converted models share one set of types with that crate.
+
+// Allow clippy warnings in generated protobuf code.
 #[allow(clippy::all)]
 pub mod coreml {
     pub mod core_ml_models {

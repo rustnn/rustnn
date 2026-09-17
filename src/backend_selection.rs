@@ -1,3 +1,23 @@
+//! Backend and device selection for [`crate::mlcontext::MLContext::create`].
+//!
+//! Selection follows the
+//! [WebNN device selection explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md):
+//! the caller passes hints and the implementation picks the device. rustnn resolves the hints
+//! in this order, skipping backends that are not compiled in or report no device:
+//!
+//! 1. An explicit device hint ([`crate::mlcontext::MLContextOptions::with_rustnn_device_hint`])
+//!    is used as is.
+//! 2. `accelerated` with `Default` or `HighPerformance` power preference: TensorRT-RTX (first
+//!    CUDA device), then CoreML (GPU), then LiteRT (GPU), then ONNX Runtime (GPU, then NPU).
+//! 3. `accelerated` with `LowPower`: CoreML (Neural Engine), then LiteRT (NPU), then ONNX
+//!    Runtime (NPU).
+//! 4. Not accelerated: CoreML (CPU), then LiteRT (CPU), then ONNX Runtime (CPU).
+//! 5. CANN is only selected when requested with a backend hint.
+//!
+//! ONNX Runtime CPU also serves as the last resort for accelerated requests. When nothing
+//! matches, creation fails with [`crate::error::Error::NoBackendAvailable`] (or the
+//! `ForBackendHint` variant), which lists the wanted and compiled backends.
+
 #[cfg(feature = "onnx-runtime")]
 use crate::executors::onnx::ensure_ort_initialized;
 use crate::{
@@ -17,6 +37,7 @@ use crate::backends::trtx::TrtxContext;
 #[allow(unused_imports)]
 use crate::mlcontext::ListDevices;
 
+/// Device class of a [`BackendDevice`].
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum DeviceType {
@@ -25,6 +46,8 @@ pub enum DeviceType {
     Npu,
 }
 
+/// Execution backend. Each variant is compiled in by the matching Cargo feature
+/// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`).
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Backend {
     Onnx,
@@ -34,9 +57,11 @@ pub enum Backend {
     Cann,
 }
 
-/// we currently only consider internal backends,
-/// might allow to register external backends in future
-/// like with converter registry
+/// A concrete device of a [`Backend`], as returned by
+/// [`crate::mlcontext::MLContext::rustnn_device`] or passed as a device hint.
+///
+/// Only internal backends are represented; registering external backends (as the converter
+/// registry allows) may come later.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum BackendDevice {
     Onnx {

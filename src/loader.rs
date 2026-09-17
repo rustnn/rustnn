@@ -1,3 +1,9 @@
+//! Loading `.webnn` text and `webnn-graph` JSON files into a [`GraphInfo`].
+//!
+//! Parsing is delegated to the `webnn-graph` crate; this module sanitizes identifiers that
+//! exporters such as onnx2webnn emit, resolves external weight files declared next to the
+//! graph, and runs shape inference on import.
+
 use regex::Regex;
 use std::fs;
 use std::path::Path;

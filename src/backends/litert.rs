@@ -2,6 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2
 
+//! LiteRT (TensorFlow Lite) backend (`litert-runtime` feature).
+//!
+//! Converts the graph to a TFLite flatbuffer with [`LiteRtConverter`] (NCHW operands are
+//! transposed to NHWC first) and runs it with the LiteRT interpreter from `litert-sys`.
+//! Recurrent operations are not supported; see [`unsupported_ops`] and
+//! [`dtype_unsupported_for_op`] for the data type policy the WPT harness also applies.
+
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;

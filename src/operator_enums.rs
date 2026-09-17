@@ -1,6 +1,15 @@
+//! Enumerations of the WebNN IDL (`MLOperandDataType`, layouts, rounding, padding modes).
+//!
+//! Serde uses the kebab-case spelling of the specification (`"float32"`,
+//! `"nearest-neighbor"`); `as_str` returns the same strings for converters. [`MLOperandDataType`]
+//! converts to and from the graph-level [`DataType`].
+
 use crate::{DataType, error::GraphBuilderError};
 use serde::{Deserialize, Serialize};
 
+/// Operand data type of the WebNN API. <https://www.w3.org/TR/webnn/#enumdef-mloperanddatatype>
+///
+/// `int4` and `uint4` are rustnn extensions that follow the WPT test data.
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLOperandDataType {

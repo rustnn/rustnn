@@ -1,3 +1,12 @@
+//! Converters from [`GraphInfo`] to backend-specific model formats.
+//!
+//! Each backend in [`crate::backends`] converts the graph with the matching converter when
+//! a graph is built: ONNX protobuf ([`OnnxConverter`]), CoreML MLProgram
+//! ([`CoremlMlProgramConverter`]), a native TensorRT network (`TrtxConverter`), a TFLite
+//! flatbuffer (`LiteRtConverter`) or a CANN offline model (`CannConverter`). The
+//! [`ConverterRegistry`] exposes the same converters by format name for the CLI and for the
+//! legacy pipeline that pairs them with [`crate::executors`].
+
 use std::collections::HashMap;
 
 use crate::error::GraphError;

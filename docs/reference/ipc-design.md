@@ -8,29 +8,33 @@ This document outlines the design considerations for adding Inter-Process Commun
 
 ### Intermediate Representation
 
-**Format:** Rust structs with JSON attributes
+**Format:** a strongly typed Rust enum (`rustnn::operators::Operation`, `src/operators.rs`)
+with one variant per WebNN operation, named operand indices and a typed options struct:
+
 ```rust
-pub struct Operation {
-    pub op_type: String,              // e.g., "conv2d"
-    pub input_operands: Vec<u32>,     // operand IDs
-    pub output_operand: Option<u32>,
-    pub attributes: serde_json::Value, // Flexible JSON
-    pub label: Option<String>,
+pub enum Operation {
+    Conv2d {
+        input: OperandIndex,
+        filter: OperandIndex,
+        options: Option<MLConv2dOptions>,   // bias is an Option<OperandIndex> inside the options
+        outputs: Vec<OperandIndex>,
+    },
+    // one variant per operation
 }
 ```
 
+The enum replaced an earlier `op_type: String` plus `serde_json::Value` attributes design. It
+serializes with serde (the `webnn-graph` JSON and `.webnn` text formats), so graphs can be saved
+and loaded, and attribute names are checked at compile time.
+
 **Benefits:**
-- Simple: no code generation
-- Flexible: easy to add operations
-- Debuggable: human-readable JSON
-- Serializable: can save/load graphs
-- Cross-language: works with Python/Rust/CLI
+- Compile-time checking of operand wiring and attribute names across all converters
+- Serializable: graphs round-trip through the `.webnn` text and JSON formats
+- Debuggable: `.webnn` text is human-readable
 
 **Limitations for IPC:**
-- JSON parsing overhead on every access
-- No structured validation at serialization boundaries
-- String-based keys prone to typos
-- Runtime-only validation
+- Serde JSON is the only serialization; no schema shared with other languages
+- No zero-copy access to constant data across a process boundary
 
 ## Chromium's Architecture (Multi-Process)
 
@@ -289,7 +293,7 @@ impl GraphClient {
 ### Option A: Separate Service Process (Chromium-like)
 
 ```
-Client Process (Python/Rust)
+Client Process (Rust, or bindings such as pywebnn)
     ↓ Cap'n Proto IPC
 Service Process (Rust WebNN)
     ↓ Direct FFI
@@ -310,7 +314,7 @@ Backend (ONNX Runtime / CoreML / TensorRT)
 ### Option B: Worker Thread Pool (Simpler)
 
 ```
-Main Thread (Python/Rust)
+Main Thread (Rust, or bindings such as pywebnn)
     ↓ Channel/Queue
 Worker Thread Pool
     ↓ Direct calls
@@ -366,7 +370,7 @@ When adding IPC support:
 - [ ] Add authentication/security (if multi-user)
 - [ ] Add resource limits and quotas
 - [ ] Test serialization performance vs JSON
-- [ ] Update Python bindings to support IPC mode
+- [ ] Update downstream bindings (pywebnn) to support IPC mode
 - [ ] Add IPC mode examples
 - [ ] Document IPC setup and usage
 
@@ -440,7 +444,7 @@ If implementing IPC for multi-user scenarios:
 2. **Design Cap'n Proto schema** for WebNN operations
 3. **Implement parallel format support** (keep JSON, add Cap'n Proto)
 4. **Add IPC transport layer** (Unix sockets for POSIX, named pipes for Windows)
-5. **Update Python bindings** to support IPC mode
+5. **Update downstream bindings** (pywebnn) to support IPC mode
 6. **Add service/client examples**
 7. **Document migration path** for users
 8. **Consider WebAssembly** integration (WASI sockets)

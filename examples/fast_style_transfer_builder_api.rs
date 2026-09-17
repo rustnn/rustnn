@@ -531,7 +531,7 @@ fn conv2d(
         ..Default::default()
     };
     builder
-        .conv2_with_options(input, filter, options)
+        .conv2d_with_options(input, filter, options)
         .with_context(|| label.to_string())
 }
 

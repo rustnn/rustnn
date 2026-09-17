@@ -1,3 +1,10 @@
+//! One-shot TensorRT-RTX execution of converted models (legacy; see [`crate::executors`]).
+//!
+//! [`run_trtx_with_inputs`] accepts either an ONNX model (parsed by TensorRT) or a serialized
+//! engine produced by the `trtx` converter, builds or deserializes it, runs once and returns
+//! host outputs. The TensorRT library is loaded on demand; re-exports
+//! [`dynamically_load_tensorrt`] for callers that ship their own TensorRT-RTX build.
+
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use std::collections::HashMap;
@@ -111,7 +118,7 @@ fn is_onnx_format(bytes: &[u8]) -> bool {
 /// This is useful for validation and testing graph structure
 ///
 /// For native WebNN [`crate::converters::TrtxConverter`] engines (not ONNX), input tensor names
-/// must match [`TrtxConverter::engine_io_tensor_name`] for each graph input operand id.
+/// must match [`crate::converters::TrtxConverter::engine_io_tensor_name`] for each graph input operand id.
 ///
 /// If model_bytes appears to be ONNX format, it will be parsed as ONNX and built into an engine.
 /// Otherwise, it will be treated as a pre-serialized TensorRT engine.

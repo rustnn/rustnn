@@ -1,5 +1,9 @@
 name: Build and Deploy Documentation
 
+# The published site combines three generated parts:
+# - MkDocs pages from docs/ (mkdocs.yml)
+# - Rust API docs from rustdoc, embedded at /api/ (make docs-api)
+# - the WPT conformance dashboard cached by the nightly workflow, embedded at /wpt-conformance/
 on:
   push:
     branches:
@@ -7,15 +11,19 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "Makefile"
       - ".github/workflows/docs.yml"
       - "scripts/embed_wpt_conformance_pages.sh"
-      - "python/**"
   pull_request:
     paths:
       - "docs/**"
       - "mkdocs.yml"
       - "scripts/embed_wpt_conformance_pages.sh"
-      - "python/**"
+      - ".github/workflows/docs.yml"
   workflow_dispatch:
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
@@ -42,6 +50,29 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
+      # Keep the pinned Rust version in sync with rust-toolchain.toml.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-docs-cargo-${{ hashFiles('**/Cargo.lock') }}
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -49,6 +80,12 @@ jobs:
 
       - name: Build documentation
         run: mkdocs build --strict --verbose
+
+      - name: Build Rust API documentation
+        run: make docs-api
+
+      - name: Embed Rust API documentation
+        run: cp -r target/doc site/api
 
       - name: Restore published WPT conformance report
         uses: actions/cache/restore@v4

@@ -1,3 +1,18 @@
+//! WebNN `MLGraphBuilder`: records operations into a [`GraphInfo`] and compiles it.
+//!
+//! Every WebNN builder method exists in two forms: `op(...)` with default options and
+//! `op_with_options(..., options)` taking the matching `ML*Options` struct from
+//! [`crate::operator_options`]. Snake case replaces the JavaScript camel case
+//! (`conv_transpose2d`, `reduce_log_sum_exp`); `where` is `where_` because it is a keyword.
+//! Shape inference runs when an operation is recorded, so shape errors surface immediately as
+//! [`GraphBuilderError::ShapeInferenceError`].
+//!
+//! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
+//! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
+//! without a backend, for tooling that only needs the [`GraphInfo`]
+//! ([`MLGraphBuilder::finish_graph_info`]) or the `.webnn` export
+//! ([`MLGraphBuilder::rustnn_save_webnn`]).
+
 use std::collections::HashMap;
 
 use bytemuck::NoUninit;
@@ -37,6 +52,11 @@ use crate::{
 
 pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
+/// Records a WebNN graph and compiles it for a backend. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder>
+///
+/// A builder produces exactly one graph: after [`MLGraphBuilder::build`] or
+/// [`MLGraphBuilder::finish_graph_info`] every further call fails with
+/// [`GraphBuilderError::GraphAlreadyBuilt`].
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context, 'builder> {
     backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
@@ -2008,6 +2028,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
     }
 
+    /// Create a builder whose [`Self::build`] compiles for the backend of `context`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor>
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
     where
         'context: 'builder,
@@ -2019,6 +2041,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Compile an already complete [`GraphInfo`] (for example one returned by
+    /// [`crate::load_graph_from_path`]) for this builder's backend, bypassing the recording
+    /// methods. rustnn extension.
     pub fn build_graph_info(
         &mut self,
         graph: GraphInfo,
@@ -2116,6 +2141,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         crate::webnn_save::write_webnn_and_safetensors(graph, &output_names, path.as_ref())
     }
 
+    /// Mark `outputs` as the graph outputs and compile the graph for the backend.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-build>
+    ///
+    /// Fails when `outputs` is empty, names an input or constant, or maps two names to one
+    /// operand. Output names become the keys that [`MLContext::dispatch`] expects.
     /*async*/
     pub fn build(
         &mut self,
@@ -2234,6 +2264,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         operand.data_type(graph)
     }
 
+    /// Declare a named graph input. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-input>
+    ///
+    /// The name is the key used for the input tensor in [`MLContext::dispatch`].
     pub fn input(
         &mut self,
         name: &str,
@@ -2263,10 +2296,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     // three flavors
     //
     // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant
+
+    /// Constant from an existing [`MLTensor`]. Not implemented yet.
     pub fn constant_from_tensor(&mut self, _tensor: MLTensor) -> crate::error::Result<MLOperand> {
         todo!("not implemented yet. requires backend integration")
     }
 
+    /// Constant from an owned vector of plain-old-data values; the byte size must match
+    /// `descriptor`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant>
     pub fn constant_from_vec<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2310,6 +2347,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
+    /// Constant copied from a slice of plain-old-data values; the byte size must match
+    /// `descriptor`.
     pub fn constant_from_slice<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2363,6 +2402,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
+    /// Scalar constant from a single value. Not implemented yet; use
+    /// [`Self::constant_from_slice`] with an empty shape instead.
     pub fn constant_from_value<T>(
         &mut self,
         _data_type: MLOperandDataType,
@@ -2473,12 +2514,24 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     impl_binary_op!(gemm, gemm_with_options, Gemm, MLGemmOptions);
     impl_binary_op!(
         conv2d,
-        conv2_with_options,
+        conv2d_with_options,
         Conv2d,
         MLConv2dOptions,
         input,
         filter
     );
+
+    /// Former name of [`Self::conv2d_with_options`], kept for compatibility.
+    #[deprecated(note = "renamed to conv2d_with_options")]
+    pub fn conv2_with_options(
+        &mut self,
+        input: MLOperand,
+        filter: MLOperand,
+        options: MLConv2dOptions,
+    ) -> Result<MLOperand> {
+        self.conv2d_with_options(input, filter, options)
+    }
+
     impl_binary_op!(
         conv_transpose2d,
         conv_transpose2d_with_options,
@@ -3100,6 +3153,46 @@ mod test {
         },
         mlgraphbuilder::MLGraphBuilder,
     };
+
+    #[test]
+    fn conv2d_bias_through_options_uses_operand_index() {
+        use crate::operator_options::MLConv2dOptions;
+        use crate::operators::Operation;
+
+        let f32_desc = |shape: Vec<u64>| {
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape)
+        };
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder.input("input", &f32_desc(vec![1, 1, 4, 4])).unwrap();
+        let filter = builder
+            .constant_from_slice(&f32_desc(vec![2, 1, 3, 3]), &[0.5f32; 18])
+            .unwrap();
+        let bias = builder
+            .constant_from_slice(&f32_desc(vec![2]), &[1.0f32, 2.0])
+            .unwrap();
+        let options = MLConv2dOptions {
+            bias: Some(bias.rustnn_index()),
+            ..Default::default()
+        };
+        let output = builder.conv2d_with_options(input, filter, options).unwrap();
+        assert_eq!(
+            builder.rustnn_operand_shape(output).unwrap(),
+            vec![1, 2, 2, 2]
+        );
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("output", output);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        let conv_options = graph
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Conv2d { options, .. } => options.as_ref(),
+                _ => None,
+            })
+            .expect("conv2d recorded");
+        assert_eq!(conv_options.bias, Some(u32::from(bias)));
+    }
 
     #[test]
     fn add_inputs() {

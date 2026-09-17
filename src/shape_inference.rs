@@ -1,4 +1,11 @@
-/// Shape inference and validation for WebNN operations
+//! Output shape computation for WebNN operations.
+//!
+//! The `infer_*_shape` functions implement the shape rules of the WebNN specification
+//! (broadcasting, convolution and pooling arithmetic, reductions, gathers, and so on). They
+//! are called by [`crate::mlgraphbuilder::MLGraphBuilder`] when an operation is recorded and
+//! by [`crate::webnn_json`] when a stored graph is imported. Functions with a `_dimensions`
+//! suffix operate on [`Dimension`] values and propagate dynamic bounds.
+
 use crate::error::GraphError;
 use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size, to_dimension_vector};
 use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};

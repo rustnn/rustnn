@@ -1,3 +1,12 @@
+//! Backend-agnostic graph model: [`GraphInfo`], [`Operand`], [`OperandDescriptor`] and
+//! [`DataType`].
+//!
+//! Operands are referenced by their index in [`GraphInfo::operands`]; operations are
+//! [`crate::operators::Operation`] variants with named operand fields. Constant data is kept
+//! in [`GraphInfo::constant_operand_ids_to_handles`] as raw little-endian bytes (4-bit types
+//! are nibble-packed, see [`pack_int4`]). Dynamic shapes use [`Dimension::Dynamic`] with an
+//! upper bound and require the `dynamic-inputs` feature at runtime.
+
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
