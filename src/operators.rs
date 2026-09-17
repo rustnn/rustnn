@@ -61,7 +61,11 @@ use crate::{
 /// One variant per WebNN graph builder. Each variant has named operand fields and the
 /// corresponding options struct, so operand roles are explicit and independent of
 /// input_operands order.
+///
+/// Variant fields are operand indices named after the specification arguments plus `options`
+/// and `outputs`; they are not documented individually.
 #[derive(Debug, Clone, PartialEq, Hash)]
+#[allow(missing_docs)]
 pub enum Operation {
     // ---------- Binary element-wise (MLOperatorOptions) ----------
     /// [add()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-add)
@@ -1657,6 +1661,7 @@ impl Operation {
         self.attributes().get(key)
     }
 
+    /// The label when set, otherwise the operation type name.
     pub fn display_name(&self) -> String {
         let l = self.label();
         if !l.is_empty() {

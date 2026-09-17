@@ -92,6 +92,7 @@ fn onnx_pack_external_initializer_raw_data(initializers: &mut [TensorProto]) -> 
     any.then_some(blob)
 }
 
+/// Converts a graph to an ONNX `ModelProto`; large initializers go to an external weights file.
 #[derive(Default)]
 pub struct OnnxConverter;
 

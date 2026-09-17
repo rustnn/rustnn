@@ -1,8 +1,10 @@
 # API Overview
 
 This page explains how the WebNN API maps to Rust in rustnn and where to find each part. Exact
-signatures live in the generated [Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/)
-(`make docs-api` builds it locally into `target/doc/rustnn/`).
+signatures, the meaning and default of every option field, and a one-line description with the
+specification link for every operation live in the generated
+[Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/) (`make docs-api` builds it
+locally into `target/doc/rustnn/`).
 
 ## Conventions
 

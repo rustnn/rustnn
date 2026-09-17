@@ -260,6 +260,7 @@ mod mil_ops {
 // Default epsilon value used by several CoreML operations for numerical stability.
 const DEFAULT_EPSILON: f32 = 1e-45;
 
+/// Converts a graph to a CoreML MLProgram (MIL) model.
 #[derive(Default)]
 pub struct CoremlMlProgramConverter;
 

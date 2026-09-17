@@ -93,6 +93,12 @@ Per-backend data type restrictions and the cases that still fail are tracked in
 The [WPT Conformance Guide](../testing/wpt-test-guide.md) explains filtering by operation and
 regenerating snapshots after a converter change.
 
+Each backend has its own page with requirements, device mapping, execution details and known
+limits: [TensorRT-RTX](../integration/tensorrt.md), [CoreML](../integration/coreml.md),
+[LiteRT](../integration/litert.md), [CANN](../integration/cann.md) and the in-progress
+[browser WebNN backend](../integration/webnn-browser.md). Error messages are collected in
+[Troubleshooting](troubleshooting.md).
+
 ## Caches
 
 The TensorRT-RTX backend stores built engines (category `trtx`) and the TensorRT runtime cache

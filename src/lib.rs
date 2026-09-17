@@ -100,6 +100,9 @@
 //! Persistent caches (TensorRT engines and the TensorRT runtime cache) live under the
 //! platform cache directory, `<cache_dir>/rustnn/<category>`; see [`backends::caching`].
 
+// Every public item needs a doc comment; CI denies warnings.
+#![warn(missing_docs)]
+
 pub mod backend_selection;
 pub mod backends;
 pub mod converters;

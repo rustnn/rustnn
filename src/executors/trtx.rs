@@ -84,16 +84,21 @@ pub(crate) fn create_trtx_logger() -> Result<trtx::Logger, GraphError> {
     })
 }
 
+/// Output metadata reported by [`run_trtx_zeroed`].
 #[derive(Debug, Clone)]
 pub struct TrtxOutput {
+    /// Engine tensor name.
     pub name: String,
+    /// Shape reported by the engine.
     pub shape: Vec<i64>,
+    /// TensorRT data type name.
     pub data_type: String,
 }
 
 /// Input tensor for TensorRT execution. Caller provides raw bytes in the format
 /// expected by the engine (e.g. f32 or f16 little-endian per element).
 pub struct TrtxInput {
+    /// Engine tensor name.
     pub name: String,
     /// Raw tensor bytes (length must match engine's expected size for this tensor).
     pub data: Vec<u8>,
@@ -101,9 +106,13 @@ pub struct TrtxInput {
 
 /// Output tensor with raw bytes and data type so the caller can interpret or convert.
 pub struct TrtxOutputWithData {
+    /// Engine tensor name.
     pub name: String,
+    /// Shape of the output.
     pub shape: Vec<usize>,
+    /// Raw little-endian element bytes.
     pub data: Vec<u8>,
+    /// TensorRT data type name of `data`.
     pub data_type: String,
 }
 

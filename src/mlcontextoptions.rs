@@ -13,9 +13,12 @@ use crate::mlcontext::{Backend, BackendDevice};
 /// WebNN power preference hint. <https://www.w3.org/TR/webnn/#enumdef-mlpowerpreference>
 #[derive(Debug, Default, PartialEq, Eq, Copy, Clone)]
 pub enum MLPowerPreference {
+    /// No preference; GPU-class devices are tried first when `accelerated` is set.
     #[default]
     Default,
+    /// Prefer the fastest device (GPU before NPU).
     HighPerformance,
+    /// Prefer the most efficient device (NPU before GPU).
     LowPower,
 }
 
@@ -47,18 +50,22 @@ impl MLContextOptions {
         }
     }
 
+    /// The `powerPreference` hint.
     pub fn power_preference(&self) -> MLPowerPreference {
         self.power_preference
     }
 
+    /// Set the `powerPreference` hint.
     pub fn set_power_preference(&mut self, power_preference: MLPowerPreference) {
         self.power_preference = power_preference;
     }
 
+    /// The `accelerated` hint: request a GPU or NPU instead of the CPU.
     pub fn accelerated(&self) -> bool {
         self.accelerated
     }
 
+    /// Set the `accelerated` hint.
     pub fn set_accelerated(&mut self, accelerated: bool) {
         self.accelerated = accelerated;
     }
@@ -83,17 +90,23 @@ impl MLContextOptions {
     }
 }
 
-/// Options that steer backend or RustNN internals, experiments
-/// Could be replaced later by a proper API for RustNN options, internals and for backends
+/// Backend-specific tuning options (rustnn extension, subject to change).
+///
+/// The structs are `#[non_exhaustive]`: start from [`RustNNOptions::default`] and set fields.
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct RustNNOptions {
+    /// CoreML backend options (none yet).
     pub coreml: CoremlOptions,
+    /// LiteRT backend options (none yet).
     pub litert: LiteRtOptions,
+    /// ONNX Runtime backend options (none yet).
     pub ort: OrtOptions,
+    /// TensorRT-RTX backend options.
     pub trtx: TrtxOptions,
 }
 
+/// Tuning of the TensorRT-RTX backend; see `docs/integration/tensorrt.md`.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct TrtxOptions {
@@ -121,6 +134,7 @@ impl Default for TrtxOptions {
     }
 }
 
+/// LiteRT backend options; no fields yet.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct LiteRtOptions {}
@@ -132,6 +146,7 @@ impl Default for LiteRtOptions {
     }
 }
 
+/// ONNX Runtime backend options; no fields yet.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct OrtOptions {}
@@ -143,6 +158,7 @@ impl Default for OrtOptions {
     }
 }
 
+/// CoreML backend options; no fields yet.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct CoremlOptions {}

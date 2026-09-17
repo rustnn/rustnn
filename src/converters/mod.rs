@@ -25,7 +25,9 @@ mod trtx_gru;
 mod trtx_lstm;
 #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 mod trtx_rnn;
+/// Replays a graph through the browser WebNN API (`wasm32` only).
 #[cfg(feature = "webnn-runtime")]
+#[allow(missing_docs)]
 pub mod webnn;
 mod weight_file_builder;
 
@@ -59,25 +61,34 @@ pub(crate) fn operand_name(graph: &GraphInfo, id: u32) -> String {
         .unwrap_or_else(|| format!("operand_{}", id))
 }
 
+/// Output of a [`GraphConverter`]: the serialized model plus an optional weights sidecar.
 #[derive(Debug, Clone)]
 pub struct ConvertedGraph {
+    /// Format name, for example `"onnx"` or `"coreml"`.
     pub format: &'static str,
+    /// MIME type of `data`.
     pub content_type: &'static str,
+    /// The serialized model.
     pub data: Vec<u8>,
     /// Optional weight file data for formats that require external weights (e.g., CoreML Float16)
     pub weights_data: Option<Vec<u8>>,
 }
 
+/// Lowers a [`GraphInfo`] to one backend format.
 pub trait GraphConverter {
+    /// Format name used as the registry key (lower case).
     fn format(&self) -> &'static str;
+    /// Convert the whole graph; fails on operations or data types the format cannot express.
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError>;
 }
 
+/// Converters by format name; used by the CLI `--convert` option and the legacy pipeline.
 pub struct ConverterRegistry {
     converters: HashMap<&'static str, Box<dyn GraphConverter + Send + Sync>>,
 }
 
 impl ConverterRegistry {
+    /// Registry with every converter compiled into this build.
     pub fn with_defaults() -> Self {
         let mut registry = Self {
             converters: HashMap::new(),
@@ -93,16 +104,19 @@ impl ConverterRegistry {
         registry
     }
 
+    /// Add or replace the converter for its format name.
     pub fn register(&mut self, converter: Box<dyn GraphConverter + Send + Sync>) {
         self.converters.insert(converter.format(), converter);
     }
 
+    /// Sorted format names.
     pub fn available_formats(&self) -> Vec<&'static str> {
         let mut keys: Vec<_> = self.converters.keys().copied().collect();
         keys.sort_unstable();
         keys
     }
 
+    /// Convert `graph` with the converter registered for `format` (case-insensitive).
     pub fn convert(&self, format: &str, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
         let key = format.to_ascii_lowercase();
         let Some(converter) = self.converters.get(key.as_str()) else {

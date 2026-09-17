@@ -1001,7 +1001,9 @@ pub fn infer_layer_normalization_shape(input_shape: &[u32]) -> Result<Vec<u32>, 
 /// Options for reduction operations
 #[derive(Debug, Clone)]
 pub struct ReduceOptions {
+    /// Dimensions to reduce; empty means all.
     pub axes: Vec<u32>,
+    /// Keep reduced dimensions as size 1.
     pub keep_dimensions: bool,
 }
 
@@ -1113,58 +1115,72 @@ pub fn infer_abs_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `ceil` operation for the given input shape(s).
 pub fn infer_ceil_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `floor` operation for the given input shape(s).
 pub fn infer_floor_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `round even` operation for the given input shape(s).
 pub fn infer_round_even_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `neg` operation for the given input shape(s).
 pub fn infer_neg_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `sign` operation for the given input shape(s).
 pub fn infer_sign_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `exp` operation for the given input shape(s).
 pub fn infer_exp_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `log` operation for the given input shape(s).
 pub fn infer_log_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `sqrt` operation for the given input shape(s).
 pub fn infer_sqrt_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `reciprocal` operation for the given input shape(s).
 pub fn infer_reciprocal_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `sin` operation for the given input shape(s).
 pub fn infer_sin_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `cos` operation for the given input shape(s).
 pub fn infer_cos_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `tan` operation for the given input shape(s).
 pub fn infer_tan_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `erf` operation for the given input shape(s).
 pub fn infer_erf_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
 
+/// Output shape of the `identity` operation for the given input shape(s).
 pub fn infer_identity_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
     Ok(input_shape.to_vec())
 }
@@ -1175,10 +1191,12 @@ pub fn infer_equal_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, G
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `greater` operation for the given input shape(s).
 pub fn infer_greater_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `greater or equal` operation for the given input shape(s).
 pub fn infer_greater_or_equal_shape(
     shape_a: &[u32],
     shape_b: &[u32],
@@ -1186,10 +1204,12 @@ pub fn infer_greater_or_equal_shape(
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `lesser` operation for the given input shape(s).
 pub fn infer_lesser_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `lesser or equal` operation for the given input shape(s).
 pub fn infer_lesser_or_equal_shape(
     shape_a: &[u32],
     shape_b: &[u32],
@@ -1209,10 +1229,12 @@ pub fn infer_logical_and_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `logical or` operation for the given input shape(s).
 pub fn infer_logical_or_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
     broadcast_shapes(shape_a, shape_b)
 }
 
+/// Output shape of the `logical xor` operation for the given input shape(s).
 pub fn infer_logical_xor_shape(shape_a: &[u32], shape_b: &[u32]) -> Result<Vec<u32>, GraphError> {
     broadcast_shapes(shape_a, shape_b)
 }
@@ -1863,9 +1885,13 @@ pub fn infer_where_shape_dimensions(
 /// Pad mode for pad operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PadMode {
+    /// Fill with a constant value.
     Constant,
+    /// Repeat the edge value.
     Edge,
+    /// Mirror without repeating the edge.
     Reflection,
+    /// Mirror including the edge.
     Symmetric,
 }
 

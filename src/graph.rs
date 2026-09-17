@@ -18,21 +18,28 @@ use std::hash::{Hash, Hasher};
 use crate::operator_options::{MLDimension, MLDynamicDimension};
 use crate::operators::Operation;
 
+/// A dimension whose size is only known at dispatch time, bounded by `max_size`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct DynamicDimension {
+    /// Dimensions with the same name must have the same size at dispatch time.
     pub name: String,
+    /// Upper bound; storage is allocated for this size.
     pub max_size: u32,
 }
 
+/// One entry of an operand shape. Serializes as a number or as `{ "name", "maxSize" }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
 pub enum Dimension {
+    /// Fixed size.
     Static(u32),
+    /// Bounded dynamic size; requires the `dynamic-inputs` feature.
     Dynamic(DynamicDimension),
 }
 
 impl Dimension {
+    /// The static size, or `max_size` for a dynamic dimension.
     pub fn get_static_or_max_size(&self) -> u32 {
         match self {
             Self::Static(value) => *value,
@@ -41,10 +48,12 @@ impl Dimension {
     }
 }
 
+/// Wraps a static shape as [`Dimension::Static`] entries.
 pub fn to_dimension_vector(shape: &[u32]) -> Vec<Dimension> {
     shape.iter().copied().map(Dimension::Static).collect()
 }
 
+/// Free-function form of [`Dimension::get_static_or_max_size`], handy in iterator chains.
 pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
     dim.get_static_or_max_size()
 }
@@ -91,26 +100,40 @@ impl From<DynamicDimension> for MLDynamicDimension {
     }
 }
 
+/// Whether the crate was built with the `dynamic-inputs` feature.
 pub fn dynamic_inputs_enabled() -> bool {
     cfg!(feature = "dynamic-inputs")
 }
 
+/// Element type of an operand in the graph model; converts to and from
+/// [`crate::operator_enums::MLOperandDataType`]. Serialized in snake_case (`"float32"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataType {
+    /// Signed 4-bit integer, two per byte.
     Int4,
+    /// Unsigned 4-bit integer, two per byte.
     Uint4,
+    /// IEEE 754 binary16.
     Float16,
+    /// IEEE 754 binary32.
     Float32,
+    /// Signed 32-bit integer.
     Int32,
+    /// Unsigned 32-bit integer.
     Uint32,
+    /// Signed 8-bit integer.
     Int8,
+    /// Unsigned 8-bit integer; also carries boolean results.
     Uint8,
+    /// Signed 64-bit integer.
     Int64,
+    /// Unsigned 64-bit integer.
     Uint64,
 }
 
 impl DataType {
+    /// Bits per element (4 for the packed 4-bit types).
     pub const fn bits_per_element(self) -> usize {
         match self {
             DataType::Int4 | DataType::Uint4 => 4,
@@ -158,6 +181,7 @@ pub fn unpack_int4(data: &[u8], element_count: usize) -> Vec<i32> {
     out
 }
 
+/// Packs signed 4-bit values (clamped to `-8..=7`) into nibbles; see [`unpack_int4`] for the layout.
 pub fn pack_int4(values: &[i32]) -> Vec<u8> {
     let byte_len = DataType::Int4
         .storage_byte_length(values.len())
@@ -174,6 +198,7 @@ pub fn pack_int4(values: &[i32]) -> Vec<u8> {
     out
 }
 
+/// Unpacks nibbles into unsigned 4-bit values; same layout as [`unpack_int4`].
 pub fn unpack_uint4(data: &[u8], element_count: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(element_count);
     for i in 0..element_count {
@@ -188,6 +213,7 @@ pub fn unpack_uint4(data: &[u8], element_count: usize) -> Vec<u8> {
     out
 }
 
+/// Packs unsigned 4-bit values (low nibble of each byte is used) into nibbles.
 pub fn pack_uint4(values: &[u8]) -> Vec<u8> {
     let byte_len = DataType::Uint4
         .storage_byte_length(values.len())
@@ -204,6 +230,7 @@ pub fn pack_uint4(values: &[u8]) -> Vec<u8> {
     out
 }
 
+/// [`pack_uint4`] for `i32` inputs, clamped to `0..=15`.
 pub fn pack_uint4_from_i32(values: &[i32]) -> Vec<u8> {
     pack_uint4(
         &values
@@ -213,22 +240,28 @@ pub fn pack_uint4_from_i32(values: &[i32]) -> Vec<u8> {
     )
 }
 
+/// Data type and shape of an operand in the graph model.
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct OperandDescriptor {
+    /// Element type.
     pub data_type: DataType,
+    /// Dimensions, outermost first; empty for a scalar.
     #[serde(default)]
     pub shape: Vec<Dimension>,
+    /// Layout permutation a converter still has to apply (internal bookkeeping, normally empty).
     #[serde(default)]
     pub pending_permutation: Vec<u32>,
 }
 
 impl OperandDescriptor {
+    /// Whether any dimension is [`Dimension::Dynamic`].
     pub fn has_dynamic_dimensions(&self) -> bool {
         self.shape
             .iter()
             .any(|dim| matches!(dim, Dimension::Dynamic(_)))
     }
 
+    /// The shape as plain sizes, or `None` if any dimension is dynamic.
     pub fn static_shape(&self) -> Option<Vec<u32>> {
         let mut shape = Vec::with_capacity(self.shape.len());
         for dim in &self.shape {
@@ -240,10 +273,12 @@ impl OperandDescriptor {
         Some(shape)
     }
 
+    /// The shape with dynamic dimensions replaced by their maximum size.
     pub fn static_or_max_shape(&self) -> Vec<u32> {
         self.shape.iter().map(get_static_or_max_size).collect()
     }
 
+    /// Number of elements at the maximum shape; `None` on overflow.
     pub fn element_count(&self) -> Option<usize> {
         if self.shape.is_empty() {
             return Some(1);
@@ -256,62 +291,85 @@ impl OperandDescriptor {
         Some(count)
     }
 
+    /// Storage bytes at the maximum shape (4-bit types packed); `None` on overflow.
     pub fn byte_length(&self) -> Option<usize> {
         let elements = self.element_count()?;
         self.data_type.storage_byte_length(elements)
     }
 }
 
+/// Role of an operand in the graph.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum OperandKind {
+    /// Named graph input bound at dispatch.
     Input,
+    /// Constant with data in [`GraphInfo::constant_operand_ids_to_handles`].
     Constant,
+    /// Named graph output bound at dispatch.
     Output,
+    /// Result of an operation that is consumed inside the graph.
     // optional operand type, at the moment not required in graphs, but useful for validation and
     // incremental shape inference
     Intermediate,
 }
 
+/// A graph operand: its role, descriptor and optional name.
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct Operand {
+    /// Role in the graph.
     pub kind: OperandKind,
+    /// Data type and shape.
     pub descriptor: OperandDescriptor,
+    /// Binding name for inputs and outputs; label for other operands.
     #[serde(default)]
     pub name: Option<String>,
 }
 
+/// Raw bytes of a constant operand (little-endian, 4-bit types nibble-packed).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct ConstantData {
+    /// The bytes; base64 in JSON.
     #[serde_as(as = "Base64")]
     pub data: Vec<u8>,
+    /// Optional label carried into exported graphs.
     #[serde(default)]
     pub label: Option<String>,
 }
 
+/// The complete backend-agnostic graph.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraphInfo {
+    /// All operands; operations refer to them by index.
     pub operands: Vec<Operand>,
+    /// Indices of the [`OperandKind::Input`] operands, in declaration order.
     #[serde(default)]
     pub input_operands: Vec<u32>,
+    /// Indices of the [`OperandKind::Output`] operands, sorted.
     #[serde(default)]
     pub output_operands: Vec<u32>,
+    /// Operations in topological (recording) order.
     #[serde(default)]
     pub operations: Vec<Operation>,
+    /// Constant data by operand index.
     #[serde(default)]
     pub constant_operand_ids_to_handles: HashMap<u32, ConstantData>,
+    /// Constant operand index to the tensor name used by converters.
     #[serde(default)]
     pub id_to_constant_tensor_operand_map: HashMap<u32, String>,
+    /// Whether the graph carries quantized constants (affects the `.webnn` export).
     #[serde(default)]
     pub quantized: bool,
 }
 
 impl GraphInfo {
+    /// The operand with index `id`, if it exists.
     pub fn operand(&self, id: u32) -> Option<&Operand> {
         self.operands.get(id as usize)
     }
 
+    /// Whether any operand has a dynamic dimension.
     pub fn has_dynamic_dimensions(&self) -> bool {
         self.operands
             .iter()
@@ -348,9 +406,13 @@ impl GraphInfo {
     }
 }
 
+/// Which constant operands [`GraphInfo::hash_identifier`] includes in a cache key.
 pub enum WeightsToHash<'a> {
+    /// Topology only; weights are refitted after loading.
     None,
+    /// Every constant.
     All,
+    /// The listed constant operand indices.
     Some(&'a HashSet<u32>),
 }
 
@@ -413,6 +475,8 @@ impl GraphInfo {
         Ok((inputs, outputs))
     }
 
+    /// Stable hash of the graph (operands, operations, selected weights) plus `suffix`, used as
+    /// the key of the backend engine caches.
     pub fn hash_identifier<'a>(&self, suffix: &str, weights_to_hash: WeightsToHash<'a>) -> String {
         let mut hasher = seahash::SeaHasher::new();
         self.input_operands.hash(&mut hasher);

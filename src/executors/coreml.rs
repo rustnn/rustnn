@@ -57,6 +57,7 @@ unsafe extern "C" {
 }
 
 // Shims to check compilation on Linux
+/// Always-failing stand-in for the CoreML shim; only exists off macOS so the feature compiles.
 #[cfg(not(target_os = "macos"))]
 pub unsafe extern "C" fn rustnn_coreml_compile(
     _model_url: *mut Object,
@@ -66,6 +67,7 @@ pub unsafe extern "C" fn rustnn_coreml_compile(
 ) -> i32 {
     1
 }
+/// Always-failing stand-in for the CoreML shim; only exists off macOS so the feature compiles.
 #[cfg(not(target_os = "macos"))]
 pub unsafe extern "C" fn rustnn_coreml_load(
     _compiled_url: *mut Object,
@@ -76,6 +78,7 @@ pub unsafe extern "C" fn rustnn_coreml_load(
 ) -> i32 {
     1
 }
+/// Always-failing stand-in for the CoreML shim; only exists off macOS so the feature compiles.
 #[cfg(not(target_os = "macos"))]
 pub unsafe extern "C" fn rustnn_coreml_predict(
     _model: *mut Object,
@@ -119,27 +122,40 @@ fn shim_error_to_string(buffer: &[u8]) -> String {
     String::from_utf8_lossy(&buffer[..end]).into_owned()
 }
 
+/// Input tensor for the one-shot CoreML executors.
 #[derive(Debug, Clone)]
 pub struct CoremlInput {
+    /// Model input name.
     pub name: String,
+    /// Shape of the data.
     pub shape: Vec<usize>,
+    /// Values as float32.
     pub data: Vec<f32>,
 }
 
+/// One output of a CoreML run.
 #[derive(Debug, Clone)]
 pub struct CoremlOutput {
+    /// Model output name.
     pub name: String,
+    /// Shape reported by CoreML.
     pub shape: Vec<i64>,
+    /// CoreML `MLMultiArrayDataType` code of the original output.
     pub data_type_code: i64,
+    /// Values converted to float32.
     pub data: Vec<f32>, // Output data converted to f32 for consistency
 }
 
+/// Result of running a model on one compute-unit configuration.
 #[derive(Debug, Clone)]
 pub struct CoremlRunAttempt {
+    /// Compute units tried, for example `"all"` or `"cpuOnly"`.
     pub compute_unit: &'static str,
+    /// Outputs, or the CoreML error message.
     pub result: Result<Vec<CoremlOutput>, String>,
 }
 
+/// Compile and run a CoreML model once with zero-filled inputs on each compute-unit configuration.
 pub fn run_coreml_zeroed(
     model_bytes: &[u8],
     inputs: &HashMap<String, OperandDescriptor>,
@@ -147,6 +163,7 @@ pub fn run_coreml_zeroed(
     run_coreml_zeroed_cached(model_bytes, inputs, None)
 }
 
+/// [`run_coreml_zeroed`] that stores or reuses the compiled `.mlmodelc` at `compiled_path`.
 pub fn run_coreml_zeroed_cached(
     model_bytes: &[u8],
     inputs: &HashMap<String, OperandDescriptor>,

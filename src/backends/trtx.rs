@@ -84,18 +84,25 @@ impl<'memory> From<Cow<'memory, [u8]>> for HostMemoryOrVec<'memory> {
     }
 }
 
+/// Errors of the TensorRT-RTX backend.
+///
+/// Variant fields carry the values named in the message; they are not documented separately.
 #[derive(Debug, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum TrtxError {
+    /// A CUDA driver call failed.
     #[error("Cuda driver error: {source}")]
     CudaError {
         #[from]
         source: DriverError,
     },
+    /// A TensorRT call failed.
     #[error("TensorRT error: {source}")]
     TrtxError {
         #[from]
         source: trtx::Error,
     },
+    /// No cached engine and `TrtxOptions::fail_on_cache_miss` forbids building one.
     #[error(
         "Engine cache miss: cache_key={cache_key:?}. Failed engine build because TrtxOptions::fail_on_cache_miss options was enabled"
     )]
@@ -117,6 +124,7 @@ pub enum TrtxError {
         source: trtx::Error,
     },
 }
+/// Result of TensorRT-RTX backend operations.
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
 
 // TODO: the mapping to GraphDispatchError/TensorReadError/TensorWriteError

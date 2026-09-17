@@ -83,14 +83,19 @@ Runtime shared library reachable through `ORT_DYLIB_PATH` (see
 | [Backends](user-guide/backends.md) | Selection rules and per-backend requirements, execution model and test coverage |
 | [Examples](user-guide/examples.md) | The example programs in `examples/` and short recipes |
 | [Advanced Topics](user-guide/advanced.md) | Backend hints and options, dynamic shapes, saving and exporting graphs, caching, debugging |
+| [Troubleshooting](user-guide/troubleshooting.md) | Error messages by phase, their causes and fixes |
 | [Rust API Reference](https://rustnn.github.io/rustnn/api/rustnn/) | Generated rustdoc for every public item (`make docs-api` locally) |
 | [Architecture](architecture/overview.md) | Layers, data flow, module map and design decisions |
 | [Development](development/setup.md) | Toolchain, build and test commands, adding operations and backends, CI |
+| [Converter Internals](development/converters.md) | The converter contract, backend-specific lowering rules, debugging emitted models |
 | [Documentation Policy](development/documentation-policy.md) | What to update when code changes; rules for contributors and coding agents |
 | [Implementation Status](development/implementation-status.md) | API surface, backend status and known gaps |
 | [Backend Operator Support](development/backend-operator-support.md) | Generated operation-by-backend matrix |
 | [WPT Conformance Guide](testing/wpt-test-guide.md) | Running and triaging the Web Platform Tests |
 | [TensorRT-RTX](integration/tensorrt.md) | The native TensorRT backend, caching and precision |
+| [CoreML](integration/coreml.md), [LiteRT](integration/litert.md), [CANN](integration/cann.md), [Browser WebNN](integration/webnn-browser.md) | Requirements, device mapping, testing and limits per backend |
+| [WebNN Specification and rustnn](reference/webnn-spec.md) | Where each specification concept lives in the Rust API |
+| [Graph Files and Weights](reference/graph-files.md) | The `.webnn` text and JSON formats, external weights, backend export formats |
 
 ## Python
 

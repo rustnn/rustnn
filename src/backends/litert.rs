@@ -303,6 +303,7 @@ pub(crate) struct LiteRtContext {
     pub(crate) needs_layout_fix: bool,
 }
 
+/// Whether `op` interprets its input as NCHW and needs the NHWC layout transposes.
 pub fn is_spatial_op(op: &Operation) -> bool {
     matches!(
         op,

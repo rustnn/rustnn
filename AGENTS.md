@@ -10,14 +10,16 @@ Documentation map:
 | Topic | Location |
 |---|---|
 | Site entry point | `docs/index.md` (built with MkDocs, `make docs-build`) |
-| API overview, backends, examples, advanced topics | `docs/user-guide/` |
+| API overview, backends, examples, advanced topics, troubleshooting | `docs/user-guide/` |
 | Architecture | `docs/architecture/overview.md` |
-| Workflow, adding operations and backends, CI | `docs/development/setup.md` |
+| Workflow, Make targets, adding operations and backends, CI | `docs/development/setup.md` |
+| Converter contract, per-backend lowering rules, debugging emitted models | `docs/development/converters.md` |
 | What to update together with a code change | `docs/development/documentation-policy.md` |
 | Implementation status and known gaps | `docs/development/implementation-status.md` |
 | Operator support per backend (generated) | `docs/development/backend-operator-support.md` |
 | WPT conformance harness | `docs/testing/wpt-test-guide.md` |
-| TensorRT-RTX backend | `docs/integration/tensorrt.md` |
+| Backend pages: TensorRT-RTX, CoreML, LiteRT, CANN, browser WebNN | `docs/integration/` |
+| Specification-to-API mapping; `.webnn`, JSON and weight file formats | `docs/reference/webnn-spec.md`, `docs/reference/graph-files.md` |
 | Rust API reference | `make docs-api` (rustdoc), published under https://rustnn.github.io/rustnn/api/rustnn/ |
 
 ## Read this first

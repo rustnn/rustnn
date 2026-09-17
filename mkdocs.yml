@@ -77,11 +77,13 @@ nav:
       - Backends: user-guide/backends.md
       - Examples: user-guide/examples.md
       - Advanced Topics: user-guide/advanced.md
+      - Troubleshooting: user-guide/troubleshooting.md
       - Rust API Reference (rustdoc): https://rustnn.github.io/rustnn/api/rustnn/
   - Architecture:
       - Overview: architecture/overview.md
   - Development:
       - Setup and Workflow: development/setup.md
+      - Converter Internals: development/converters.md
       - Documentation Policy: development/documentation-policy.md
       - Implementation Status: development/implementation-status.md
       - Backend Operator Support: development/backend-operator-support.md
@@ -93,8 +95,13 @@ nav:
   - Integration:
       - TensorRT-RTX: integration/tensorrt.md
       - Windows TensorRT-RTX Setup: integration/windows-tensorrt-setup.md
+      - CoreML: integration/coreml.md
+      - LiteRT: integration/litert.md
+      - CANN (OpenHarmony): integration/cann.md
+      - Browser WebNN (wasm32): integration/webnn-browser.md
   - Reference:
-      - WebNN Spec Notes: reference/webnn-spec.md
+      - WebNN Specification and rustnn: reference/webnn-spec.md
+      - Graph Files and Weights: reference/graph-files.md
       - WebNN Operators Explained: reference/operators-explanation.md
       - IPC Design Notes: reference/ipc-design.md
       - Changelog: https://github.com/rustnn/rustnn/blob/main/CHANGELOG.md

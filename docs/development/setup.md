@@ -19,33 +19,32 @@ before cloning. Backend libraries (ONNX Runtime, TensorRT-RTX, LiteRT) are descr
 ## Build and test
 
 Use the Makefile targets; they set feature flags and environment variables consistently.
-`make help` lists all of them.
+`make help` prints the same list.
 
-```bash
-make build                 # cargo build, no backend features
-make test                  # cargo fmt, clippy -D warnings, cargo test, operator report drift check
-make lint                  # clippy only
-make fmt                   # rustfmt
-
-make onnxruntime-download  # fetch the pinned ONNX Runtime into target/onnxruntime
-make run                   # validate examples/sample_graph.json with the CLI
-make onnx                  # convert the sample graph to ONNX (GRAPH_FILE=... selects another graph)
-make onnx-validate         # convert and execute with ONNX Runtime
-make coreml                # CoreML conversion (macOS); also make litert, make cann
-
-make test-wpt              # WPT conformance on ONNX Runtime CPU
-make test-wpt-op OP=relu   # one operation
-make test-wpt-trtx         # TensorRT-RTX; also make test-wpt-litert, make test-wpt-coreml
-
-make docs-api              # rustdoc, warnings are errors
-make docs-build            # MkDocs site into site/
-make ci-docs               # MkDocs strict mode, as CI runs it
-make docs-serve            # live preview
-make docs-backend-ops      # regenerate docs/development/backend-operator-support.md
-make docs-backend-ops-check
-
-make coverage              # cargo-llvm-cov; also coverage-html, coverage-lcov
-```
+| Target | Effect |
+|---|---|
+| `build` | `cargo build`, no backend features |
+| `test` | `cargo fmt`, `clippy -D warnings`, `cargo test`, operator report drift check |
+| `fmt`, `fmt-check`, `lint` | rustfmt (apply / check), clippy only |
+| `clean`, `clean-all` | `cargo clean`; also the docs site and coverage output |
+| `onnxruntime-download` | Fetch the pinned ONNX Runtime into `target/onnxruntime`; export `ORT_DYLIB_PATH` afterwards |
+| `run` | Validate `examples/sample_graph.json` with the CLI |
+| `viz` | Export the sample graph as Graphviz DOT |
+| `onnx`, `onnx-validate` | Convert the sample graph to ONNX (`GRAPH_FILE=...` selects another graph); also execute it with ONNX Runtime |
+| `coreml`, `coreml-validate` | CoreML conversion and execution (macOS) |
+| `litert`, `cann` | LiteRT and CANN conversion of the sample graph |
+| `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
+| `validate-all-env` | Build, unit tests, ONNX and CoreML validation in one run |
+| `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
+| `test-wpt` | WPT conformance on ONNX Runtime CPU |
+| `test-wpt-op OP=relu` | One operation; `WPT_BACKEND=onnx|trtx|litert|coreml` selects the backend |
+| `test-wpt-trtx`, `test-wpt-litert`, `test-wpt-coreml` | Per-backend WPT runs; `test-wpt-report` and `test-wpt-coreml-report` also write the JSON report |
+| `wpt-sync-onnx`, `wpt-sync-trtx`, `wpt-sync-litert`, `wpt-sync-coreml` | Regenerate snapshots and expected-failure lists |
+| `webnn-chromedriver`, `test-webnn-wpt-chrome`, `test-webnn-wpt-chrome-headless` | Browser WebNN graph-build tests in Chrome; see [Browser WebNN](../integration/webnn-browser.md) |
+| `docs-api` | rustdoc with `-D warnings` |
+| `docs-build`, `docs-serve`, `ci-docs`, `docs-clean` | MkDocs site into `site/`, live preview, strict mode as CI runs it, remove the site |
+| `docs-backend-ops`, `docs-backend-ops-check` | Regenerate the operator support report; check it for drift |
+| `coverage`, `coverage-html`, `coverage-lcov`, `coverage-open`, `coverage-clean` | cargo-llvm-cov reports; see [Code Coverage](code-coverage.md) |
 
 CI type-checks every backend. Do the same before pushing when shared code changed:
 
@@ -147,4 +146,7 @@ builds the API docs with the features listed under `[package.metadata.docs.rs]`.
 - Comments explain non-obvious decisions in one line and use ASCII only. No emojis anywhere in
   the repository.
 - Errors are typed with `thiserror`, carry context and are `Send + Sync`.
-- Public items get rustdoc; a new module gets a `//!` header saying what the module owns.
+- Every public item gets rustdoc: `src/lib.rs` enables `#![warn(missing_docs)]` and CI denies
+  warnings. A new module gets a `//!` header saying what the module owns. Enum variants that
+  are only operand indices (`Operation`) and error fields described by their message carry an
+  explicit `#[allow(missing_docs)]`.

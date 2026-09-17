@@ -34,7 +34,9 @@ pub mod litert;
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 pub mod cann;
 
+/// Browser WebNN bindings generated from the specification IDL (`wasm32` only).
 #[cfg(feature = "webnn-runtime")]
+#[allow(missing_docs)]
 pub mod webnn;
 
 #[derive(Debug)]
@@ -124,6 +126,7 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     }
 }
 
+/// Disabled ONNX Runtime backend (built without `onnx-runtime`).
 #[cfg(not(feature = "onnx-runtime"))]
 pub mod ort {
 
@@ -140,6 +143,7 @@ pub mod ort {
     }
 }
 
+/// Disabled TensorRT-RTX backend (built without `trtx-runtime`).
 #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
 pub mod trtx {
     pub(crate) use crate::backends::DisabledContext as TrtxContext;
@@ -155,15 +159,19 @@ pub mod trtx {
     }
 }
 
+/// Disabled CANN backend (built without `cann-runtime`).
 #[cfg(not(any(feature = "cann-runtime", feature = "cann-runtime-mock")))]
 pub mod cann {
     pub(crate) use crate::backends::DisabledContext as CannContext;
 }
 
+/// Disabled CoreML backend (built without `coreml-runtime`).
 #[cfg(not(feature = "coreml-runtime"))]
 pub mod coreml {
     pub(crate) use crate::backends::DisabledContext as CoremlContext;
 }
+
+/// Disabled LiteRT backend (built without `litert-runtime`);
 #[cfg(not(feature = "litert-runtime"))]
 pub mod litert {
     pub(crate) use crate::backends::DisabledContext as LiteRtContext;

@@ -41,8 +41,11 @@ use crate::mlcontext::ListDevices;
 // this is a concept of pywebnn
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum DeviceType {
+    /// Host CPU.
     Cpu,
+    /// Graphics processor.
     Gpu,
+    /// Neural processing unit (Neural Engine, Kirin NPU, ONNX Runtime NPU providers).
     Npu,
 }
 
@@ -50,10 +53,15 @@ pub enum DeviceType {
 /// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`).
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Backend {
+    /// ONNX Runtime (`onnx-runtime`).
     Onnx,
+    /// NVIDIA TensorRT-RTX (`trtx-runtime`).
     Trtx,
+    /// Apple CoreML (`coreml-runtime`, macOS).
     Coreml,
+    /// LiteRT (`litert-runtime`).
     Litert,
+    /// Huawei CANN on OpenHarmony (`cann-runtime`).
     Cann,
 }
 
@@ -64,21 +72,32 @@ pub enum Backend {
 /// registry allows) may come later.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum BackendDevice {
+    /// An ONNX Runtime execution-provider device.
     Onnx {
+        /// Index in the device list reported by ONNX Runtime.
         ep_device_idx: usize,
+        /// Device class of that execution provider.
         device_type: DeviceType,
     },
+    /// A CUDA device used by TensorRT-RTX.
     Trtx {
+        /// CUDA device ordinal.
         cuda_device_idx: u32,
     },
+    /// CoreML with the compute units matching `device_type`.
     Coreml {
         //device_idx: u64,
+        /// CPU, GPU or Neural Engine (NPU).
         device_type: DeviceType,
     },
+    /// LiteRT with the accelerator matching `device_type`.
     LiteRt {
+        /// CPU, GPU or NPU accelerator.
         device_type: DeviceType,
     },
+    /// A CANN NPU.
     Cann {
+        /// Always `Npu`.
         device_type: DeviceType,
     },
     //WebNN {
@@ -88,6 +107,7 @@ pub enum BackendDevice {
 }
 
 impl BackendDevice {
+    /// The backend this device belongs to.
     pub fn backend(&self) -> Backend {
         match self {
             BackendDevice::Onnx { .. } => Backend::Onnx,
@@ -98,6 +118,7 @@ impl BackendDevice {
         }
     }
 
+    /// Device class; TensorRT devices are always GPUs.
     pub fn device_type(&self) -> DeviceType {
         match self {
             BackendDevice::Trtx { .. } => DeviceType::Gpu,
@@ -108,14 +129,17 @@ impl BackendDevice {
         }
     }
 
+    /// `true` for NPU devices.
     pub fn is_npu(&self) -> bool {
         self.device_type() == DeviceType::Npu
     }
 
+    /// `true` for GPU devices.
     pub fn is_gpu(&self) -> bool {
         self.device_type() == DeviceType::Gpu
     }
 
+    /// `true` for CPU devices.
     pub fn is_cpu(&self) -> bool {
         self.device_type() == DeviceType::Cpu
     }

@@ -17,7 +17,8 @@ Changes on `main` since the `v0.5.12` publish branch (2026-05-02).
 - Examples: builder-API fast style transfer, ResNet-50, SmolLM on `MLContext` (#124, #162).
 - `TRTX_JSON_DUMP_PATH` engine dumps (#177).
 - `MLOperand::rustnn_index()` and `From<MLOperand> for OperandIndex` to fill operand fields of `ML*Options` such as `MLConv2dOptions::bias`.
-- Rust API docs (rustdoc) built with warnings denied in CI and published under `/api/`; `docs/development/documentation-policy.md`.
+- Rust API docs (rustdoc) built with warnings denied in CI and published under `/api/`; every public item is documented and `#![warn(missing_docs)]` keeps it that way; `docs/development/documentation-policy.md`.
+- Documentation pages: CoreML, LiteRT, CANN and browser WebNN backend pages under `docs/integration/`, `docs/development/converters.md` (converter contract and per-backend lowering rules), `docs/user-guide/troubleshooting.md`, `docs/reference/graph-files.md` (`.webnn`, JSON and weight formats) and a specification-to-API mapping in `docs/reference/webnn-spec.md`; the Make target table in `docs/development/setup.md` is complete.
 
 ### Changed
 - **Breaking:** `MLContext::dispatch`, `MLGraphBuilder::build` and `rustnn_save_webnn` take `MLNamedTensors` and `MLNamedOperands` (`BTreeMap`) instead of `HashMap` (#202).

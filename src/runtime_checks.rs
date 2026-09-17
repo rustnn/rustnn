@@ -10,9 +10,12 @@ use std::collections::HashMap;
 use crate::error::GraphError;
 use crate::graph::{Dimension, OperandDescriptor};
 
+/// Whether a binding is a graph input or output; selects the error wording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TensorKind {
+    /// Graph input.
     Input,
+    /// Graph output.
     Output,
 }
 
@@ -30,16 +33,20 @@ struct BoundDynamicDim {
     value: usize,
 }
 
+/// Tracks the values bound to named dynamic dimensions during one validation pass.
 #[derive(Debug, Default, Clone)]
 pub struct RuntimeShapeState {
     bound_dims: HashMap<String, BoundDynamicDim>,
 }
 
 impl RuntimeShapeState {
+    /// Empty state; one per dispatch.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Check that `actual_shapes` covers exactly the named `descriptors` and that every shape
+    /// passes [`Self::validate_shape`].
     pub fn validate_named_shapes(
         &mut self,
         actual_shapes: &HashMap<String, Vec<usize>>,
@@ -72,6 +79,8 @@ impl RuntimeShapeState {
         Ok(())
     }
 
+    /// Check rank, static dimensions, dynamic bounds and named-dimension consistency of one
+    /// tensor.
     pub fn validate_shape(
         &mut self,
         name: &str,
@@ -138,6 +147,7 @@ impl RuntimeShapeState {
     }
 }
 
+/// Check that `data_len` elements match the element count of `shape`.
 pub fn validate_shape_data_length(
     name: &str,
     shape: &[usize],

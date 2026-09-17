@@ -24,9 +24,11 @@ use crate::backends::litert::{
     is_spatial_op, transpose_hwio_to_ohwi, transpose_ihwo_to_ohwi, transpose_oihw_to_ohwi,
 };
 
+/// Converts a graph to a TFLite flatbuffer for the LiteRT interpreter (NCHW operands become NHWC).
 pub struct LiteRtConverter;
 
 impl LiteRtConverter {
+    /// Stateless converter.
     pub fn new() -> Self {
         Self
     }

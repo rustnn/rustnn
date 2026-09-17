@@ -8,7 +8,7 @@ request template points here.
 
 | Location | Content | Built by | Published at |
 |---|---|---|---|
-| `//!` and `///` comments in `src/` | Rust API reference: public items, the crate overview with the feature and environment variable tables in `src/lib.rs` | `make docs-api` (rustdoc, warnings are errors) | https://rustnn.github.io/rustnn/api/rustnn/ |
+| `//!` and `///` comments in `src/` | Rust API reference: every public item (the crate has `#![warn(missing_docs)]`, and CI denies warnings), the crate overview with the feature and environment variable tables in `src/lib.rs` | `make docs-api` (rustdoc, warnings are errors) | https://rustnn.github.io/rustnn/api/rustnn/ |
 | `docs/**/*.md`, `mkdocs.yml` | User guide, architecture, development, testing and integration pages | `make docs-build`; strict mode in CI with `make ci-docs` | https://rustnn.github.io/rustnn/ |
 | `docs/development/backend-operator-support.md` | Operation-by-backend matrix generated from the converter sources | `make docs-backend-ops`; CI fails on drift | same site |
 | WPT conformance dashboard | Per-operation pass and fail status per backend | nightly workflow | https://rustnn.github.io/rustnn/wpt-conformance/ |
@@ -23,10 +23,13 @@ the same pull request. Documentation follows the code; there is no later cleanup
 
 | If the change touches | Update |
 |---|---|
-| A public type, method, trait or module | The rustdoc comment of the item; the module docs (`//!`) when the module's responsibility changes |
-| A Cargo feature or an environment variable | The tables in `src/lib.rs` and in `docs/user-guide/backends.md`; for TensorRT also `docs/integration/tensorrt.md` |
-| Backend selection, a backend's requirements or its execution model | The module docs of `src/backend_selection.rs` and `docs/user-guide/backends.md` |
+| A public type, method, trait or module | The rustdoc comment of the item (mandatory: `cargo check` warns on undocumented public items and CI fails); the module docs (`//!`) when the module's responsibility changes. Builder operations pass their doc comment into the `impl_*_op!` macro invocation; option fields state meaning, unit and default |
+| A Cargo feature or an environment variable | The tables in `src/lib.rs` and in `docs/user-guide/backends.md`; the backend's page under `docs/integration/` |
+| Backend selection, a backend's requirements or its execution model | The module docs of `src/backend_selection.rs`, `docs/user-guide/backends.md` and the backend's page under `docs/integration/` |
 | Operator support in a converter (`src/converters/*.rs`) | Run `make docs-backend-ops`, then refresh the WPT snapshots or expected-failure list of that backend (`make wpt-sync-<backend>`) |
+| A lowering rule or a backend constraint in a converter | The backend section of `docs/development/converters.md` |
+| An error variant or a new failure mode | The rustdoc of the variant and, when users will meet it, a row in `docs/user-guide/troubleshooting.md` |
+| The `.webnn`, JSON or weight file handling (`src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs`) | `docs/reference/graph-files.md` |
 | A new operation | The "Adding an operation" checklist in `docs/development/setup.md`, including the operation table in `docs/user-guide/api-reference.md` |
 | The builder or context API (`src/mlgraphbuilder.rs`, `src/mlcontext.rs`) | `docs/user-guide/api-reference.md`; the code in `docs/user-guide/getting-started.md` and `docs/user-guide/examples.md` when it uses the changed call |
 | Makefile targets, scripts or CI workflows | `docs/development/setup.md` and `.github/workflows/README.md` |

@@ -50,22 +50,34 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
     result
 }
 
+/// Output metadata reported by [`run_onnx_zeroed`].
 #[derive(Debug, Clone)]
 pub struct OnnxOutput {
+    /// ONNX output name.
     pub name: String,
+    /// Shape as reported by ONNX Runtime.
     pub shape: Vec<i64>,
+    /// ONNX element type name.
     pub data_type: String,
 }
 
 /// Tensor data for different types
 pub enum TensorData {
+    /// 32-bit floats.
     Float32(Vec<f32>),
+    /// 16-bit floats as raw bits.
     Float16(Vec<u16>), // f16 stored as u16 bits
+    /// Signed 8-bit integers.
     Int8(Vec<i8>),
+    /// Unsigned 8-bit integers.
     Uint8(Vec<u8>),
+    /// Signed 32-bit integers.
     Int32(Vec<i32>),
+    /// Unsigned 32-bit integers.
     Uint32(Vec<u32>),
+    /// Signed 64-bit integers.
     Int64(Vec<i64>),
+    /// Unsigned 64-bit integers.
     Uint64(Vec<u64>),
 }
 
@@ -86,22 +98,33 @@ impl TensorData {
 
 /// Input tensor data for ONNX execution
 pub struct OnnxInput {
+    /// ONNX input name.
     pub name: String,
+    /// Shape of the data.
     pub shape: Vec<usize>,
+    /// Typed element data.
     pub data: TensorData,
 }
 
 /// Output tensor with actual data
 pub struct OnnxOutputWithData {
+    /// ONNX output name.
     pub name: String,
+    /// Shape of the output.
     pub shape: Vec<usize>,
+    /// Values converted to `f64` (lossy for 64-bit integers; see the typed fields).
     pub data: Vec<f64>,
+    /// Exact values for float32 outputs.
     pub float32_data: Option<Vec<f32>>,
+    /// Exact values for boolean outputs.
     pub bool_data: Option<Vec<bool>>,
+    /// Exact values for int64 outputs.
     pub int64_data: Option<Vec<i64>>,
+    /// Exact values for uint64 outputs.
     pub uint64_data: Option<Vec<u64>>,
 }
 
+/// Load an ONNX model and run it once with zero-filled inputs; returns output metadata only.
 pub fn run_onnx_zeroed(
     model_bytes: &[u8],
     _inputs: &HashMap<String, OperandDescriptor>,
