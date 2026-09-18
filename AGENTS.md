@@ -72,6 +72,7 @@ Loader    Validator    Backend
   - `compute_coreml()` → Converts to CoreML protobuf, executes with CoreML
   - `compute_fallback()` → Returns zeros when no backend available
 - Conversion is transparent to the user
+- **CANN exception:** CANN compiles and loads the model at `build()`
 
 **4. Rust-First Architecture**
 - All core logic implemented in pure Rust

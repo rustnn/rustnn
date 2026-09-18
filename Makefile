@@ -180,6 +180,13 @@ test-wpt-coreml-report:
 	@mkdir -p reports
 	WPT_REPORT_JSON=reports/wpt-conformance.json $(CARGO) test --test run_wpt_conformance --features coreml-runtime -- coreml --test-threads 1
 
+test-wpt-cann: require-wpt-cache validate-cann-env
+	@mkdir -p reports
+	$(CANN_CROSS_ENV) $(CARGO) test --test run_wpt_conformance --no-run \
+		--target aarch64-unknown-linux-ohos --features cann-runtime,wpt-embed-corpus --release
+	CANN_DDK=$(CANN_DDK) \
+	./scripts/ohos-test-helper.sh wpt $(filter-out $@,$(MAKECMDGOALS))
+
 test-wpt-op: onnxruntime-download
 	@test -n "$(OP)" || (echo "Usage: make test-wpt-op OP=add" && exit 1)
 	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- $(OP) --test-threads 1
@@ -327,13 +334,6 @@ cann-device-test: validate-cann-env
 	CANN_DDK=$(CANN_DDK) \
 	./scripts/ohos-test-helper.sh $(filter-out $@,$(MAKECMDGOALS))
 
-test-wpt-cann: require-wpt-cache validate-cann-env
-	@mkdir -p reports
-	$(CANN_CROSS_ENV) $(CARGO) test --test run_wpt_conformance --no-run \
-		--target aarch64-unknown-linux-ohos --features cann-runtime,wpt-embed-corpus --release
-	CANN_DDK=$(CANN_DDK) \
-	./scripts/ohos-test-helper.sh wpt $(filter-out $@,$(MAKECMDGOALS))
-
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
 
@@ -415,6 +415,7 @@ help:
 	@echo "  test-wpt-op OP=... - Run filtered WPT trials"
 	@echo "  test-wpt-report    - Run full WPT suite and write JSON/HTML reports (ignores trial failures)"
 	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
+	@echo "  test-wpt-cann      - Run WPT conformance suite via CANN on device"
 	@echo "  wpt-sync-onnx      - Regenerate ONNX PASS snapshots"
 	@echo "  wpt-sync-litert    - Regenerate LiteRT PASS snapshots + expected-failures"
 	@echo "  wpt-sync-coreml    - Regenerate CoreML expected-failures (macOS)"
@@ -435,7 +436,6 @@ help:
 	@echo "  cann               - Convert graph to CANN/HiAI format"
 	@echo "  cann-build    		- Cross-compile rustnn for OHOS via cargo"
 	@echo "  cann-device-test   - Test on device via scripts/ohos-test-helper.sh"
-	@echo "  test-wpt-cann      - Run WPT conformance suite via CANN on device"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"

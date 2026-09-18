@@ -89,6 +89,57 @@ mod tests {
     }
 
     #[test]
+    fn test_add_redispatch() {
+        // Re-dispatching the same graph with different inputs must re-read the
+        // caller's input buffers on every dispatch. This guards the zero-copy
+        // input path (the NPU references the buffer in place rather than taking
+        // a snapshot) and the session loaded at build() time.
+        let mut context = CONTEXT.lock().unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let desc_2x2 = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+        let a: MLOperand = builder.input("a", &desc_2x2).unwrap();
+        let b: MLOperand = builder.input("b", &desc_2x2).unwrap();
+        let sum: MLOperand = builder.add(a, b).unwrap();
+        let mut graph = builder.build(&BTreeMap::from([("sum", sum)])).unwrap();
+
+        let tdesc = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2])
+            .to_writable()
+            .to_readable();
+        let tensor_a = context.create_tensor(&tdesc).unwrap();
+        let tensor_b = context.create_tensor(&tdesc).unwrap();
+        let tensor_out = context.create_tensor(&tdesc).unwrap();
+
+        for (a_vals, b_vals, expected) in [
+            (
+                [1.0f32, 2.0, 3.0, 4.0],
+                [5.0f32, 6.0, 7.0, 8.0],
+                [6.0f32, 8.0, 10.0, 12.0],
+            ),
+            (
+                [10.0f32, 20.0, 30.0, 40.0],
+                [1.0f32, 1.0, 1.0, 1.0],
+                [11.0f32, 21.0, 31.0, 41.0],
+            ),
+        ] {
+            context.write_tensor(&tensor_a, &a_vals).unwrap();
+            context.write_tensor(&tensor_b, &b_vals).unwrap();
+            context
+                .dispatch(
+                    &mut graph,
+                    &BTreeMap::from([("a", &tensor_a), ("b", &tensor_b)]),
+                    &BTreeMap::from([("sum", &tensor_out)]),
+                )
+                .unwrap();
+
+            let mut out_data = vec![0.0f32; 4];
+            context.read_tensor(&tensor_out, &mut out_data).unwrap();
+            println!("  Add({a_vals:?}, {b_vals:?}) = {:?}", out_data);
+            assert_eq!(out_data, expected);
+        }
+    }
+
+    #[test]
     fn test_sub() {
         let mut context = CONTEXT.lock().unwrap();
 
