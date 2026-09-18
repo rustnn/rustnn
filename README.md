@@ -86,8 +86,9 @@ fn main() -> rustnn::error::Result<()> {
 }
 ```
 
-The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DYLIB_PATH`; in
-a clone, `make onnxruntime-download` fetches a matching release into `target/onnxruntime/`.
+The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DYLIB_PATH`;
+from the repository root, `make onnxruntime-download` fetches a matching release into
+`target/onnxruntime/`.
 Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
 `$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
 system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).

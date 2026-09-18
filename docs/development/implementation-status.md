@@ -80,5 +80,6 @@ request. See the [WPT Conformance Guide](../testing/wpt-test-guide.md).
 
 ## Versioning
 
-rustnn is published as a `0.5.x` development release. The API changes without notice;
-`CHANGELOG.md` records notable changes per release.
+rustnn is a `0.5.x` development release. The WebNN API described here is on `main` and not yet
+published; the crates.io release predates it, so consumers use a git dependency. The API
+changes without notice; `CHANGELOG.md` records notable changes per release.

@@ -8,8 +8,10 @@ rustnn is a Rust implementation of the [W3C WebNN API](https://www.w3.org/TR/web
 neural network graphs with a WebNN-style builder, validates and shape-infers them, and executes
 them on a pluggable backend.
 
-**Experimental.** rustnn is published as a development release (`0.5.x`). APIs change without
-notice and the crate is not meant for production use.
+**Experimental.** rustnn is a development release. APIs change without notice and the crate is
+not meant for production use. The API on this site is on the `main` branch and is used as a git
+dependency; the `rustnn` crate on crates.io (0.5.x) is the earlier converter and loader crate
+without `MLContext`.
 
 ## What rustnn provides
 
@@ -71,8 +73,9 @@ fn main() -> rustnn::error::Result<()> {
 }
 ```
 
-Build it with a runtime feature, for example `cargo run --features onnx-runtime`, with the ONNX
-Runtime shared library reachable through `ORT_DYLIB_PATH` (see
+Depend on rustnn with a backend feature on the dependency line
+(`rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }`), point
+`ORT_DYLIB_PATH` at the ONNX Runtime shared library and `cargo run` (see
 [Getting Started](user-guide/getting-started.md)). This API is on the `main` branch; the
 `rustnn` crate published on crates.io (0.5.x) predates it, so depend on the git repository until
 the next release.
@@ -87,7 +90,7 @@ the next release.
 | [Examples](user-guide/examples.md) | The example programs in `examples/` and short recipes |
 | [Advanced Topics](user-guide/advanced.md) | Backend hints and options, dynamic shapes, saving and exporting graphs, caching, debugging |
 | [Troubleshooting](user-guide/troubleshooting.md) | Error messages by phase, their causes and fixes |
-| [Rust API Reference](https://rustnn.github.io/rustnn/api/rustnn/) | Generated rustdoc for every public item (`make docs-api` locally) |
+| [Rust API Reference](https://rustnn.github.io/rustnn/api/rustnn/) | Generated rustdoc for every public item, deployed from `main`; locally `make docs-api` writes it to `target/doc/rustnn/` |
 | [Architecture](architecture/overview.md) | Layers, data flow, module map and design decisions |
 | [Development](development/setup.md) | Toolchain, build and test commands, adding operations and backends, CI |
 | [Converter Internals](development/converters.md) | The converter contract, backend-specific lowering rules, debugging emitted models |

@@ -78,7 +78,7 @@ nav:
       - Examples: user-guide/examples.md
       - Advanced Topics: user-guide/advanced.md
       - Troubleshooting: user-guide/troubleshooting.md
-      - Rust API Reference (rustdoc): https://rustnn.github.io/rustnn/api/rustnn/
+      - Rust API Reference (rustdoc, deployed from main): https://rustnn.github.io/rustnn/api/rustnn/
   - Architecture:
       - Overview: architecture/overview.md
   - Development:

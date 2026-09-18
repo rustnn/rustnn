@@ -22,7 +22,7 @@ CoreML, but `MLContext::create` fails with `Error::NoBackendAvailable`.
 
 `MLContext::create` resolves the WebNN hints in `MLContextOptions` (`accelerated` and the
 power preference) in a fixed order, skipping backends that are not compiled in or report no
-device. The order is implemented in `src/backend_selection.rs`:
+device. The order is:
 
 1. A device hint (`with_rustnn_device_hint`) is used as given, without an availability check.
 2. `accelerated` with `Default` or `HighPerformance`: TensorRT-RTX (first CUDA device), then

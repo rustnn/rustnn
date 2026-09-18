@@ -7,7 +7,7 @@ then shows how to load graphs from files and how to use the command line tool.
 
 | Requirement | Needed for |
 |---|---|
-| Rust 1.97, pinned in `rust-toolchain.toml` (rustup installs it on the first build) | the crate (edition 2024) |
+| Rust 1.97 or newer (edition 2024); `rust-toolchain.toml` pins it for the repository itself | the crate |
 | `protoc`, the Protocol Buffers compiler, on `PATH` | `build.rs` compiles the ONNX and CoreML schemas |
 | `flatc` | the `litert-runtime` feature only (TFLite schema) |
 | Node.js | the WPT conformance tests only |
@@ -28,10 +28,10 @@ publish:
 rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }
 ```
 
-Features select backends. Without one the crate validates and converts graphs but cannot
-execute them. The full feature list is in the crate documentation (`make docs-api` in a clone
-writes it to `target/doc/rustnn/index.html`; the site publishes it under `/api/`) and in
-[Backends](backends.md).
+Features select backends and go on this dependency line. Without a backend feature the crate
+validates and converts graphs but cannot execute them. The full feature list is in the crate
+documentation (`make docs-api` writes it to `target/doc/rustnn/index.html`; the site publishes
+it under `/api/`) and in [Backends](backends.md).
 
 ## Provide ONNX Runtime
 
@@ -40,7 +40,7 @@ The `onnx-runtime` feature loads the ONNX Runtime shared library at run time fro
 library in Windows `System32` is older (1.17) and the process aborts with a `BadVersion` panic
 from `ort` when it is picked up, so set the variable before every run.
 
-Download the pinned release. In a clone with `make` installed:
+Download the pinned release. From the repository root with `make` installed:
 
 ```bash
 make onnxruntime-download          # into target/onnxruntime/
@@ -125,11 +125,12 @@ fn main() -> rustnn::error::Result<()> {
 }
 ```
 
-Run it with a backend feature enabled and `ORT_DYLIB_PATH` set in the same shell:
+Run it with `ORT_DYLIB_PATH` set in the same shell; the backend feature is already on the
+dependency line:
 
 ```bash
 export ORT_DYLIB_PATH=...          # PowerShell: $env:ORT_DYLIB_PATH = "..."
-cargo run --features onnx-runtime
+cargo run
 ```
 
 Points worth knowing:
@@ -169,10 +170,14 @@ and `toy_transformer.webnn` to try this with.
 ## Command line tool
 
 The `rustnn` binary validates a graph file, prints its inputs, outputs and dependency fan-out,
-and optionally exports or executes it. Validation and conversion need no runtime feature and
-no `ORT_DYLIB_PATH`; each `--run-*` flag exists only when its feature is compiled in
-(`--run-onnx` with `onnx-runtime`, `--run-trtx` with `trtx-runtime`, `--run-coreml` with
-`coreml-runtime` on macOS) and `--help` lists the flags of the current build.
+and optionally exports or executes it. The commands below run from the repository root, where
+the sample graphs live in `examples/` and `--features` selects the backend for this package.
+It needs a runtime feature at build time (without one it exits with "rustnn CLI requires a
+runtime feature").
+Validation and conversion do not need `ORT_DYLIB_PATH`; `--run-onnx` does. Each `--run-*` flag
+exists only when its feature is compiled in (`--run-onnx` with `onnx-runtime`, `--run-trtx`
+with `trtx-runtime`, `--run-coreml` with `coreml-runtime` on macOS) and `--help` lists the
+flags of the current build.
 
 ```bash
 # Validate and describe

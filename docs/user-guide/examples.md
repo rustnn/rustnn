@@ -11,16 +11,19 @@ fast.
 | `fast_style_transfer_builder_api.rs` | Builds the fast style transfer network with the builder API (`conv2d`, `conv_transpose2d`, instance normalization with a fallback composed from reductions, `pad`), downloads the weights from the WebNN test-data repository, and pipelines inferences over pre-allocated tensors | `cargo run --release --features native-examples,onnx-runtime --example fast_style_transfer_builder_api -- --input photo.jpg --output styled.png` |
 | `smollm_mlcontext.rs` | Text generation with SmolLM-135M from an onnx2webnn export: loads `.webnn` plus weights, uses dynamic tensor shapes for the KV cache (`rustnn_set_tensor_capacity`, `rustnn_resize_tensor`) and a tokenizer | `cargo run --release --features native-examples,onnx-runtime,dynamic-inputs --example smollm_mlcontext -- --model model.webnn --tokenizer tokenizer.json --max-new-tokens 32` |
 | `resnet50_webnn_rust.rs` | ResNet-50 classification and a latency benchmark from a `.webnn` export, with ImageNet preprocessing of a JPEG or PNG input | `cargo run --release --features onnx-runtime --example resnet50_webnn_rust -- --model resnet50_Opset16.webnn --input cat.jpg --labels examples/imagenet_classes.txt --bench` |
-
-The `.webnn` models for the SmolLM and ResNet-50 examples are not in the repository. Produce
-them with [onnx2webnn](https://github.com/rustnn/onnx2webnn) from the ONNX model (ResNet-50
-from the ONNX model zoo, SmolLM-135M from its Hugging Face ONNX export); the tool writes the
-`.webnn` file with its `manifest.json` and `model.weights` sidecars, and the tokenizer comes
-from the Hugging Face repository. The fast style transfer example downloads its own weights.
 | `gpt2_webnn_rust.rs`, `smollm_webnn_rust.rs` | Older generation loops built on the legacy executor path (`ConverterRegistry` plus `run_onnx_with_inputs`) instead of `MLContext` | `cargo run --features onnx-runtime --example smollm_webnn_rust -- --help` |
 
 Replace `onnx-runtime` with `trtx-runtime` to run the same programs on TensorRT-RTX. All of
 them accept `--help`.
+
+Where the models come from:
+
+- Fast style transfer downloads its weights from the WebNN test-data repository on first run.
+- `smollm_mlcontext` clones https://huggingface.co/tarekziade/SmolLM-135M-webnn (the `.webnn`
+  export, its weights and `tokenizer.json`) when `--model` is omitted.
+- ResNet-50 expects a `.webnn` export you produce yourself: take `resnet50_Opset16.onnx` from
+  the ONNX model zoo and convert it with [onnx2webnn](https://github.com/rustnn/onnx2webnn),
+  which writes the `.webnn` file next to its `manifest.json` and `model.weights`.
 
 Other files in `examples/`:
 
@@ -127,10 +130,11 @@ let mut builder = MLGraphBuilder::new_uncompiled();
 // ... record the graph ...
 let graph_info = builder.finish_graph_info(&outputs)?;
 let converted = ConverterRegistry::with_defaults().convert("onnx", &graph_info)?;
-std::fs::write("model.onnx", &converted.data)?;
+// The file writes return std::io::Error, which rustnn::error::Error does not wrap.
+std::fs::write("model.onnx", &converted.data).expect("write model.onnx");
 if let Some(weights) = converted.weights_data {
-    // Large models keep their initializers in a sidecar file next to the model.
-    std::fs::write(ONNX_EXTERNAL_WEIGHTS_FILENAME, weights)?;
+    // Initializers live in a sidecar file that must stay next to the model.
+    std::fs::write(ONNX_EXTERNAL_WEIGHTS_FILENAME, weights).expect("write weights");
 }
 ```
 
@@ -140,7 +144,7 @@ features are enabled, `trtx`, `litert` and `cann`.
 ### Pick the backend
 
 ```rust
-use rustnn::backend_selection::{Backend, BackendDevice};
+use rustnn::mlcontext::{Backend, BackendDevice};
 
 let options = MLContextOptions::new(MLPowerPreference::Default, true)
     .with_rustnn_backend_hint(Backend::Onnx);
@@ -150,5 +154,8 @@ match context.rustnn_device() {
     other => println!("{other:?}"),
 }
 ```
+
+The hint fixes the backend; the device is still whatever that backend reports for the hints,
+so `accelerated = true` on an ONNX Runtime build without a GPU execution provider prints `Cpu`.
 
 The selection order and the per-backend requirements are described in [Backends](backends.md).
