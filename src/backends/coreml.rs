@@ -4,7 +4,9 @@
 //! owns raw-byte host tensor storage, a [`CoremlBuilder`] converts a [`GraphInfo`]
 //! to a CoreML MLProgram and compiles it once, and [`CoremlGraph`] holds the
 //! compiled model for repeated dispatch.
-
+//!
+// The site page for this backend, kept in one place and included here for the API reference.
+#![doc = include_str!("../../docs/integration/coreml.md")]
 #![cfg(feature = "coreml-runtime")]
 
 use std::collections::HashMap;

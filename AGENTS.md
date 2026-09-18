@@ -113,7 +113,7 @@ with `RUSTNN_DEBUG_ONNX_DIR`, `RUSTNN_TRTX_LOG_VERBOSITY`, `TRTX_JSON_DUMP_PATH`
 
 Check the Chromium reference implementation first
 (https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/, in particular
-`ort/graph_builder_ort.cc`, `coreml/graph_builder_coreml.mm` and
+`ort/graph_builder_ort.cc`, `coreml/graph_builder_coreml.cc` and
 `tflite/graph_builder_tflite.cc`) for the expected lowering and edge cases. Then follow the
 checklist in `docs/development/setup.md`: options struct, `Operation` variant and `op_type`,
 shape inference with tests, builder method, `webnn_json` mapping, each converter (or an explicit

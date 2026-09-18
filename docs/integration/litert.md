@@ -54,5 +54,5 @@ cargo test --test test_litert_execution --features litert-runtime
 ```
 
 CI runs the LiteRT WPT suite on Linux for every pull request as a non-blocking job. The
-generated [operator support report](../development/backend-operator-support.md) lists the
+generated [operator support report](https://rustnn.github.io/rustnn/development/backend-operator-support/) lists the
 operations the converter lowers; the dashboard shows the per-case results.

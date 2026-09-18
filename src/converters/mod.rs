@@ -6,6 +6,8 @@
 //! flatbuffer (`LiteRtConverter`) or a CANN offline model (`CannConverter`). The
 //! [`ConverterRegistry`] exposes the same converters by format name for the CLI and for the
 //! legacy pipeline that pairs them with [`crate::executors`].
+//!
+#![doc = include_str!("../../docs/development/converters.md")]
 
 use std::collections::HashMap;
 

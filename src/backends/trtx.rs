@@ -6,6 +6,8 @@
 //! the `trtx` cache category; the TensorRT runtime (JIT) cache lives in `trtx-jit`. Cache keys
 //! include a hash of the converter sources so converter edits invalidate stale engines.
 //! Behaviour is tuned with [`TrtxOptions`]; `TRTX_JSON_DUMP_PATH` dumps engine layer JSON.
+//!
+#![doc = include_str!("../../docs/integration/tensorrt.md")]
 
 use std::borrow::Cow;
 use std::collections::HashMap;

@@ -20,6 +20,8 @@
 //! The graph is compiled to an offline model through the `hiai-rs` adapter and executed
 //! with a HiAI session; sessions are cached per compiled model. Only selected when requested
 //! with a backend hint. The mock feature validates operator support without a device.
+//!
+#![doc = include_str!("../../docs/integration/cann.md")]
 
 use std::fmt;
 

@@ -7,6 +7,10 @@ and how to debug a wrong model. Read it before touching `src/converters/`.
 ## Contract
 
 ```rust
+use rustnn::GraphInfo;
+use rustnn::converters::ConvertedGraph;
+use rustnn::error::GraphError;
+
 pub trait GraphConverter {
     fn format(&self) -> &'static str;                                   // registry key, e.g. "onnx"
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError>;
@@ -119,7 +123,7 @@ Rules that hold for every converter:
 ## Operator support report
 
 `scripts/generate_backend_operator_report.py` derives the
-[operator support matrix](backend-operator-support.md) from the sources: an operation counts as
+[operator support matrix](https://rustnn.github.io/rustnn/development/backend-operator-support/) from the sources: an operation counts as
 supported when the ONNX or LiteRT converter references its `Operation::<Variant>`, when the
 CoreML converter references the variant or compares against its lower-cased name, when the
 TensorRT converter has the name as a `match op_type` key, or when CANN lists the variant in

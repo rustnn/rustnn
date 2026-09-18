@@ -52,7 +52,7 @@ it prints `[OK]` and `[FAIL]` lines per step.
 
 The converter accepts the operations listed by `is_supported_op` in `src/converters/cann.rs`
 and rejects everything else at build time. The CANN column of the generated
-[operator support report](../development/backend-operator-support.md) is the current list.
+[operator support report](https://rustnn.github.io/rustnn/development/backend-operator-support/) is the current list.
 There is no WPT run for CANN; conformance is checked with the device test.
 
 ## Conversion without a device

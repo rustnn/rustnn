@@ -83,7 +83,7 @@ Check Chromium's implementation first. It is the WebNN reference and shows the l
 backend needs, for example casts for boolean types or decompositions:
 
 - https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/ort/graph_builder_ort.cc (ONNX Runtime)
-- https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/coreml/graph_builder_coreml.mm (CoreML)
+- https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/coreml/graph_builder_coreml.cc (CoreML)
 - https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/tflite/graph_builder_tflite.cc (LiteRT)
 
 Then:

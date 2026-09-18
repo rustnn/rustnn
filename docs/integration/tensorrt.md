@@ -29,7 +29,7 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
   libclang (`LIBCLANG_PATH` when it is not found automatically). `TENSORRT_INCLUDE_DIR`,
   `TENSORRT_LIB_DIR` and `TENSORRT_SDK_DIR` override the header and library locations.
 
-The Windows steps are in [Windows TensorRT-RTX Setup](windows-tensorrt-setup.md).
+The Windows steps are in [Windows TensorRT-RTX Setup](https://rustnn.github.io/rustnn/integration/windows-tensorrt-setup/).
 
 ## Selection
 
@@ -66,6 +66,8 @@ Set through `RustNNOptions::trtx` (`TrtxOptions`):
 | `cuda_graphs` | `true` | Capture and replay CUDA graphs for dispatch |
 
 ```rust
+use rustnn::mlcontext::{Backend, MLContextOptions, MLPowerPreference, RustNNOptions};
+
 let mut options = RustNNOptions::default();
 options.trtx.cuda_graphs = false;
 let context_options = MLContextOptions::new(MLPowerPreference::HighPerformance, true)

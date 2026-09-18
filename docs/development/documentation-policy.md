@@ -8,7 +8,7 @@ request template points here.
 
 | Location | Content | Built by | Published at |
 |---|---|---|---|
-| `//!` and `///` comments in `src/` | Rust API reference: every public item (the crate has `#![warn(missing_docs)]`, and CI denies warnings), the crate overview with the feature and environment variable tables in `src/lib.rs` | `make docs-api` (rustdoc, warnings are errors) | https://rustnn.github.io/rustnn/api/rustnn/ |
+| `//!` and `///` comments in `src/` | Rust API reference: every public item (the crate has `#![warn(missing_docs)]`, and CI denies warnings), the crate overview with the feature and environment variable tables in `src/lib.rs`. The backend pages under `docs/integration/` and `docs/development/converters.md` are also included into their modules with `#![doc = include_str!(...)]`, so they render in rustdoc too: use absolute site URLs for links in those pages and a language tag on every code fence (an untagged or `rust` fence becomes a doctest) | `make docs-api` (rustdoc, warnings are errors) | https://rustnn.github.io/rustnn/api/rustnn/ |
 | `docs/**/*.md`, `mkdocs.yml` | User guide, architecture, development, testing and integration pages | `make docs-build`; strict mode in CI with `make ci-docs` | https://rustnn.github.io/rustnn/ |
 | `docs/development/backend-operator-support.md` | Operation-by-backend matrix generated from the converter sources | `make docs-backend-ops`; CI fails on drift | same site |
 | WPT conformance dashboard | Per-operation pass and fail status per backend | nightly workflow | https://rustnn.github.io/rustnn/wpt-conformance/ |
