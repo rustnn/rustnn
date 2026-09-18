@@ -373,7 +373,7 @@ docs-clean:
 
 # Rust API documentation (rustdoc). Warnings are errors so broken doc links fail CI.
 # The feature list matches what CI type-checks on Linux; coreml-runtime is macOS-only.
-DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,dynamic-inputs
+DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,coreml-runtime,dynamic-inputs
 docs-api:
 	@echo "Building Rust API documentation..."
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --no-deps --lib --features $(DOCS_API_FEATURES)

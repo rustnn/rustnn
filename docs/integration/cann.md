@@ -53,7 +53,10 @@ it prints `[OK]` and `[FAIL]` lines per step.
 The converter accepts the operations listed by `is_supported_op` in `src/converters/cann.rs`
 and rejects everything else at build time. The CANN column of the generated
 [operator support report](https://rustnn.github.io/rustnn/development/backend-operator-support/) is the current list.
-There is no WPT run for CANN; conformance is checked with the device test.
+WPT conformance runs on the device as well: `make test-wpt-cann` cross-compiles the harness
+with the corpus embedded (`wpt-embed-corpus` feature), pushes it with the HiAI libraries over
+`hdc`, runs it single-threaded and retrieves the JSON report; `make wpt-sync-cann` regenerates
+`tests/wpt_conformance/cann_expected_failures.txt`. There is no CANN job in CI.
 
 ## Conversion without a device
 

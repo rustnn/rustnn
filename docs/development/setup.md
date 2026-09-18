@@ -38,8 +38,8 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
 | `test-wpt` | WPT conformance on ONNX Runtime CPU |
 | `test-wpt-op OP=relu` | One operation; `WPT_BACKEND=onnx|trtx|litert|coreml` selects the backend |
-| `test-wpt-trtx`, `test-wpt-litert`, `test-wpt-coreml` | Per-backend WPT runs; `test-wpt-report` and `test-wpt-coreml-report` also write the JSON report |
-| `wpt-sync-onnx`, `wpt-sync-trtx`, `wpt-sync-litert`, `wpt-sync-coreml` | Regenerate snapshots and expected-failure lists |
+| `test-wpt-trtx`, `test-wpt-litert`, `test-wpt-coreml`, `test-wpt-cann` | Per-backend WPT runs (CANN cross-compiles and runs on the device over `hdc`); `test-wpt-report` and `test-wpt-coreml-report` also write the JSON report |
+| `wpt-sync-onnx`, `wpt-sync-trtx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-cann` | Regenerate snapshots and expected-failure lists |
 | `webnn-chromedriver`, `test-webnn-wpt-chrome`, `test-webnn-wpt-chrome-headless` | Browser WebNN graph-build tests in Chrome; see [Browser WebNN](../integration/webnn-browser.md) |
 | `docs-api` | rustdoc with `-D warnings` |
 | `docs-build`, `docs-serve`, `ci-docs`, `docs-clean` | MkDocs site into `site/`, live preview, strict mode as CI runs it, remove the site |

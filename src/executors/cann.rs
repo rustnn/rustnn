@@ -26,17 +26,24 @@ use crate::operator_enums::MLOperandDataType;
 
 /// Host-side input view for a NPU dispatch.
 pub struct CannInput<'a> {
+    /// Data of the input
     pub data: &'a [u8],
+    /// Shape of the input
     pub shape: Vec<u32>,
+    /// Shape data type of the input
     pub dtype: MLOperandDataType,
 }
 
 /// Host-side output view for a NPU dispatch. `actual_len` is filled in by the
 /// runtime with the number of bytes the NPU produced.
 pub struct CannOutput<'a> {
+    /// Data of the output
     pub data: &'a mut [u8],
+    /// Shape of the output
     pub shape: Vec<u32>,
+    /// Data type of the output
     pub dtype: MLOperandDataType,
+    /// `actual_len` is filled in by the runtime with the number of bytes the NPU produced.
     pub actual_len: usize,
 }
 
