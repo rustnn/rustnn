@@ -86,10 +86,11 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
 	fetch-wpt require-wpt-cache test-wpt test-wpt-trtx test-wpt-litert test-wpt-coreml \
-	test-wpt-coreml-report test-wpt-op test-wpt-report \
-	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx \
+	test-wpt-coreml-report test-wpt-op test-wpt-report test-wpt-cann \
+	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
 	webnn-chromedriver test-webnn-wpt-chrome test-webnn-wpt-chrome-headless \
-	onnxruntime-download onnx onnx-validate coreml coreml-validate litert cann validate-all-env
+	onnxruntime-download onnx onnx-validate coreml coreml-validate litert cann \
+	cann-build cann-device-test validate-cann-env validate-all-env
 
 clean:
 	$(CARGO) clean
@@ -216,6 +217,11 @@ wpt-sync-trtx: fetch-wpt
 	@grep -q -F '[WPT] result:' /tmp/wpt-trtx.log
 	node scripts/prune_wpt_snapshots.mjs trtx
 
+# CANN: cann_expected_failures.txt only (requires an OHOS device; no snapshots).
+wpt-sync-cann: fetch-wpt
+	./scripts/update_expected_failures.sh cann 2>&1 | tee /tmp/wpt-cann.log || true
+	@grep -q -F '[WPT] result:' /tmp/wpt-cann.log
+
 fmt:
 	$(CARGO) fmt
 
@@ -321,6 +327,13 @@ cann-device-test: validate-cann-env
 	CANN_DDK=$(CANN_DDK) \
 	./scripts/ohos-test-helper.sh $(filter-out $@,$(MAKECMDGOALS))
 
+test-wpt-cann: require-wpt-cache validate-cann-env
+	@mkdir -p reports
+	$(CANN_CROSS_ENV) $(CARGO) test --test run_wpt_conformance --no-run \
+		--target aarch64-unknown-linux-ohos --features cann-runtime,wpt-embed-corpus --release
+	CANN_DDK=$(CANN_DDK) \
+	./scripts/ohos-test-helper.sh wpt $(filter-out $@,$(MAKECMDGOALS))
+
 validate-all-env: build test onnx-validate coreml-validate
 	@echo "Full pipeline (build/test/convert/validate) completed."
 
@@ -406,6 +419,7 @@ help:
 	@echo "  wpt-sync-litert    - Regenerate LiteRT PASS snapshots + expected-failures"
 	@echo "  wpt-sync-coreml    - Regenerate CoreML expected-failures (macOS)"
 	@echo "  wpt-sync-trtx      - Regenerate TensorRT PASS snapshots (requires GPU)"
+	@echo "  wpt-sync-cann      - Regenerate CANN expected-failures (requires device)"
 	@echo "  webnn-chromedriver - Download a ChromeDriver compatible with installed Chrome"
 	@echo "  test-webnn-wpt-chrome - Run browser WebNN WPT graph-build tests in Chrome"
 	@echo "  test-webnn-wpt-chrome-headless - Run the browser WebNN WPT tests headlessly"
@@ -421,6 +435,7 @@ help:
 	@echo "  cann               - Convert graph to CANN/HiAI format"
 	@echo "  cann-build    		- Cross-compile rustnn for OHOS via cargo"
 	@echo "  cann-device-test   - Test on device via scripts/ohos-test-helper.sh"
+	@echo "  test-wpt-cann      - Run WPT conformance suite via CANN on device"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  docs-serve         - Serve documentation with live reload"

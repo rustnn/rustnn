@@ -21,8 +21,8 @@ pub mod wpt_tensor;
 pub mod wpt_types;
 
 use tolerance::{
-    FloatErrorMetrics, IntegerErrorMetrics, check_integer_tolerance, float_error_metrics,
-    get_operation_tolerance, integer_error_metrics, validate_result,
+    FloatErrorMetrics, IntegerErrorMetrics, cann_fp16_tolerance, check_integer_tolerance,
+    float_error_metrics, get_operation_tolerance, integer_error_metrics, validate_result,
 };
 use wpt_audit::WptAuditCollector;
 use wpt_backend::WptBackend;
@@ -395,6 +395,14 @@ pub fn run_one_test_case_with_audit(
     let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
     let (tolerance_kind, tolerance_value) =
         get_operation_tolerance(operation, test_case.tolerance.as_ref(), &graph_op_refs);
+    // The CANN/HiAI NPU executes in fp16 even for float32 I/O; compare at fp16
+    // significance so conformant fp16 arithmetic is not judged as a float32
+    // failure.
+    let (tolerance_kind, tolerance_value) = if backend.trial_prefix() == "cann" {
+        cann_fp16_tolerance(tolerance_kind, tolerance_value)
+    } else {
+        (tolerance_kind, tolerance_value)
+    };
     let wpt_ulp_only = test_case
         .tolerance
         .as_ref()

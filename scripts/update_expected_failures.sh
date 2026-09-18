@@ -14,7 +14,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage: scripts/update_expected_failures.sh <backend>
 
-  <backend>    onnx | trtx | litert | coreml
+  <backend>    onnx | trtx | litert | coreml | cann
 
 EOF
     exit 2
@@ -28,6 +28,7 @@ case "$BACKEND" in
     trtx)   MAKE_TARGET="test-wpt-trtx"  ;;
     litert) MAKE_TARGET="test-wpt-litert" ;;
     coreml) MAKE_TARGET="test-wpt-coreml" ;;
+    cann)   MAKE_TARGET="test-wpt-cann"   ;;
     *)      usage ;;
 esac
 
@@ -54,15 +55,29 @@ if [ -f "$EXPECTED" ]; then
 fi
 
 set +e
-make "$MAKE_TARGET" 2>&1 | tee "$WPT_LOG" || true
+make "$MAKE_TARGET" 2>&1 | tee "$WPT_LOG"
 set -e
+
+# A completed run always prints a "[WPT] result:" summary. If it is missing the
+# run failed before finishing (build error, no device, ...): keep the baseline.
+if ! grep -q -F '[WPT] result:' "$WPT_LOG"; then
+    echo "error: WPT run did not complete (no '[WPT] result:' in ${WPT_LOG});" >&2
+    echo "       keeping the existing baseline at ${EXPECTED}" >&2
+    if [ -f "$BACKUP" ]; then
+        cp "$BACKUP" "$EXPECTED"
+    elif [ -f "$EXPECTED" ]; then
+        rm -f "$EXPECTED"
+    fi
+    exit 1
+fi
 
 # ---- Extract failures from log ----
 
-sed -nE "s/^[[:space:]]{4,}(${BACKEND}::[^[:space:]]+).*/\1/p" "$WPT_LOG" | sort -u > "$FAILURES"
+sed -nE "s/^[[:space:]]{4,}(${BACKEND}::[^[:space:]]+).*/\1/p" "$WPT_LOG" | LC_ALL=C sort -u > "$FAILURES"
 num_failing=$(wc -l < "$FAILURES")
 
 # ---- Rebuild (or create) expected-failures.txt ----
+# $FAILURES is already sorted (LC_ALL=C) by the extraction above.
 
 if [ -f "$EXPECTED" ]; then
 
@@ -70,11 +85,10 @@ if [ -f "$EXPECTED" ]; then
 
     grep '^#' "$BACKUP" > "$EXPECTED" 2>/dev/null || true
     cat "$FAILURES" >> "$EXPECTED"
-    sort -u -o "$EXPECTED" "$EXPECTED"
 
     new_count=$(grep "^${BACKEND}::" "$EXPECTED" 2>/dev/null | wc -l)
-    added_entries=$(comm -13 <(sort "$BACKUP" 2>/dev/null) "$EXPECTED" | grep "^${BACKEND}::" || true)
-    removed_entries=$(comm -23 <(sort "$BACKUP" 2>/dev/null) "$EXPECTED" | grep "^${BACKEND}::" || true)
+    added_entries=$(comm -13 <(LC_ALL=C sort "$BACKUP" 2>/dev/null) "$EXPECTED" | grep "^${BACKEND}::" || true)
+    removed_entries=$(comm -23 <(LC_ALL=C sort "$BACKUP" 2>/dev/null) "$EXPECTED" | grep "^${BACKEND}::" || true)
     added=$(printf '%s' "$added_entries" | grep -c '^'"${BACKEND}::" || true)
     removed=$(printf '%s' "$removed_entries" | grep -c '^'"${BACKEND}::" || true)
 
@@ -104,5 +118,6 @@ else
 
 fi
 
+rm -f "$BACKUP"
 trap - EXIT
 _cleanup

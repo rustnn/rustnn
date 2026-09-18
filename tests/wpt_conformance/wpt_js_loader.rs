@@ -7,6 +7,10 @@ use std::process::Command;
 
 use super::wpt_types::{WptCorpus, WptLoadedCase};
 
+/// WPT corpus embedded at build time (see `build.rs`).
+#[cfg(feature = "wpt-embed-corpus")]
+const EMBEDDED_WPT_CORPUS: &str = include_str!(concat!(env!("OUT_DIR"), "/webnn-wpt-corpus.json"));
+
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -130,8 +134,23 @@ pub fn check_wpt_revision(wpt_dir: &Path) -> Option<String> {
     }
 }
 
-/// Load the full WPT conformance corpus in one Node.js invocation.
+/// The WPT corpus embedded at build time, when enabled.
+#[cfg(feature = "wpt-embed-corpus")]
+fn embedded_wpt_corpus() -> Option<WptCorpus> {
+    serde_json::from_str(EMBEDDED_WPT_CORPUS).ok()
+}
+
+/// Load the WPT conformance corpus.
+///
+/// With `--features wpt-embed-corpus` the corpus is baked into the binary at
+/// build time (no Node.js needed);
+/// Otherwise it is dumped from the WPT checkout via the host Node.js bridge.
 pub fn load_wpt_corpus(wpt_dir: &Path) -> Result<WptCorpus, String> {
+    #[cfg(feature = "wpt-embed-corpus")]
+    if let Some(corpus) = embedded_wpt_corpus() {
+        return Ok(corpus);
+    }
+
     ensure_wpt_cache(wpt_dir)?;
 
     let script = dump_corpus_script();

@@ -158,6 +158,20 @@ fn default_tolerances() -> HashMap<String, (ToleranceKind, u64)> {
     m
 }
 
+/// The CANN/HiAI NPU executes in fp16 even for float32 I/O, so results carry
+/// fp16-level rounding relative to the float32 WPT references. An 11-bit fp16
+/// significand vs float32's 24-bit is up to 2^(23-10) ≈ 8192 ULP; floor ULP
+/// budgets at 2^14 to leave headroom for accumulation.
+const CANN_FP16_ULP_FLOOR: u64 = 1 << 14;
+
+/// Raise a ULP budget to the CANN fp16 floor (other metrics unchanged).
+pub fn cann_fp16_tolerance(kind: ToleranceKind, value: u64) -> (ToleranceKind, u64) {
+    match kind {
+        ToleranceKind::Ulp => (kind, value.max(CANN_FP16_ULP_FLOOR)),
+        _ => (kind, value),
+    }
+}
+
 /// Get tolerance for an operation; test-case override takes precedence.
 /// When WPT specifies ULP, uses max(wpt_value, merged minimum across graph ops) like pywebnn.
 /// Returns (kind, value): for Ulp, value is the ULP count; for Atol/Rtol, value is f64 bits.

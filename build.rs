@@ -117,10 +117,10 @@ fn create_source_hash(source_files: &[&str]) {
     fs::write(dest_path, hash_string).unwrap();
 }
 
-fn embed_wpt_corpus_for_wasm() -> Result<(), Box<dyn std::error::Error>> {
-    if env::var_os("CARGO_FEATURE_WEBNN_WPT_TESTS").is_none()
-        || env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32")
-    {
+fn embed_wpt_corpus() -> Result<(), Box<dyn std::error::Error>> {
+    // Embed the corpus when explicitly requested.
+    // Used for wasm32 tests and OHOS cross-build for CANN.
+    if env::var_os("CARGO_FEATURE_WPT_EMBED_CORPUS").is_none() {
         return Ok(());
     }
 
@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     build_coreml_protos()?;
     #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
     build_coreml_shim();
-    embed_wpt_corpus_for_wasm()?;
+    embed_wpt_corpus()?;
 
     // Build TFLite flatbuffer schema - Only required for the litert-runtime.
     #[cfg(feature = "litert-runtime")]

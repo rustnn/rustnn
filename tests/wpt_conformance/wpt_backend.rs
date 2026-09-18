@@ -57,6 +57,14 @@ impl WptBackend {
                 MLContextOptions::new(MLPowerPreference::Default, false)
                     .with_rustnn_backend_hint(Backend::Coreml),
             ),
+            // CANN/HiAI (Huawei Ascend NPU). Filtered out by `is_available` unless the
+            // binary is built with `cann-runtime`; availability is still probed at startup
+            // (requires a device).
+            Self::new(
+                "cann",
+                MLContextOptions::new(MLPowerPreference::Default, true)
+                    .with_rustnn_backend_hint(Backend::Cann),
+            ),
         ]
     }
 
@@ -74,6 +82,7 @@ impl WptBackend {
                 "tensorrt" | "trt" => Self::all().into_iter().find(|b| b.prefix == "trtx"),
                 "litert" | "tflite" => Self::all().into_iter().find(|b| b.prefix == "litert"),
                 "core-ml" | "mlprogram" => Self::all().into_iter().find(|b| b.prefix == "coreml"),
+                "cann" => Self::all().into_iter().find(|b| b.prefix == "cann"),
                 _ => None,
             })
     }
@@ -86,7 +95,7 @@ impl WptBackend {
                 Some(backend) => vec![backend],
                 None => {
                     eprintln!(
-                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, coreml or litert); using all backends"
+                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, coreml, litert or cann); using all backends"
                     );
                     Self::all()
                 }

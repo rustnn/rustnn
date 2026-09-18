@@ -24,7 +24,9 @@ fn run_trial(
     test_case: &WptTestCase,
     audit: Option<&WptAuditCollector>,
 ) -> Result<Completion, Failed> {
-    let operation = if backend.trial_prefix() == "litert" {
+    // Normalize camelCase WPT stems to the snake_case names used by the
+    // tolerance tables and the litert skip list.
+    let operation = if matches!(backend.trial_prefix(), "litert" | "cann") {
         wpt_tensor::normalize_wpt_op_name(operation)
     } else {
         operation.to_string()
@@ -84,7 +86,7 @@ fn push_backend_trials(
 
             match &result {
                 Ok(Completion::Completed) => {
-                    if backend_prefix != "coreml" {
+                    if backend_prefix != "coreml" && backend_prefix != "cann" {
                         insta::assert_debug_snapshot!(
                             snapshot_name,
                             (&file_name, &test_name, &backend_prefix, "PASS")

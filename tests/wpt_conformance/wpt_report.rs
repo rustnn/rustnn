@@ -387,6 +387,7 @@ fn backend_and_variant(backend_prefix: &str) -> (String, String) {
         "onnx" => ("onnx".to_string(), "cpu".to_string()),
         "onnx-gpu" => ("onnx".to_string(), "gpu".to_string()),
         "trtx" => ("trtx".to_string(), "trtx".to_string()),
+        "cann" => ("cann".to_string(), "npu".to_string()),
         other => (other.to_string(), "default".to_string()),
     }
 }

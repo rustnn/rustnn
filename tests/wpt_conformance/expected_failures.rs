@@ -9,6 +9,9 @@ static COREML_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
 static LITERT_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| parse_expected_failures(include_str!("litert_expected_failures.txt")));
 
+static CANN_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| parse_expected_failures(include_str!("cann_expected_failures.txt")));
+
 fn parse_expected_failures(contents: &'static str) -> HashSet<&'static str> {
     contents
         .lines()
@@ -25,6 +28,7 @@ pub fn is_expected_failure(backend: &str, trial_name: &str) -> bool {
     match backend {
         "coreml" => COREML_EXPECTED_FAILURES.contains(trial_name),
         "litert" => LITERT_EXPECTED_FAILURES.contains(trial_name),
+        "cann" => CANN_EXPECTED_FAILURES.contains(trial_name),
         _ => false,
     }
 }
@@ -42,6 +46,7 @@ mod tests {
         };
         let coreml_entries = entries(include_str!("coreml_expected_failures.txt"));
         let litert_entries = entries(include_str!("litert_expected_failures.txt"));
+        let cann_entries = entries(include_str!("cann_expected_failures.txt"));
 
         assert_eq!(coreml_entries.len(), super::COREML_EXPECTED_FAILURES.len());
         assert!(
@@ -55,6 +60,8 @@ mod tests {
                 .iter()
                 .all(|entry| entry.starts_with("litert::"))
         );
+        assert_eq!(cann_entries.len(), super::CANN_EXPECTED_FAILURES.len());
+        assert!(cann_entries.iter().all(|entry| entry.starts_with("cann::")));
     }
 
     #[test]
