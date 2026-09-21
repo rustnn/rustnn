@@ -150,12 +150,4 @@ pub mod coreml {
 #[cfg(not(feature = "litert-runtime"))]
 pub mod litert {
     pub(crate) use crate::backends::DisabledContext as LiteRtContext;
-
-    pub fn unsupported_ops() -> &'static [&'static str] {
-        &[]
-    }
-
-    pub fn dtype_unsupported_for_op(_dtype: &str, _op: &str) -> bool {
-        false
-    }
 }

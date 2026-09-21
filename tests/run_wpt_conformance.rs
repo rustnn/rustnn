@@ -13,8 +13,7 @@ use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_tensor;
 use wpt_conformance::wpt_types::WptLoadedCase;
 use wpt_conformance::{
-    run_one_test_case_with_audit, should_skip_test_by_dtype, should_skip_test_by_ops,
-    wpt_types::WptTestCase,
+    run_one_test_case_with_audit, should_skip_test_by_dtype, wpt_types::WptTestCase,
 };
 
 fn run_trial(
@@ -34,11 +33,6 @@ fn run_trial(
 
     if let Some(reason) =
         should_skip_test_by_dtype(backend.trial_prefix(), &operation, &test_case.graph)
-    {
-        return Ok(Completion::ignored_with(reason));
-    }
-    if let Some(reason) =
-        should_skip_test_by_ops(backend.trial_prefix(), &operation, &test_case.graph)
     {
         return Ok(Completion::ignored_with(reason));
     }
