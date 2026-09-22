@@ -201,30 +201,27 @@ test-wpt-report: fetch-wpt onnxruntime-download
 	LIBRARY_PATH="$$LITERT_LIB_DIR:$$LIBRARY_PATH" \
 	RUST_BACKTRACE=1 WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features $(WPT_BACKEND)-runtime -- --test-threads 1
 
-# WPT snapshot + expected-failure sync (per backend).
+# ONNX: onnx_expected_failures.txt.
 wpt-sync-onnx: fetch-wpt
-	INSTA_UPDATE=always $(MAKE) test-wpt 2>&1 | tee /tmp/wpt-onnx.log || true
+	./scripts/update_expected_failures.sh onnx 2>&1 | tee /tmp/wpt-onnx.log || true
 	@grep -q -F '[WPT] result:' /tmp/wpt-onnx.log
-	node scripts/prune_wpt_snapshots.mjs onnx
 
-# LiteRT: PASS snapshots + litert_expected_failures.txt.
+# LiteRT: litert_expected_failures.txt.
 wpt-sync-litert: fetch-wpt
-	INSTA_UPDATE=always ./scripts/update_expected_failures.sh litert 2>&1 | tee /tmp/wpt-litert.log || true
+	./scripts/update_expected_failures.sh litert 2>&1 | tee /tmp/wpt-litert.log || true
 	@grep -q -F '[WPT] result:' /tmp/wpt-litert.log
-	node scripts/prune_wpt_snapshots.mjs litert
 
-# CoreML: coreml_expected_failures.txt only (macOS; no snapshots).
+# CoreML: coreml_expected_failures.txt (macOS).
 wpt-sync-coreml: fetch-wpt
 	./scripts/update_expected_failures.sh coreml 2>&1 | tee /tmp/wpt-coreml.log || true
 	@grep -q -F '[WPT] result:' /tmp/wpt-coreml.log
 
-# TensorRT: PASS snapshots only (requires an NVIDIA GPU; not run in CI).
+# TensorRT: trtx_expected_failures.txt (requires an NVIDIA GPU; not run in CI).
 wpt-sync-trtx: fetch-wpt
-	INSTA_UPDATE=always $(MAKE) test-wpt-trtx 2>&1 | tee /tmp/wpt-trtx.log || true
+	./scripts/update_expected_failures.sh trtx 2>&1 | tee /tmp/wpt-trtx.log || true
 	@grep -q -F '[WPT] result:' /tmp/wpt-trtx.log
-	node scripts/prune_wpt_snapshots.mjs trtx
 
-# CANN: cann_expected_failures.txt only (requires an OHOS device; no snapshots).
+# CANN: cann_expected_failures.txt (requires an OHOS device).
 wpt-sync-cann: fetch-wpt
 	./scripts/update_expected_failures.sh cann 2>&1 | tee /tmp/wpt-cann.log || true
 	@grep -q -F '[WPT] result:' /tmp/wpt-cann.log
@@ -417,10 +414,10 @@ help:
 	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
 	@echo "  test-wpt-cann      - Run WPT conformance suite via CANN on device"
 	@echo "  test-wpt-litert    - Run WPT suite via LiteRT"
-	@echo "  wpt-sync-onnx      - Regenerate ONNX PASS snapshots"
-	@echo "  wpt-sync-litert    - Regenerate LiteRT PASS snapshots + expected-failures"
+	@echo "  wpt-sync-onnx      - Regenerate ONNX expected-failures"
+	@echo "  wpt-sync-litert    - Regenerate LiteRT expected-failures"
 	@echo "  wpt-sync-coreml    - Regenerate CoreML expected-failures (macOS)"
-	@echo "  wpt-sync-trtx      - Regenerate TensorRT PASS snapshots (requires GPU)"
+	@echo "  wpt-sync-trtx      - Regenerate TensorRT expected-failures (requires GPU)"
 	@echo "  wpt-sync-cann      - Regenerate CANN expected-failures (requires device)"
 	@echo "  webnn-chromedriver - Download a ChromeDriver compatible with installed Chrome"
 	@echo "  test-webnn-wpt-chrome - Run browser WebNN WPT graph-build tests in Chrome"

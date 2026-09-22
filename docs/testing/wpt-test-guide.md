@@ -1,6 +1,6 @@
 # WPT Test Guide
 
-The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests) against rustnn's WebNN API (`MLGraphBuilder` + `MLContext::dispatch`). Tests are loaded live from `.https.any.js` files via a Node.js bridge — there is no checked-in JSON snapshot of the corpus.
+The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests) against rustnn's WebNN API (`MLGraphBuilder` + `MLContext::dispatch`). Tests are loaded live from `.https.any.js` files via a Node.js bridge — there is no checked-in JSON dump of the corpus.
 
 **Entry point:** `tests/run_wpt_conformance.rs`  
 **Harness modules:** `tests/wpt_conformance/`
@@ -219,13 +219,17 @@ Report schema: per-file summaries, per-case status (`pass`/`fail`/`skip`), durat
 
 ## Failure tracking
 
-A test is either passing or failing:
+Every backend records conformance the same way: a test passes by completing, and fails
+unless it is listed as a known failure.
 
-- **Passing** → a PASS snapshot (`tests/snapshots/run_wpt_conformance__{backend}_{test}.snap`).
-  Used by `onnx`, `trtx`, and `litert`. CoreML produces no snapshots.
+- **Passing** → the trial completes and its results match the WPT expected data.
 - **Failing** → listed in `tests/wpt_conformance/{backend}_expected_failures.txt`
-  (one `{backend}::{operation}::{name}` per line). Used by `coreml` and `litert`.
-  The test still runs, but its failure is non-fatal.
+  (one `{backend}::{operation}::{name}` per line). The trial still runs, but its failure is
+  non-fatal.
+
+Because the lists are the only recorded baseline, a listed trial that starts passing is not
+flagged: refresh the lists with the sync targets below, which regenerate them from a run
+(`scripts/update_expected_failures.sh` blanks the list first, so every failure surfaces).
 
 The WPT corpus is pinned by the `WPT_REVISION` file (a commit SHA checked out by
 `make fetch-wpt`), so CI is reproducible. At startup the harness compares the
@@ -234,14 +238,14 @@ when the revision cannot be determined). Set `WPT_STRICT_REVISION=1` to turn tha
 warning into a hard failure. Regenerate against the pinned corpus with:
 
 ```bash
-make wpt-sync-onnx     # ONNX PASS snapshots
-make wpt-sync-litert   # LiteRT PASS snapshots + expected-failures
+make wpt-sync-onnx     # ONNX expected-failures
+make wpt-sync-litert   # LiteRT expected-failures
 make wpt-sync-coreml   # macOS: coreml expected-failures
-make wpt-sync-trtx     # TensorRT PASS snapshots (requires a GPU)
+make wpt-sync-trtx     # TensorRT expected-failures (requires an NVIDIA GPU)
 make wpt-sync-cann     # CANN expected-failures (requires a device)
 ```
 
-A scheduled workflow (`.github/workflows/snapshot-sync.yml`) runs these and opens a PR.
+A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a PR.
 
 ## Troubleshooting
 

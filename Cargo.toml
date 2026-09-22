@@ -185,7 +185,6 @@ seahash = "4.1.0"
 
 [dev-dependencies]
 half = "2.4"
-insta = { version = "1.47.2", features = ["yaml"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 dirs = "6.0.0"
 anyhow = "1.0.102"
@@ -216,10 +215,6 @@ required-features = ["native-examples"]
 name = "smollm_mlcontext"
 path = "examples/smollm_mlcontext.rs"
 required-features = ["native-examples"]
-
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3
 
 [lib]
 name = "rustnn"

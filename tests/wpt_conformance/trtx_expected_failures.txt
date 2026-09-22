@@ -1,0 +1,4 @@
+# TensorRT expected WPT failures, one `trtx::<operation>::<test>` entry per line.
+# These trials are still executed; a failing result is made non-fatal.
+# Regenerate with `make wpt-sync-trtx` on a machine with an NVIDIA GPU; the TensorRT
+# WPT suite does not run in CI.

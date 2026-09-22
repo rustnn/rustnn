@@ -191,17 +191,14 @@ Contributions welcome! Please see:
 1. Fork and create feature branch: `git checkout -b feature/my-feature`
 2. Install hooks (optional): `./scripts/install-git-hooks.sh`
 3. Make changes and test: `make test && make python-test`
-4. If WPT snapshots or expected-failure lists need to be updated (indicated by
-   test failures), use one of:
+4. If a WPT expected-failure list needs to be updated (indicated by test failures),
+   use the per-backend sync target, which regenerates `{backend}_expected_failures.txt`
+   from a fresh run:
 
-   - Per-backend sync targets (regenerate PASS snapshots + `*_expected_failures.txt`):
-     - `make wpt-sync-onnx`
-     - `make wpt-sync-litert`
-     - `make wpt-sync-coreml` (macOS only)
-     - `make wpt-sync-trtx` (requires an NVIDIA GPU)
-   - Or update PASS snapshots manually via insta:
-     - `cargo insta review` (interactive; https://insta.rs/docs/cli/)
-     - `INSTA_UPDATE=always make test-wpt` (automatic)
+   - `make wpt-sync-onnx`
+   - `make wpt-sync-litert`
+   - `make wpt-sync-coreml` (macOS only)
+   - `make wpt-sync-trtx` (requires an NVIDIA GPU)
 
    Review the diff before committing!
 5. Format code: `make fmt`

@@ -1,0 +1,3 @@
+# ONNX expected WPT failures, one `onnx::<operation>::<test>` entry per line.
+# These trials are still executed; a failing result is made non-fatal.
+# Regenerate with `make wpt-sync-onnx`.

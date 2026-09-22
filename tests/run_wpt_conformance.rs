@@ -7,7 +7,7 @@ use wpt_conformance::expected_failures::is_expected_failure;
 use wpt_conformance::wpt_audit::WptAuditCollector;
 use wpt_conformance::wpt_backend::WptBackend;
 use wpt_conformance::wpt_js_loader::{
-    check_wpt_revision, default_wpt_dir, load_wpt_corpus, sanitize_test_id, trial_name,
+    check_wpt_revision, default_wpt_dir, load_wpt_corpus, trial_name,
 };
 use wpt_conformance::wpt_report::{WptReportCollector, report_output_path};
 use wpt_conformance::wpt_tensor;
@@ -59,7 +59,6 @@ fn push_backend_trials(
         let file_name = case.file_name.clone();
         let test_name = case.name.clone();
         let backend_prefix = prefix.to_string();
-        let snapshot_name = format!("{backend_prefix}_{}", sanitize_test_id(&test_name));
         let report = report.clone();
         let backend = backend.clone();
         let audit = audit.clone();
@@ -80,12 +79,6 @@ fn push_backend_trials(
 
             match &result {
                 Ok(Completion::Completed) => {
-                    if backend_prefix != "coreml" && backend_prefix != "cann" {
-                        insta::assert_debug_snapshot!(
-                            snapshot_name,
-                            (&file_name, &test_name, &backend_prefix, "PASS")
-                        );
-                    }
                     report.record_pass(&file_name, &test_name, &backend_prefix, duration);
                 }
                 Ok(Completion::Ignored { reason }) => {
