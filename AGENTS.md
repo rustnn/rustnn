@@ -143,6 +143,170 @@ operation table in `docs/user-guide/api-reference.md`.
 `docs/reference/webnn-index.bs` is a cached copy of the specification source (date in
 `docs/reference/README.md`). The `search-bikeshed` tool indexes the live specification:
 
+**Note:** Python bindings are now in [pywebnn](https://github.com/rustnn/pywebnn), which uses rustnn as its core library.
+
+### Key Architectural Principles
+
+**1. Backend-Agnostic Graph Representation (WebNN Spec-Compliant)**
+- `builder.build()` creates an immutable `GraphInfo` structure
+- Graph representation is **platform-independent** and **backend-agnostic**
+- No backend-specific artifacts at graph build time
+- Same graph can be executed on multiple backends
+
+**2. Runtime Backend Selection (WebNN Device Selection Explainer)**
+- Follows [W3C WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md)
+- Backend selection happens at **context creation** using hints, not compile-time
+- `MLContext::new()` takes `accelerated` (bool) and `power_preference` (str) hints:
+  - `accelerated=false` → `Backend::OnnxCpu` (CPU only)
+  - `accelerated=true` + `power="low-power"` → NPU > GPU > CPU
+  - `accelerated=true` + `power="high-performance"` → TensorRT > GPU > NPU > CPU
+  - `accelerated=true` + `power="default"` → TensorRT > GPU > NPU > CPU
+- Platform autonomously selects actual device based on availability
+- Selection logic in `PyMLContext::select_backend()` (src/python/context.rs:473)
+- Feature flags control availability, not selection
+- Per explainer: "implementations have a better grasp of the system...control should be relinquished to them"
+
+**3. Lazy Backend Conversion**
+- Backend conversion happens during **`compute()`**, not `build()`
+- `compute()` method routes to backend-specific execution:
+  - `compute_trtx()` → Converts to ONNX protobuf, executes with TensorRT
+  - `compute_onnx()` → Converts to ONNX protobuf, executes with ONNX Runtime
+  - `compute_coreml()` → Converts to CoreML protobuf, executes with CoreML
+  - `compute_fallback()` → Returns zeros when no backend available
+- Conversion is transparent to the user
+- **CANN exception:** CANN compiles and loads the model at `build()`
+
+**4. Rust-First Architecture**
+- All core logic implemented in pure Rust
+- Python bindings are thin PyO3 wrappers
+- Zero Python code in critical path (validation, conversion, execution)
+- Rust library usable independently without Python
+
+### Key Modules
+
+#### **graph.rs** - Core Data Model
+- `DataType`: Float32, Float16, Int32, Uint32, Int8, Uint8
+- `OperandDescriptor`: Shape and type information
+- `OperandKind`: Input, Constant, Output
+- `Operand`: Graph nodes with descriptors and metadata
+- `Operation`: Graph operations with inputs/outputs
+- `ConstantData`: Weight/constant storage (base64 encoded)
+- `GraphInfo`: Complete graph representation
+
+**Key Convention:** Operands are referenced by their array index (u32) within the graph's operands list.
+
+#### **validator.rs** - Validation Pipeline
+- `ContextProperties`: Validation constraints and limits
+- `GraphValidator`: Validates graph structure and dependencies
+- `ValidationArtifacts`: Results including I/O descriptors and operation dependencies
+
+**Validation Checks:**
+1. Operand count limits
+2. Tensor byte length limits
+3. Valid input/output names
+4. Constant data integrity
+5. Operation dependency ordering
+6. Operand usage consistency
+
+#### **converters/** - Pluggable Format Conversion
+- **Registry Pattern**: `ConverterRegistry` manages converters dynamically
+- **Trait Interface**: `GraphConverter` defines conversion contract
+- **Implementations**:
+  - `OnnxConverter` → ONNX protobuf format
+  - `CoremlMlProgramConverter` → CoreML MLProgram (MIL) protobuf format
+
+#### **executors/** - Runtime Execution
+- **Platform-specific**: Conditional compilation for macOS
+- **TensorRT Runtime**: `run_trtx_with_inputs()` - NVIDIA GPU execution (Linux/Windows, with mock mode for development)
+- **ONNX Runtime**: `run_onnx_with_inputs()` - executes with actual tensor I/O (cross-platform)
+- **CoreML Runtime**: `run_coreml_zeroed_cached()` - macOS only via Objective-C FFI
+
+#### **Backend Selection**
+- Backend selection follows [W3C WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md)
+- Selection based on `accelerated` (bool) and `power_preference` (str) hints
+- Platform autonomously selects optimal backend based on availability
+- Supports: TensorRT (NVIDIA GPU), ONNX Runtime (CPU/GPU), CoreML (macOS)
+
+**For Python API documentation**, see [pywebnn](https://github.com/rustnn/pywebnn)
+
+#### **graphviz.rs** - Visualization
+- Generates DOT format for graph visualization
+- Color-coded nodes: inputs (green), outputs (blue), constants (yellow)
+
+## Development Conventions
+
+### Design Principles
+
+**Rust-First WebNN Implementation:**
+- The Rust code is a fully valid, standalone WebNN implementation
+- All core functionality, validation, and graph operations exist in pure Rust
+- The Rust library is independently usable without any Python dependency
+- Python bindings are a convenience layer to enable easy integration with Python projects
+- Python code should be minimal wrappers that expose Rust functionality
+- This ensures the library can be used in pure Rust projects, CLI tools, and Python projects alike
+
+### Code Style
+
+1. **Naming:**
+   - Files: `snake_case.rs`
+   - Types: `PascalCase`
+   - Functions: `snake_case`
+   - Enums: PascalCase variants, snake_case JSON serialization
+
+2. **Error Handling:**
+   - All fallible operations return `Result<T, GraphError>`
+   - Use `?` operator for error propagation
+   - `thiserror` for error type derivation
+   - Include contextual information in errors
+
+3. **Serde Integration:**
+   - `#[derive(Serialize, Deserialize)]` on all data types
+   - `#[serde(rename_all = "snake_case")]` for JSON compatibility
+   - `serde_with` for base64 encoding of binary data
+   - Optional fields use `Option<T>`
+
+4. **Testing:**
+   - Unit tests in `#[cfg(test)]` modules at end of files
+   - Use realistic data structures matching actual usage
+   - Test examples exist in `graphviz.rs` and `converters/mod.rs`
+
+5. **Formatting:**
+   - No emojis in code, documentation, commit messages, or any project files
+   - Use plain text markers: [OK], [WARNING], [INFO], [TODO], etc.
+   - Keep all text professional and readable in all terminals and editors
+   - Prioritize clarity and accessibility over visual decoration
+
+### Architecture Patterns
+
+1. **Registry Pattern** (converters):
+   - Trait objects: `Box<dyn GraphConverter + Send + Sync>`
+   - Dynamic registration and lookup
+   - Extensible without modifying core code
+
+2. **Builder Pattern** (protobuf construction):
+   - Incremental construction of complex structures
+   - Used in ONNX and CoreML converters
+
+3. **Validation Pipeline**:
+   - Immutable graph input
+   - Stateful validator with progressive checks
+   - Comprehensive artifacts returned for downstream use
+
+4. **Conditional Compilation**:
+   - `#[cfg(target_os = "macos")]` for platform-specific code
+   - `#[cfg(feature = "...")]` for optional features
+   - Graceful degradation on unsupported platforms
+
+5. **Explicit Dependencies**:
+   - No singletons or global state
+   - Pass dependencies via function parameters
+   - Clear data flow through the system
+
+### WebNN Specification Reference
+
+The project uses the `search-bikeshed` tool for efficient browsing and searching of the W3C WebNN specification:
+
+**Installation:**
 ```bash
 pip install search-bikeshed
 search-bs index https://github.com/webmachinelearning/webnn/blob/main/index.bs --name webnn

@@ -699,6 +699,86 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
+    /// TFLite's INT8/UINT8 `SUB` kernel aborts the process (its quantized kernel
+    /// requires quantization params that plain WebNN int8/uint8 tensors lack).
+    /// Emulate via INT32: cast operands up, `SUB`, cast the result back down.
+    fn build_int8_sub_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_type: tflite::TensorType,
+    ) -> bool {
+        if !matches!(
+            in_type,
+            tflite::TensorType::INT8 | tflite::TensorType::UINT8
+        ) {
+            return false;
+        }
+        let Operation::Sub { a, b, .. } = op else {
+            return false;
+        };
+        let out_id = op.outputs()[0];
+        let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
+        let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
+
+        let shape_of = |id: u32| -> Vec<i32> {
+            graph
+                .operand(id)
+                .map(|o| {
+                    o.descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(v) => *v as i32,
+                            _ => -1,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let a_shape = shape_of(*a);
+        let b_shape = shape_of(*b);
+        let out_shape = shape_of(out_id);
+
+        let a32 = self.add_tensor("sub_int8_a32", &a_shape, tflite::TensorType::INT32, 0) as i32;
+        let b32 = self.add_tensor("sub_int8_b32", &b_shape, tflite::TensorType::INT32, 0) as i32;
+        self.emit_cast_op(
+            operator_offsets,
+            a_t,
+            in_type,
+            a32,
+            tflite::TensorType::INT32,
+        );
+        self.emit_cast_op(
+            operator_offsets,
+            b_t,
+            in_type,
+            b32,
+            tflite::TensorType::INT32,
+        );
+        let res32 = emit_op!(
+            self,
+            operator_offsets,
+            std_op::SUB,
+            [a32, b32],
+            "sub_int8_res32",
+            &out_shape,
+            tflite::TensorType::INT32
+        );
+        let out = self.add_tensor("sub_int8_out", &out_shape, in_type, 0) as i32;
+        self.emit_cast_op(
+            operator_offsets,
+            res32,
+            tflite::TensorType::INT32,
+            out,
+            in_type,
+        );
+        tensor_map.insert(out_id, out as u32);
+        true
+    }
+
     fn build_activation_ops(
         &mut self,
         op: &Operation,
@@ -984,6 +1064,7 @@ impl<'a> TfliteContext<'a> {
         &mut self,
         operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
         in_tensor: i32,
+        in_type: tflite::TensorType,
         out_tensor: i32,
         out_type: tflite::TensorType,
     ) {
@@ -993,7 +1074,7 @@ impl<'a> TfliteContext<'a> {
         let co = tflite::CastOptions::create(
             &mut self.fbb,
             &tflite::CastOptionsArgs {
-                in_data_type: tflite::TensorType::INT32,
+                in_data_type: in_type,
                 out_data_type: out_type,
             },
         );
@@ -1052,6 +1133,7 @@ impl<'a> TfliteContext<'a> {
                 self.emit_cast_op(
                     operator_offsets,
                     in_t,
+                    tflite::TensorType::INT32,
                     float_in as i32,
                     tflite::TensorType::FLOAT32,
                 );
@@ -1060,6 +1142,7 @@ impl<'a> TfliteContext<'a> {
                 self.emit_cast_op(
                     operator_offsets,
                     zp_t,
+                    tflite::TensorType::INT32,
                     float_zp as i32,
                     tflite::TensorType::FLOAT32,
                 );
@@ -4426,6 +4509,11 @@ fn build_native_operators<'a>(
                     reason: "scatterND: non-constant indices not yet supported".to_string(),
                 });
             }
+            continue;
+        }
+
+        // sub int8/uint8: TFLite's kernel aborts, emulate via INT32.
+        if ctx.build_int8_sub_op(op, graph, &mut tensor_map, &mut operator_offsets, in_type) {
             continue;
         }
 

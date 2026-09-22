@@ -30,43 +30,6 @@ use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;
 use crate::{GraphError, GraphInfo};
 
-/// WebNN operations not (yet) supported by the LiteRT backend
-const LITERT_UNSUPPORTED_OPS: &[&str] = &["gru", "gru_cell", "lstm", "lstm_cell"];
-
-/// Returns the list of WebNN operations not supported by this backend.
-pub fn unsupported_ops() -> &'static [&'static str] {
-    LITERT_UNSUPPORTED_OPS
-}
-
-/// Returns true if this dtype is NOT supported for this operation.
-pub fn dtype_unsupported_for_op(dtype: &str, op: &str) -> bool {
-    if matches!(op, "dequantize_linear" | "quantize_linear") {
-        return false;
-    }
-    match dtype.to_lowercase().as_str() {
-        "float32" | "float16" => false,
-        "int32" | "uint8" => !matches!(
-            op,
-            "equal"
-                | "greater"
-                | "greater_or_equal"
-                | "lesser"
-                | "lesser_or_equal"
-                | "logical_and"
-                | "logical_not"
-                | "logical_or"
-                | "isNaN"
-                | "isInfinite"
-                | "is_nan"
-                | "is_infinite"
-                | "not_equal"
-                | "scatter_elements"
-                | "where"
-        ),
-        _ => true,
-    }
-}
-
 struct LiteRt;
 
 impl LiteRt {
