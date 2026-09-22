@@ -416,6 +416,7 @@ help:
 	@echo "  test-wpt-report    - Run full WPT suite and write JSON/HTML reports (ignores trial failures)"
 	@echo "  test-wpt-trtx      - Run WPT suite via TensorRT (skips when GPU unavailable)"
 	@echo "  test-wpt-cann      - Run WPT conformance suite via CANN on device"
+	@echo "  test-wpt-litert    - Run WPT suite via LiteRT"
 	@echo "  wpt-sync-onnx      - Regenerate ONNX PASS snapshots"
 	@echo "  wpt-sync-litert    - Regenerate LiteRT PASS snapshots + expected-failures"
 	@echo "  wpt-sync-coreml    - Regenerate CoreML expected-failures (macOS)"

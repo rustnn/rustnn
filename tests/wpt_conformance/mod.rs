@@ -38,22 +38,6 @@ const SUPPORTED_DTYPES: &[&str] = &[
     "float32", "float16", "int8", "uint8", "int32", "uint32", "int64", "uint64", "int4", "uint4",
 ];
 
-/// Skip WPT cases whose operation is not supported by the selected backend.
-pub fn should_skip_test_by_ops(
-    backend_prefix: &str,
-    operation: &str,
-    _graph: &WptGraph,
-) -> Option<String> {
-    if backend_prefix == "litert"
-        && rustnn::backends::litert::unsupported_ops().contains(&operation)
-    {
-        return Some(format!(
-            "operation '{operation}' not supported by litert backend"
-        ));
-    }
-    None
-}
-
 /// Skip WPT cases whose inputs or expected outputs use unsupported tensor dtypes.
 pub fn should_skip_test_by_dtype(
     backend_prefix: &str,
@@ -77,9 +61,6 @@ pub fn should_skip_test_by_dtype(
             // TODO: Needs Investigation
             if operation == "transpose" && spec.shape().is_empty() {
                 return Some("transpose 0D not supported by litert backend".to_string());
-            }
-            if rustnn::backends::litert::dtype_unsupported_for_op(dt, operation) {
-                return Some(format!("dtype '{dt}' not supported by litert backend"));
             }
         }
     }
