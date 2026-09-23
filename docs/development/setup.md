@@ -118,6 +118,16 @@ Ordinary integration suites should be named `tests/test_*.rs` so the shared
 target includes them automatically. The live WPT and browser harnesses remain
 separate: use `make fetch-wpt` followed by `make test-wpt-coreml` for CoreML WPT.
 
+The large-int32 triangular regression is temporarily ignored because native
+CoreML loses integer precision on some configurations, including CI; see
+[the investigation in #235](https://github.com/rustnn/rustnn/pull/235#issuecomment-5790829434).
+Its exact-value assertions remain intact. Run it explicitly when checking a
+CoreML fix or another OS/device configuration:
+
+```bash
+make test-coreml TEST_FILTER='triangular_int32_keeps_values_beyond_float32_precision --ignored'
+```
+
 ## Feature Flags
 
 The project uses Cargo feature flags to control optional functionality. The Makefile handles these automatically:
