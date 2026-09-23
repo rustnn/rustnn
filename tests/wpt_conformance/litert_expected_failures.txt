@@ -800,3 +800,7 @@ litert::tan::tan_float16_3D_tensor
 litert::tan::tan_float16_4D_tensor
 litert::tan::tan_float16_5D_tensor
 litert::tile::tile_float32_1D_constant_tensor
+litert::triangular::triangular_float16_non-finite_values_options_diagonal_1
+litert::triangular::triangular_float16_non-finite_values_options_upper_false_options_diagonal_-1
+litert::triangular::triangular_float32_non-finite_values_options_diagonal_1
+litert::triangular::triangular_float32_non-finite_values_options_upper_false_options_diagonal_-1

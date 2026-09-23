@@ -9,8 +9,8 @@ coreml::averagePool2d::averagePool2d_float32_4D_tensor_options_dilations
 coreml::clamp::clamp_int32_1D_tensor
 coreml::clamp::clamp_int64_1D_tensor_with_bigint_max
 coreml::clamp::clamp_uint32_1D_tensor
-coreml::clamp::clamp_uint64_1D_tensor_with_bigint_max
 coreml::clamp::clamp_uint64_1D_tensor_with_Number_min_and_max
+coreml::clamp::clamp_uint64_1D_tensor_with_bigint_max
 coreml::conv_transpose2d::convTranspose2d_same_output_size_different_padding__padding_2__outputPadding_2__
 coreml::gather::gather_float16_5D_tensor_and_0D_scalar_indices_options_axis_4
 coreml::gather::gather_float32_5D_tensor_and_0D_scalar_indices_options_axis_4
@@ -63,3 +63,5 @@ coreml::scatterND::scatterND_4D_float32_tensors_by_negative_indices
 coreml::scatterND::scatterND_5D_float16_tensors_by_negative_indices
 coreml::scatterND::scatterND_5D_float32_tensors_by_negative_indices
 coreml::subgraph::add___sub___mul___gather_default
+coreml::triangular::triangular_int32_boundary_values_options_diagonal_1
+coreml::triangular::triangular_int32_boundary_values_options_upper_false_options_diagonal_-1

@@ -1,3 +1,5 @@
 # ONNX expected WPT failures, one `onnx::<operation>::<test>` entry per line.
 # These trials are still executed; a failing result is made non-fatal.
 # Regenerate with `make wpt-sync-onnx`.
+onnx::triangular::triangular_int32_boundary_values_options_diagonal_1
+onnx::triangular::triangular_int32_boundary_values_options_upper_false_options_diagonal_-1
