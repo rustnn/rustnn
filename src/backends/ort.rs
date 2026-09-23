@@ -1,3 +1,9 @@
+//! ONNX Runtime backend (`onnx-runtime` feature).
+//!
+//! Builds an ONNX model with [`OnnxConverter`], creates an `ort` session per graph and keeps
+//! tensors in host memory. Devices are the execution-provider devices reported by ONNX
+//! Runtime; the library itself is loaded dynamically from `ORT_DYLIB_PATH`.
+
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;

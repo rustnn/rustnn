@@ -7,6 +7,8 @@ rust-version = "1.97"
 description = "W3C WebNN implementation with ONNX, CoreML, and TensorRT backends [DO NOT USE IN PRODUCTION - Development Release]"
 license = "Apache-2.0"
 repository = "https://github.com/rustnn/rustnn"
+homepage = "https://rustnn.github.io/rustnn/"
+documentation = "https://rustnn.github.io/rustnn/api/rustnn/"
 keywords = ["webnn", "onnx", "coreml", "tensorrt", "neural-networks"]
 categories = ["science", "api-bindings"]
 exclude = [
@@ -18,6 +20,10 @@ exclude = [
     "*.md",
     "!README.md",
 ]
+
+# docs.rs builds with the backends that compile on Linux so their APIs appear in the docs.
+[package.metadata.docs.rs]
+features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "dynamic-inputs"]
 
 # The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to `cfg(feature = "cargo-clippy")`,
 # which rustc flags as an unexpected cfg. A file-level `#![allow(unexpected_cfgs)]` does not
@@ -179,7 +185,9 @@ pollster = { version = "1.0.1", optional = true }
 objc = { version = "0.2", optional = true, features = ["exception"] }
 
 [build-dependencies]
-prost-build = "0.12"
+# cleanup-markdown rewrites the .proto comments as Markdown and fences their code blocks as
+# text, so the generated docs keep Apple's comments without producing failing doctests.
+prost-build = { version = "0.12", features = ["cleanup-markdown"] }
 cc = "1.0"
 seahash = "4.1.0"
 

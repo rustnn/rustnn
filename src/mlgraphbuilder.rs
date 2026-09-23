@@ -1,3 +1,18 @@
+//! WebNN `MLGraphBuilder`: records operations into a [`GraphInfo`] and compiles it.
+//!
+//! Every WebNN builder method exists in two forms: `op(...)` with default options and
+//! `op_with_options(..., options)` taking the matching `ML*Options` struct from
+//! [`crate::operator_options`]. Snake case replaces the JavaScript camel case
+//! (`conv_transpose2d`, `reduce_log_sum_exp`); `where` is `where_` because it is a keyword.
+//! Shape inference runs when an operation is recorded, so shape errors surface immediately as
+//! [`GraphBuilderError::ShapeInferenceError`].
+//!
+//! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
+//! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
+//! without a backend, for tooling that only needs the [`GraphInfo`]
+//! ([`MLGraphBuilder::finish_graph_info`]) or the `.webnn` export
+//! ([`MLGraphBuilder::rustnn_save_webnn`]).
+
 use std::collections::HashMap;
 
 use bytemuck::NoUninit;
@@ -35,8 +50,14 @@ use crate::{
     mlcontext::{MLBackendBuilder, MLContext},
 };
 
+/// Result of the operation-recording methods; `build` and friends use [`crate::error::Result`].
 pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
+/// Records a WebNN graph and compiles it for a backend. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder>
+///
+/// A builder produces exactly one graph: after [`MLGraphBuilder::build`] or
+/// [`MLGraphBuilder::finish_graph_info`] every further call fails with
+/// [`GraphBuilderError::GraphAlreadyBuilt`].
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context, 'builder> {
     backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
@@ -1048,14 +1069,17 @@ fn dequantize_linear_shape(
 ///
 /// Extra parameters must match `Operation` field names (e.g. `axis: u32` for `Softmax`).
 macro_rules! impl_unary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
-        impl_unary_op! {$fn_name, $fn_with_options, $op, MLOperatorOptions}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
+        impl_unary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, MLOperatorOptions}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, input: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options(input, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             input: MLOperand,
@@ -1071,12 +1095,14 @@ macro_rules! impl_unary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
         $option_type:ident,
         $( $extra:ident : $ety:ty ),+ $(,)?
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(
             &mut self,
             input: MLOperand,
@@ -1085,6 +1111,8 @@ macro_rules! impl_unary_op {
             self.$fn_with_options(input, $( $extra ),+, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             input: MLOperand,
@@ -1105,17 +1133,20 @@ macro_rules! impl_unary_op {
 
 /// Generates `fn_name(a, b)` and `fn_with_options(a, b, options)` on `MLGraphBuilder`.
 macro_rules! impl_binary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
-        impl_binary_op! {$fn_name, $fn_with_options, $op, MLOperatorOptions}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
+        impl_binary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, MLOperatorOptions}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
-        impl_binary_op! {$fn_name, $fn_with_options, $op, $option_type, a, b}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+        impl_binary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, $option_type, a, b}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident, $arg1:ident, $arg2:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident, $arg1:ident, $arg2:ident) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, $arg1: MLOperand, $arg2: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options($arg1, $arg2, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -1141,8 +1172,9 @@ macro_rules! impl_binary_op {
 ///
 /// Operand parameter names must match `Operation` field names (e.g. `condition`, `true_value`, `false_value` for `Where`).
 macro_rules! impl_ternary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
         impl_ternary_op! {
+            $(#[$meta])*
             $fn_name,
             $fn_with_options,
             $op,
@@ -1153,6 +1185,7 @@ macro_rules! impl_ternary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
@@ -1161,6 +1194,7 @@ macro_rules! impl_ternary_op {
         $arg3:ident
     ) => {
         impl_ternary_op! {
+            $(#[$meta])*
             $fn_name,
             $fn_with_options,
             $op,
@@ -1171,6 +1205,7 @@ macro_rules! impl_ternary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
@@ -1179,6 +1214,7 @@ macro_rules! impl_ternary_op {
         $arg2:ident,
         $arg3:ident
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(
             &mut self,
             $arg1: MLOperand,
@@ -1188,6 +1224,8 @@ macro_rules! impl_ternary_op {
             self.$fn_with_options($arg1, $arg2, $arg3, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -1215,6 +1253,7 @@ macro_rules! impl_ternary_op {
 /// Two required operands plus an optional third (`quantizeLinear` / `dequantizeLinear`).
 macro_rules! impl_ternary_optional_op {
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_three:ident,
         $fn_with_options:ident,
@@ -1224,10 +1263,13 @@ macro_rules! impl_ternary_optional_op {
         $arg2:ident,
         $optional:ident
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, $arg1: MLOperand, $arg2: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options($arg1, $arg2, None, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with the optional `", stringify!($optional), "` operand.")]
         pub fn $fn_with_three(
             &mut self,
             $arg1: MLOperand,
@@ -1237,6 +1279,8 @@ macro_rules! impl_ternary_optional_op {
             self.$fn_with_options($arg1, $arg2, Some($optional), $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with an optional `", stringify!($optional), "` operand and explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -2008,6 +2052,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
     }
 
+    /// Create a builder whose [`Self::build`] compiles for the backend of `context`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor>
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
     where
         'context: 'builder,
@@ -2019,6 +2065,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Compile an already complete [`GraphInfo`] (for example one returned by
+    /// [`crate::load_graph_from_path`]) for this builder's backend, bypassing the recording
+    /// methods. rustnn extension.
     pub fn build_graph_info(
         &mut self,
         graph: GraphInfo,
@@ -2116,6 +2165,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         crate::webnn_save::write_webnn_and_safetensors(graph, &output_names, path.as_ref())
     }
 
+    /// Mark `outputs` as the graph outputs and compile the graph for the backend.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-build>
+    ///
+    /// Fails when `outputs` is empty, names an input or constant, or maps two names to one
+    /// operand. Output names become the keys that [`MLContext::dispatch`] expects.
     /*async*/
     pub fn build(
         &mut self,
@@ -2234,6 +2288,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         operand.data_type(graph)
     }
 
+    /// Declare a named graph input. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-input>
+    ///
+    /// The name is the key used for the input tensor in [`MLContext::dispatch`].
     pub fn input(
         &mut self,
         name: &str,
@@ -2263,10 +2320,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     // three flavors
     //
     // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant
+
+    /// Constant from an existing [`MLTensor`]. Not implemented yet.
     pub fn constant_from_tensor(&mut self, _tensor: MLTensor) -> crate::error::Result<MLOperand> {
         todo!("not implemented yet. requires backend integration")
     }
 
+    /// Constant from an owned vector of plain-old-data values; the byte size must match
+    /// `descriptor`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant>
     pub fn constant_from_vec<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2310,6 +2371,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
+    /// Constant copied from a slice of plain-old-data values; the byte size must match
+    /// `descriptor`.
     pub fn constant_from_slice<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2363,6 +2426,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(MLOperand { id })
     }
 
+    /// Scalar constant from a single value. Not implemented yet; use
+    /// [`Self::constant_from_slice`] with an empty shape instead.
     pub fn constant_from_value<T>(
         &mut self,
         _data_type: MLOperandDataType,
@@ -2449,37 +2514,106 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         ))
     }
 
-    impl_binary_op!(add, add_with_options, Add);
-    impl_binary_op!(sub, sub_with_options, Sub);
-    impl_binary_op!(mul, mul_with_options, Mul);
-    impl_binary_op!(div, div_with_options, Div);
-    impl_binary_op!(pow, pow_with_options, Pow);
-    impl_binary_op!(max, max_with_options, Max);
-    impl_binary_op!(min, min_with_options, Min);
-    impl_binary_op!(equal, equal_with_options, Equal);
-    impl_binary_op!(greater, greater_with_options, Greater);
     impl_binary_op!(
+        /// Element-wise addition with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        add, add_with_options, Add);
+    impl_binary_op!(
+        /// Element-wise subtraction with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        sub, sub_with_options, Sub);
+    impl_binary_op!(
+        /// Element-wise multiplication with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        mul, mul_with_options, Mul);
+    impl_binary_op!(
+        /// Element-wise division with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        div, div_with_options, Div);
+    impl_binary_op!(
+        /// Element-wise power `a ^ b` with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        pow, pow_with_options, Pow);
+    impl_binary_op!(
+        /// Element-wise maximum with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        max, max_with_options, Max);
+    impl_binary_op!(
+        /// Element-wise minimum with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        min, min_with_options, Min);
+    impl_binary_op!(
+        /// Element-wise `a == b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        equal, equal_with_options, Equal);
+    impl_binary_op!(
+        /// Element-wise `a > b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        greater, greater_with_options, Greater);
+    impl_binary_op!(
+        /// Element-wise `a >= b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
         greater_or_equal,
         greater_or_equal_with_options,
         GreaterOrEqual
     );
-    impl_binary_op!(lesser, lesser_with_options, Lesser);
-    impl_binary_op!(lesser_or_equal, lesser_or_equal_with_options, LesserOrEqual);
-    impl_binary_op!(not_equal, not_equal_with_options, NotEqual);
-    impl_binary_op!(logical_and, logical_and_with_options, LogicalAnd);
-    impl_binary_op!(logical_or, logical_or_with_options, LogicalOr);
-    impl_binary_op!(logical_xor, logical_xor_with_options, LogicalXor);
-    impl_binary_op!(matmul, matmul_with_options, Matmul);
-    impl_binary_op!(gemm, gemm_with_options, Gemm, MLGemmOptions);
     impl_binary_op!(
+        /// Element-wise `a < b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        lesser, lesser_with_options, Lesser);
+    impl_binary_op!(
+        /// Element-wise `a <= b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        lesser_or_equal, lesser_or_equal_with_options, LesserOrEqual);
+    impl_binary_op!(
+        /// Element-wise `a != b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        not_equal, not_equal_with_options, NotEqual);
+    impl_binary_op!(
+        /// Element-wise logical AND of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_and, logical_and_with_options, LogicalAnd);
+    impl_binary_op!(
+        /// Element-wise logical OR of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_or, logical_or_with_options, LogicalOr);
+    impl_binary_op!(
+        /// Element-wise logical XOR of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_xor, logical_xor_with_options, LogicalXor);
+    impl_binary_op!(
+        /// Matrix product of the last two dimensions with batch broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-matmul>
+        matmul, matmul_with_options, Matmul);
+    impl_binary_op!(
+        /// General matrix multiplication `alpha * A * B + beta * C` for 2-D inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gemm>
+        gemm, gemm_with_options, Gemm, MLGemmOptions);
+    impl_binary_op!(
+        /// 2-D convolution of `input` with `filter`; layouts, strides, padding, dilations, groups and bias come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d>
         conv2d,
-        conv2_with_options,
+        conv2d_with_options,
         Conv2d,
         MLConv2dOptions,
         input,
         filter
     );
+
+    /// Former name of [`Self::conv2d_with_options`], kept for compatibility.
+    #[deprecated(note = "renamed to conv2d_with_options")]
+    pub fn conv2_with_options(
+        &mut self,
+        input: MLOperand,
+        filter: MLOperand,
+        options: MLConv2dOptions,
+    ) -> Result<MLOperand> {
+        self.conv2d_with_options(input, filter, options)
+    }
+
     impl_binary_op!(
+        /// 2-D transposed (fractionally strided) convolution.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d>
         conv_transpose2d,
         conv_transpose2d_with_options,
         ConvTranspose2d,
@@ -2488,10 +2622,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         filter
     );
 
+    /// Splits `input` along axis 0 into pieces of the given sizes; `splits` must sum to the
+    /// dimension. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split>
     pub fn split(&mut self, input: MLOperand, splits: &[u32]) -> Result<Vec<MLOperand>> {
         self.split_with_options(input, splits, MLSplitOptions::default())
     }
 
+    /// Same as [`Self::split`] with explicit [`MLSplitOptions`] (the split axis).
     pub fn split_with_options(
         &mut self,
         input: MLOperand,
@@ -2516,6 +2653,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// Splits `input` into `num_splits` equal pieces along the axis of the options.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split>
     pub fn split_equal_with_options(
         &mut self,
         input: MLOperand,
@@ -2541,6 +2680,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     impl_ternary_op!(
+        /// Batch normalization with per-channel `mean` and `variance`; optional `scale` and `bias` come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-batchnorm>
         batch_normalization,
         batch_normalization_with_options,
         BatchNormalization,
@@ -2550,6 +2691,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         variance
     );
     impl_ternary_op!(
+        /// Selects `true_value` where `condition` is non-zero and `false_value` elsewhere.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-where>
         where_,
         where_with_options,
         Where,
@@ -2558,6 +2701,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         false_value
     );
     impl_ternary_op!(
+        /// Copies `updates` into a copy of `input` at the slices addressed by `indices`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatternd>
         scatter_nd,
         scatter_nd_with_options,
         ScatterND,
@@ -2566,6 +2711,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         updates
     );
     impl_ternary_op!(
+        /// Copies `updates` into a copy of `input` at `indices` along `axis`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatterelements>
         scatter_elements,
         scatter_elements_with_options,
         ScatterElements,
@@ -2575,6 +2722,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         updates
     );
     impl_ternary_optional_op!(
+        /// Quantizes `input` with `scale` and an optional `zero_point` to the zero point data type (default `uint8`).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear>
         quantize_linear,
         quantize_linear_with_zeropoint,
         quantize_linear_with_options,
@@ -2585,6 +2734,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         zero_point
     );
     impl_ternary_optional_op!(
+        /// Dequantizes `input` with `scale` and an optional `zero_point` to the scale data type.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear>
         dequantize_linear,
         dequantize_linear_with_zeropoint,
         dequantize_linear_with_options,
@@ -2595,6 +2746,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         zero_point
     );
 
+    /// Extracts a window that begins at `starts` and spans `sizes`, one entry per dimension.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-slice>
     pub fn slice(
         &mut self,
         input: MLOperand,
@@ -2608,6 +2761,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.slice_with_options(input, starts, sizes, opts)
     }
 
+    /// Same as [`Self::slice`] with explicit [`MLSliceOptions`] (per-dimension strides).
     pub fn slice_with_options(
         &mut self,
         input: MLOperand,
@@ -2631,59 +2785,147 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_single_output_operation(operation)
     }
 
-    impl_unary_op!(abs, abs_with_options, Abs);
-    impl_unary_op!(round_even, round_even_with_options, RoundEven);
-    impl_unary_op!(ceil, ceil_with_options, Ceil);
-    impl_unary_op!(cos, cos_with_options, Cos);
-    impl_unary_op!(elu, elu_with_options, Elu, MLEluOptions);
     impl_unary_op!(
+        /// Element-wise absolute value.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        abs, abs_with_options, Abs);
+    impl_unary_op!(
+        /// Element-wise rounding to the nearest integer, ties to even.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        round_even, round_even_with_options, RoundEven);
+    impl_unary_op!(
+        /// Element-wise rounding up to the nearest integer.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        ceil, ceil_with_options, Ceil);
+    impl_unary_op!(
+        /// Element-wise cosine.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        cos, cos_with_options, Cos);
+    impl_unary_op!(
+        /// Exponential linear unit; `alpha` scales the negative branch.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-elu>
+        elu, elu_with_options, Elu, MLEluOptions);
+    impl_unary_op!(
+        /// Piecewise linear approximation of sigmoid, `clamp(alpha * x + beta, 0, 1)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-sigmoid>
         hard_sigmoid,
         hard_sigmoid_with_options,
         HardSigmoid,
         MLHardSigmoidOptions
     );
-    impl_unary_op!(hard_swish, hard_swish_with_options, HardSwish);
     impl_unary_op!(
+        /// Hard swish activation `x * clamp(x + 3, 0, 6) / 6`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-swish>
+        hard_swish, hard_swish_with_options, HardSwish);
+    impl_unary_op!(
+        /// Leaky rectified linear unit; `alpha` is the slope for negative inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-leakyrelu>
         leaky_relu,
         leaky_relu_with_options,
         LeakyRelu,
         MLLeakyReluOptions
     );
-    impl_unary_op!(exp, exp_with_options, Exp);
-    impl_unary_op!(floor, floor_with_options, Floor);
-    impl_unary_op!(gelu, gelu_with_options, Gelu);
-    impl_unary_op!(log, log_with_options, Log);
-    impl_unary_op!(neg, neg_with_options, Neg);
-    impl_unary_op!(relu, relu_with_options, Relu);
-    impl_unary_op!(sigmoid, sigmoid_with_options, Sigmoid);
-    impl_unary_op!(sin, sin_with_options, Sin);
-    impl_unary_op!(sqrt, sqrt_with_options, Sqrt);
-    impl_unary_op!(tan, tan_with_options, Tan);
-    impl_unary_op!(tanh, tanh_with_options, Tanh);
     impl_unary_op!(
+        /// Element-wise exponential `e^x`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        exp, exp_with_options, Exp);
+    impl_unary_op!(
+        /// Element-wise rounding down to the nearest integer.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        floor, floor_with_options, Floor);
+    impl_unary_op!(
+        /// Gaussian error linear unit `x * 0.5 * (1 + erf(x / sqrt(2)))`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gelu-method>
+        gelu, gelu_with_options, Gelu);
+    impl_unary_op!(
+        /// Element-wise natural logarithm.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        log, log_with_options, Log);
+    impl_unary_op!(
+        /// Element-wise negation.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        neg, neg_with_options, Neg);
+    impl_unary_op!(
+        /// Rectified linear unit, `max(0, x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-relu-method>
+        relu, relu_with_options, Relu);
+    impl_unary_op!(
+        /// Logistic sigmoid `1 / (1 + e^-x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-sigmoid-method>
+        sigmoid, sigmoid_with_options, Sigmoid);
+    impl_unary_op!(
+        /// Element-wise sine.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sin, sin_with_options, Sin);
+    impl_unary_op!(
+        /// Element-wise square root.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sqrt, sqrt_with_options, Sqrt);
+    impl_unary_op!(
+        /// Element-wise tangent.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        tan, tan_with_options, Tan);
+    impl_unary_op!(
+        /// Hyperbolic tangent.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tanh-method>
+        tanh, tanh_with_options, Tanh);
+    impl_unary_op!(
+        /// Permutes the dimensions (`permutation` in the options, default: reversed order).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-transpose>
         transpose,
         transpose_with_options,
         Transpose,
         MLTransposeOptions
     );
-    impl_unary_op!(squeeze, squeeze_with_options, Squeeze, MLSqueezeOptions);
     impl_unary_op!(
+        /// Removes size-1 dimensions (all, or the `axes` of the options). Kept from the WebNN emulation appendix.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
+        squeeze, squeeze_with_options, Squeeze, MLSqueezeOptions);
+    impl_unary_op!(
+        /// Inserts size-1 dimensions at the `axes` of the options. Kept from the WebNN emulation appendix.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
         unsqueeze,
         unsqueeze_with_options,
         Unsqueeze,
         MLUnsqueezeOptions
     );
-    impl_unary_op!(erf, erf_with_options, Erf);
-    impl_unary_op!(reciprocal, reciprocal_with_options, Reciprocal);
-    impl_unary_op!(sign, sign_with_options, Sign);
-    impl_unary_op!(logical_not, logical_not_with_options, LogicalNot);
-    impl_unary_op!(identity, identity_with_options, Identity);
+    impl_unary_op!(
+        /// Element-wise Gauss error function.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        erf, erf_with_options, Erf);
+    impl_unary_op!(
+        /// Element-wise reciprocal `1 / x`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        reciprocal, reciprocal_with_options, Reciprocal);
+    impl_unary_op!(
+        /// Element-wise sign (`-1`, `0` or `1`).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sign, sign_with_options, Sign);
+    impl_unary_op!(
+        /// Element-wise logical NOT of a `uint8` input.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_not, logical_not_with_options, LogicalNot);
+    impl_unary_op!(
+        /// Copies the input unchanged.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        identity, identity_with_options, Identity);
 
     // Unary ops with extra method parameters (Option B).
-    impl_unary_op!(arg_min, arg_min_with_options, ArgMin, MLArgMinMaxOptions, axis: u32);
-    impl_unary_op!(arg_max, arg_max_with_options, ArgMax, MLArgMinMaxOptions, axis: u32);
-    impl_unary_op!(softmax, softmax_with_options, Softmax, MLOperatorOptions, axis: u32);
     impl_unary_op!(
+        /// Index of the minimum along `axis`; the output data type comes from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax>
+        arg_min, arg_min_with_options, ArgMin, MLArgMinMaxOptions, axis: u32);
+    impl_unary_op!(
+        /// Index of the maximum along `axis`; the output data type comes from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax>
+        arg_max, arg_max_with_options, ArgMax, MLArgMinMaxOptions, axis: u32);
+    impl_unary_op!(
+        /// Softmax along `axis`; the values along that axis sum to one.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softmax-method>
+        softmax, softmax_with_options, Softmax, MLOperatorOptions, axis: u32);
+    impl_unary_op!(
+        /// Cumulative sum along `axis`; `exclusive` and `reversed` come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cumulativesum>
         cumulative_sum,
         cumulative_sum_with_options,
         CumulativeSum,
@@ -2691,6 +2933,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         axis: u32
     );
     impl_unary_op!(
+        /// Converts the elements to another data type.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cast>
         cast,
         cast_with_options,
         Cast,
@@ -2698,6 +2942,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         data_type: MLOperandDataType
     );
     impl_unary_op!(
+        /// Broadcasts the input to `new_shape`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-expand>
         expand,
         expand_with_options,
         Expand,
@@ -2705,6 +2951,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         new_shape: Vec<MLDimension>
     );
     impl_unary_op!(
+        /// Reinterprets the input with `new_shape`; the element count must not change.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
         reshape,
         reshape_with_options,
         Reshape,
@@ -2712,6 +2960,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         new_shape: Vec<MLDimension>
     );
     impl_unary_op!(
+        /// Repeats the input `repetitions` times along each dimension.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tile>
         tile,
         tile_with_options,
         Tile,
@@ -2719,6 +2969,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         repetitions: Vec<u32>
     );
     impl_unary_op!(
+        /// Pads each dimension by `beginning_padding` and `ending_padding`; mode and value come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pad>
         pad,
         pad_with_options,
         Pad,
@@ -2729,117 +2981,184 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     // Unary ops without extra method parameters (not yet on the builder).
     impl_unary_op!(
+        /// Instance normalization over the spatial dimensions of each channel.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-instancenorm>
         instance_normalization,
         instance_normalization_with_options,
         InstanceNormalization,
         MLInstanceNormalizationOptions
     );
     impl_unary_op!(
+        /// Layer normalization over the `axes` of the options (default: all but the first dimension).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-layernorm>
         layer_normalization,
         layer_normalization_with_options,
         LayerNormalization,
         MLLayerNormalizationOptions
     );
-    impl_unary_op!(linear, linear_with_options, Linear, MLLinearOptions);
-    impl_unary_op!(clamp, clamp_with_options, Clamp, MLClampOptions);
     impl_unary_op!(
+        /// Linear transform `alpha * x + beta`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-linear>
+        linear, linear_with_options, Linear, MLLinearOptions);
+    impl_unary_op!(
+        /// Clamps every element to the `[min_value, max_value]` range of the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-clamp>
+        clamp, clamp_with_options, Clamp, MLClampOptions);
+    impl_unary_op!(
+        /// Resizes two spatial dimensions by `scales` or to `sizes` with nearest-neighbor or linear interpolation.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-resample2d-method>
         resample2d,
         resample2d_with_options,
         Resample2d,
         MLResample2dOptions
     );
-    impl_unary_op!(reverse, reverse_with_options, Reverse, MLReverseOptions);
-    impl_unary_op!(softplus, softplus_with_options, Softplus);
-    impl_unary_op!(softsign, softsign_with_options, Softsign);
-    impl_unary_op!(is_nan, is_nan_with_options, IsNaN);
-    impl_unary_op!(is_infinite, is_infinite_with_options, IsInfinite);
-    impl_unary_op!(shape, shape_with_options, Shape);
     impl_unary_op!(
+        /// Reverses the order of elements along the `axes` of the options (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reverse-method>
+        reverse, reverse_with_options, Reverse, MLReverseOptions);
+    impl_unary_op!(
+        /// Softplus activation `ln(1 + e^x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softplus-method>
+        softplus, softplus_with_options, Softplus);
+    impl_unary_op!(
+        /// Softsign activation `x / (1 + |x|)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softsign-method>
+        softsign, softsign_with_options, Softsign);
+    impl_unary_op!(
+        /// Element-wise NaN test; the `uint8` result is `1` where the input is NaN.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        is_nan, is_nan_with_options, IsNaN);
+    impl_unary_op!(
+        /// Element-wise infinity test; the `uint8` result is `1` where the input is infinite.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        is_infinite, is_infinite_with_options, IsInfinite);
+    impl_unary_op!(
+        /// Returns the shape of the input as a 1-D `int64` tensor (rustnn extension used by onnx2webnn exports; not part of the WebNN specification).
+        shape, shape_with_options, Shape);
+    impl_unary_op!(
+        /// Keeps the upper or lower triangle of the last two dimensions and zeroes the rest.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-triangular>
         triangular,
         triangular_with_options,
         Triangular,
         MLTriangularOptions
     );
     impl_unary_op!(
+        /// 2-D average pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
         average_pool2d,
         average_pool2d_with_options,
         AveragePool2d,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// 2-D max pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
         max_pool2d,
         max_pool2d_with_options,
         MaxPool2d,
         MLPool2dOptions
     );
-    impl_unary_op!(l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
     impl_unary_op!(
+        /// 2-D L2-norm pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-l2>
+        l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
+    impl_unary_op!(
+        /// Average pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `average_pool2d` with the default window).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
         global_average_pool,
         global_average_pool_with_options,
         GlobalAveragePool,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// Max pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `max_pool2d` with the default window).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
         global_max_pool,
         global_max_pool_with_options,
         GlobalMaxPool,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// Sum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_sum,
         reduce_sum_with_options,
         ReduceSum,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Arithmetic mean over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_mean,
         reduce_mean_with_options,
         ReduceMean,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Maximum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_max,
         reduce_max_with_options,
         ReduceMax,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Minimum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_min,
         reduce_min_with_options,
         ReduceMin,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Product over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_product,
         reduce_product_with_options,
         ReduceProduct,
         MLReduceOptions
     );
-    impl_unary_op!(reduce_l1, reduce_l1_with_options, ReduceL1, MLReduceOptions);
-    impl_unary_op!(reduce_l2, reduce_l2_with_options, ReduceL2, MLReduceOptions);
     impl_unary_op!(
+        /// L1 norm (sum of absolute values) over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
+        reduce_l1, reduce_l1_with_options, ReduceL1, MLReduceOptions);
+    impl_unary_op!(
+        /// L2 norm (square root of the sum of squares) over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
+        reduce_l2, reduce_l2_with_options, ReduceL2, MLReduceOptions);
+    impl_unary_op!(
+        /// Logarithm of the sum over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_log_sum,
         reduce_log_sum_with_options,
         ReduceLogSum,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Logarithm of the sum of exponentials over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_log_sum_exp,
         reduce_log_sum_exp_with_options,
         ReduceLogSumExp,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Sum of squares over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_sum_square,
         reduce_sum_square_with_options,
         ReduceSumSquare,
         MLReduceOptions
     );
 
+    /// Gathers slices of `input` along the axis of the options (default 0) at `indices`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gather>
     pub fn gather(&mut self, input: MLOperand, indices: MLOperand) -> Result<MLOperand> {
         self.gather_with_options(input, indices, MLGatherOptions::default())
     }
 
+    /// Same as [`Self::gather`] with explicit [`MLGatherOptions`].
     pub fn gather_with_options(
         &mut self,
         input: MLOperand,
@@ -2861,10 +3180,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Gathers single elements of `input` along the axis of the options; `indices` has the
+    /// output shape. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gatherelements>
     pub fn gather_elements(&mut self, input: MLOperand, indices: MLOperand) -> Result<MLOperand> {
         self.gather_elements_with_options(input, indices, MLGatherOptions::default())
     }
 
+    /// Same as [`Self::gather_elements`] with explicit [`MLGatherOptions`].
     pub fn gather_elements_with_options(
         &mut self,
         input: MLOperand,
@@ -2887,6 +3209,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     impl_binary_op!(
+        /// Gathers slices addressed by the last dimension of `indices`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gathernd>
         gather_nd,
         gather_nd_with_options,
         GatherND,
@@ -2895,6 +3219,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         indices
     );
     impl_binary_op!(
+        /// Parametric rectified linear unit; `slope` broadcasts against `input` for negative values.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-prelu>
         prelu,
         prelu_with_options,
         Prelu,
@@ -2903,10 +3229,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         slope
     );
 
+    /// Concatenates `inputs` along `axis`; all other dimensions must match.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat>
     pub fn concat(&mut self, inputs: &[MLOperand], axis: u32) -> Result<MLOperand> {
         self.concat_with_options(inputs, axis, MLOperatorOptions::default())
     }
 
+    /// Same as [`Self::concat`] with explicit [`MLOperatorOptions`].
     pub fn concat_with_options(
         &mut self,
         inputs: &[MLOperand],
@@ -2977,6 +3306,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(output)
     }
 
+    /// Gated recurrent unit over `steps` time steps. Returns the final hidden state
+    /// `[num_directions, batch, hidden_size]` and, with `return_sequence`, the per-step states
+    /// `[steps, num_directions, batch, hidden_size]`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gru>
     pub fn gru_with_options(
         &mut self,
         input: MLOperand,
@@ -3005,6 +3337,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// One gated recurrent unit step; returns the new hidden state `[batch, hidden_size]`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-grucell>
     pub fn gru_cell_with_options(
         &mut self,
         input: MLOperand,
@@ -3030,6 +3364,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Long short-term memory network over `steps` time steps. Returns the final hidden state,
+    /// the final cell state (both `[num_directions, batch, hidden_size]`) and, with
+    /// `return_sequence`, the per-step hidden states. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstm>
     pub fn lstm_with_options(
         &mut self,
         input: MLOperand,
@@ -3058,6 +3395,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// One long short-term memory step; returns the new hidden state and cell state, both
+    /// `[batch, hidden_size]`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstmcell>
     #[allow(clippy::too_many_arguments)]
     pub fn lstm_cell_with_options(
         &mut self,
@@ -3100,6 +3439,46 @@ mod test {
         },
         mlgraphbuilder::MLGraphBuilder,
     };
+
+    #[test]
+    fn conv2d_bias_through_options_uses_operand_index() {
+        use crate::operator_options::MLConv2dOptions;
+        use crate::operators::Operation;
+
+        let f32_desc = |shape: Vec<u64>| {
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape)
+        };
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder.input("input", &f32_desc(vec![1, 1, 4, 4])).unwrap();
+        let filter = builder
+            .constant_from_slice(&f32_desc(vec![2, 1, 3, 3]), &[0.5f32; 18])
+            .unwrap();
+        let bias = builder
+            .constant_from_slice(&f32_desc(vec![2]), &[1.0f32, 2.0])
+            .unwrap();
+        let options = MLConv2dOptions {
+            bias: Some(bias.rustnn_index()),
+            ..Default::default()
+        };
+        let output = builder.conv2d_with_options(input, filter, options).unwrap();
+        assert_eq!(
+            builder.rustnn_operand_shape(output).unwrap(),
+            vec![1, 2, 2, 2]
+        );
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("output", output);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        let conv_options = graph
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Conv2d { options, .. } => options.as_ref(),
+                _ => None,
+            })
+            .expect("conv2d recorded");
+        assert_eq!(conv_options.bias, Some(u32::from(bias)));
+    }
 
     #[test]
     fn add_inputs() {

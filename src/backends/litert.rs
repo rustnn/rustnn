@@ -2,6 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2
 
+//! LiteRT (TensorFlow Lite) backend (`litert-runtime` feature).
+//!
+//! Converts the graph to a TFLite flatbuffer with [`LiteRtConverter`] (NCHW operands are
+//! transposed to NHWC first) and runs it with the LiteRT interpreter from `litert-sys`.
+//!
+#![doc = include_str!("../../docs/integration/litert.md")]
+
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
@@ -296,6 +303,7 @@ pub(crate) struct LiteRtContext {
     pub(crate) needs_layout_fix: bool,
 }
 
+/// Whether `op` interprets its input as NCHW and needs the NHWC layout transposes.
 pub fn is_spatial_op(op: &Operation) -> bool {
     matches!(
         op,
@@ -619,7 +627,7 @@ fn transpose_nhwc_to_nchw(data: &[u8], shape: &[u64]) -> Vec<u8> {
     out
 }
 
-/// Transpose weight data from OIHW [O,I,H,W] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from OIHW (`[O, I, H, W]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usize) -> Vec<u8> {
     let esz = data.len() / (o * i * h * w);
     if esz == 0 || esz * o * i * h * w != data.len() {
@@ -641,7 +649,7 @@ pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usiz
     out
 }
 
-/// Transpose weight data from HWIO [H,W,I,O] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from HWIO (`[H, W, I, O]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usize) -> Vec<u8> {
     let esz = data.len() / (h * w * i * o);
     if esz == 0 || esz * h * w * i * o != data.len() {
@@ -663,7 +671,7 @@ pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usiz
     out
 }
 
-/// Transpose weight data from IHWO [I,H,W,O] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from IHWO (`[I, H, W, O]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_ihwo_to_ohwi(data: &[u8], i: usize, h: usize, w: usize, o: usize) -> Vec<u8> {
     let esz = data.len() / (i * h * w * o);
     if esz == 0 || esz * i * h * w * o != data.len() {

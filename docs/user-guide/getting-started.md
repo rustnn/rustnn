@@ -1,251 +1,207 @@
 # Getting Started
 
-This guide will help you get started with the WebNN Python API.
+rustnn is a Rust crate. This page goes from an empty project to a graph that runs on a backend,
+then shows how to load graphs from files and how to use the command line tool.
 
-## Installation
+## Requirements
 
-### From PyPI (Quick Start)
+| Requirement | Needed for |
+|---|---|
+| Rust 1.97 or newer (edition 2024); `rust-toolchain.toml` pins it for the repository itself | the crate |
+| `protoc`, the Protocol Buffers compiler, on `PATH` | `build.rs` compiles the ONNX and CoreML schemas |
+| `flatc` | the `litert-runtime` feature only (TFLite schema) |
+| Node.js | the WPT conformance tests only |
+| A backend library | execution; see [Backends](backends.md). The ONNX Runtime shared library works on every platform and is the usual starting point |
 
-Install PyWebNN with bundled ONNX Runtime (v0.4.0+):
+On Windows run `git config --system core.longpaths true` before cloning; the repository
+contains paths longer than 260 characters.
+
+## Add the crate
+
+The WebNN API described on this site is on the `main` branch and not yet published. The
+`rustnn` crate on crates.io (0.5.x) is the earlier converter and loader crate without
+`MLContext`; the docs.rs pages describe that release. Use the git dependency until the next
+publish:
+
+```toml
+[dependencies]
+rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }
+```
+
+Features select backends and go on this dependency line. Without a backend feature the crate
+validates and converts graphs but cannot execute them. The full feature list is in the crate
+documentation (`make docs-api` writes it to `target/doc/rustnn/index.html`; the site publishes
+it under `/api/`) and in [Backends](backends.md).
+
+## Provide ONNX Runtime
+
+The `onnx-runtime` feature loads the ONNX Runtime shared library at run time from the path in
+`ORT_DYLIB_PATH`. The `ort` crate rustnn is built against requires ONNX Runtime 1.29; the
+library in Windows `System32` is older (1.17) and the process aborts with a `BadVersion` panic
+from `ort` when it is picked up, so set the variable before every run.
+
+Download the pinned release. From the repository root with `make` installed:
 
 ```bash
-pip install pywebnn
+make onnxruntime-download          # into target/onnxruntime/
 ```
 
-Version 0.4.0+ includes bundled ONNX Runtime for immediate execution support. No additional dependencies needed!
+Without `make`, fetch the same archive from the ONNX Runtime GitHub release
+`v1.29.0` and unpack it into `target/onnxruntime/`; the archive names are
+`onnxruntime-linux-x64-1.29.0.tgz`, `onnxruntime-osx-arm64-1.29.0.tgz` and
+`onnxruntime-win-x64-1.29.0.zip`:
 
-**Note:** Earlier versions (0.3.0 and below) required separate `onnxruntime` installation and had no execution backends.
+```powershell
+# Windows PowerShell
+New-Item -ItemType Directory -Force target\onnxruntime | Out-Null
+Invoke-WebRequest https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-win-x64-1.29.0.zip -OutFile target\onnxruntime\ort.zip
+Expand-Archive target\onnxruntime\ort.zip -DestinationPath target\onnxruntime
+```
 
-### Building from Source (Recommended for Full Features)
-
-#### Prerequisites
-
-- Python 3.11 or later
-- Rust toolchain
-- NumPy (automatically installed)
-- ONNX Runtime 1.23+ (for execution support)
-
-#### Quick Setup with Makefile (Easiest)
-
-The Makefile handles everything automatically:
+Then point the variable at the library:
 
 ```bash
-# Clone the repository
-git clone https://github.com/tarekziade/rustnn.git
-cd rustnn
-
-# Install with ONNX Runtime support (downloads ONNX Runtime automatically)
-make python-dev
-
-# Run tests to verify
-make python-test
+# Linux
+export ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so.1.29.0
+# macOS (Apple Silicon)
+export ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-osx-arm64-1.29.0/lib/libonnxruntime.1.29.0.dylib
+# Windows (Git Bash)
+export ORT_DYLIB_PATH=$PWD/target/onnxruntime/onnxruntime-win-x64-1.29.0/lib/onnxruntime.dll
 ```
 
-This creates a `.venv-webnn` virtual environment with everything configured.
-
-#### Manual Setup with Maturin
-
-1. **Install Rust** (if not already installed):
-   ```bash
-   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-   ```
-
-2. **Clone and setup**:
-   ```bash
-   git clone https://github.com/tarekziade/rustnn.git
-   cd rustnn
-   pip install maturin
-   ```
-
-3. **Build with features**:
-   ```bash
-   # With ONNX Runtime support (requires ONNX Runtime 1.23+)
-   maturin develop --features python,onnx-runtime
-
-   # macOS: Add CoreML support
-   maturin develop --features python,onnx-runtime,coreml-runtime
-
-   # Basic (validation/conversion only, no execution)
-   maturin develop --features python
-   ```
-
-**Note:** When building with `onnx-runtime` feature, you need ONNX Runtime libraries available. The Makefile handles this automatically. For manual setup, see the [development guide](../development/setup.md).
-
-## Your First Graph
-
-Let's build a simple computational graph that adds two tensors and applies ReLU activation.
-
-### Step 1: Import and Setup
-
-```python
-import webnn
-import numpy as np
-
-# Create the ML namespace and context
-ml = webnn.ML()
-context = ml.create_context(accelerated=False, power_preference="default")
+```powershell
+# Windows PowerShell
+$env:ORT_DYLIB_PATH = "$PWD\target\onnxruntime\onnxruntime-win-x64-1.29.0\lib\onnxruntime.dll"
 ```
 
-The `MLContext` represents the execution environment. Following the [W3C WebNN Device Selection spec](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md), you provide hints:
-- `accelerated`: `True` to request GPU/NPU, `False` for CPU-only
-- `power_preference`: "default", "high-performance", or "low-power"
+## First graph
 
-The platform autonomously selects the actual device based on availability.
+The program below computes `y = relu(x + 1)` for a 2x2 tensor.
 
-### Step 2: Create a Graph Builder
+```rust
+use rustnn::mlcontext::{
+    MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+    MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+};
+use rustnn::operator_enums::MLOperandDataType;
 
-```python
-# Create a graph builder
-builder = context.create_graph_builder()
+fn main() -> rustnn::error::Result<()> {
+    // 1. Context: backend selection happens here. `accelerated = false` asks for a CPU device.
+    let options = MLContextOptions::new(MLPowerPreference::Default, false);
+    let mut context = MLContext::create(&options)?;
+    println!("backend: {:?}", context.rustnn_backend());
+
+    // 2. Builder: records operations for this context's backend.
+    let mut builder = MLGraphBuilder::new(&mut context)?;
+    let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x = builder.input("x", &descriptor)?;
+    let one = builder.constant_from_slice(&descriptor, &[1.0f32; 4])?;
+    let sum = builder.add(x, one)?;
+    let y = builder.relu(sum)?;
+
+    // 3. Build: names the outputs and compiles the graph. Output names are the dispatch keys.
+    let mut outputs = MLNamedOperands::new();
+    outputs.insert("y", y);
+    let mut graph = builder.build(&outputs)?;
+
+    // 4. Tensors: allocated by the context; the flags decide what the host may do with them.
+    let tensor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x_tensor = context.create_tensor(&tensor.to_writable())?;
+    let y_tensor = context.create_tensor(&tensor.to_readable())?;
+    context.write_tensor(&x_tensor, &[-2.0f32, -1.0, 0.0, 1.0])?;
+
+    // 5. Dispatch: bind tensors by name and run.
+    let mut inputs = MLNamedTensors::new();
+    inputs.insert("x", &x_tensor);
+    let mut output_tensors = MLNamedTensors::new();
+    output_tensors.insert("y", &y_tensor);
+    context.dispatch(&mut graph, &inputs, &output_tensors)?;
+
+    // 6. Read back: the buffer must hold exactly the tensor's bytes.
+    let mut result = [0.0f32; 4];
+    context.read_tensor(&y_tensor, &mut result)?;
+    assert_eq!(result, [0.0, 0.0, 1.0, 2.0]);
+    Ok(())
+}
 ```
 
-The graph builder is used to construct computational graphs using a declarative API.
+Run it with `ORT_DYLIB_PATH` set in the same shell; the backend feature is already on the
+dependency line:
 
-### Step 3: Define Inputs
-
-```python
-# Define two input operands
-x = builder.input("x", [2, 3], "float32")
-y = builder.input("y", [2, 3], "float32")
-```
-
-Each input has:
-- A **name** for identification
-- A **shape** (list of dimensions)
-- A **data type** ("float32", "float16", "int32", etc.)
-
-### Step 4: Build Operations
-
-```python
-# Add the inputs
-sum_result = builder.add(x, y)
-
-# Apply ReLU activation
-output = builder.relu(sum_result)
-```
-
-Operations are chained to build the computational graph.
-
-### Step 5: Compile the Graph
-
-```python
-# Compile the graph with named outputs
-graph = builder.build({"output": output})
-
-# Inspect the compiled graph
-print(f"Graph has {graph.operand_count} operands")
-print(f"Graph has {graph.operation_count} operations")
-print(f"Inputs: {graph.get_input_names()}")
-print(f"Outputs: {graph.get_output_names()}")
-```
-
-The `build()` method:
-- Validates the graph structure
-- Returns a compiled `MLGraph` object
-- Takes a dictionary mapping output names to operands
-
-### Step 6: Execute the Graph
-
-```python
-import numpy as np
-
-# Prepare input data
-x_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
-y_data = np.array([[1, 1, 1], [1, 1, 1]], dtype=np.float32)
-
-# Execute the graph with actual inputs
-results = context.compute(graph, {"x": x_data, "y": y_data})
-
-print("Input x:")
-print(x_data)
-print("\nInput y:")
-print(y_data)
-print("\nOutput (relu(x + y)):")
-print(results["output"])
-# [[2. 3. 4.]
-#  [5. 6. 7.]]
-```
-
-### Step 7: Export to Other Formats (Optional)
-
-```python
-# Export to ONNX for deployment
-context.convert_to_onnx(graph, "my_model.onnx")
-print("✓ ONNX model saved")
-
-# Export to CoreML (macOS only)
-try:
-    context.convert_to_coreml(graph, "my_model.mlmodel")
-    print("✓ CoreML model saved")
-except Exception as e:
-    print(f"CoreML conversion: {e}")
-```
-
-## Complete Example
-
-Here's the complete code with execution:
-
-```python
-import webnn
-import numpy as np
-
-def main():
-    # Setup
-    ml = webnn.ML()
-    context = ml.create_context(accelerated=False)
-    builder = context.create_graph_builder()
-
-    # Build graph: output = relu(x + y)
-    x = builder.input("x", [2, 3], "float32")
-    y = builder.input("y", [2, 3], "float32")
-    sum_result = builder.add(x, y)
-    output = builder.relu(sum_result)
-
-    # Compile
-    graph = builder.build({"output": output})
-
-    print(f"✓ Graph compiled: {graph.operand_count} operands, "
-          f"{graph.operation_count} operations")
-
-    # Execute with real data
-    x_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
-    y_data = np.array([[1, 1, 1], [1, 1, 1]], dtype=np.float32)
-    results = context.compute(graph, {"x": x_data, "y": y_data})
-
-    print(f"✓ Computed output:\n{results['output']}")
-
-    # Optional: Export to ONNX
-    context.convert_to_onnx(graph, "model.onnx")
-    print(f"✓ Model exported to model.onnx")
-
-if __name__ == "__main__":
-    main()
-```
-
-## Next Steps
-
-- Learn about all available operations in the [API Reference](api-reference.md)
-- Explore more complex examples in [Examples](examples.md)
-- Read about advanced topics in [Advanced Topics](advanced.md)
-
-## Common Issues
-
-### Import Error
-
-If you get `ModuleNotFoundError: No module named 'webnn'`:
-- Make sure you ran `maturin develop` successfully
-- Verify you're using the correct Python environment
-
-### Build Errors
-
-If maturin build fails:
-- Ensure Rust is installed: `rustc --version`
-- Update maturin: `pip install -U maturin`
-- Check that you have the required features: `cargo check --features python`
-
-### NumPy Compatibility
-
-The library requires NumPy >= 1.20.0. Update if needed:
 ```bash
-pip install -U numpy
+export ORT_DYLIB_PATH=...          # PowerShell: $env:ORT_DYLIB_PATH = "..."
+cargo run
 ```
+
+Points worth knowing:
+
+- Every builder call infers the output shape and data type immediately, so shape errors
+  surface at the call, not at build time.
+- `build` consumes the recorded graph. A builder compiles exactly one graph; create a new
+  builder for the next one.
+- The names passed to `input` and `build` are the keys that `dispatch` validates the tensor
+  bindings against. A missing input, a shape mismatch or a wrong data type is reported as
+  `Error::GraphDispatchError` before the backend runs.
+- Graphs and tensors borrow the context; the borrow checker keeps them from outliving it.
+
+## Load a graph from a file
+
+rustnn reads the `.webnn` text format and the JSON format of the
+[webnn-graph](https://github.com/rustnn/webnn-graph) crate, including the exports of
+[onnx2webnn](https://github.com/rustnn/onnx2webnn). Weights referenced with `@weights(...)`
+are resolved from files next to the graph: `manifest.json` plus `model.weights`, or the
+`.safetensors` file written by `rustnn_save_webnn`.
+
+```rust
+use rustnn::load_graph_from_path;
+use rustnn::mlcontext::{MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference};
+
+let graph_info = load_graph_from_path("model.webnn")?;
+let mut context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false))?;
+let mut builder = MLGraphBuilder::new(&mut context)?;
+let graph = builder.build_graph_info(graph_info)?;
+// graph.input_descriptors and graph.output_descriptors list the names and shapes to bind.
+```
+
+`build_graph_info` is a rustnn extension: it compiles an already complete graph, bypassing the
+recording methods. The `examples/` directory contains `sample_graph.webnn`, `sample_graph.json`
+and `toy_transformer.webnn` to try this with.
+
+## Command line tool
+
+The `rustnn` binary validates a graph file, prints its inputs, outputs and dependency fan-out,
+and optionally exports or executes it. The commands below run from the repository root, where
+the sample graphs live in `examples/` and `--features` selects the backend for this package.
+It needs a runtime feature at build time (without one it exits with "rustnn CLI requires a
+runtime feature").
+Validation and conversion do not need `ORT_DYLIB_PATH`; `--run-onnx` does. Each `--run-*` flag
+exists only when its feature is compiled in (`--run-onnx` with `onnx-runtime`, `--run-trtx`
+with `trtx-runtime`, `--run-coreml` with `coreml-runtime` on macOS) and `--help` lists the
+flags of the current build.
+
+```bash
+# Validate and describe
+cargo run --features onnx-runtime -- examples/sample_graph.webnn
+
+# Graphviz export
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --export-dot target/graph.dot
+dot -Tpng target/graph.dot -o target/graph.png
+
+# Convert; formats are onnx, coreml and, with their features, trtx, litert and cann
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --convert-output target/graph.onnx
+
+# Convert and execute once with zeroed inputs (ORT_DYLIB_PATH must be set for --run-onnx)
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --run-onnx
+cargo run --features onnx-runtime,trtx-runtime -- examples/sample_graph.webnn --convert onnx --run-trtx
+cargo run --features coreml-runtime -- examples/sample_graph.webnn --convert coreml --run-coreml   # macOS
+```
+
+`--tensor-limit <bytes>` raises the validator's tensor byte limit for very large models. The
+`make run`, `make viz`, `make onnx` and `make coreml` targets wrap these commands.
+
+## Next steps
+
+- [API Overview](api-reference.md): types, builder conventions and error types.
+- [Backends](backends.md): selection rules and per-backend requirements.
+- [Examples](examples.md): the example programs and short recipes.
+- [Advanced Topics](advanced.md): backend options, dynamic shapes, saving graphs, caching and debugging.

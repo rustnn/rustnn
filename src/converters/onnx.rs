@@ -16,6 +16,14 @@
  * limitations under the License.
  */
 
+//! WebNN graph to ONNX protobuf converter (format name `onnx`).
+//!
+//! Every [`crate::operators::Operation`] variant is lowered to ONNX nodes; WebNN semantics that
+//! ONNX Runtime does not implement directly (uint8 booleans, integer clamps, WebNN padding
+//! order, blockwise quantization, empty reduction axes) are decomposed into primitive ops.
+//! Initializers above the protobuf size limit are moved to an external weights blob that
+//! callers must store as [`ONNX_EXTERNAL_WEIGHTS_FILENAME`] next to the model.
+
 use crate::converters::{ConvertedGraph, ONNX_EXTERNAL_WEIGHTS_FILENAME, operand_name};
 use crate::debug_print;
 use crate::error::GraphError;
@@ -84,6 +92,7 @@ fn onnx_pack_external_initializer_raw_data(initializers: &mut [TensorProto]) -> 
     any.then_some(blob)
 }
 
+/// Converts a graph to an ONNX `ModelProto`; large initializers go to an external weights file.
 #[derive(Default)]
 pub struct OnnxConverter;
 

@@ -1,3 +1,10 @@
+//! One-shot TensorRT-RTX execution of converted models (legacy; see [`crate::executors`]).
+//!
+//! [`run_trtx_with_inputs`] accepts either an ONNX model (parsed by TensorRT) or a serialized
+//! engine produced by the `trtx` converter, builds or deserializes it, runs once and returns
+//! host outputs. The TensorRT library is loaded on demand; re-exports
+//! [`dynamically_load_tensorrt`] for callers that ship their own TensorRT-RTX build.
+
 #![cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
 
 use std::collections::HashMap;
@@ -77,16 +84,21 @@ pub(crate) fn create_trtx_logger() -> Result<trtx::Logger, GraphError> {
     })
 }
 
+/// Output metadata reported by [`run_trtx_zeroed`].
 #[derive(Debug, Clone)]
 pub struct TrtxOutput {
+    /// Engine tensor name.
     pub name: String,
+    /// Shape reported by the engine.
     pub shape: Vec<i64>,
+    /// TensorRT data type name.
     pub data_type: String,
 }
 
 /// Input tensor for TensorRT execution. Caller provides raw bytes in the format
 /// expected by the engine (e.g. f32 or f16 little-endian per element).
 pub struct TrtxInput {
+    /// Engine tensor name.
     pub name: String,
     /// Raw tensor bytes (length must match engine's expected size for this tensor).
     pub data: Vec<u8>,
@@ -94,9 +106,13 @@ pub struct TrtxInput {
 
 /// Output tensor with raw bytes and data type so the caller can interpret or convert.
 pub struct TrtxOutputWithData {
+    /// Engine tensor name.
     pub name: String,
+    /// Shape of the output.
     pub shape: Vec<usize>,
+    /// Raw little-endian element bytes.
     pub data: Vec<u8>,
+    /// TensorRT data type name of `data`.
     pub data_type: String,
 }
 
@@ -111,7 +127,7 @@ fn is_onnx_format(bytes: &[u8]) -> bool {
 /// This is useful for validation and testing graph structure
 ///
 /// For native WebNN [`crate::converters::TrtxConverter`] engines (not ONNX), input tensor names
-/// must match [`TrtxConverter::engine_io_tensor_name`] for each graph input operand id.
+/// must match [`crate::converters::TrtxConverter::engine_io_tensor_name`] for each graph input operand id.
 ///
 /// If model_bytes appears to be ONNX format, it will be parsed as ONNX and built into an engine.
 /// Otherwise, it will be treated as a pre-serialized TensorRT engine.

@@ -954,7 +954,7 @@ mod tests {
             ..Default::default()
         };
         let output: MLOperand = builder
-            .conv2_with_options(input, filter, conv_opts)
+            .conv2d_with_options(input, filter, conv_opts)
             .unwrap();
         let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
 

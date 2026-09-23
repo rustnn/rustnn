@@ -1,3 +1,11 @@
+//! Persistent on-disk caches used by backends (currently TensorRT engines and its runtime
+//! cache).
+//!
+//! Entries live under `<platform cache dir>/rustnn/<category>/<key>`, for example
+//! `~/.cache/rustnn/trtx` on Linux or `%LOCALAPPDATA%\rustnn\trtx` on Windows. Writes go
+//! through a temporary file and an atomic rename. With the `zstd-cache-compression` feature
+//! entries are stored compressed with a `.zstd` suffix.
+
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::{Read, Write};
@@ -6,38 +14,55 @@ use thiserror::Error;
 
 use log::debug;
 
+/// Failures of the on-disk caches.
 #[derive(Debug, Error)]
 pub enum CacheError {
+    /// The platform reports no cache directory.
     #[error("Failed to create cache path")]
     FailedToDetermineCachePath,
 
+    /// The cache directory could not be created.
     #[error("Failed to create cache path: {path:?} ({source})")]
     FailedToCreateCachePath {
+        /// Directory that could not be created.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
 
+    /// An entry could not be written.
     #[error("Failed to write cache file: {path:?} ({source})")]
     FailedToWriteCacheFile {
+        /// File that could not be written.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
 
+    /// An entry could not be read (including a plain cache miss).
     #[error("Failed to read cache file: {path:?} ({source})")]
     FailedToReadCacheFile {
+        /// File that could not be read.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
 }
 
+/// Result of cache operations.
 pub type CacheResult<T> = std::result::Result<T, CacheError>;
 
+/// A key-value store of byte blobs under `<cache_dir>/rustnn/<category>`.
 pub trait PersistentCache<'cache>: Sized + Send + Sync + std::fmt::Debug {
+    /// Open (and create) the cache directory for `category`.
     fn new(category: &str) -> CacheResult<Self>;
+    /// Read the entry stored under `key`.
     fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>>;
+    /// Write `data` under `key`, replacing an existing entry atomically.
     fn set(&self, key: &str, data: &[u8]) -> CacheResult<()>;
 }
 
+/// One file per key, uncompressed.
 // should probably be a SQLite data base that
 // where it is easy to evict old data, do size management and also allow to work without file access
 #[derive(Debug)]
@@ -79,8 +104,10 @@ impl<'cache> PersistentCache<'cache> for SimpleFileCache {
     }
 }
 
+/// Cache used when the `zstd-cache-compression` feature is off.
 pub type DefaultCache = SimpleFileCache;
 
+/// One zstd-compressed file per key (`<key>.zstd`).
 #[cfg(feature = "zstd-cache-compression")]
 #[derive(Debug)]
 pub struct ZstdCompressedFileCache {

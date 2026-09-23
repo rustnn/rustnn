@@ -1,12 +1,24 @@
+//! Structural validation of a [`GraphInfo`], modelled on Chromium's WebNN graph checks.
+//!
+//! [`GraphValidator`] checks operand counts and tensor byte limits from
+//! [`ContextProperties`], input/output naming, constant data sizes, operand production order
+//! and quantization constraints. It returns [`ValidationArtifacts`] with the named input and
+//! output descriptors that the CLI and the legacy executors use to bind tensors. The
+//! validator inspects positional operands; operands referenced only from options (for
+//! example `gemm.c`) are not checked.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, OperandDescriptor, OperandKind};
 use crate::operators::Operation;
 
+/// Limits the validator enforces.
 #[derive(Debug, Clone)]
 pub struct ContextProperties {
+    /// Maximum byte size of a single operand (default 256 MiB).
     pub tensor_byte_length_limit: usize,
+    /// Data types allowed for graph inputs and outputs (default: all).
     pub allowed_io_data_types: HashSet<DataType>,
 }
 
@@ -33,14 +45,20 @@ impl Default for ContextProperties {
     }
 }
 
+/// Facts collected while validating, used to bind tensors and to print the graph.
 #[derive(Debug)]
 pub struct ValidationArtifacts {
+    /// Graph inputs by name.
     pub input_names_to_descriptors: HashMap<String, OperandDescriptor>,
+    /// Graph outputs by name.
     pub output_names_to_descriptors: HashMap<String, OperandDescriptor>,
+    /// Operations (by label or type) that consume each operand.
     pub operand_to_dependent_operations: HashMap<u32, Vec<String>>,
+    /// Operation that produces each non-input operand.
     pub operand_to_producing_operation: HashMap<u32, String>,
 }
 
+/// Validates one graph; consumed by [`GraphValidator::validate`].
 pub struct GraphValidator<'a> {
     graph: &'a GraphInfo,
     context: ContextProperties,
@@ -50,6 +68,7 @@ pub struct GraphValidator<'a> {
 }
 
 impl<'a> GraphValidator<'a> {
+    /// Validator for `graph` with the given limits.
     pub fn new(graph: &'a GraphInfo, context: ContextProperties) -> Self {
         Self {
             graph,
@@ -60,6 +79,7 @@ impl<'a> GraphValidator<'a> {
         }
     }
 
+    /// Run all checks; the first failure is returned as a [`GraphError`].
     pub fn validate(mut self) -> Result<ValidationArtifacts, GraphError> {
         if self.graph.operands.is_empty()
             || self.graph.operations.is_empty()

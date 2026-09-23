@@ -15,7 +15,6 @@ OHOS_SDK_NATIVE ?=
 ORT_VERSION ?= 1.29.0
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
-MATURIN_ARGS ?=
 CHROMEDRIVER_CACHE ?= $(CURDIR)/.cache/chromedriver
 CHROMEDRIVER ?= $(CHROMEDRIVER_CACHE)/chromedriver
 
@@ -86,7 +85,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 
 .PHONY: build test fmt fmt-check lint run viz clean clean-all help \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
-	docs-serve docs-build docs-clean ci-docs docs-backend-ops docs-backend-ops-check \
+	docs-serve docs-build docs-clean ci-docs docs-api docs-backend-ops docs-backend-ops-check \
 	fetch-wpt require-wpt-cache test-wpt test-wpt-trtx test-wpt-litert test-wpt-coreml \
 	test-wpt-coreml-report build-coreml test-coreml test-wpt-op test-wpt-report test-wpt-cann \
 	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
@@ -372,6 +371,14 @@ docs-clean:
 	@echo "Cleaning documentation build artifacts..."
 	rm -rf site/
 
+# Rust API documentation (rustdoc). Warnings are errors so broken doc links fail CI.
+# The feature list matches what CI type-checks on Linux; coreml-runtime is macOS-only.
+DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,coreml-runtime,dynamic-inputs
+docs-api:
+	@echo "Building Rust API documentation..."
+	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --no-deps --lib --features $(DOCS_API_FEATURES)
+	@echo "[OK] Rust API documentation generated in target/doc/rustnn/"
+
 docs-backend-ops:
 	@echo "Generating backend operator support report..."
 	python3 scripts/generate_backend_operator_report.py
@@ -453,6 +460,7 @@ help:
 	@echo "  docs-serve         - Serve documentation with live reload"
 	@echo "  docs-build         - Build static documentation site"
 	@echo "  ci-docs            - Build documentation in strict mode (CI)"
+	@echo "  docs-api           - Build Rust API docs (rustdoc, warnings are errors)"
 	@echo "  docs-clean         - Clean documentation artifacts"
 	@echo "  docs-backend-ops   - Generate backend operator support report"
 	@echo "  docs-backend-ops-check - Verify backend operator report is up to date"

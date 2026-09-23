@@ -1,5 +1,5 @@
 site_name: RustNN
-site_description: Rust Implementation of the W3C WebNN API
+site_description: Rust implementation of the W3C WebNN API
 site_author: Tarek Ziadé and contributors
 site_url: https://rustnn.github.io/rustnn/
 
@@ -44,16 +44,12 @@ theme:
 
 plugins:
   - search
-  - mkdocstrings:
-      handlers:
-        python:
-          options:
-            docstring_style: google
-            show_source: true
 
-# Exclude files from the docs site
+# Exclude files from the docs site. docs/archive holds superseded plans and
+# investigation notes that reference removed APIs; they are kept for history only.
 exclude_docs: |
   README.md
+  archive/
 
 markdown_extensions:
   - pymdownx.highlight:
@@ -77,34 +73,40 @@ nav:
   - Home: index.md
   - User Guide:
       - Getting Started: user-guide/getting-started.md
-      - API Reference: user-guide/api-reference.md
+      - API Overview: user-guide/api-reference.md
+      - Backends: user-guide/backends.md
       - Examples: user-guide/examples.md
       - Advanced Topics: user-guide/advanced.md
+      - Troubleshooting: user-guide/troubleshooting.md
+      - Rust API Reference (rustdoc, deployed from main): https://rustnn.github.io/rustnn/api/rustnn/
   - Architecture:
       - Overview: architecture/overview.md
   - Development:
-      - Setup: development/setup.md
+      - Setup and Workflow: development/setup.md
+      - Converter Internals: development/converters.md
+      - Documentation Policy: development/documentation-policy.md
       - Implementation Status: development/implementation-status.md
       - Backend Operator Support: development/backend-operator-support.md
+      - Flexible Input Shapes: development/flexible-input-shapes.md
+      - Code Coverage: development/code-coverage.md
   - Testing:
-      - Performance Benchmarks: testing/performance-benchmarks.md
-      - WPT Conformance: https://rustnn.github.io/rustnn/wpt-conformance/
+      - WPT Conformance Guide: testing/wpt-test-guide.md
+      - WPT Conformance Dashboard: https://rustnn.github.io/rustnn/wpt-conformance/
   - Integration:
-      - TensorRT: integration/tensorrt.md
-      - Windows TensorRT: integration/windows-tensorrt-setup.md
-      - GGML: integration/ggml.md
+      - TensorRT-RTX: integration/tensorrt.md
+      - Windows TensorRT-RTX Setup: integration/windows-tensorrt-setup.md
+      - CoreML: integration/coreml.md
+      - LiteRT: integration/litert.md
+      - CANN (OpenHarmony): integration/cann.md
+      - Browser WebNN (wasm32): integration/webnn-browser.md
   - Reference:
-      - WebNN Spec: reference/webnn-spec.md
-      - IPC Design: reference/ipc-design.md
+      - WebNN Specification and rustnn: reference/webnn-spec.md
+      - Graph Files and Weights: reference/graph-files.md
       - Changelog: https://github.com/rustnn/rustnn/blob/main/CHANGELOG.md
 
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/rustnn/rustnn
-    - icon: fontawesome/brands/python
-      link: https://pypi.org/project/webnn/
-  version:
-    provider: mike
 
-copyright: Copyright &copy; 2025 Tarek Ziadé
+copyright: Copyright &copy; 2025-2026 Tarek Ziadé and contributors

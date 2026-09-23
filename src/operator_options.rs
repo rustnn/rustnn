@@ -36,7 +36,9 @@ pub type OperandIndex = u32;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLDynamicDimension {
+    /// Name shared by dimensions that must have the same size at run time.
     pub name: String,
+    /// Upper bound of the dimension; tensors are allocated for this size.
     pub max_size: u32,
 }
 
@@ -45,7 +47,9 @@ pub struct MLDynamicDimension {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
 pub enum MLDimension {
+    /// Fixed size.
     Static(u32),
+    /// Named dimension bounded by `max_size`; requires the `dynamic-inputs` feature.
     Dynamic(MLDynamicDimension),
 }
 
@@ -69,16 +73,27 @@ pub fn mldimensions_static_or_max(dims: &[MLDimension]) -> Vec<u32> {
 /// (method arguments) rather than in the options dictionary, as extracted from interchange JSON.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct OperationExtras {
+    /// `axis` argument of `argMin`, `argMax`, `concat`, `cumulativeSum` and `softmax`.
     pub axis: Option<u32>,
+    /// Target data type of `cast`.
     pub to_data_type: Option<MLOperandDataType>,
+    /// `batchDimensions` of `gather` and `gatherElements`.
     pub batch_dimensions: Option<u32>,
+    /// `steps` of `gru` and `lstm`.
     pub steps: Option<u32>,
+    /// `hiddenSize` of the recurrent operations.
     pub hidden_size: Option<u32>,
+    /// `beginningPadding` of `pad`.
     pub beginning_padding: Vec<u32>,
+    /// `endingPadding` of `pad`.
     pub ending_padding: Vec<u32>,
+    /// `starts` of `slice`.
     pub starts: Vec<u32>,
+    /// `sizes` of `slice`.
     pub sizes: Vec<MLDimension>,
+    /// Explicit split sizes of `split`.
     pub splits: Vec<u32>,
+    /// Number of equal parts of `split` when `splits` is a count.
     pub split_equal_parts: Option<u32>,
     /// `expand()` method argument `newShape` (not part of MLOperatorOptions).
     pub expand_new_shape: Vec<MLDimension>,
@@ -232,6 +247,7 @@ impl OperationExtras {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLOperatorOptions {
+    /// Free-form name of the operation, used in error messages and exported graphs.
     #[serde(default)]
     pub label: String,
 }
@@ -246,10 +262,13 @@ pub struct MLOperatorOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLArgMinMaxOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Keep the reduced axis as a size-1 dimension (default `false`).
     #[serde(default)]
     pub keep_dimensions: bool,
+    /// Data type of the index output, `int32` (default) or `int64`.
     #[serde(default = "default_arg_min_max_output_data_type")]
     pub output_data_type: MLOperandDataType,
 }
@@ -282,12 +301,17 @@ fn default_batch_norm_epsilon() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLBatchNormalizationOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// 1-D scale operand with one value per channel (see `MLOperand::rustnn_index`).
     pub scale: Option<OperandIndex>,
+    /// 1-D bias operand with one value per channel.
     pub bias: Option<OperandIndex>,
+    /// Index of the channel dimension (default `1`).
     #[serde(default = "default_batch_norm_axis")]
     pub axis: u32,
+    /// Value added to the variance before the square root (default `1e-5`).
     #[serde(default = "default_batch_norm_epsilon")]
     pub epsilon: f64,
 }
@@ -320,10 +344,13 @@ impl Default for MLBatchNormalizationOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLClampOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
     // TODO MTAX MLNumber is an union of any floating point or integral type
+    /// Lower bound as a JSON number (WebNN `MLNumber`); `None` means negative infinity.
     pub min_value: Option<serde_json::Value>, // MLNumber
+    /// Upper bound as a JSON number (WebNN `MLNumber`); `None` means positive infinity.
     pub max_value: Option<serde_json::Value>, // MLNumber
 }
 
@@ -337,20 +364,28 @@ fn default_conv_groups() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConv2dOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// `[beginning_height, ending_height, beginning_width, ending_width]`; empty means no padding.
     #[serde(default)]
     pub padding: Vec<u32>,
+    /// `[height, width]` strides; empty means `[1, 1]`.
     #[serde(default)]
     pub strides: Vec<u32>,
+    /// `[height, width]` dilations; empty means `[1, 1]`.
     #[serde(default)]
     pub dilations: Vec<u32>,
+    /// Number of groups the input channels are split into (default `1`; equal to the channel count for depthwise).
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
+    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
     #[serde(default)]
     pub input_layout: String, // "nchw" | "nhwc"
+    /// Filter layout, `"oihw"` (default when empty), `"hwio"`, `"ohwi"` or `"ihwo"`.
     #[serde(default)]
     pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
+    /// 1-D bias operand with one value per output channel (see `MLOperand::rustnn_index`).
     pub bias: Option<OperandIndex>,
 }
 
@@ -373,23 +408,33 @@ impl Default for MLConv2dOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConvTranspose2dOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// `[beginning_height, ending_height, beginning_width, ending_width]`; empty means no padding.
     #[serde(default)]
     pub padding: Vec<u32>,
+    /// `[height, width]` strides; empty means `[1, 1]`.
     #[serde(default)]
     pub strides: Vec<u32>,
+    /// `[height, width]` dilations; empty means `[1, 1]`.
     #[serde(default)]
     pub dilations: Vec<u32>,
+    /// Extra `[height, width]` added to the output; empty means `[0, 0]`.
     #[serde(default)]
     pub output_padding: Vec<u32>,
+    /// Explicit `[height, width]` of the output; overrides `output_padding` when set.
     pub output_sizes: Option<Vec<u32>>,
+    /// Number of groups (default `1`).
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
+    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
     #[serde(default)]
     pub input_layout: String,
+    /// Filter layout, `"iohw"` (default when empty), `"hwoi"` or `"ohwi"`.
     #[serde(default)]
     pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
+    /// 1-D bias operand with one value per output channel.
     pub bias: Option<OperandIndex>,
 }
 
@@ -417,11 +462,16 @@ impl Default for MLConvTranspose2dOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLConstantOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Initializer expression of the interchange format (for example a scalar fill).
     pub init: Option<String>,
+    /// Base64-encoded little-endian constant bytes.
     pub data: Option<String>, // base64
+    /// WebNN data type name of the constant.
     pub data_type: String,
+    /// Shape of the constant.
     #[serde(default)]
     pub shape: Vec<u32>,
 }
@@ -432,10 +482,13 @@ pub struct MLConstantOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLCumulativeSumOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Exclude the current element from its own sum (default `false`).
     #[serde(default)]
     pub exclusive: bool,
+    /// Accumulate from the end of the axis (default `false`).
     #[serde(default)]
     pub reversed: bool,
 }
@@ -450,8 +503,10 @@ fn default_elu_alpha() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLEluOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Scale of the negative branch `alpha * (e^x - 1)` (default `1`).
     #[serde(default = "default_elu_alpha")]
     pub alpha: f64,
 }
@@ -478,8 +533,10 @@ impl Default for MLEluOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGatherOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Dimension of `input` that `indices` index into (default `0`).
     #[serde(default)]
     pub axis: u32,
 }
@@ -498,15 +555,21 @@ fn default_gemm_beta() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGemmOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Optional third operand `C`, broadcast to the output shape (see `MLOperand::rustnn_index`).
     pub c: Option<OperandIndex>,
+    /// Multiplier of `A * B` (default `1`).
     #[serde(default = "default_gemm_alpha")]
     pub alpha: f64,
+    /// Multiplier of `C` (default `1`).
     #[serde(default = "default_gemm_beta")]
     pub beta: f64,
+    /// Transpose `A` before the product (default `false`).
     #[serde(default)]
     pub a_transpose: bool,
+    /// Transpose `B` before the product (default `false`).
     #[serde(default)]
     pub b_transpose: bool,
 }
@@ -541,19 +604,28 @@ impl std::hash::Hash for MLGemmOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Input bias, shape `[num_directions, 3 * hidden_size]`.
     pub bias: Option<OperandIndex>,
+    /// Recurrent bias, shape `[num_directions, 3 * hidden_size]`.
     pub recurrent_bias: Option<OperandIndex>,
+    /// Initial hidden state, shape `[num_directions, batch_size, hidden_size]` (default zeros).
     pub initial_hidden_state: Option<OperandIndex>,
+    /// Apply the reset gate after the recurrent matrix multiplication (default `false` here; the spec default is `true`).
     #[serde(default)]
     pub reset_after: bool,
+    /// Also return the hidden state of every step (default `false`).
     #[serde(default)]
     pub return_sequence: bool,
+    /// `"forward"` (default when empty), `"backward"` or `"both"`.
     #[serde(default)]
     pub direction: String, // "forward" | "backward" | "both"
+    /// Gate order of the weights, `"zrn"` (default when empty) or `"rzn"`.
     #[serde(default)]
     pub layout: String, // "zrn" | "rzn"
+    /// Gate activations, two names from `relu`, `sigmoid`, `tanh` (default `["sigmoid", "tanh"]`).
     pub activations: Option<Vec<String>>, // MLRecurrentNetworkActivation
 }
 
@@ -563,14 +635,20 @@ pub struct MLGruOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLGruCellOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Input bias, shape `[3 * hidden_size]`.
     pub bias: Option<OperandIndex>,
+    /// Recurrent bias, shape `[3 * hidden_size]`.
     pub recurrent_bias: Option<OperandIndex>,
+    /// Apply the reset gate after the recurrent matrix multiplication (default `false` here; the spec default is `true`).
     #[serde(default)]
     pub reset_after: bool,
+    /// Gate order of the weights, `"zrn"` (default when empty) or `"rzn"`.
     #[serde(default)]
     pub layout: String,
+    /// Gate activations, two names from `relu`, `sigmoid`, `tanh` (default `["sigmoid", "tanh"]`).
     pub activations: Option<Vec<String>>,
 }
 
@@ -588,10 +666,13 @@ fn default_hard_sigmoid_beta() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLHardSigmoidOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Slope of the linear segment (default `0.2`).
     #[serde(default = "default_hard_sigmoid_alpha")]
     pub alpha: f64,
+    /// Offset of the linear segment (default `0.5`).
     #[serde(default = "default_hard_sigmoid_beta")]
     pub beta: f64,
 }
@@ -624,12 +705,17 @@ fn default_instance_norm_epsilon() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLInstanceNormalizationOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// 1-D scale operand with one value per channel.
     pub scale: Option<OperandIndex>,
+    /// 1-D bias operand with one value per channel.
     pub bias: Option<OperandIndex>,
+    /// Value added to the variance before the square root (default `1e-5`).
     #[serde(default = "default_instance_norm_epsilon")]
     pub epsilon: f64,
+    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
     #[serde(default)]
     pub layout: String,
 }
@@ -667,11 +753,16 @@ fn default_layer_norm_epsilon() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLayerNormalizationOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Scale operand shaped like the normalized `axes`.
     pub scale: Option<OperandIndex>,
+    /// Bias operand shaped like the normalized `axes`.
     pub bias: Option<OperandIndex>,
+    /// Dimensions to normalize; `None` means all but the first, `Some(vec![])` normalizes nothing.
     pub axes: Option<Vec<u32>>,
+    /// Value added to the variance before the square root (default `1e-5`).
     #[serde(default = "default_layer_norm_epsilon")]
     pub epsilon: f64,
 }
@@ -708,8 +799,10 @@ fn default_leaky_relu_alpha() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLeakyReluOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Slope for negative inputs (default `0.01`).
     #[serde(default = "default_leaky_relu_alpha")]
     pub alpha: f64,
 }
@@ -744,10 +837,13 @@ fn default_linear_beta() -> f64 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLinearOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Multiplier (default `1`).
     #[serde(default = "default_linear_alpha")]
     pub alpha: f64,
+    /// Offset (default `0`).
     #[serde(default = "default_linear_beta")]
     pub beta: f64,
 }
@@ -776,19 +872,29 @@ impl Default for MLLinearOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Input bias, shape `[num_directions, 4 * hidden_size]`.
     pub bias: Option<OperandIndex>,
+    /// Recurrent bias, shape `[num_directions, 4 * hidden_size]`.
     pub recurrent_bias: Option<OperandIndex>,
+    /// Peephole weights, shape `[num_directions, 3 * hidden_size]`.
     pub peephole_weight: Option<OperandIndex>,
+    /// Initial hidden state, shape `[num_directions, batch_size, hidden_size]` (default zeros).
     pub initial_hidden_state: Option<OperandIndex>,
+    /// Initial cell state, shape `[num_directions, batch_size, hidden_size]` (default zeros).
     pub initial_cell_state: Option<OperandIndex>,
+    /// Also return the hidden state of every step (default `false`).
     #[serde(default)]
     pub return_sequence: bool,
+    /// `"forward"` (default when empty), `"backward"` or `"both"`.
     #[serde(default)]
     pub direction: String,
+    /// Gate order of the weights, `"iofg"` (default when empty) or `"ifgo"`.
     #[serde(default)]
     pub layout: String, // "iofg" | "ifgo"
+    /// Gate activations, three names from `relu`, `sigmoid`, `tanh` (default `["sigmoid", "tanh", "tanh"]`).
     pub activations: Option<Vec<String>>,
 }
 
@@ -798,14 +904,20 @@ pub struct MLLstmOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLLstmCellOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Input bias, shape `[4 * hidden_size]`.
     pub bias: Option<OperandIndex>,
+    /// Recurrent bias, shape `[4 * hidden_size]`.
     pub recurrent_bias: Option<OperandIndex>,
+    /// Peephole weights, shape `[3 * hidden_size]`.
     pub peephole_weight: Option<OperandIndex>,
     // TODO TMAX verify default
+    /// Gate order of the weights, `"iofg"` (default when empty) or `"ifgo"`.
     #[serde(default)]
     pub layout: String,
+    /// Gate activations, three names from `relu`, `sigmoid`, `tanh` (default `["sigmoid", "tanh", "tanh"]`).
     pub activations: Option<Vec<String>>,
 }
 
@@ -815,11 +927,14 @@ pub struct MLLstmCellOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPadOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
     // TODO MTAX mode is an enum of type MLPaddingMode
+    /// `"constant"` (default when empty), `"edge"` or `"reflection"`.
     #[serde(default)]
     pub mode: String, // "constant" | "edge" | "reflection"
+    /// Fill value for `"constant"` mode as a JSON number (default `0`).
     pub value: Option<serde_json::Value>, // MLNumber
 }
 
@@ -829,22 +944,30 @@ pub struct MLPadOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLPool2dOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// `[height, width]` of the pooling window; `None` pools over the whole spatial extent.
     pub window_dimensions: Option<Vec<u32>>,
     // TODO MTAX check default value
+    /// `[beginning_height, ending_height, beginning_width, ending_width]`; empty means no padding.
     #[serde(default)]
     pub padding: Vec<u32>,
+    /// `[height, width]` strides; empty means `[1, 1]`.
     #[serde(default)]
     pub strides: Vec<u32>,
+    /// `[height, width]` dilations; empty means `[1, 1]`.
     #[serde(default)]
     pub dilations: Vec<u32>,
     // TODO MTAX layout is enum MLInputOperandLayout
+    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
     #[serde(default)]
     pub layout: String,
     // TODO MTAX enum MLRoundingType
+    /// Rounding of the output size, `"floor"` (default when empty) or `"ceil"`.
     #[serde(default)]
     pub output_shape_rounding: String,
+    /// Explicit `[height, width]` of the output; overrides the rounding when set.
     pub output_sizes: Option<Vec<u32>>,
 }
 
@@ -855,9 +978,12 @@ pub struct MLPool2dOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReduceOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Dimensions to reduce; `None` means all, `Some(vec![])` reduces nothing.
     pub axes: Option<Vec<u32>>,
+    /// Keep the reduced dimensions as size 1 (default `false`).
     #[serde(default)]
     pub keep_dimensions: bool,
 }
@@ -868,16 +994,21 @@ pub struct MLReduceOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MLResample2dOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
     // TODO MTAX enum MLInterpolationMode
+    /// `"nearest-neighbor"` (default when empty) or `"linear"`.
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
+    /// Scale factor per resampled axis; empty means `[1.0, 1.0]`. Ignored when `sizes` is set.
     #[serde(default)]
     pub scales: Vec<f32>,
+    /// Explicit output size per resampled axis.
     #[serde(default)]
     pub sizes: Option<Vec<u32>>,
 
+    /// The two dimensions to resample; empty means `[2, 3]`.
     #[serde(default)]
     pub axes: Vec<u32>,
 }
@@ -899,6 +1030,7 @@ impl std::hash::Hash for MLResample2dOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLReverseOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
     /// None = not present in JSON => reverse all. Some([]) => axes: [] => identity. Some([..]) => reverse those axes.
@@ -911,8 +1043,10 @@ pub struct MLReverseOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLScatterOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Dimension along which `indices` address elements (default `0`; `scatterND` ignores it).
     #[serde(default)]
     pub axis: u32,
 }
@@ -923,8 +1057,10 @@ pub struct MLScatterOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSliceOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Step per dimension; empty means `1` everywhere.
     #[serde(default)]
     pub strides: Vec<u32>,
 }
@@ -935,8 +1071,10 @@ pub struct MLSliceOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSplitOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Dimension to split along (default `0`).
     #[serde(default)]
     pub axis: u32,
 }
@@ -947,8 +1085,10 @@ pub struct MLSplitOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTransposeOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// New order of the dimensions; empty reverses them.
     #[serde(default)]
     pub permutation: Vec<u32>,
 }
@@ -967,8 +1107,10 @@ pub struct MLTransposeOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLSqueezeOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Size-1 dimensions to remove; empty removes all of them.
     #[serde(default)]
     pub axes: Vec<u32>,
 }
@@ -979,8 +1121,10 @@ pub struct MLSqueezeOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLUnsqueezeOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Positions in the output at which size-1 dimensions are inserted.
     #[serde(default)]
     pub axes: Vec<u32>,
 }
@@ -992,9 +1136,12 @@ pub struct MLUnsqueezeOptions {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct MLTriangularOptions {
+    /// Operation label.
     #[serde(default)]
     pub label: String,
+    /// Keep the upper (`true`, the default when `None`) or lower triangle.
     pub upper: Option<bool>,
+    /// Diagonal offset: positive moves above the main diagonal, negative below (default `0`).
     #[serde(default)]
     pub diagonal: i32,
 }
@@ -1114,6 +1261,7 @@ impl Default for OperatorOptions {
 }
 
 impl OperatorOptions {
+    /// The `label` shared by every options dictionary.
     pub fn label(&self) -> &str {
         match self {
             OperatorOptions::Operator(opt) => &opt.label,
@@ -1253,192 +1401,224 @@ impl OperatorOptions {
     // Typed accessors: return the options struct when the variant matches.
     // ---------------------------------------------------------------------------
 
+    /// The [`MLOperatorOptions`] when this is the `operator` variant.
     pub fn as_operator(&self) -> Option<&MLOperatorOptions> {
         match self {
             OperatorOptions::Operator(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLArgMinMaxOptions`] when this is the `arg_min_max` variant.
     pub fn as_arg_min_max(&self) -> Option<&MLArgMinMaxOptions> {
         match self {
             OperatorOptions::ArgMinMax(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLBatchNormalizationOptions`] when this is the `batch_normalization` variant.
     pub fn as_batch_normalization(&self) -> Option<&MLBatchNormalizationOptions> {
         match self {
             OperatorOptions::BatchNormalization(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLClampOptions`] when this is the `clamp` variant.
     pub fn as_clamp(&self) -> Option<&MLClampOptions> {
         match self {
             OperatorOptions::Clamp(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLConv2dOptions`] when this is the `conv2d` variant.
     pub fn as_conv2d(&self) -> Option<&MLConv2dOptions> {
         match self {
             OperatorOptions::Conv2d(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLConstantOptions`] when this is the `constant` variant.
     pub fn as_constant(&self) -> Option<&MLConstantOptions> {
         match self {
             OperatorOptions::Constant(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLConvTranspose2dOptions`] when this is the `conv_transpose2d` variant.
     pub fn as_conv_transpose2d(&self) -> Option<&MLConvTranspose2dOptions> {
         match self {
             OperatorOptions::ConvTranspose2d(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLCumulativeSumOptions`] when this is the `cumulative_sum` variant.
     pub fn as_cumulative_sum(&self) -> Option<&MLCumulativeSumOptions> {
         match self {
             OperatorOptions::CumulativeSum(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLEluOptions`] when this is the `elu` variant.
     pub fn as_elu(&self) -> Option<&MLEluOptions> {
         match self {
             OperatorOptions::Elu(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLGatherOptions`] when this is the `gather` variant.
     pub fn as_gather(&self) -> Option<&MLGatherOptions> {
         match self {
             OperatorOptions::Gather(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLGemmOptions`] when this is the `gemm` variant.
     pub fn as_gemm(&self) -> Option<&MLGemmOptions> {
         match self {
             OperatorOptions::Gemm(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLGruOptions`] when this is the `gru` variant.
     pub fn as_gru(&self) -> Option<&MLGruOptions> {
         match self {
             OperatorOptions::Gru(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLGruCellOptions`] when this is the `gru_cell` variant.
     pub fn as_gru_cell(&self) -> Option<&MLGruCellOptions> {
         match self {
             OperatorOptions::GruCell(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLHardSigmoidOptions`] when this is the `hard_sigmoid` variant.
     pub fn as_hard_sigmoid(&self) -> Option<&MLHardSigmoidOptions> {
         match self {
             OperatorOptions::HardSigmoid(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLInstanceNormalizationOptions`] when this is the `instance_normalization` variant.
     pub fn as_instance_normalization(&self) -> Option<&MLInstanceNormalizationOptions> {
         match self {
             OperatorOptions::InstanceNormalization(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLLayerNormalizationOptions`] when this is the `layer_normalization` variant.
     pub fn as_layer_normalization(&self) -> Option<&MLLayerNormalizationOptions> {
         match self {
             OperatorOptions::LayerNormalization(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLLeakyReluOptions`] when this is the `leaky_relu` variant.
     pub fn as_leaky_relu(&self) -> Option<&MLLeakyReluOptions> {
         match self {
             OperatorOptions::LeakyRelu(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLLinearOptions`] when this is the `linear` variant.
     pub fn as_linear(&self) -> Option<&MLLinearOptions> {
         match self {
             OperatorOptions::Linear(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLLstmOptions`] when this is the `lstm` variant.
     pub fn as_lstm(&self) -> Option<&MLLstmOptions> {
         match self {
             OperatorOptions::Lstm(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLLstmCellOptions`] when this is the `lstm_cell` variant.
     pub fn as_lstm_cell(&self) -> Option<&MLLstmCellOptions> {
         match self {
             OperatorOptions::LstmCell(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLPadOptions`] when this is the `pad` variant.
     pub fn as_pad(&self) -> Option<&MLPadOptions> {
         match self {
             OperatorOptions::Pad(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLPool2dOptions`] when this is the `pool2d` variant.
     pub fn as_pool2d(&self) -> Option<&MLPool2dOptions> {
         match self {
             OperatorOptions::Pool2d(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLReduceOptions`] when this is the `reduce` variant.
     pub fn as_reduce(&self) -> Option<&MLReduceOptions> {
         match self {
             OperatorOptions::Reduce(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLResample2dOptions`] when this is the `resample2d` variant.
     pub fn as_resample2d(&self) -> Option<&MLResample2dOptions> {
         match self {
             OperatorOptions::Resample2d(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLReverseOptions`] when this is the `reverse` variant.
     pub fn as_reverse(&self) -> Option<&MLReverseOptions> {
         match self {
             OperatorOptions::Reverse(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLScatterOptions`] when this is the `scatter_elements` variant.
     pub fn as_scatter_elements(&self) -> Option<&MLScatterOptions> {
         match self {
             OperatorOptions::ScatterElements(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLSliceOptions`] when this is the `slice` variant.
     pub fn as_slice(&self) -> Option<&MLSliceOptions> {
         match self {
             OperatorOptions::Slice(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLSplitOptions`] when this is the `split` variant.
     pub fn as_split(&self) -> Option<&MLSplitOptions> {
         match self {
             OperatorOptions::Split(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLTransposeOptions`] when this is the `transpose` variant.
     pub fn as_transpose(&self) -> Option<&MLTransposeOptions> {
         match self {
             OperatorOptions::Transpose(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLSqueezeOptions`] when this is the `squeeze` variant.
     pub fn as_squeeze(&self) -> Option<&MLSqueezeOptions> {
         match self {
             OperatorOptions::Squeeze(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLUnsqueezeOptions`] when this is the `unsqueeze` variant.
     pub fn as_unsqueeze(&self) -> Option<&MLUnsqueezeOptions> {
         match self {
             OperatorOptions::Unsqueeze(o) => Some(o),
             _ => None,
         }
     }
+    /// The [`MLTriangularOptions`] when this is the `triangular` variant.
     pub fn as_triangular(&self) -> Option<&MLTriangularOptions> {
         match self {
             OperatorOptions::Triangular(o) => Some(o),

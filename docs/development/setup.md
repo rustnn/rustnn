@@ -1,393 +1,152 @@
-# Development Guide
+# Setup and Workflow
 
-## Prerequisites
+## Toolchain
 
-- **Rust**: 1.70+ (install from [rustup.rs](https://rustup.rs/))
-- **Python**: 3.11+ with pip
-- **Maturin**: `pip install maturin`
-- **Optional**: Graphviz for visualization (`brew install graphviz` on macOS)
+| Tool | Notes |
+|---|---|
+| Rust | `rust-toolchain.toml` pins the channel (1.97.0 at the time of writing) with `rustfmt` and `clippy`; rustup installs it on first use. The CI workflows pin the same version, so bump them together |
+| `protoc` | Required: `build.rs` compiles the ONNX and CoreML protobuf schemas. Linux `apt-get install protobuf-compiler`, macOS `brew install protobuf`, Windows `winget install Google.Protobuf` |
+| `flatc` | Required for `litert-runtime` (TFLite schema). CI downloads the flatbuffers release binary; macOS `brew install flatbuffers` |
+| Node.js | WPT corpus fetch and evaluation (`scripts/fetch_wpt.mjs`, `scripts/wpt_bridge/`) |
+| Python 3 | Only for MkDocs (`pip install -r docs/requirements.txt`) and `scripts/generate_backend_operator_report.py` |
+| libclang | `trtx-runtime`: the `trtx-sys` crate generates bindings with autocxx; set `LIBCLANG_PATH` if it is not found |
+| Graphviz | Optional, for `make viz` |
 
-## Building from Source
+Windows: install the Visual Studio C++ build tools and run `git config --system core.longpaths true`
+before cloning. Backend libraries (ONNX Runtime, TensorRT-RTX, LiteRT) are described in
+[Backends](../user-guide/backends.md).
 
-```bash
-# Clone repository
-git clone https://github.com/tarekziade/rustnn.git
-cd rustnn
+## Build and test
 
-# See all available commands
-make help
+Use the Makefile targets; they set feature flags and environment variables consistently.
+`make help` prints the same list.
 
-# Build Rust library
-make build
+| Target | Effect |
+|---|---|
+| `build` | `cargo build`, no backend features |
+| `test` | `cargo fmt`, `clippy -D warnings`, `cargo test`, operator report drift check |
+| `fmt`, `fmt-check`, `lint` | rustfmt (apply / check), clippy only |
+| `clean`, `clean-all` | `cargo clean`; also the docs site and coverage output |
+| `onnxruntime-download` | Fetch the pinned ONNX Runtime into `target/onnxruntime`; export `ORT_DYLIB_PATH` afterwards |
+| `run` | Validate `examples/sample_graph.json` with the CLI |
+| `viz` | Export the sample graph as Graphviz DOT |
+| `onnx`, `onnx-validate` | Convert the sample graph to ONNX (`GRAPH_FILE=...` selects another graph); also execute it with ONNX Runtime |
+| `coreml`, `coreml-validate` | CoreML conversion and execution (macOS) |
+| `litert`, `cann` | LiteRT and CANN conversion of the sample graph |
+| `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
+| `validate-all-env` | Build, unit tests, ONNX and CoreML validation in one run |
+| `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
+| `test-wpt` | WPT conformance on ONNX Runtime CPU |
+| `test-wpt-op OP=relu` | One operation; `WPT_BACKEND=onnx|trtx|litert|coreml` selects the backend |
+| `test-wpt-trtx`, `test-wpt-litert`, `test-wpt-coreml`, `test-wpt-cann` | Per-backend WPT runs (CANN cross-compiles and runs on the device over `hdc`); `test-wpt-report` and `test-wpt-coreml-report` also write the JSON report |
+| `wpt-sync-onnx`, `wpt-sync-trtx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-cann` | Regenerate snapshots and expected-failure lists |
+| `webnn-chromedriver`, `test-webnn-wpt-chrome`, `test-webnn-wpt-chrome-headless` | Browser WebNN graph-build tests in Chrome; see [Browser WebNN](../integration/webnn-browser.md) |
+| `docs-api` | rustdoc with `-D warnings` |
+| `docs-build`, `docs-serve`, `ci-docs`, `docs-clean` | MkDocs site into `site/`, live preview, strict mode as CI runs it, remove the site |
+| `docs-backend-ops`, `docs-backend-ops-check` | Regenerate the operator support report; check it for drift |
+| `coverage`, `coverage-html`, `coverage-lcov`, `coverage-open`, `coverage-clean` | cargo-llvm-cov reports; see [Code Coverage](code-coverage.md) |
 
-# Build Python package (downloads ONNX Runtime automatically)
-make python-dev
-
-# Run tests
-make test                     # Rust tests
-make python-test              # Python tests (includes WPT conformance)
-
-# Build documentation
-make docs-serve               # Live preview at http://127.0.0.1:8000
-make docs-build               # Build static site
-```
-
-## Running Examples
-
-### Python Examples
-
-```bash
-# Install package first
-make python-dev
-
-# Run examples
-make python-example           # Run all examples
-make mobilenet-demo           # MobileNetV2 on all 3 backends
-make text-gen-demo            # Text generation with attention
-make text-gen-train           # Train model on sample data
-make text-gen-trained         # Generate with trained weights
-
-# Or run individual examples
-python examples/python_simple.py
-python examples/python_matmul.py
-python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu
-```
-
-### Rust Examples
+CI type-checks every backend. Do the same before pushing when shared code changed:
 
 ```bash
-# Validate a graph
-make run
-
-# Generate visualization
-make viz
-
-# Convert to ONNX
-make onnx
-
-# Convert to CoreML
-make coreml
+cargo check
+cargo check --features onnx-runtime
+cargo check -F trtx-runtime --all-targets
+cargo check --features litert-runtime
+cargo check --features cann-runtime
+cargo check --features coreml-runtime          # macOS
+cargo test --lib
+cargo test --lib --features cann-runtime-mock
 ```
 
-## Testing
-
-### Python Tests
-
-```bash
-# All tests (includes WPT conformance tests)
-make python-test
-
-# WPT conformance tests only
-make python-test-wpt
-
-# Or use pytest directly
-python -m pytest tests/ -v
-
-# Specific test
-python -m pytest tests/test_python_api.py::test_context_creation -v
-
-# With coverage
-python -m pytest tests/ --cov=webnn --cov-report=html
-```
-
-### Rust Tests
-
-```bash
-# All Rust tests
-make test
-
-# Or use cargo directly
-cargo test
-
-# Specific module
-cargo test validator
-
-# With output
-cargo test -- --nocapture
-```
-
-### CoreML Tests
-
-On macOS, `make build-coreml` builds all targets and `make test-coreml` runs
-library, binary, and ordinary integration tests with `coreml-runtime,dynamic-inputs`.
-Use `COREML_FEATURES=coreml-runtime` with either target to test without dynamic
-inputs; CI covers both configurations. Use `TEST_FILTER=triangular` to narrow
-the test names without adding an operator-specific target.
-
-Ordinary integration suites should be named `tests/test_*.rs` so the shared
-target includes them automatically. The live WPT and browser harnesses remain
-separate: use `make fetch-wpt` followed by `make test-wpt-coreml` for CoreML WPT.
-
-The large-int32 triangular regression is temporarily ignored because native
-CoreML loses integer precision on some configurations, including CI; see
-[the investigation in #235](https://github.com/rustnn/rustnn/pull/235#issuecomment-5790829434).
-Its exact-value assertions remain intact. Run it explicitly when checking a
-CoreML fix or another OS/device configuration:
-
-```bash
-make test-coreml TEST_FILTER='triangular_int32_keeps_values_beyond_float32_precision --ignored'
-```
-
-## Feature Flags
-
-The project uses Cargo feature flags to control optional functionality. The Makefile handles these automatically:
-
-```bash
-# Python bindings with ONNX Runtime (recommended)
-make python-dev              # Includes python,onnx-runtime features
-
-# Build Python wheel
-make python-build            # Production build with all features
-
-# Or use cargo/maturin directly if needed
-cargo build --features python,onnx-runtime
-maturin develop --features python,onnx-runtime,coreml-runtime
-```
-
-## Development Workflow
-
-### 1. Make Changes
-
-Edit Rust code in `src/` or Python code in `python/webnn/`.
-
-### 2. Format Code
-
-```bash
-# Rust (automatically formats)
-make fmt
-
-# Python
-black python/ tests/
-```
-
-### 3. Run Tests
-
-```bash
-# Full test suite
-make test                    # Rust tests
-make python-test             # Python tests
-
-# Or run comprehensive validation
-make validate-all-env        # Build, test, convert, validate
-```
-
-### 4. Check Code Coverage
-
-```bash
-# Generate coverage report
-make coverage                # Text output
-make coverage-html           # HTML report
-make coverage-open           # HTML report + open in browser
-
-# For CI/CD
-make coverage-lcov           # LCOV format for upload to coverage services
-```
-
-See [Code Coverage Guide](code-coverage.md) for detailed coverage analysis and best practices.
-
-### 5. Build and Test Python Package
-
-```bash
-make python-dev              # Install in development mode
-make python-test             # Run all tests
-```
-
-### 6. Update Documentation
-
-Edit files in `docs/` and preview:
-
-```bash
-make docs-serve              # Live preview at http://127.0.0.1:8000
-make docs-build              # Build static site
-make ci-docs                 # Build in strict mode (CI)
-```
-
-## Debugging
-
-### Rust
-
-```bash
-# Debug build
-make build
-
-# Run with visualization
-make viz
-
-# Run with backtrace
-RUST_BACKTRACE=1 make run
-```
-
-### Python
-
-```bash
-# Run specific example with verbose output
-python examples/python_simple.py
-
-# Or enable debug logging in code
-import webnn
-import logging
-
-logging.basicConfig(level=logging.DEBUG)
-
-# Your code here
-```
-
-## Common Tasks
-
-### Add a New Operation
-
-1. Update `graph.rs` with new operation type
-2. Add validation logic in `validator.rs`
-3. Implement conversion in `converters/onnx.rs` and `converters/coreml.rs`
-4. Add Python binding in `src/python/graph_builder.rs`
-5. Add tests in `tests/test_python_api.py`
-
-### Add a New Backend
-
-1. Create new file in `src/executors/your_backend.rs`
-2. Add feature flag in `Cargo.toml`
-3. Implement executor trait/functions
-4. Add conditional compilation in `src/executors/mod.rs`
-5. Wire up in `src/python/context.rs` backend selection
-6. Add tests
-
-### Update Documentation
-
-1. Edit markdown files in `docs/`
-2. Preview with `make docs-serve`
-3. Check links and formatting
-4. Build with `make docs-build`
-5. Test in strict mode with `make ci-docs`
-
-## Troubleshooting
-
-### Maturin Build Fails
-
-```bash
-# Update Rust
-rustup update
-
-# Clean all build artifacts
-make clean-all
-
-# Rebuild from scratch
-make python-dev
-```
-
-### Import Errors
-
-```bash
-# Ensure you're in the right virtual environment
-which python
-
-# Clean and reinstall
-make python-clean
-make python-dev
-
-# Verify installation
-python -c "import webnn; print(webnn.__version__)"
-```
-
-### ONNX Runtime Issues
-
-The Makefile automatically downloads ONNX Runtime for you:
-
-```bash
-# Download ONNX Runtime manually if needed
-make onnxruntime-download
-
-# Or install system-wide (optional)
-brew install onnxruntime
-
-# Build with system ONNX Runtime
-export ORT_STRATEGY=system
-export ORT_LIB_LOCATION=/opt/homebrew/lib
-make python-dev
-```
-
-### Test Failures
-
-```bash
-# Run tests with verbose output
-make python-test
-
-# Run specific test
-python -m pytest tests/test_python_api.py::test_name -xvs
-
-# Check if backend is available
-python -c "import webnn; ctx = webnn.ML().create_context(); print(ctx.accelerated)"
-```
-
-## Code Style
-
-### Rust
-
-- Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
-- Use `cargo fmt` for formatting
-- Use `cargo clippy` for linting
-- Write doc comments for public APIs
-
-### Python
-
-- Follow [PEP 8](https://pep8.org/)
-- Use type hints
-- Write docstrings for public APIs
-- Use `black` for formatting
-
-## Git Workflow
-
-### Commits
-
-```bash
-# Stage changes
-git add .
-
-# Commit with descriptive message
-git commit -m "Add feature X
-
-- Detail 1
-- Detail 2
-
-[BOT] Generated with [Claude Code](https://claude.com/claude-code)"
-
-# Push
-git push origin main
-```
-
-### Pre-commit Hooks
-
-The project uses pre-commit hooks to ensure code quality:
-
-- `cargo fmt --check` and `cargo clippy` automatically run when Rust files change
-- `make python-ty-check` runs Ty against pywebnn when Python files change
-- Tests run automatically in CI
-
-## CI/CD
-
-### GitHub Actions
-
-The project uses GitHub Actions for CI:
-
-- `.github/workflows/ci.yml` - Main CI pipeline
-  - Runs on push and pull requests
-  - Tests on Linux and macOS
-  - Builds Python wheels
-  - Runs all tests
-
-### Local CI Simulation
-
-```bash
-# Run the same checks as CI
-make fmt                     # Format code
-cargo clippy -- -D warnings  # Lint checks
-make validate-all-env        # Full validation pipeline
-make ci-docs                 # Documentation build (strict mode)
-```
-
-## Resources
-
-- [Rust Book](https://doc.rust-lang.org/book/)
-- [PyO3 Guide](https://pyo3.rs/)
-- [W3C WebNN Spec](https://www.w3.org/TR/webnn/)
-- [ONNX Documentation](https://onnx.ai/)
-- [CoreML Documentation](https://developer.apple.com/documentation/coreml)
+## Workflow for a change
+
+1. Branch from `main`.
+2. Make the change with its tests. Unit tests live in `#[cfg(test)]` modules at the end of each
+   file; converter tests decode the emitted model and assert on its structure.
+3. Run `make test`.
+4. If an operation or a converter changed: run the affected WPT cases on every backend you can
+   (`make test-wpt-op OP=<name>`, `WPT_BACKEND=<backend>` to pick one), regenerate snapshots or
+   expected-failure lists with `make wpt-sync-<backend>`, review the diff, and run
+   `make docs-backend-ops`.
+5. Update the documentation as described in the [Documentation Policy](documentation-policy.md).
+   Run `make docs-api` and `make ci-docs` when rustdoc or pages changed.
+6. Open a pull request with the template filled in. CI runs formatting, clippy, tests, rustdoc,
+   the operator report drift check, the docs build and the WPT suites.
+
+`scripts/install-git-hooks.sh` installs a pre-commit hook that runs `cargo fmt --check` and
+clippy when Rust files are staged.
+
+## Adding an operation
+
+Check Chromium's implementation first. It is the WebNN reference and shows the lowering each
+backend needs, for example casts for boolean types or decompositions:
+
+- https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/ort/graph_builder_ort.cc (ONNX Runtime)
+- https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/coreml/graph_builder_coreml.cc (CoreML)
+- https://chromium.googlesource.com/chromium/src/+/lkgr/services/webnn/tflite/graph_builder_tflite.cc (LiteRT)
+
+Then:
+
+1. `src/operator_options.rs`: add the `ML*Options` struct when the spec defines a new dictionary.
+2. `src/operators.rs`: add the `Operation` variant with named operand fields, its `op_type()`
+   name and the `from_json_attributes` parsing.
+3. `src/shape_inference.rs`: output shape and data type rules, with unit tests.
+4. `src/mlgraphbuilder.rs`: the builder method, through one of the `impl_*_op!` macros or
+   explicitly when the signature does not fit.
+5. `src/webnn_json.rs`: import and export mapping for the text and JSON formats.
+6. Converters: `src/converters/onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs`, `litert.rs`, `cann.rs`.
+   A backend that cannot support the operation must reject it explicitly (LiteRT:
+   `unsupported_ops`; CANN: `is_supported_op`).
+7. WPT: `make test-wpt-op OP=<name>` on every backend you can run, then `make wpt-sync-<backend>`.
+8. `make docs-backend-ops`, and add the method to the operation table in
+   `docs/user-guide/api-reference.md`.
+
+## Adding a backend
+
+1. Converter: implement `GraphConverter` in `src/converters/<name>.rs` and register it in
+   `ConverterRegistry::with_defaults`.
+2. Backend: implement `MLBackendContext`, `MLBackendBuilder` and `ListDevices` in
+   `src/backends/<name>.rs`; add the `MLBackendGraph` variant and a `DisabledContext` alias in
+   `src/backends/mod.rs`.
+3. Selection: add the `Backend` and `BackendDevice` variants and the position in the order in
+   `src/backend_selection.rs`; extend the fields of the `NoBackendAvailable` errors.
+4. Cargo: feature flag, optional dependencies, a mock feature when the hardware is not available
+   in CI, and a `cargo check` step in `.github/workflows/ci.yml`.
+5. Tests: a WPT backend entry in `tests/wpt_conformance/wpt_backend.rs`, an expected-failure
+   file or snapshots, a `test-wpt-<name>` Make target, an integration test under `tests/`.
+6. Report: a detection rule in `scripts/generate_backend_operator_report.py` and its tests.
+7. Docs: `docs/user-guide/backends.md`, the feature table in `src/lib.rs`, an integration page
+   when setup is involved.
+
+## Continuous integration
+
+| Workflow | Trigger | Content |
+|---|---|---|
+| `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (including wasm32, and CoreML on macOS), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with `-D warnings`, operator report drift check and generator tests, MkDocs strict build, version check on tags |
+| `wpt-conformance.yml` | push, pull request | WPT suites for ONNX Runtime (Linux), LiteRT (Linux, non-blocking) and CoreML (macOS) |
+| `wpt-conformance-nightly.yml` | schedule | Full WPT run with JSON and HTML reports; publishes the dashboard together with the docs site |
+| `snapshot-sync.yml` | weekly, manual | Regenerates snapshots and expected failures against the pinned WPT revision and opens a pull request |
+| `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn and enforces a minimum pass rate |
+| `docs.yml`, `docs-pr.yml` | push to `main`, pull request | MkDocs strict build, rustdoc embedded under `/api/`, WPT report embedded, link check on PRs, deploy to GitHub Pages from `main` |
+| `publish.yml` | GitHub release | fmt, clippy, tests, `cargo publish` |
+
+TensorRT-RTX has no GPU runner. CI compiles it (`cargo check -F trtx-runtime --all-targets`);
+contributors run `make test-wpt-trtx` locally before and after changing the converter.
+
+## Releasing
+
+Bump `version` in `Cargo.toml`, update `Cargo.lock`, tag `vX.Y.Z` and create a GitHub release.
+`publish.yml` verifies that the version matches the tag and publishes to crates.io; docs.rs
+builds the API docs with the features listed under `[package.metadata.docs.rs]`.
+
+## Code style
+
+- `cargo fmt` and `cargo clippy --all-targets -- -D warnings` must pass.
+- Comments explain non-obvious decisions in one line and use ASCII only. No emojis anywhere in
+  the repository.
+- Errors are typed with `thiserror`, carry context and are `Send + Sync`.
+- Every public item gets rustdoc: `src/lib.rs` enables `#![warn(missing_docs)]` and CI denies
+  warnings. A new module gets a `//!` header saying what the module owns. Enum variants that
+  are only operand indices (`Operation`) and error fields described by their message carry an
+  explicit `#[allow(missing_docs)]`.

@@ -670,7 +670,7 @@ fn invoke_builder_method(
             let opts = operator_options.as_conv2d().cloned().unwrap_or_default();
             Ok(InvokeResult::Single(
                 builder
-                    .conv2_with_options(input, filter, opts)
+                    .conv2d_with_options(input, filter, opts)
                     .map_err(|e| e.to_string())?,
             ))
         }

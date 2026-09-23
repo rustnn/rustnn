@@ -1,230 +1,76 @@
-# WebNN API Specification Reference
-
-**Source:** https://www.w3.org/TR/webnn/
-**Status:** W3C Candidate Recommendation Draft (December 3, 2025)
-**Local Copy:** Saved for offline reference and easy parsing
-
-## Overview
-
-The Web Neural Network API (WebNN) defines a dedicated low-level API for neural network inference hardware acceleration. It provides hardware-agnostic access to ML acceleration capabilities across CPU, GPU, and dedicated ML accelerators.
-
-## Core Interfaces
-
-### ML
-Entry point for creating ML contexts.
-
-### MLContext
-Global execution state managing device resources and graph compilation.
-
-### MLGraphBuilder
-Constructs computational graphs using operator methods.
-
-### MLOperand
-Represents data flowing through the graph (inputs, constants, intermediate values, outputs).
-
-### MLGraph
-Compiled, immutable representation of the computational graph.
-
-### MLTensor
-Runtime data binding for graph execution.
-
-## Reduction Operations
-
-Reduction operations reduce input tensor dimensions by applying a reduction function across specified axes.
-
-### Common Parameters (MLReduceOptions)
-
-```webidl
-dictionary MLReduceOptions : MLOperatorOptions {
-  sequence<[EnforceRange] unsigned long> axes;
-  boolean keepDimensions = false;
-};
-```
-
-**Parameters:**
-- `axes`: Array of dimension indices to reduce. If not specified, reduces all dimensions.
-- `keepDimensions`: If true, retains reduced dimensions with size 1. Default is false.
-
-### reduceSum()
-
-Reduces the input tensor by summing elements along specified axes.
-
-**Formula:** `output = Σ input[i]` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceSum(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceSum`
-
-### reduceMean()
-
-Reduces the input tensor by computing the arithmetic mean along specified axes.
-
-**Formula:** `output = (Σ input[i]) / n` where n is the number of elements reduced
-
-**Signature:**
-```webidl
-MLOperand reduceMean(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceMean`
-
-### reduceMax()
-
-Reduces the input tensor by computing the maximum value along specified axes.
-
-**Formula:** `output = max(input[i])` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceMax(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceMax`
-
-### reduceMin()
-
-Reduces the input tensor by computing the minimum value along specified axes.
-
-**Formula:** `output = min(input[i])` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceMin(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceMin`
-
-### reduceProduct()
-
-Reduces the input tensor by computing the product of elements along specified axes.
-
-**Formula:** `output = Π input[i]` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceProduct(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceProd`
-
-### reduceL1()
-
-Reduces the input tensor by computing the L1 norm (sum of absolute values) along specified axes.
-
-**Formula:** `output = Σ |input[i]|` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceL1(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceL1`
-
-### reduceL2()
-
-Reduces the input tensor by computing the L2 norm (Euclidean norm) along specified axes.
-
-**Formula:** `output = sqrt(Σ input[i]²)` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceL2(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceL2`
-
-### reduceLogSum()
-
-Reduces the input tensor by computing the natural logarithm of the sum along specified axes.
-
-**Formula:** `output = log(Σ input[i])` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceLogSum(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceLogSum`
-
-### reduceLogSumExp()
-
-Reduces the input tensor by computing the log of the sum of exponentials along specified axes.
-
-**Formula:** `output = log(Σ exp(input[i]))` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceLogSumExp(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceLogSumExp`
-
-### reduceSumSquare()
-
-Reduces the input tensor by computing the sum of squares along specified axes.
-
-**Formula:** `output = Σ input[i]²` for i in reduced dimensions
-
-**Signature:**
-```webidl
-MLOperand reduceSumSquare(MLOperand input, optional MLReduceOptions options = {});
-```
-
-**ONNX Mapping:** `ReduceSumSquare`
-
-## Shape Inference for Reduction Operations
-
-**Input shape:** `[d0, d1, d2, ..., dn]`
-
-**If keepDimensions = false:**
-- Output shape removes the reduced dimensions
-- Example: `[2, 3, 4]` with `axes=[1]` → `[2, 4]`
-
-**If keepDimensions = true:**
-- Output shape keeps reduced dimensions with size 1
-- Example: `[2, 3, 4]` with `axes=[1]` and `keepDimensions=true` → `[2, 1, 4]`
-
-**If axes is empty or not specified:**
-- Reduces all dimensions
-- Output is a scalar (rank-0 tensor) with `keepDimensions=false`
-- Output is `[1, 1, ..., 1]` with `keepDimensions=true`
-
-## Implementation Notes
-
-### Excluded Operations
-
-**localResponseNormalization** - NOT part of WebNN spec as of 2025-12-07
-- Decision: Use decomposition in higher layers (e.g., ONNX Runtime's WebNN EP)
-- Reason: Rarity in modern models, awkward backend differences
-- Source: W3C WebML WG meeting notes (2024-10-31)
-
-### Data Type Support
-
-Reduction operations typically support:
-- `float32` (required)
-- `float16` (optional)
-- `int32` (optional, for min/max operations)
-- `int8`/`uint8` (optional, for min/max operations)
-
-### Numerical Stability
-
-**reduceLogSumExp** uses the log-sum-exp trick for numerical stability:
-```
-output = log(Σ exp(input[i]))
-       = max_val + log(Σ exp(input[i] - max_val))
-```
-where `max_val = max(input[i])` for i in reduced dimensions.
-
-## Additional Operations
-
-For a complete list of all WebNN operations, see:
-- Official spec: https://www.w3.org/TR/webnn/
-- Implementation status: https://webmachinelearning.github.io/webnn-status/
-
----
-
-**Last Updated:** 2025-12-07
-**Spec Version:** W3C Candidate Recommendation Draft (2025-12-03)
+# WebNN Specification and rustnn
+
+This page maps the concepts of the [W3C WebNN specification](https://www.w3.org/TR/webnn/) to
+rustnn's Rust API. `docs/reference/webnn-index.bs` is a cached copy of the specification source;
+its date is in `docs/reference/README.md` in the repository. To search the live text install
+`search-bikeshed` and run `search-bs index https://github.com/webmachinelearning/webnn/blob/main/index.bs --name webnn`
+once, then `search-bs search --name webnn "<term>"`.
+
+## Interfaces
+
+| WebNN | rustnn | Notes |
+|---|---|---|
+| `navigator.ml.createContext(options)` | `MLContext::create(&MLContextOptions)` | Selects a backend from the hints; see [Backends](../user-guide/backends.md) |
+| `MLContextOptions` (`powerPreference`, `accelerated`) | `MLContextOptions::new(MLPowerPreference, accelerated)` plus `rustnn_` extensions (backend hint, TensorRT options) | |
+| `MLContext.opSupportLimits()` | `MLContext::op_support_limits` | Not implemented (`todo!()`); the generated [operator support report](../development/backend-operator-support.md) and the WPT dashboard are the current substitute |
+| `MLContext.lost`, `destroy()` | `lost()`, `destroy()` | Not implemented (`todo!()`); resources are released by `Drop` |
+| `MLGraphBuilder(context)` | `MLGraphBuilder::new(&mut context)` | One graph per builder |
+| `builder.input(name, descriptor)` | `input(&str, &MLOperandDescriptor)` | |
+| `builder.constant(descriptor, buffer)` | `constant_from_slice`, `constant_from_vec`, `constant_from_bytes` | Bytes are checked against the descriptor; `constant_from_value` and `constant_from_tensor` are not implemented |
+| `builder.<op>(...)` | `snake_case` method, `<op>_with_options` for the options dictionary | `where` is `where_`; the recurrent operations only have the `_with_options` form; see the operation table in the [API Overview](../user-guide/api-reference.md) |
+| `MLOperand.dataType`, `shape` | `builder.rustnn_operand_shape(op)` / `rustnn_operand_data_type(op)` while recording, or `op.shape(&graph_info)` / `op.data_type(&graph_info)` | The operand is an index into the builder's graph, so lookups need the builder or the `GraphInfo`. Shapes are `Vec<u64>`; dynamic dimensions report their maximum size and need the `dynamic-inputs` feature |
+| `builder.build(outputs)` | `build(&MLNamedOperands)` | Compiles on the selected backend |
+| `MLTensorDescriptor` (`readable`, `writable`) | `MLTensorDescriptor::new(...).to_readable().to_writable()` | |
+| `context.createTensor`, `writeTensor`, `readTensor` | `create_tensor`, `write_tensor`, `read_tensor` | Synchronous; there are no promises |
+| `context.dispatch(graph, inputs, outputs)` | `dispatch(&mut graph, &MLNamedTensors, &MLNamedTensors)` | Binding checks in `src/runtime_checks.rs` |
+| `MLGraph.destroy()`, `MLTensor.destroy()` | `Drop` | |
+| `createConstantTensor`, `createContext(gpuDevice)` | `create_constant_tensor`, `create_from_gpu_device` | Not implemented (`todo!()`); use `constant_from_slice` and `MLContext::create` |
+
+## Enumerations and dictionaries
+
+- `MLOperandDataType`, `MLPowerPreference`, `MLInputOperandLayout`, `MLConv2dFilterOperandLayout`,
+  `MLConvTranspose2dFilterOperandLayout`, `MLRoundingType`, `MLPaddingMode`,
+  `MLInterpolationMode`, `MLRecurrentNetworkDirection`, `MLRecurrentNetworkActivation`,
+  `MLGruWeightLayout`, `MLLstmWeightLayout` live in `src/operator_enums.rs`. String values match
+  the specification's enum strings and serialize with `serde` as camelCase.
+- Every `ML*Options` dictionary is a struct in `src/operator_options.rs` with the same field
+  names in `snake_case`, the specification's defaults documented per field, and `label`
+  inherited from `MLOperatorOptions`. Fields of type `MLOperand` (for example `bias`, `scale`,
+  `initialHiddenState`) hold operand indices and are resolved by the converters.
+- `MLNumber` (a float or integer union in the spec, used by `clamp` and `pad`) is stored as a
+  JSON number (`serde_json::Value`) in the option structs and interpreted according to the
+  operand data type when the graph is lowered.
+
+## Algorithms
+
+| Specification section | rustnn |
+|---|---|
+| Validation of operand descriptors, broadcasting, `MLOperand` compatibility | `src/validator.rs` and the per-operation rules in `src/shape_inference.rs`; the builder runs both on every call and fails early with `GraphBuilderError` or `ShapeInferenceError` |
+| Output shape computation per operation | `infer_<op>_shape` in `src/shape_inference.rs`, with unit tests |
+| Constant validation (`byteLength` = product of shape times element size, 4-bit packing) | `MLGraphBuilder::constant_*`, `DataType::byte_length` in `src/graph.rs` |
+| Graph build validation (outputs must be operation results, inputs and constants may not be outputs) | `MLGraphBuilder::build` |
+| Dispatch validation (names, shapes, data types, no duplicate bindings) | `src/runtime_checks.rs` |
+| Operation emulation appendix | The converters decompose operations the backends lack; the choices are documented in [Converter Internals](../development/converters.md) |
+
+## Deviations and extensions
+
+- Synchronous API: every promise-returning method is a blocking call returning `Result`.
+- `rustnn_` methods extend the API: backend hints and options, `rustnn_save_webnn`,
+  `rustnn_webnn_text_for_outputs`, `rustnn_set_tensor_capacity`, `rustnn_resize_tensor`,
+  `rustnn_required_bytes`, `rustnn_index`.
+- `squeeze` and `unsqueeze` are kept as convenience operations although the specification
+  removed them; they are lowered to `reshape` and have no WPT coverage.
+- `globalAveragePool` and `globalMaxPool` from earlier drafts and the `shape` extension emitted
+  by onnx2webnn are kept as `Operation` variants; a converter without a lowering rejects them at
+  build time.
+- Data type support depends on the backend; the WPT conformance run per backend is the record
+  of what passes. See [Implementation Status](../development/implementation-status.md) for the
+  list of gaps.
+
+## Conformance
+
+The WebNN Web Platform Tests are the oracle: `tests/run_wpt_conformance.rs` runs the upstream
+`conformance_tests` corpus against each backend, with tolerances taken from the tests
+themselves. The [WPT Conformance Guide](../testing/wpt-test-guide.md) describes the harness and
+the [dashboard](https://rustnn.github.io/rustnn/wpt-conformance/) the current per-operation
+status.
