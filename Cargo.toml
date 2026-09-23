@@ -227,7 +227,7 @@ required-features = ["native-examples"]
 
 [lib]
 name = "rustnn"
-crate-type = ["rlib", "cdylib", "staticlib"]
+crate-type = ["rlib"]
 doctest = false
 
 [package.metadata.capi.header]
