@@ -5873,6 +5873,44 @@ impl TrtxConverter {
             })
     }
 
+    fn layer_norm_parameter_shape(input_dims: &[i64], axes: &[u32]) -> Vec<i64> {
+        let mut shape = vec![1; input_dims.len()];
+        for &axis in axes {
+            shape[axis as usize] = input_dims[axis as usize];
+        }
+        shape
+    }
+
+    fn layer_norm_parameter_reshape_plan(
+        input_rank: usize,
+        tensor_dims: &[i64],
+        axes: &[u32],
+    ) -> (Vec<i64>, Option<Vec<i32>>) {
+        if tensor_dims.len() == axes.len() {
+            let shape = (0..input_rank)
+                .map(|i| {
+                    axes.iter()
+                        .position(|&axis| axis as usize == i)
+                        .map(|j| tensor_dims[j])
+                        .unwrap_or(1)
+                })
+                .collect();
+            let mut sorted_axes = axes.to_vec();
+            sorted_axes.sort_unstable();
+            let transpose = (axes != sorted_axes.as_slice()).then(|| {
+                sorted_axes
+                    .iter()
+                    .map(|axis| axes.iter().position(|a| a == axis).expect("axis in axes") as i32)
+                    .collect()
+            });
+            (shape, transpose)
+        } else {
+            let mut shape = vec![1; input_rank - tensor_dims.len()];
+            shape.extend_from_slice(tensor_dims);
+            (shape, None)
+        }
+    }
+
     /// Reshape optional layer-norm scale/bias so they broadcast with the input (same rank as `input_ref`).
     fn layer_norm_reshape_scale_bias_to_input_rank<'a>(
         network: &mut trtx::NetworkDefinition<'a>,
@@ -5905,57 +5943,8 @@ impl TrtxConverter {
                 ),
             });
         }
-        if tensor_dims.len() == input_dims.len() {
-            let id_layer =
-                network
-                    .add_identity(tensor)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("LayerNorm {op_name}: identity: {e}"),
-                    })?;
-            return id_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("LayerNorm {op_name}: identity output: {e}"),
-                });
-        }
-        let (new_shape, transpose_perm): (Vec<i32>, Option<Vec<i32>>) = if tensor_dims.len()
-            == axes.len()
-        {
-            let new_shape: Vec<i32> = (0..input_dims.len())
-                .map(|i| {
-                    let axis = i as u32;
-                    axes.iter()
-                        .position(|&a| a == axis)
-                        .map(|j| tensor_dims[j] as i32)
-                        .unwrap_or(1)
-                })
-                .collect();
-            let mut sorted_axes = axes.to_vec();
-            sorted_axes.sort_unstable();
-            let needs_transpose = axes != sorted_axes.as_slice();
-            let transpose_perm: Option<Vec<i32>> = if needs_transpose {
-                Some(
-                    sorted_axes
-                        .iter()
-                        .map(|&a| {
-                            axes.iter()
-                                .position(|&ax| ax == a)
-                                .expect("axis in sorted_axes") as i32
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
-            (new_shape, transpose_perm)
-        } else {
-            let pad = input_dims.len() - tensor_dims.len();
-            let mut shape: Vec<i32> = vec![1; pad];
-            shape.extend(tensor_dims.iter().map(|&d| d as i32));
-            (shape, None)
-        };
+        let (new_shape, transpose_perm) =
+            Self::layer_norm_parameter_reshape_plan(input_dims.len(), &tensor_dims, axes);
         let mut shuffle =
             network
                 .add_shuffle(tensor)
@@ -5971,9 +5960,8 @@ impl TrtxConverter {
                     reason: format!("LayerNorm {op_name}: set transpose: {e}"),
                 })?;
         }
-        let new_shape_i64: Vec<i64> = new_shape.iter().map(|&d| d as i64).collect();
         shuffle
-            .set_reshape_dimensions(network, &new_shape_i64)
+            .set_reshape_dimensions(network, &new_shape)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("LayerNorm {op_name}: set reshape: {e}"),
@@ -6666,9 +6654,13 @@ impl TrtxConverter {
 
         let axes_mask = Axes::from_bits(Self::normalization_axes_mask_bits(&axes));
 
-        // Default scale=1 / bias=0: full input rank with extent 1 on every axis (one element; TRT
-        // requires scale/bias rank to match the input, not a compact `[d_a, d_b, ...]` parameter shape).
-        let default_unit_shape: Vec<i64> = vec![1i64; input_dims.len()];
+        // TensorRT requires scale and bias to have identical shapes. When only one is supplied,
+        // fill the missing parameter across the same axes as the supplied parameter.
+        let default_parameter_shape = if scale_operand_id.is_some() || bias_operand_id.is_some() {
+            Self::layer_norm_parameter_shape(&input_dims, &axes)
+        } else {
+            vec![1; input_dims.len()]
+        };
 
         let scale_bc = if let Some(scale_id) = scale_operand_id {
             let scale = tensor_map
@@ -6683,7 +6675,7 @@ impl TrtxConverter {
         } else {
             Self::trtx_constant_tensor_filled(
                 network,
-                &default_unit_shape,
+                &default_parameter_shape,
                 input_dtype,
                 1.0,
                 "layer_norm_default_scale",
@@ -6701,7 +6693,7 @@ impl TrtxConverter {
         } else {
             Self::trtx_constant_tensor_filled(
                 network,
-                &default_unit_shape,
+                &default_parameter_shape,
                 input_dtype,
                 0.0,
                 "layer_norm_default_bias",
@@ -15042,6 +15034,26 @@ impl Default for TrtxConverter {
 mod tests {
     use super::*;
     use trtx::DataType as TrtDataType;
+
+    #[test]
+    fn layer_norm_full_rank_parameter_follows_unsorted_axes() {
+        let (shape, transpose) =
+            TrtxConverter::layer_norm_parameter_reshape_plan(2, &[3, 2], &[1, 0]);
+        assert_eq!(shape, vec![2, 3]);
+        assert_eq!(transpose, Some(vec![1, 0]));
+    }
+
+    #[test]
+    fn layer_norm_missing_parameter_matches_supplied_parameter_shape() {
+        let input_shape = [2, 3, 4];
+        let axes = [2, 1];
+        let default_shape = TrtxConverter::layer_norm_parameter_shape(&input_shape, &axes);
+        let (supplied_shape, transpose) =
+            TrtxConverter::layer_norm_parameter_reshape_plan(3, &[4, 3], &axes);
+        assert_eq!(default_shape, vec![1, 3, 4]);
+        assert_eq!(default_shape, supplied_shape);
+        assert_eq!(transpose, Some(vec![1, 0]));
+    }
 
     #[test]
     fn test_webnn_to_trt_dtype() {
