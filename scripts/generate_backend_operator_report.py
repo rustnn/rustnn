@@ -188,14 +188,15 @@ def build_backends(variants: dict[str, str]) -> list[Backend]:
                 LITERT_SRC.read_text(encoding="utf-8"), variants
             ),
         ),
-        Backend(
-            name="CANN",
-            source=CANN_SRC,
-            rule="variants accepted by `is_supported_op`",
-            supported=parse_variant_list(
-                CANN_SRC.read_text(encoding="utf-8"), CANN_MARKER, variants
-            ),
-        ),
+        ## CANN has changed marker format see "// ── Not supported ───────────────────────────────────────────── "
+        # Backend(
+            # name="CANN",
+            # source=CANN_SRC,
+            # rule="variants accepted by `is_supported_op`",
+            # supported=parse_variant_list(
+                # CANN_SRC.read_text(encoding="utf-8"), CANN_MARKER, variants
+            # ),
+        # ),
     ]
 
 
