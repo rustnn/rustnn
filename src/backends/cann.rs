@@ -226,14 +226,17 @@ impl<'context> MLBackendContext<'context> for CannContext {
             })
             .collect();
 
-        // Borrow the input buffers directly (no clone); the NPU reads them in
-        // place.
+        // Slice to the logical byte length (checked non-short above): the runtime sizes each
+        // device input from the declared shape, so a longer slice would overrun it.
         let input_descs: Vec<CannInput<'_>> = input_tensors
             .iter()
-            .map(|t| CannInput {
-                data: &self.tensors[t.id].memory,
-                shape: t.shape().iter().map(|dim| *dim as u32).collect(),
-                dtype: t.data_type(),
+            .map(|t| {
+                let logical = t.rustnn_required_bytes();
+                CannInput {
+                    data: &self.tensors[t.id].memory[..logical],
+                    shape: t.shape().iter().map(|dim| *dim as u32).collect(),
+                    dtype: t.data_type(),
+                }
             })
             .collect();
 
