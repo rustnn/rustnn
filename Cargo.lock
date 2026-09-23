@@ -3365,6 +3365,7 @@ version = "0.1.0"
 dependencies = [
  "cel",
  "thiserror 2.0.20",
+ "z3",
 ]
 
 [[package]]
@@ -4431,6 +4432,25 @@ dependencies = [
  "quote",
  "syn 3.0.6",
  "synstructure",
+]
+
+[[package]]
+name = "z3"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83c8c28827f094697c982c88a730ef2511b5cb551f86f532a0bba2723178a37a"
+dependencies = [
+ "log",
+ "z3-sys",
+]
+
+[[package]]
+name = "z3-sys"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1343ed2cd33696498898195eb63613ef7891d9353bbc33ddc87d0292c6e3b1e6"
+dependencies = [
+ "pkg-config",
 ]
 
 [[package]]

@@ -561,6 +561,32 @@ pub struct MLOperand {
 // TODO: actually, WebNN requires shape, data_type directly on MLOperand
 // would require MLOperand==Operand and we give the user &MLOperand or Rc<MLOperand>
 impl MLOperand {
+    /// Experimental: render the inferred symbolic shape for human inspection.
+    /// This string is not a stable serialization format.
+    pub fn rustnn_symbolic_shape_string(self, graph: &GraphInfo) -> Result<String> {
+        let operand = get_operand(self, graph)?;
+        let dimensions = operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|dimension| match dimension {
+                Dimension::Static(value) => value.to_string(),
+                Dimension::Dynamic(value) => value.name.clone(),
+                Dimension::Expression(value) => value.expression.clone(),
+            });
+        Ok(format!("[{}]", dimensions.collect::<Vec<_>>().join(", ")))
+    }
+
+    /// Experimental: render the Z3 form of the inferred shape for human inspection.
+    /// This string is not a stable serialization format.
+    #[cfg(feature = "z3")]
+    pub fn rustnn_symbolic_shape_string_z3(self, graph: &GraphInfo) -> Result<String> {
+        let operand = get_operand(self, graph)?;
+        let shape = crate::graph::to_symbolic_shape(&operand.descriptor.shape)?;
+        let dimensions = shape.iter().map(shapeinfer_symbolic::Expression::z3_string);
+        Ok(format!("[{}]", dimensions.collect::<Vec<_>>().join(", ")))
+    }
+
     /// Shape of the operand in `graph` (dynamic dimensions report their maximum size).
     pub fn shape(self, graph: &GraphInfo) -> Result<Vec<u64>> {
         let operand = get_operand(self, graph)?;

@@ -39,6 +39,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 default = ["dynamic-inputs"]
 capi = ["dep:pretty_env_logger"]
 dynamic-inputs = []
+z3 = ["shapeinfer-symbolic/z3"]
 coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray"]
 trtx-runtime = ["trtx", "cudarc", "zstd-cache-compression"]

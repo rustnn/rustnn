@@ -4571,6 +4571,104 @@ mod test {
 
     #[cfg(feature = "dynamic-inputs")]
     #[test]
+    fn infers_two_layer_network_with_dynamic_batch() {
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "input",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "batch".into(),
+                            max_size: 16,
+                        }),
+                        MLDimension::Static(4),
+                    ],
+                ),
+            )
+            .unwrap();
+        let weights1 = builder
+            .input(
+                "weights1",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4, 8]),
+            )
+            .unwrap();
+        let bias1 = builder
+            .input(
+                "bias1",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![8]),
+            )
+            .unwrap();
+        let weights2 = builder
+            .input(
+                "weights2",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![8, 2]),
+            )
+            .unwrap();
+
+        let hidden = builder.matmul(input, weights1).unwrap();
+        let hidden = builder.add(hidden, bias1).unwrap();
+        let hidden = builder.relu(hidden).unwrap();
+        let output = builder.matmul(hidden, weights2).unwrap();
+        let repeated = builder.tile(output, vec![2, 1]).unwrap();
+
+        let graph = builder.graph.as_ref().unwrap();
+        assert_eq!(
+            hidden.rustnn_symbolic_shape_string(graph).unwrap(),
+            "[batch, 8]"
+        );
+        assert_eq!(
+            output.rustnn_symbolic_shape_string(graph).unwrap(),
+            "[batch, 2]"
+        );
+        assert_eq!(
+            repeated.rustnn_symbolic_shape_string(graph).unwrap(),
+            "[(batch * 2), (2 * 1)]"
+        );
+        assert_eq!(repeated.shape(graph).unwrap(), vec![32, 2]);
+        #[cfg(feature = "z3")]
+        {
+            assert_eq!(
+                hidden.rustnn_symbolic_shape_string_z3(graph).unwrap(),
+                "[batch, 8]"
+            );
+            assert_eq!(
+                output.rustnn_symbolic_shape_string_z3(graph).unwrap(),
+                "[batch, 2]"
+            );
+            assert_eq!(
+                repeated.rustnn_symbolic_shape_string_z3(graph).unwrap(),
+                "[(* 2 batch), 2]"
+            );
+        }
+        let symbolic_shape =
+            crate::graph::to_symbolic_shape(&graph.operands[repeated.id].descriptor.shape).unwrap();
+        let concrete_shapes = builder
+            .symbolic_context()
+            .unwrap()
+            .compute_shapes_cel_comcrete(&[symbolic_shape], &[("batch", 3)].into_iter().collect())
+            .unwrap();
+        assert_eq!(concrete_shapes[0].as_slice(), &[6, 2]);
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("output", repeated);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        assert_eq!(
+            repeated.rustnn_symbolic_shape_string(&graph).unwrap(),
+            "[(batch * 2), (2 * 1)]"
+        );
+        #[cfg(feature = "z3")]
+        assert_eq!(
+            repeated.rustnn_symbolic_shape_string_z3(&graph).unwrap(),
+            "[(* 2 batch), 2]"
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
     fn symbolic_broadcast_and_tile_keep_derived_dimension() {
         use crate::graph::{Dimension, ExpressionDimension};
         use crate::operator_enums::MLOperandDataType;
