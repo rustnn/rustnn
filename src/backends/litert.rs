@@ -83,6 +83,8 @@ pub(crate) struct LiteRtGraph {
     filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
     /// Output operand names needing BOOL type (WHERE condition, comparison ops).
     bool_operand_names: std::collections::HashSet<String>,
+    input_order: Vec<String>,
+    output_order: Vec<String>,
 }
 
 unsafe impl Send for LiteRtGraph {}
@@ -95,6 +97,8 @@ impl LiteRtGraph {
         spatial_operand_names: std::collections::HashSet<String>,
         filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
         bool_operand_names: std::collections::HashSet<String>,
+        input_order: Vec<String>,
+        output_order: Vec<String>,
     ) -> Result<Self> {
         let owned = model_bytes.into_boxed_slice();
         unsafe {
@@ -135,6 +139,8 @@ impl LiteRtGraph {
                 spatial_operand_names,
                 filter_transpose_info,
                 bool_operand_names,
+                input_order,
+                output_order,
             })
         }
     }
@@ -716,6 +722,26 @@ fn ohwi_shape_from_layout(shape: &[i32], layout: &str) -> Vec<i32> {
     }
 }
 
+/// Orders `names` as the compiled model's signature declares them.
+///
+/// LiteRT binds buffers to signature slots positionally, while `MLNamedTensors` iterates
+/// alphabetically. Undeclared names are appended rather than dropped.
+fn order_by_signature<'a>(
+    order: &'a [String],
+    names: &MLNamedTensors<'a>,
+) -> Vec<(&'a str, &'a MLTensor)> {
+    let mut ordered: Vec<(&'a str, &'a MLTensor)> = order
+        .iter()
+        .filter_map(|name| names.get(name.as_str()).map(|t| (name.as_str(), *t)))
+        .collect();
+    for (name, tensor) in names {
+        if !order.iter().any(|declared| declared == *name) {
+            ordered.push((name, *tensor));
+        }
+    }
+    ordered
+}
+
 fn build_input_handles(
     sorted_inputs: &[(&str, &MLTensor)],
     tensors: &mut [LiteRtTensor],
@@ -970,13 +996,8 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             }
         };
 
-        let mut sorted_inputs: Vec<(&str, &MLTensor)> =
-            inputs.iter().map(|(k, v)| (*k, *v)).collect();
-        sorted_inputs.sort_by_key(|(name, _)| *name);
-
-        let mut sorted_outputs: Vec<(&str, &MLTensor)> =
-            outputs.iter().map(|(k, v)| (*k, *v)).collect();
-        sorted_outputs.sort_by_key(|(name, _)| *name);
+        let sorted_inputs = order_by_signature(&lite_graph.input_order, inputs);
+        let sorted_outputs = order_by_signature(&lite_graph.output_order, outputs);
 
         let (in_raw, _temp_in_tensors) = build_input_handles(
             &sorted_inputs,
@@ -1022,6 +1043,15 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
         let (input_descriptors, output_descriptors) = graph_info
             .io_binding_maps()
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        // The model's signature keeps the order the operands were declared in.
+        let operand_order = |ids: &[u32]| -> Vec<String> {
+            ids.iter()
+                .filter_map(|&id| graph_info.operand(id).and_then(|o| o.name.clone()))
+                .collect()
+        };
+        let input_order = operand_order(&graph_info.input_operands);
+        let output_order = operand_order(&graph_info.output_operands);
+
         let (spatial_operand_names, filter_transpose_info) = collect_spatial_info(&graph_info);
         let mut graph_info = graph_info;
         modify_graph_for_nhwc(&mut graph_info, &spatial_operand_names);
@@ -1034,6 +1064,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
             spatial_operand_names,
             filter_transpose_info,
             bool_operand_names,
+            input_order,
+            output_order,
         )
         .map_err(|e| Error::GraphBuildError {
             source: format!("failed to compile model: {e}").into(),
