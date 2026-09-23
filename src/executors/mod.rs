@@ -1,3 +1,5 @@
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub mod cann;
 #[cfg(feature = "coreml-runtime")]
 pub mod coreml;
 #[cfg(feature = "onnx-runtime")]

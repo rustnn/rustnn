@@ -51,7 +51,7 @@ impl WptBackend {
             ),
             // CoreML (macOS only). Filtered out by `is_available` unless the binary is built
             // with `coreml-runtime` on macOS, so this is a no-op on other platforms/builds.
-            // `accelerated = false` picks CoreML's CPU device for deterministic snapshots.
+            // `accelerated = false` picks CoreML's CPU device for deterministic results.
             Self::new(
                 "coreml",
                 MLContextOptions::new(MLPowerPreference::Default, false)

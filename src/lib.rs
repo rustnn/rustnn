@@ -32,6 +32,8 @@ pub use converters::{
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
 pub use coreml::{CoremlOutput, CoremlRunAttempt, run_coreml_zeroed, run_coreml_zeroed_cached};
 pub use error::GraphError;
+#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+pub use executors::cann::{CannInput, CannOutput};
 #[cfg(feature = "onnx-runtime")]
 pub use executors::onnx::{
     OnnxInput, OnnxOutput, OnnxOutputWithData, TensorData, run_onnx_with_inputs,

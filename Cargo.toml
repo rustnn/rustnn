@@ -147,7 +147,7 @@ litert = { version = "0.2.1", optional = true }
 litert-sys = { version = "0.2.1", optional = true }
 flatbuffers = { version = "25.12", optional = true }
 regex = "1.11"
-hiai-rs = { git = "https://github.com/rustnn/hiai-rs", rev = "6c93e1b", optional = true }
+hiai-rs = { git = "https://github.com/rustnn/hiai-rs", rev = "a7b8ae5", optional = true }
 webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
 
@@ -185,7 +185,6 @@ seahash = "4.1.0"
 
 [dev-dependencies]
 half = "2.4"
-insta = { version = "1.47.2", features = ["yaml"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 dirs = "6.0.0"
 anyhow = "1.0.102"
@@ -216,10 +215,6 @@ required-features = ["native-examples"]
 name = "smollm_mlcontext"
 path = "examples/smollm_mlcontext.rs"
 required-features = ["native-examples"]
-
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3
 
 [lib]
 name = "rustnn"

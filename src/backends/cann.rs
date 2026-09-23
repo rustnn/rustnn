@@ -21,30 +21,12 @@ use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
 use crate::converters::cann::encode_via_adapter;
 use crate::error::{Error, Result};
+use crate::executors::cann::{CannInput, CannOutput, CannSession};
 use crate::mlcontext::MLBackendGraph::CannEngine;
 use crate::mlcontext::{
     ListDevices, MLBackendBuilder, MLBackendContext, MLGraph, MLNamedTensors, MLTensor,
     MLTensorDescriptor, RustNNOptions,
 };
-#[cfg(feature = "cann-runtime")]
-use crate::operator_enums::MLOperandDataType;
-#[cfg(feature = "cann-runtime")]
-use hiai_rs::{Session, TensorDesc};
-
-/// Map WebNN operand data type to CANN adapter enum
-#[cfg(feature = "cann-runtime")]
-fn ml_operand_to_cann_dtype(data_type: MLOperandDataType) -> i32 {
-    match data_type {
-        MLOperandDataType::Float32 => 0, // CANN_DT_FLOAT
-        MLOperandDataType::Float16 => 1, // CANN_DT_FLOAT16
-        MLOperandDataType::Int32 => 3,   // CANN_DT_INT32
-        MLOperandDataType::Int8 => 2,    // CANN_DT_INT8
-        MLOperandDataType::Uint8 => 4,   // CANN_DT_UINT8
-        MLOperandDataType::Int64 => 9,   // CANN_DT_INT64
-        MLOperandDataType::Uint32 => 8,  // CANN_DT_UINT32
-        _ => 0,                          // default CANN_DT_FLOAT
-    }
-}
 
 #[derive(Debug)]
 pub(crate) struct CannTensor {
@@ -52,15 +34,12 @@ pub(crate) struct CannTensor {
 }
 
 #[derive(Debug)]
-// Fields are only read by the runtime `dispatch`; the mock build never
-// constructs a graph.
-#[allow(dead_code)]
 pub(crate) struct CannGraph {
-    pub(crate) model_bytes: Vec<u8>,
-    // Input/output names in the model's canonical order (matching how the
-    // graph was compiled). dispatch() relies on this to feed tensors to the
-    // NPU positionally, since MLNamedTensors (a BTreeMap) sorts by name rather
-    // than the model's operand order.
+    // The compiled model, loaded onto the NPU at `build()` time; `dispatch()`
+    // only runs it.
+    pub(crate) session: CannSession,
+    // Input/output names in the model's canonical order (dispatch feeds the NPU
+    // positionally; MLNamedTensors sorts by name).
     pub(crate) input_names: Vec<String>,
     pub(crate) output_names: Vec<String>,
 }
@@ -69,13 +48,6 @@ pub(crate) struct CannGraph {
 pub(crate) struct CannContext {
     tensors: Vec<CannTensor>,
     _device_type: DeviceType,
-    /// Loaded models, keyed by their compiled offline model bytes, so repeated
-    /// dispatches of the same graph skip the expensive `Session::load`. Each
-    /// session is wrapped in a `Mutex` because `Session` is `Send` but not
-    /// `Sync` (its `dispatch` mutates the DDK model manager internally), while
-    /// `CannContext` must satisfy the `Sync` bound of `MLBackendContext`.
-    #[cfg(feature = "cann-runtime")]
-    sessions: std::collections::HashMap<Vec<u8>, std::sync::Mutex<Session>>,
 }
 
 impl CannContext {
@@ -86,8 +58,6 @@ impl CannContext {
         Ok(Self {
             tensors: Vec::new(),
             _device_type: device_type,
-            #[cfg(feature = "cann-runtime")]
-            sessions: std::collections::HashMap::new(),
         })
     }
 }
@@ -184,7 +154,6 @@ impl<'context> MLBackendContext<'context> for CannContext {
         Ok(())
     }
 
-    #[cfg(feature = "cann-runtime")]
     fn dispatch(
         &mut self,
         graph: &mut MLGraph,
@@ -199,89 +168,114 @@ impl<'context> MLBackendContext<'context> for CannContext {
             });
         };
 
-        let model_bytes = &cann_graph.model_bytes;
+        // Resolve the input/output `MLTensor`s in the model's canonical order
+        // (BTreeMap sorts by name, so look each one up by name).
+        let input_tensors: Vec<&MLTensor> = cann_graph
+            .input_names
+            .iter()
+            .map(|name| {
+                inputs
+                    .get(name.as_str())
+                    .copied()
+                    .ok_or_else(|| Error::GraphDispatchError {
+                        source: format!("missing input '{name}' for CANN dispatch").into(),
+                    })
+            })
+            .collect::<Result<_>>()?;
 
-        let build_desc = |tensor: &&MLTensor| -> TensorDesc {
-            TensorDesc {
-                data: self.tensors[tensor.id].memory.clone(),
-                shape: tensor.shape().iter().map(|dim| *dim as u32).collect(),
-                dtype: ml_operand_to_cann_dtype(tensor.data_type()),
+        let output_tensors: Vec<&MLTensor> = cann_graph
+            .output_names
+            .iter()
+            .map(|name| {
+                outputs
+                    .get(name.as_str())
+                    .copied()
+                    .ok_or_else(|| Error::GraphDispatchError {
+                        source: format!("missing output '{name}' for CANN dispatch").into(),
+                    })
+            })
+            .collect::<Result<_>>()?;
+
+        // Input storage must cover the logical byte length; fail rather than
+        // upload a short buffer to the NPU.
+        for t in &input_tensors {
+            let logical = t.rustnn_required_bytes();
+            let actual = self.tensors[t.id].memory.len();
+            if actual < logical {
+                return Err(Error::GraphDispatchError {
+                    source: format!(
+                        "input tensor {} storage too short: {actual} bytes < logical {logical}",
+                        t.id
+                    )
+                    .into(),
+                });
             }
-        };
-
-        // Feed tensors to the NPU positionally, in the model's canonical
-        // input/output order (BTreeMap sorts by name).
-        let mut input_descs = Vec::with_capacity(cann_graph.input_names.len());
-        for name in &cann_graph.input_names {
-            let tensor = inputs
-                .get(name.as_str())
-                .ok_or_else(|| Error::GraphDispatchError {
-                    source: format!("missing input '{name}' for CANN dispatch").into(),
-                })?;
-            input_descs.push(build_desc(tensor));
         }
 
-        let mut output_descs = Vec::with_capacity(cann_graph.output_names.len());
-        for name in &cann_graph.output_names {
-            let tensor = outputs
-                .get(name.as_str())
-                .ok_or_else(|| Error::GraphDispatchError {
-                    source: format!("missing output '{name}' for CANN dispatch").into(),
-                })?;
-            output_descs.push(build_desc(tensor));
+        // Take output buffers out (zero-copy) so they can be borrowed mutably
+        // while inputs borrow `self.tensors`. A tensor that is also an input is
+        // cloned instead, so the take doesn't empty the input buffer.
+        let mut output_buffers: Vec<Vec<u8>> = output_tensors
+            .iter()
+            .map(|t| {
+                if input_tensors.iter().any(|i| i.id == t.id) {
+                    self.tensors[t.id].memory.clone()
+                } else {
+                    std::mem::take(&mut self.tensors[t.id].memory)
+                }
+            })
+            .collect();
+
+        // Borrow the input buffers directly (no clone); the NPU reads them in
+        // place.
+        let input_descs: Vec<CannInput<'_>> = input_tensors
+            .iter()
+            .map(|t| CannInput {
+                data: &self.tensors[t.id].memory,
+                shape: t.shape().iter().map(|dim| *dim as u32).collect(),
+                dtype: t.data_type(),
+            })
+            .collect();
+
+        // Borrow the output buffers in place (no clone); the NPU result is
+        // written straight into them.
+        let mut output_descs: Vec<CannOutput<'_>> = output_tensors
+            .iter()
+            .zip(output_buffers.iter_mut())
+            .map(|(t, buf)| CannOutput {
+                data: buf.as_mut_slice(),
+                shape: t.shape().iter().map(|dim| *dim as u32).collect(),
+                dtype: t.data_type(),
+                actual_len: 0,
+            })
+            .collect();
+
+        // The model was compiled and loaded at `build()` time; just run it.
+        let result = cann_graph.session.dispatch(&input_descs, &mut output_descs);
+
+        // Restore output buffers at full logical length (never truncate to the
+        // NPU-reported size). Warn on a size mismatch; on failure restore the
+        // originals so storage is never left empty.
+        let ok = result.is_ok();
+        let actual_lens: Vec<usize> = output_descs.iter().map(|d| d.actual_len).collect();
+        for ((t, buf), actual) in output_tensors.iter().zip(output_buffers).zip(actual_lens) {
+            if ok {
+                let logical = t.rustnn_required_bytes();
+                if actual != logical {
+                    log::warn!(
+                        "CANN output tensor {} produced {actual} bytes, expected {logical}",
+                        t.id
+                    );
+                }
+            }
+            self.tensors[t.id].memory = buf;
         }
 
-        // Reuse a previously loaded session for this model; load once on the
-        // first dispatch and cache it (the model load dominates per-call cost).
-        let session = if let Some(session) = self.sessions.get(model_bytes) {
-            session
-        } else {
-            let session = Session::load(model_bytes).map_err(|e| Error::GraphDispatchError {
-                source: Box::new(e),
-            })?;
-            self.sessions
-                .insert(model_bytes.clone(), std::sync::Mutex::new(session));
-            self.sessions
-                .get(model_bytes)
-                .expect("session was just inserted")
-        };
-
-        session
-            .lock()
-            .expect("session mutex poisoned")
-            .dispatch(&input_descs, &mut output_descs)
-            .map_err(|e| Error::GraphDispatchError {
-                source: Box::new(e),
-            })?;
-
-        for (name, output_desc) in cann_graph.output_names.iter().zip(output_descs.iter()) {
-            let tensor = outputs
-                .get(name.as_str())
-                .ok_or_else(|| Error::GraphDispatchError {
-                    source: format!("missing output '{name}' for CANN dispatch").into(),
-                })?;
-            // hiai-rs `dispatch` truncates `output_desc.data` to the actual
-            // produced size, so resize the destination to match before copying
-            // (avoids a length-mismatch panic when the model output is smaller
-            // than the pre-allocated tensor buffer).
-            let mem = &mut self.tensors[tensor.id].memory;
-            mem.truncate(output_desc.data.len());
-            mem.copy_from_slice(&output_desc.data);
-        }
+        result.map_err(|e| Error::GraphDispatchError {
+            source: Box::new(e),
+        })?;
 
         Ok(())
-    }
-
-    #[cfg(not(feature = "cann-runtime"))]
-    fn dispatch(
-        &mut self,
-        _graph: &mut MLGraph,
-        _inputs: &MLNamedTensors,
-        _outputs: &MLNamedTensors,
-    ) -> Result<()> {
-        Err(Error::GraphDispatchError {
-            source: "CANN shim not available (mock mode)".into(),
-        })
     }
 
     fn rustnn_resize_tensor(&mut self, _tensor: &mut MLTensor, _new_shape: &[u64]) -> Result<()> {
@@ -311,12 +305,6 @@ impl fmt::Debug for CannBuilder {
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
     fn build(&mut self, graph_info: GraphInfo) -> Result<MLGraph<'context>> {
-        // Build the CANN graph and compile to offline model bytes.
-        let model_bytes =
-            encode_via_adapter(&graph_info).map_err(|e| Error::GraphDispatchError {
-                source: format!("CANN graph build failed: {e}").into(),
-            })?;
-
         // Record the input/output names in the model's canonical order. Names
         // are guaranteed present: MLGraph::new() below runs io_binding_maps(),
         // which errors on missing or duplicate names.
@@ -341,8 +329,17 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
             })
             .collect();
 
+        // Compile and load the model onto the NPU now, at `build()` time, so
+        // the compile cost is outside the measured "Inference"; `dispatch()`
+        // then just runs the loaded session.
+        let session = CannSession::compile(&graph_info, encode_via_adapter).map_err(|e| {
+            Error::GraphBuildError {
+                source: format!("CANN graph build failed: {e}").into(),
+            }
+        })?;
+
         let graph = CannGraph {
-            model_bytes,
+            session,
             input_names,
             output_names,
         };
