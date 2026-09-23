@@ -5510,11 +5510,12 @@ impl CoremlMlProgramConverter {
 
         // A MIL unknown dimension must also be flexible at the model interface.
         // Keep the maximum as the default, but do not require it at dispatch.
-        if descriptor
-            .shape
-            .iter()
-            .any(|dim| matches!(dim, GraphDimension::Dynamic(_)))
-        {
+        if descriptor.shape.iter().any(|dim| {
+            matches!(
+                dim,
+                GraphDimension::Dynamic(_) | GraphDimension::Expression(_)
+            )
+        }) {
             use crate::protos::coreml::specification::{SizeRange, array_feature_type};
             array_feature.shape_flexibility = Some(
                 array_feature_type::ShapeFlexibility::ShapeRange(array_feature_type::ShapeRange {
@@ -5527,6 +5528,10 @@ impl CoremlMlProgramConverter {
                                 upper_bound: i64::from(*size),
                             },
                             GraphDimension::Dynamic(dim) => SizeRange {
+                                lower_bound: 0,
+                                upper_bound: i64::from(dim.max_size),
+                            },
+                            GraphDimension::Expression(dim) => SizeRange {
                                 lower_bound: 0,
                                 upper_bound: i64::from(dim.max_size),
                             },
@@ -9460,7 +9465,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                                 .descriptor
                                 .shape
                                 .get(axis)
-                                    .map(GraphDimension::get_static_or_max_size)
+                                .map(GraphDimension::get_static_or_max_size)
                                 .unwrap_or(1);
                             let mut bcast_shape = vec![1u32; input_rank];
                             bcast_shape[axis] = c_size;

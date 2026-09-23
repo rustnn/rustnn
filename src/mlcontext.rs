@@ -26,9 +26,9 @@ use crate::error::ShapeInferenceError;
 use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
-use crate::operator_options::OperandIndex;
 #[cfg(feature = "dynamic-inputs")]
 use crate::operator_options::MLDimension;
+use crate::operator_options::OperandIndex;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
 use crate::backends::cann::CannContext;

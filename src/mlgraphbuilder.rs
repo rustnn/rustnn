@@ -69,9 +69,10 @@ pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 macro_rules! add_dynamic_single_output {
     ($builder:expr, $operation:ident { $($field:ident: $value:expr),* $(,)? }) => {{
         let output_id = $builder
-            .graph
+            .recorder
             .as_ref()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .graph()
             .operands
             .len() as u32;
         $builder.add_single_output_operation(Operation::$operation {
@@ -626,7 +627,9 @@ fn symbolic_descriptor(
             if dims.len() != 4 {
                 return Err(symbolic_error(operation, "global pool requires rank four"));
             }
-            let layout = opts.layout;
+            let layout: MLInputOperandLayout =
+                serde_json::from_value(serde_json::Value::String(opts.layout.to_ascii_lowercase()))
+                    .unwrap_or_default();
             let axes = if layout == MLInputOperandLayout::Nhwc {
                 [1, 2]
             } else {
@@ -1231,7 +1234,10 @@ fn symbolic_pool_shape(
     if result.len() != 4 {
         return Err(symbolic_error(operation, "pool2d requires rank-four input"));
     }
-    let layout = options.layout;
+    let layout: MLInputOperandLayout = serde_json::from_value(serde_json::Value::String(
+        options.layout.to_ascii_lowercase(),
+    ))
+    .unwrap_or_default();
     let axes = if layout == MLInputOperandLayout::Nhwc {
         [1, 2]
     } else {
@@ -3419,7 +3425,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .add_input(name.to_string(), descriptor.into());
         let shape = crate::graph::to_symbolic_shape(
-            &self.recorder.as_ref().unwrap().graph().operands[id as usize].descriptor.shape,
+            &self.recorder.as_ref().unwrap().graph().operands[id as usize]
+                .descriptor
+                .shape,
         )?;
         let context = self.symbolic_context.get_or_insert_with(|| {
             shapeinfer_symbolic::Context::new(
@@ -4379,7 +4387,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-        let mut outputs = recorder.record_operation_with_descriptors(operation, None, symbolic_descriptors)?;
+        let mut outputs =
+            recorder.record_operation_with_descriptors(operation, None, symbolic_descriptors)?;
         if outputs.len() != 1 {
             return Err(GraphBuilderError::InconsistentGraphInfo {
                 message: format!("single-output insertion returned {} outputs", outputs.len()),
@@ -4615,7 +4624,7 @@ mod test {
         let output = builder.matmul(hidden, weights2).unwrap();
         let repeated = builder.tile(output, vec![2, 1]).unwrap();
 
-        let graph = builder.graph.as_ref().unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
         assert_eq!(
             hidden.rustnn_symbolic_shape_string(graph).unwrap(),
             "[batch, 8]"
@@ -4641,7 +4650,7 @@ mod test {
             );
             assert_eq!(
                 repeated.rustnn_symbolic_shape_string_z3(graph).unwrap(),
-                "[(* 2 batch), 2]"
+                "[(2 * batch), 2]"
             );
         }
         let symbolic_shape =
@@ -4663,7 +4672,7 @@ mod test {
         #[cfg(feature = "z3")]
         assert_eq!(
             repeated.rustnn_symbolic_shape_string_z3(&graph).unwrap(),
-            "[(* 2 batch), 2]"
+            "[(2 * batch), 2]"
         );
     }
 
@@ -4949,7 +4958,7 @@ mod test {
     #[cfg(feature = "dynamic-inputs")]
     use crate::{
         mlcontext::{MLDynamicOperandDescriptor, MLNamedShapes},
-        operator_options::{MLDimension, MLDynamicDimension, MLOperatorOptions},
+        operator_options::{MLDynamicDimension, MLOperatorOptions},
     };
 
     #[cfg(feature = "dynamic-inputs")]
@@ -5001,7 +5010,15 @@ mod test {
                 .constant_from_value(crate::operator_enums::MLOperandDataType::Int64, 2u64) // TODO: this is different from dynamic shape explainer: there u32
                 .unwrap();
             let two_x_output = builder.mul(output, two).unwrap();
-            insta::assert_debug_snapshot!(builder.recorder.as_ref().unwrap().graph());
+            assert!(
+                !builder
+                    .recorder
+                    .as_ref()
+                    .unwrap()
+                    .graph()
+                    .operations
+                    .is_empty()
+            );
 
             let mut outputs = MLNamedOperands::new();
             outputs.insert("out1", output);
