@@ -299,7 +299,11 @@ pub(crate) struct LiteRtContext {
 pub fn is_spatial_op(op: &Operation) -> bool {
     matches!(
         op,
-        Operation::Conv2d { .. } | Operation::MaxPool2d { .. } | Operation::AveragePool2d { .. }
+        Operation::Conv2d { .. }
+            | Operation::MaxPool2d { .. }
+            | Operation::AveragePool2d { .. }
+            | Operation::L2Pool2d { .. }
+            | Operation::InstanceNormalization { .. }
     )
 }
 
@@ -317,7 +321,13 @@ fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::Ha
                     .unwrap_or("");
                 layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
             }
-            Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
+            Operation::MaxPool2d { options, .. }
+            | Operation::AveragePool2d { options, .. }
+            | Operation::L2Pool2d { options, .. } => {
+                let layout = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
+            }
+            Operation::InstanceNormalization { options, .. } => {
                 let layout = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
                 layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
             }
@@ -491,7 +501,12 @@ fn modify_graph_for_nhwc(
                             l.is_empty() || l.eq_ignore_ascii_case("nchw")
                         }
                         Operation::MaxPool2d { options, .. }
-                        | Operation::AveragePool2d { options, .. } => {
+                        | Operation::AveragePool2d { options, .. }
+                        | Operation::L2Pool2d { options, .. } => {
+                            let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                            l.is_empty() || l.eq_ignore_ascii_case("nchw")
+                        }
+                        Operation::InstanceNormalization { options, .. } => {
                             let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
                             l.is_empty() || l.eq_ignore_ascii_case("nchw")
                         }

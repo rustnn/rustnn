@@ -17,6 +17,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind};
 use crate::mlcontext::Backend;
+use crate::operator_options::MLPool2dOptions;
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -62,9 +63,14 @@ macro_rules! scalar_const {
 
 macro_rules! emit_op {
     ($ctx:expr, $ops:expr, $opcode:expr, $inp:expr, $name:expr, $shape:expr, $tfl_type:expr) => {{
+        let inputs = if BROADCASTING_OPS.contains(&$opcode) {
+            $ctx.broadcast_operands(&$inp[..], $shape, $ops)
+        } else {
+            $inp.to_vec()
+        };
         let out_idx = $ctx.add_tensor($name, $shape, $tfl_type, 0);
-        let oc_idx = $ctx.add_opcode($opcode, 1);
-        let iv = $ctx.fbb.create_vector(&$inp[..]);
+        let oc_idx = $ctx.add_opcode($opcode, opcode_version($opcode));
+        let iv = $ctx.fbb.create_vector(&inputs[..]);
         let ov = $ctx.fbb.create_vector(&[out_idx as i32]);
         let tfl_op = tflite::Operator::create(
             &mut $ctx.fbb,
@@ -229,7 +235,7 @@ macro_rules! reshape_1d_to_axis {
     }};
 }
 
-// CAST uint8 tensor to BOOL for logical operations (Chromium pattern)
+// CAST uint8 tensor to BOOL for logical operations
 macro_rules! cast_to_bool {
     ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
         let bool_name = concat!($prefix, "_bool");
@@ -252,7 +258,7 @@ macro_rules! cast_to_bool {
     }};
 }
 
-// CAST BOOL tensor back to uint8 for logical operations (Chromium pattern)
+// CAST BOOL tensor back to uint8 for logical operations
 macro_rules! cast_from_bool {
     ($ctx:expr, $ops:expr, $tensor:expr, $prefix:expr, $shape:expr) => {{
         let uint8_name = concat!($prefix, "_u8");
@@ -278,6 +284,11 @@ macro_rules! cast_from_bool {
 struct TfliteContext<'a> {
     fbb: FlatBufferBuilder<'a>,
     tensor_offsets: Vec<WIPOffset<tflite::Tensor<'a>>>,
+    /// Shape and type of every tensor created, indexed by tensor id. Used to decide
+    /// where TFLite's implicit broadcasting cannot be relied on and operands have to
+    /// be broadcast explicitly.
+    tensor_shapes: Vec<Vec<i32>>,
+    tensor_types: Vec<tflite::TensorType>,
     opcodes: Vec<WIPOffset<tflite::OperatorCode<'a>>>,
     buffer_data: Vec<Vec<u8>>,
 }
@@ -287,6 +298,8 @@ impl<'a> TfliteContext<'a> {
         Self {
             fbb: FlatBufferBuilder::new(),
             tensor_offsets: Vec::new(),
+            tensor_shapes: Vec::new(),
+            tensor_types: Vec::new(),
             opcodes: Vec::new(),
             buffer_data: vec![Vec::new()], // buffer 0 is always empty
         }
@@ -318,6 +331,8 @@ impl<'a> TfliteContext<'a> {
         tfl_type: tflite::TensorType,
         buffer_idx: u32,
     ) -> u32 {
+        self.tensor_shapes.push(shape.to_vec());
+        self.tensor_types.push(tfl_type);
         let name_offset = self.fbb.create_string(name);
         let shape_vec = self.fbb.create_vector(shape);
         let tensor = tflite::Tensor::create(
@@ -538,7 +553,7 @@ impl<'a> TfliteContext<'a> {
             let norm_axes: Vec<i32> = if let Some(ref a) = opts.axes {
                 a.iter().map(|&ax| ax as i32).collect()
             } else {
-                vec![(in_shape.len() as i32) - 1]
+                (1..in_shape.len() as i32).collect()
             };
             let axes_buf: Vec<u8> = norm_axes.iter().flat_map(|v| v.to_le_bytes()).collect();
             let axes_tensor = self.add_constant(
@@ -616,64 +631,82 @@ impl<'a> TfliteContext<'a> {
     fn build_logical_ops(
         &mut self,
         op: &Operation,
+        graph: &GraphInfo,
         tensor_map: &mut HashMap<u32, u32>,
         operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
         in_shape: &[i32],
     ) -> bool {
+        // WebNN broadcasts these operands, so each cast takes its own input's shape and
+        // the logical op produces the declared output shape (falling back to the first
+        // input's shape when an operand is not 4-D-annotated).
+        let operand_shape = |id: u32| -> Option<Vec<i32>> {
+            graph
+                .operand(id)
+                .map(|o| dimensions_to_i32(&o.descriptor.shape))
+        };
         if let Operation::LogicalAnd { a, b, .. } = op {
             let out_id = op.outputs()[0];
+            let out_shape = operand_shape(out_id).unwrap_or_else(|| in_shape.to_vec());
+            let a_shape = operand_shape(*a).unwrap_or_else(|| in_shape.to_vec());
+            let b_shape = operand_shape(*b).unwrap_or_else(|| in_shape.to_vec());
             let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
             let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
-            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "la", in_shape);
-            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lb", in_shape);
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "la", &a_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lb", &b_shape);
             let res_bool = emit_op!(
                 self,
                 operator_offsets,
                 std_op::LOGICAL_AND,
                 [a_bool, b_bool],
                 "land_bool",
-                in_shape,
+                &out_shape,
                 tflite::TensorType::BOOL
             );
-            let out = cast_from_bool!(self, operator_offsets, res_bool, "land", in_shape);
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "land", &out_shape);
             tensor_map.insert(out_id, out as u32);
             return true;
         }
         if let Operation::LogicalOr { a, b, .. } = op {
             let out_id = op.outputs()[0];
+            let out_shape = operand_shape(out_id).unwrap_or_else(|| in_shape.to_vec());
+            let a_shape = operand_shape(*a).unwrap_or_else(|| in_shape.to_vec());
+            let b_shape = operand_shape(*b).unwrap_or_else(|| in_shape.to_vec());
             let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
             let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
-            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "loa", in_shape);
-            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lob", in_shape);
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "loa", &a_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lob", &b_shape);
             let res_bool = emit_op!(
                 self,
                 operator_offsets,
                 std_op::LOGICAL_OR,
                 [a_bool, b_bool],
                 "lor_bool",
-                in_shape,
+                &out_shape,
                 tflite::TensorType::BOOL
             );
-            let out = cast_from_bool!(self, operator_offsets, res_bool, "lor", in_shape);
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "lor", &out_shape);
             tensor_map.insert(out_id, out as u32);
             return true;
         }
         if let Operation::LogicalXor { a, b, .. } = op {
             let out_id = op.outputs()[0];
+            let out_shape = operand_shape(out_id).unwrap_or_else(|| in_shape.to_vec());
+            let a_shape = operand_shape(*a).unwrap_or_else(|| in_shape.to_vec());
+            let b_shape = operand_shape(*b).unwrap_or_else(|| in_shape.to_vec());
             let a_t = *tensor_map.get(a).unwrap_or(a) as i32;
             let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
-            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "lxoa", in_shape);
-            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lxob", in_shape);
+            let a_bool = cast_to_bool!(self, operator_offsets, a_t, "lxoa", &a_shape);
+            let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lxob", &b_shape);
             let res_bool = emit_op!(
                 self,
                 operator_offsets,
                 std_op::NOT_EQUAL,
                 [a_bool, b_bool],
                 "lxor_bool",
-                in_shape,
+                &out_shape,
                 tflite::TensorType::BOOL
             );
-            let out = cast_from_bool!(self, operator_offsets, res_bool, "lxor", in_shape);
+            let out = cast_from_bool!(self, operator_offsets, res_bool, "lxor", &out_shape);
             tensor_map.insert(out_id, out as u32);
             return true;
         }
@@ -1057,6 +1090,65 @@ impl<'a> TfliteContext<'a> {
         }
     }
 
+    /// Kind of `tensor` as recorded by [`Self::add_tensor`].
+    fn tensor_shape_type(&self, tensor: i32) -> Option<(&[i32], tflite::TensorType)> {
+        let idx = usize::try_from(tensor).ok()?;
+        Some((self.tensor_shapes.get(idx)?, *self.tensor_types.get(idx)?))
+    }
+
+    /// Make `inputs` safe to feed to an operand-broadcasting TFLite op whose result is
+    /// `target`.
+    ///
+    /// TFLite's kernels derive a too-small output when a broadcast result reaches rank
+    /// 5 and then write past the declared tensor, so any operand whose shape differs
+    /// from the result is broadcast to it explicitly first. Below rank 5 the kernel
+    /// broadcasts correctly and the inputs are returned unchanged.
+    fn broadcast_operands(
+        &mut self,
+        inputs: &[i32],
+        target: &[i32],
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> Vec<i32> {
+        if target.len() < 5 {
+            return inputs.to_vec();
+        }
+        let mut broadcast = Vec::with_capacity(inputs.len());
+        for &tensor in inputs {
+            let Some((shape, ty)) = self.tensor_shape_type(tensor) else {
+                broadcast.push(tensor);
+                continue;
+            };
+            if shape == target {
+                broadcast.push(tensor);
+                continue;
+            }
+            let shape_bytes: Vec<u8> = target.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = self.add_constant(
+                "bcast_shape",
+                &[target.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let expanded = self.add_tensor("bcast_op", target, ty, 0) as i32;
+            let oc = self.add_opcode(std_op::BROADCAST_TO, 2);
+            let iv = self.fbb.create_vector(&[tensor, shape_const as i32]);
+            let ov = self.fbb.create_vector(&[expanded]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
+            broadcast.push(expanded);
+        }
+        broadcast
+    }
+
     /// Emit a TFLite CAST operator.
     fn emit_cast_op(
         &mut self,
@@ -1124,6 +1216,20 @@ impl<'a> TfliteContext<'a> {
                 let scale_t = *tensor_map.get(scale_id).unwrap_or(scale_id) as i32;
                 let zp_id = zero_point.unwrap_or(*input);
                 let zp_t = *tensor_map.get(&zp_id).unwrap_or(&zp_id) as i32;
+                let in_dt = graph
+                    .operand(*input)
+                    .map(|o| {
+                        datatype_to_tflite(o.descriptor.data_type)
+                            .unwrap_or(tflite::TensorType::INT32)
+                    })
+                    .unwrap_or(tflite::TensorType::INT32);
+                let zp_dt = graph
+                    .operand(zp_id)
+                    .map(|o| {
+                        datatype_to_tflite(o.descriptor.data_type)
+                            .unwrap_or(tflite::TensorType::INT32)
+                    })
+                    .unwrap_or(tflite::TensorType::INT32);
 
                 // Cast int inputs to float32 before arithmetic (TFLite SUB needs same type)
                 let float_in =
@@ -1131,7 +1237,7 @@ impl<'a> TfliteContext<'a> {
                 self.emit_cast_op(
                     operator_offsets,
                     in_t,
-                    tflite::TensorType::INT32,
+                    in_dt,
                     float_in as i32,
                     tflite::TensorType::FLOAT32,
                 );
@@ -1140,7 +1246,7 @@ impl<'a> TfliteContext<'a> {
                 self.emit_cast_op(
                     operator_offsets,
                     zp_t,
-                    tflite::TensorType::INT32,
+                    zp_dt,
                     float_zp as i32,
                     tflite::TensorType::FLOAT32,
                 );
@@ -1195,19 +1301,45 @@ impl<'a> TfliteContext<'a> {
                 );
                 let cur = if let Some(zp) = zero_point {
                     let zp_t = *tensor_map.get(&zp).unwrap_or(&zp) as i32;
+                    let zp_dt = graph
+                        .operand(*zp)
+                        .map(|o| {
+                            datatype_to_tflite(o.descriptor.data_type)
+                                .unwrap_or(tflite::TensorType::UINT8)
+                        })
+                        .unwrap_or(tflite::TensorType::UINT8);
+                    // Cast the integer zero point up to float to match round_val.
+                    let zp_f = self.add_tensor(&format!("q_zp_f_{out_id}"), &out_shape, in_type, 0);
+                    self.emit_cast_op(
+                        operator_offsets,
+                        zp_t,
+                        zp_dt,
+                        zp_f as i32,
+                        tflite::TensorType::FLOAT32,
+                    );
                     emit_op!(
                         self,
                         operator_offsets,
                         std_op::ADD,
-                        [round_val, zp_t],
-                        &format!("q_out_{out_id}"),
+                        [round_val, zp_f as i32],
+                        &format!("q_add_{out_id}"),
                         &out_shape,
                         in_type
                     )
                 } else {
                     round_val
                 };
-                tensor_map.insert(out_id, cur as u32);
+                // Cast the float result to the quantized output type.
+                let out_dt = graph
+                    .operand(out_id)
+                    .map(|o| {
+                        datatype_to_tflite(o.descriptor.data_type)
+                            .unwrap_or(tflite::TensorType::UINT8)
+                    })
+                    .unwrap_or(tflite::TensorType::UINT8);
+                let cast_out = self.add_tensor(&format!("q_cast_{out_id}"), &out_shape, out_dt, 0);
+                self.emit_cast_op(operator_offsets, cur, in_type, cast_out as i32, out_dt);
+                tensor_map.insert(out_id, cast_out as u32);
                 true
             }
             _ => false,
@@ -1818,39 +1950,60 @@ impl<'a> TfliteContext<'a> {
         let axes: Vec<i32> = match &axes_opt {
             Some(a) if !a.is_empty() => a.iter().map(|&v| v as i32).collect(),
             Some(_) => {
-                // Empty axes = identity: emit RESHAPE to alias output to input.
-                let out_tensor =
-                    self.add_tensor(&format!("reduce_ident_{out_id}"), in_shape, in_type, 0);
-                let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
-                let shape_const = self.add_constant(
-                    "reduce_ident_shape",
-                    &[in_shape.len() as i32],
-                    tflite::TensorType::INT32,
-                    &shape_bytes,
-                );
-                let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
-                let iv = self.fbb.create_vector(&[in_tensor, shape_const as i32]);
-                let ov = self.fbb.create_vector(&[out_tensor as i32]);
-                let shape_vec = self.fbb.create_vector(in_shape);
-                let ro = tflite::ReshapeOptions::create(
-                    &mut self.fbb,
-                    &tflite::ReshapeOptionsArgs {
-                        new_shape: Some(shape_vec),
-                    },
-                );
-                let tfl_op = tflite::Operator::create(
-                    &mut self.fbb,
-                    &tflite::OperatorArgs {
-                        opcode_index: oc_idx,
-                        inputs: Some(iv),
-                        outputs: Some(ov),
-                        builtin_options: Some(ro.as_union_value()),
-                        builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
-                        ..Default::default()
-                    },
-                );
-                operator_offsets.push(tfl_op);
-                tensor_map.insert(out_id, out_tensor as u32);
+                // Empty axes: no reduction, but the reduction function is
+                // applied to each value individually (spec: "the reduction
+                // function is applied to each value in the tensor individually").
+                let out = match op {
+                    Operation::ReduceSumSquare { .. } => emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::MUL,
+                        [in_tensor, in_tensor],
+                        "rss_elem",
+                        in_shape,
+                        in_type
+                    ),
+                    Operation::ReduceL1 { .. } | Operation::ReduceL2 { .. } => emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::ABS,
+                        [in_tensor],
+                        "rl_elem",
+                        in_shape,
+                        in_type
+                    ),
+                    Operation::ReduceLogSum { .. } => emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::LOG,
+                        [in_tensor],
+                        "rls_elem",
+                        in_shape,
+                        in_type
+                    ),
+                    // logSumExp: log(exp(x)) == x.
+                    _ => {
+                        let e = emit_op!(
+                            self,
+                            operator_offsets,
+                            std_op::EXP,
+                            [in_tensor],
+                            "rlse_elem_e",
+                            in_shape,
+                            in_type
+                        );
+                        emit_op!(
+                            self,
+                            operator_offsets,
+                            std_op::LOG,
+                            [e],
+                            "rlse_elem_l",
+                            in_shape,
+                            in_type
+                        )
+                    }
+                };
+                tensor_map.insert(out_id, out as u32);
                 return true;
             }
             None => (0..rank).collect(),
@@ -1865,13 +2018,24 @@ impl<'a> TfliteContext<'a> {
 
         // Build the reduced shape for the intermediate output
         let mut reduced_shape = in_shape.to_vec();
-        for &ax in &axes {
-            if (ax as usize) < reduced_shape.len() {
-                if keep_dims {
+        if keep_dims {
+            for &ax in &axes {
+                if (ax as usize) < reduced_shape.len() {
                     reduced_shape[ax as usize] = 1;
-                } else {
-                    reduced_shape.remove(ax as usize);
                 }
+            }
+        } else {
+            // Drop axes in descending order so earlier removals don't shift the
+            // indices of later axes.
+            let mut sorted: Vec<usize> = axes
+                .iter()
+                .map(|&a| a as usize)
+                .filter(|&a| a < reduced_shape.len())
+                .collect();
+            sorted.sort_unstable();
+            sorted.dedup();
+            for &ax in sorted.iter().rev() {
+                reduced_shape.remove(ax);
             }
         }
         if reduced_shape.is_empty() {
@@ -2021,7 +2185,7 @@ impl<'a> TfliteContext<'a> {
                         tflite::TensorType::INT32,
                         &shape_bytes,
                     );
-                    let oc_exp = self.add_opcode(std_op::BROADCAST_TO, 1);
+                    let oc_exp = self.add_opcode(std_op::BROADCAST_TO, 2);
                     let iv_exp = self
                         .fbb
                         .create_vector(&[max_tensor as i32, shape_const as i32]);
@@ -2114,7 +2278,7 @@ impl<'a> TfliteContext<'a> {
         true
     }
 
-    /// Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+    /// Identity: emit RESHAPE with same shape
     fn build_identity_op(
         &mut self,
         op: &Operation,
@@ -2281,6 +2445,301 @@ impl<'a> TfliteContext<'a> {
             }
         }
         false
+    }
+
+    /// Broadcasting binary op whose result has rank >= 5.
+    ///
+    /// TFLite's own broadcasting derives a too-small output at that rank — both for
+    /// equal ranks and for mismatched ones — and the kernels then write past the
+    /// declared output tensor, which aborts the process. Broadcasting both operands
+    /// to the declared shape with BROADCAST_TO first leaves the op with identical
+    /// shapes, which the kernels handle at any rank.
+    fn build_broadcast_binary_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        bool_override: &std::collections::HashSet<u32>,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Some(opcode) = tflite_opcode(op).filter(|c| BROADCASTING_OPS.contains(c)) else {
+            return false;
+        };
+        let out_id = op.outputs()[0];
+        let Some(out_operand) = graph.operand(out_id) else {
+            return false;
+        };
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        if out_shape.len() < 5 {
+            // Ranks 1..=4 broadcast correctly in the kernel itself.
+            return false;
+        }
+        let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+
+        let mut inputs: Vec<i32> = Vec::with_capacity(op.inputs().len());
+        for id in op.inputs() {
+            let Some(operand) = graph.operand(id) else {
+                return false;
+            };
+            let tensor = *tensor_map.get(&id).unwrap_or(&id) as i32;
+            if dimensions_to_i32(&operand.descriptor.shape) == out_shape {
+                inputs.push(tensor);
+                continue;
+            }
+            let ty = if bool_override.contains(&id) {
+                tflite::TensorType::BOOL
+            } else {
+                match datatype_to_tflite(operand.descriptor.data_type) {
+                    Ok(t) => t,
+                    Err(_) => return false,
+                }
+            };
+            let shape_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = self.add_constant(
+                "bcast_shape",
+                &[out_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let expanded = self.add_tensor("bcast_op", &out_shape, ty, 0) as i32;
+            let oc = self.add_opcode(std_op::BROADCAST_TO, 2);
+            let iv = self.fbb.create_vector(&[tensor, shape_const as i32]);
+            let ov = self.fbb.create_vector(&[expanded]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
+            inputs.push(expanded);
+        }
+
+        let input_id = op.inputs()[0];
+        let Ok((builtin_options, builtin_options_type)) =
+            self.create_builtin_options(op, graph, input_id)
+        else {
+            return false;
+        };
+        let oc = self.add_opcode(opcode, 2);
+        let iv = self.fbb.create_vector(&inputs);
+        let ov = self.fbb.create_vector(&[out_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options,
+                builtin_options_type,
+                ..Default::default()
+            },
+        ));
+        true
+    }
+
+    /// argMax / argMin via TFLite ARG_MAX / ARG_MIN (builtin version 3, which
+    /// takes the axis as a second input). The TFLite ops always drop the reduced
+    /// axis, so `keepDimensions` is realised with a trailing RESHAPE back to the
+    /// declared output shape.
+    fn build_arg_min_max_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+    ) -> bool {
+        let (axis, options, opcode) = match op {
+            Operation::ArgMax { axis, options, .. } => (*axis, options, std_op::ARG_MAX),
+            Operation::ArgMin { axis, options, .. } => (*axis, options, std_op::ARG_MIN),
+            _ => return false,
+        };
+        let out_id = op.outputs()[0];
+        let Some(out_operand) = graph.operand(out_id) else {
+            return false;
+        };
+        let out_shape: Vec<i32> = out_operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|d| match d {
+                crate::graph::Dimension::Static(v) => *v as i32,
+                _ => 1,
+            })
+            .collect();
+        let out_type = datatype_to_tflite(out_operand.descriptor.data_type)
+            .unwrap_or(tflite::TensorType::INT32);
+        let keep_dimensions = options.as_ref().map(|o| o.keep_dimensions).unwrap_or(false);
+        let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+
+        // The TFLite result is the output shape minus the reduced axis.
+        let rank_reduced_shape: Vec<i32> = out_shape
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != axis as usize)
+            .map(|(_, d)| *d)
+            .collect();
+        let raw_tensor = if keep_dimensions {
+            self.add_tensor("arg_raw", &rank_reduced_shape, out_type, 0) as i32
+        } else {
+            out_tensor
+        };
+
+        let axis_bytes: Vec<u8> = (axis as i32).to_le_bytes().to_vec();
+        let axis_tensor =
+            self.add_constant("arg_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
+        let oc = self.add_opcode(opcode, 3);
+        // ARG_MIN carries ArgMinOptions, ARG_MAX carries ArgMaxOptions; handing the
+        // runtime the other table fails the dispatch with kLiteRtStatusErrorInvalidArgument.
+        let (builtin_options, builtin_options_type) = if matches!(op, Operation::ArgMax { .. }) {
+            let ao = tflite::ArgMaxOptions::create(
+                &mut self.fbb,
+                &tflite::ArgMaxOptionsArgs {
+                    output_type: out_type,
+                },
+            );
+            (ao.as_union_value(), tflite::BuiltinOptions::ArgMaxOptions)
+        } else {
+            let ao = tflite::ArgMinOptions::create(
+                &mut self.fbb,
+                &tflite::ArgMinOptionsArgs {
+                    output_type: out_type,
+                },
+            );
+            (ao.as_union_value(), tflite::BuiltinOptions::ArgMinOptions)
+        };
+        let iv = self.fbb.create_vector(&[in_tensor, axis_tensor as i32]);
+        let ov = self.fbb.create_vector(&[raw_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(builtin_options),
+                builtin_options_type,
+                ..Default::default()
+            },
+        ));
+
+        if keep_dimensions {
+            // RESHAPE back to the declared output shape (axis kept with size 1).
+            let shape_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = self.add_constant(
+                "arg_out_shape",
+                &[out_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let oc_r = self.add_opcode(std_op::RESHAPE, 1);
+            let iv_r = self.fbb.create_vector(&[raw_tensor, shape_const as i32]);
+            let ov_r = self.fbb.create_vector(&[out_tensor]);
+            let shape_vec = self.fbb.create_vector(&out_shape);
+            let ro = tflite::ReshapeOptions::create(
+                &mut self.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_r,
+                    inputs: Some(iv_r),
+                    outputs: Some(ov_r),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+        }
+        true
+    }
+
+    /// Reverse: chain one REVERSE_V2 per axis. TFLite rejects non-contiguous
+    /// axes ("Non-contiguous axes not supported"), so reversing each axis
+    /// separately is the portable form. An explicitly empty axes list is the
+    /// identity (spec 8.9.43); axes absent reverses all dims.
+    fn build_reverse_op(
+        &mut self,
+        op: &Operation,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        in_tensor: i32,
+        in_shape: &[i32],
+        in_type: tflite::TensorType,
+    ) -> bool {
+        let Operation::Reverse { options, .. } = op else {
+            return false;
+        };
+        let axes: Vec<i32> = match options.as_ref().and_then(|o| o.axes.as_ref()) {
+            Some(a) => a.iter().map(|&v| v as i32).collect(),
+            None => (0..in_shape.len() as i32).collect(),
+        };
+        let out_id = op.outputs()[0];
+        if axes.is_empty() {
+            // Identity: RESHAPE to the same shape.
+            let out_t = self.add_tensor("reverse_ident", in_shape, in_type, 0);
+            let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = self.add_constant(
+                "reverse_ident_shape",
+                &[in_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
+            let iv = self.fbb.create_vector(&[in_tensor, shape_const as i32]);
+            let ov = self.fbb.create_vector(&[out_t as i32]);
+            let shape_vec = self.fbb.create_vector(in_shape);
+            let ro = tflite::ReshapeOptions::create(
+                &mut self.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc_idx,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+            tensor_map.insert(out_id, out_t as u32);
+            return true;
+        }
+        let mut cur = in_tensor;
+        for (i, ax) in axes.iter().enumerate() {
+            let ax_bytes = ax.to_le_bytes().to_vec();
+            let ax_t =
+                self.add_constant("reverse_axis", &[1], tflite::TensorType::INT32, &ax_bytes);
+            let out = self.add_tensor(&format!("reverse_out_{i}"), in_shape, in_type, 0);
+            let oc = self.add_opcode(std_op::REVERSE_V2, 1);
+            let iv = self.fbb.create_vector(&[cur, ax_t as i32]);
+            let ov = self.fbb.create_vector(&[out as i32]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
+            cur = out as i32;
+        }
+        tensor_map.insert(out_id, cur as u32);
+        true
     }
 
     /// Slice: use SLICE (no strides) or STRIDED_SLICE (with strides).
@@ -2455,11 +2914,13 @@ impl<'a> TfliteContext<'a> {
             let diag_buf: Vec<u8> = diagonal.to_le_bytes().to_vec();
             let diag = self.add_constant("tri_diag", &[1], tflite::TensorType::INT32, &diag_buf);
 
-            // row_index - diagonal, broadcast to row_shape
+            // row_index + diagonal, broadcast to row_shape. WebNN keeps
+            // element (i, j) when j - i >= diagonal (upper) / <= diagonal (lower),
+            // i.e. col >= row + diagonal / col <= row + diagonal.
             let masked_rows = emit_op!(
                 self,
                 operator_offsets,
-                std_op::SUB,
+                std_op::ADD,
                 [rows as i32, diag as i32],
                 "tri_adj_rows",
                 &row_shape,
@@ -2472,8 +2933,8 @@ impl<'a> TfliteContext<'a> {
             } else {
                 std_op::LESS_EQUAL
             };
-            // For upper: col >= row - diag
-            // For lower: col <= row - diag
+            // For upper: col >= row + diag
+            // For lower: col <= row + diag
             let mask = emit_op!(
                 self,
                 operator_offsets,
@@ -2525,7 +2986,6 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// GatherElements: emulate with GATHER_ND + coordinate conversion.
-    /// Chromium-style: only supports constant indices.
     fn build_gather_elements_op(
         &mut self,
         op: &Operation,
@@ -2543,7 +3003,7 @@ impl<'a> TfliteContext<'a> {
             let out_id = op.outputs()[0];
             let axis = options.as_ref().map(|o| o.axis).unwrap_or(0) as usize;
 
-            // Only constant indices supported (Chromium pattern)
+            // Only constant indices supported
             let indices_data = graph
                 .constant_operand_ids_to_handles
                 .get(indices_op_id)
@@ -2696,7 +3156,6 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// ScatterElements: emulate with SCATTER_ND + coordinate conversion.
-    /// Chromium-style: only supports constant int32 indices.
     fn build_scatter_elements_op(
         &mut self,
         op: &Operation,
@@ -2921,8 +3380,9 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
-    /// ScatterND: emulate with SCATTER_ND + WHERE (same pattern as Chromium's WebNNScatterND).
-    /// Only supports constant int32 indices with positive values (no negative clamping for now).
+    /// ScatterND: emulate with SCATTER_ND + WHERE
+    /// Constant indices are negative-clamped at build time; runtime indices are used
+    /// as-is (TFLite SCATTER_ND requires non-negative indices).
     fn build_scatter_nd_op(
         &mut self,
         op: &Operation,
@@ -2987,46 +3447,126 @@ impl<'a> TfliteContext<'a> {
             let in_type = datatype_to_tflite(in_op.descriptor.data_type)
                 .unwrap_or(tflite::TensorType::FLOAT32);
 
-            // Only support constant indices for now (like ScatterElements)
-            let indices_data = graph
-                .constant_operand_ids_to_handles
-                .get(indices_op_id)
-                .map(|cd| cd.data.clone());
-            let indices_data = match indices_data {
-                Some(d) => d,
-                None => return false,
+            // WebNN scatterND: the last indices dim is the coordinate size and
+            // the leading dims batch the updates. The indices rank can be > 2
+            // (spec §8.9.45).
+            let coordinate_size = *indices_shape.last().unwrap() as usize;
+            let num_coords: usize = indices_shape[..indices_shape.len() - 1]
+                .iter()
+                .map(|&d| d as usize)
+                .product();
+
+            // Indices: constant (negative-clamped at build time) or runtime
+            // (transformed/clamped in-graph).
+            let indices_tensor: i32 = match graph.constant_operand_ids_to_handles.get(indices_op_id)
+            {
+                Some(cd) => {
+                    let indices_data = &cd.data;
+                    let expected_len = num_coords * coordinate_size * 4;
+                    if indices_data.len() < expected_len {
+                        return false;
+                    }
+                    let indices_vals: Vec<i32> = indices_data[..expected_len]
+                        .chunks(4)
+                        .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                        .collect();
+                    let clamped: Vec<i32> = indices_vals
+                        .chunks(coordinate_size)
+                        .flat_map(|coord| {
+                            coord.iter().enumerate().map(|(d, &v)| {
+                                let dim_size = input_shape.get(d).copied().unwrap_or(1);
+                                let c = v.clamp(-dim_size, dim_size - 1);
+                                if c < 0 { c + dim_size } else { c }
+                            })
+                        })
+                        .collect();
+                    let coord_bytes: Vec<u8> =
+                        clamped.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    self.add_constant(
+                        "scatternd_indices",
+                        &indices_shape,
+                        tflite::TensorType::INT32,
+                        &coord_bytes,
+                    ) as i32
+                }
+                None => {
+                    // Runtime indices: TFLite SCATTER_ND requires non-negative
+                    // indices, but WebNN allows negative (counted from the end)
+                    // and out-of-range values. Transform and clamp in-graph
+                    // (spec §8.9.45).
+                    let raw = *tensor_map.get(indices_op_id).unwrap_or(indices_op_id) as i32;
+                    let m = coordinate_size;
+                    let dim_sizes: Vec<i32> = input_shape.iter().take(m).copied().collect();
+                    let dim_bytes: Vec<u8> =
+                        dim_sizes.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    let dims_t = self.add_constant(
+                        "scatternd_dim_sizes",
+                        &[m as i32],
+                        tflite::TensorType::INT32,
+                        &dim_bytes,
+                    );
+                    let max_sizes: Vec<i32> = dim_sizes.iter().map(|&d| d - 1).collect();
+                    let max_bytes: Vec<u8> =
+                        max_sizes.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    let max_t = self.add_constant(
+                        "scatternd_dim_max",
+                        &[m as i32],
+                        tflite::TensorType::INT32,
+                        &max_bytes,
+                    );
+                    let zero_t = self.add_constant(
+                        "scatternd_zero",
+                        &[1],
+                        tflite::TensorType::INT32,
+                        &0i32.to_le_bytes(),
+                    );
+                    let v_plus = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::ADD,
+                        [raw, dims_t as i32],
+                        "scatternd_vplus",
+                        &indices_shape,
+                        tflite::TensorType::INT32
+                    );
+                    let neg = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::LESS,
+                        [raw, zero_t as i32],
+                        "scatternd_neg",
+                        &indices_shape,
+                        tflite::TensorType::BOOL
+                    );
+                    let adj = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::SELECT_V2,
+                        [neg, v_plus, raw],
+                        "scatternd_adj",
+                        &indices_shape,
+                        tflite::TensorType::INT32
+                    );
+                    let non_neg = emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::MAXIMUM,
+                        [adj, zero_t as i32],
+                        "scatternd_nonneg",
+                        &indices_shape,
+                        tflite::TensorType::INT32
+                    );
+                    emit_op!(
+                        self,
+                        operator_offsets,
+                        std_op::MINIMUM,
+                        [non_neg, max_t as i32],
+                        "scatternd_clamped",
+                        &indices_shape,
+                        tflite::TensorType::INT32
+                    )
+                }
             };
-
-            let num_updates = indices_shape[0] as usize;
-            let indexing_depth = indices_shape[1] as usize;
-            let expected_len = num_updates * indexing_depth * 4;
-            if indices_data.len() < expected_len {
-                return false;
-            }
-
-            // Parse indices and clamp negative values
-            let indices_vals: Vec<i32> = indices_data[..expected_len]
-                .chunks(4)
-                .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
-            let clamped: Vec<i32> = indices_vals
-                .chunks(indexing_depth)
-                .flat_map(|coord| {
-                    coord.iter().enumerate().map(|(d, &v)| {
-                        let dim_size = input_shape.get(d).copied().unwrap_or(1);
-                        let c = v.clamp(-dim_size, dim_size - 1);
-                        if c < 0 { c + dim_size } else { c }
-                    })
-                })
-                .collect();
-
-            let coord_bytes: Vec<u8> = clamped.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let indices_tensor = self.add_constant(
-                "scatternd_indices",
-                &indices_shape,
-                tflite::TensorType::INT32,
-                &coord_bytes,
-            );
 
             // Input shape as constant 1D tensor
             let input_shape_bytes: Vec<u8> =
@@ -3055,7 +3595,7 @@ impl<'a> TfliteContext<'a> {
             );
             let oc_s1 = self.add_opcode(std_op::SCATTER_ND, 1);
             let iv_s1 = self.fbb.create_vector(&[
-                indices_tensor as i32,
+                indices_tensor,
                 true_updates as i32,
                 input_shape_tensor as i32,
             ]);
@@ -3075,7 +3615,7 @@ impl<'a> TfliteContext<'a> {
             let values_out = self.add_tensor("scatternd_val_out", &input_shape, in_type, 0);
             let oc_s2 = self.add_opcode(std_op::SCATTER_ND, 1);
             let iv_s2 = self.fbb.create_vector(&[
-                indices_tensor as i32,
+                indices_tensor,
                 updates_tensor,
                 input_shape_tensor as i32,
             ]);
@@ -3309,21 +3849,35 @@ impl<'a> TfliteContext<'a> {
                     tflite::BuiltinOptions::TransposeConvOptions,
                 )
             }
-            Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
+            Operation::MaxPool2d { options, .. }
+            | Operation::AveragePool2d { options, .. }
+            | Operation::L2Pool2d { options, .. } => {
                 let o = options.as_ref().cloned().unwrap_or_default();
                 let (sh, sw) = if o.strides.len() >= 2 {
                     (o.strides[0] as i32, o.strides[1] as i32)
                 } else {
                     (1, 1)
                 };
-                let (fh, fw) = if let Some(wd) = &o.window_dimensions {
-                    if wd.len() >= 2 {
-                        (wd[0] as i32, wd[1] as i32)
-                    } else {
-                        (0, 0)
-                    }
-                } else {
-                    (0, 0)
+                let (fh, fw) = match o.window_dimensions.as_ref() {
+                    Some(wd) if wd.len() >= 2 => (wd[0] as i32, wd[1] as i32),
+                    // WebNN defaults window_dimensions to the full spatial size.
+                    // The graph is NHWC here (modify_graph_for_nhwc), so H/W are
+                    // dims 1 and 2.
+                    _ => graph
+                        .operand(input_id)
+                        .map(|operand| {
+                            let s: Vec<i32> = operand
+                                .descriptor
+                                .shape
+                                .iter()
+                                .map(|d| match d {
+                                    crate::graph::Dimension::Static(v) => *v as i32,
+                                    _ => 1,
+                                })
+                                .collect();
+                            if s.len() >= 4 { (s[1], s[2]) } else { (1, 1) }
+                        })
+                        .unwrap_or((1, 1)),
                 };
                 let po = tflite::Pool2DOptions::create(
                     &mut self.fbb,
@@ -3539,6 +4093,166 @@ impl<'a> TfliteContext<'a> {
     }
 }
 
+/// Lowest value of `dtype` as little-endian bytes: the fill WebNN gives pooled
+/// padding, which TFLite's PAD must be told explicitly. Unsigned types are
+/// unaffected (their lowest value is zero); other types keep zero-fill.
+fn dtype_min_bytes(dtype: tflite::TensorType) -> Vec<u8> {
+    match dtype {
+        tflite::TensorType::FLOAT32 => f32::NEG_INFINITY.to_le_bytes().to_vec(),
+        tflite::TensorType::FLOAT16 => 0xFC00u16.to_le_bytes().to_vec(), // -inf
+        tflite::TensorType::INT8 => vec![i8::MIN as u8],
+        tflite::TensorType::UINT8 => vec![0],
+        tflite::TensorType::INT32 => i32::MIN.to_le_bytes().to_vec(),
+        tflite::TensorType::UINT32 => 0u32.to_le_bytes().to_vec(),
+        tflite::TensorType::INT64 => i64::MIN.to_le_bytes().to_vec(),
+        tflite::TensorType::UINT64 => 0u64.to_le_bytes().to_vec(),
+        _ => vec![0],
+    }
+}
+
+/// Spatial (height, width) of a 4D NHWC operand, or `None` if it is not 4D.
+fn nhwc_spatial(graph: &GraphInfo, id: u32) -> Option<(i64, i64)> {
+    let operand = graph.operand(id)?;
+    let shape: Vec<i64> = operand
+        .descriptor
+        .shape
+        .iter()
+        .map(|d| match d {
+            crate::graph::Dimension::Static(v) => *v as i64,
+            _ => 1,
+        })
+        .collect();
+    (shape.len() == 4).then(|| (shape[1], shape[2]))
+}
+
+/// Resolve the padding to emit in the PAD op that precedes a pooled op.
+///
+/// WebNN spells pool padding as (beginH, endH, beginW, endW). TFLite pooling has
+/// no explicit padding, so this converter pads first and then pools with
+/// `Padding::VALID`: the padding emitted here alone decides the reference
+/// input's shape, and therefore the pooling output shape. That shape must match
+/// what WebNN declares, otherwise LiteRT writes past the output tensor. WebNN
+/// gives `outputSizes` precedence over `outputShapeRounding`, so when the
+/// caller requests output sizes the trailing padding is extended (or the
+/// configuration is rejected) until TFLite's floor pooling lands exactly on
+/// them.
+fn resolve_pool_pad(
+    op: &Operation,
+    graph: &GraphInfo,
+    o: &MLPool2dOptions,
+) -> Result<Vec<u32>, GraphError> {
+    let fail = |reason: String| GraphError::ConversionFailed {
+        format: "litert".to_string(),
+        reason,
+    };
+
+    let in_hw = nhwc_spatial(graph, op.inputs()[0])
+        .ok_or_else(|| fail("pool2d: input must be 4D".to_string()))?;
+    let out_hw = nhwc_spatial(graph, op.outputs()[0])
+        .ok_or_else(|| fail("pool2d: output must be 4D".to_string()))?;
+
+    let window = match o.window_dimensions.as_ref() {
+        Some(wd) if wd.len() >= 2 => (wd[0] as i64, wd[1] as i64),
+        _ => in_hw,
+    };
+    let strides = if o.strides.len() >= 2 {
+        (o.strides[0] as i64, o.strides[1] as i64)
+    } else {
+        (1, 1)
+    };
+    let dilations = if o.dilations.len() >= 2 {
+        (o.dilations[0] as i64, o.dilations[1] as i64)
+    } else {
+        (1, 1)
+    };
+    // TFLite pooling takes no dilation parameter, so a dilated window cannot be
+    // expressed: fail instead of emitting a model whose spatial size disagrees
+    // with the declared output.
+    if dilations != (1, 1) {
+        return Err(fail(format!(
+            "pool2d: dilations {:?} are not supported by the litert backend",
+            o.dilations
+        )));
+    }
+
+    let pads: Vec<i64> = if o.padding.len() >= 4 {
+        o.padding.iter().map(|&v| v as i64).collect()
+    } else {
+        vec![0, 0, 0, 0]
+    };
+    let ceil_rounding = o.output_shape_rounding.eq_ignore_ascii_case("ceil");
+    let output_sizes = o.output_sizes.as_ref().filter(|sizes| sizes.len() >= 2);
+
+    let mut resolved = vec![0u32; 4];
+    for axis in 0..2 {
+        let (begin, end) = (pads[axis * 2], pads[axis * 2 + 1]);
+        let (in_size, declared) = if axis == 0 {
+            (in_hw.0, out_hw.0)
+        } else {
+            (in_hw.1, out_hw.1)
+        };
+        let (window, stride, dilation) = if axis == 0 {
+            (window.0, strides.0, dilations.0)
+        } else {
+            (window.1, strides.1, dilations.1)
+        };
+        let effective_window = dilation * (window - 1) + 1;
+
+        // `outputSizes` wins over `outputShapeRounding`; otherwise follow the
+        // shape inference formula in shape_inference.rs.
+        let target = match output_sizes {
+            Some(sizes) => sizes[axis] as i64,
+            None => {
+                let span = in_size + begin + end - effective_window;
+                let rounded = if ceil_rounding {
+                    span.div_euclid(stride) + i64::from(span.rem_euclid(stride) != 0)
+                } else {
+                    span.div_euclid(stride)
+                };
+                rounded + 1
+            }
+        };
+        if target <= 0 {
+            return Err(fail(format!(
+                "pool2d: cannot pool to a non-positive output size (axis {axis}, target {target})"
+            )));
+        }
+
+        // Total padding (begin + end) that makes TFLite's VALID floor pooling
+        // yield `target`; keep the caller's padding when it already does.
+        let lower = ((target - 1) * stride + effective_window - in_size).max(0);
+        let upper = target * stride - 1 + effective_window - in_size;
+        let user_total = begin + end;
+        let total = user_total.clamp(lower, upper);
+        // The caller's begin padding is preserved (it decides which input
+        // elements each window covers); the end padding takes the remainder.
+        let end_pad = total - begin;
+        if end_pad < 0 {
+            return Err(fail(format!(
+                "pool2d: output size {target} needs less begin padding than requested \
+                 (axis {axis}, begin {begin})"
+            )));
+        }
+        // Guard the arithmetic above: the emitted model must produce `target`.
+        if (in_size + total - effective_window).div_euclid(stride) + 1 != target {
+            return Err(fail(format!(
+                "pool2d: cannot produce output size {target} (axis {axis})"
+            )));
+        }
+        if target != declared {
+            return Err(fail(format!(
+                "pool2d: resolved output size {target} disagrees with declared {declared} \
+                 (axis {axis})"
+            )));
+        }
+
+        resolved[axis * 2] = begin as u32;
+        resolved[axis * 2 + 1] = end_pad as u32;
+    }
+
+    Ok(resolved)
+}
+
 fn build_spatial_inputs<'a>(
     ctx: &mut TfliteContext<'a>,
     op: &Operation,
@@ -3603,18 +4317,25 @@ fn build_spatial_inputs<'a>(
     // Handle explicit padding for Conv2d/Pool2d by inserting a PAD op before it.
     let pad_opts: Option<(Vec<u32>, bool)> = match op {
         Operation::Conv2d { options, .. } => options.as_ref().map(|o| (o.padding.clone(), false)),
-        Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
-            options.as_ref().map(|o| (o.padding.clone(), true))
+        Operation::MaxPool2d { options, .. }
+        | Operation::AveragePool2d { options, .. }
+        | Operation::L2Pool2d { options, .. } => {
+            let o = options.as_ref().cloned().unwrap_or_default();
+            Some((resolve_pool_pad(op, graph, &o)?, true))
         }
         _ => None,
     };
     if let Some((padding, _is_pool)) = pad_opts {
         if padding.len() >= 4 {
-            let ph0 = padding[0] as i32;
-            let pw0 = padding[1] as i32;
-            let ph1 = padding[2] as i32;
-            let pw1 = padding[3] as i32;
-            let pad_vals: [i32; 8] = [0, 0, ph0, ph1, pw0, pw1, 0, 0];
+            // WebNN padding order is (beginH, endH, beginW, endW); the PAD op
+            // takes a (begin, end) pair per axis of the NHWC operand.
+            let (bh, eh, bw, ew) = (
+                padding[0] as i32,
+                padding[1] as i32,
+                padding[2] as i32,
+                padding[3] as i32,
+            );
+            let pad_vals: [i32; 8] = [0, 0, bh, eh, bw, ew, 0, 0];
             let pad_buf: Vec<u8> = pad_vals.iter().flat_map(|v| v.to_le_bytes()).collect();
             let pad_tensor = ctx.add_constant(
                 "conv2d_prepad",
@@ -3639,13 +4360,26 @@ fn build_spatial_inputs<'a>(
             if in_shape.len() == 4 {
                 let padded_shape = vec![
                     in_shape[0],
-                    in_shape[1] + ph0 + ph1,
-                    in_shape[2] + pw0 + pw1,
+                    in_shape[1] + bh + eh,
+                    in_shape[2] + bw + ew,
                     in_shape[3],
                 ];
                 let padded_tensor = ctx.add_tensor("conv2d_padded", &padded_shape, in_type, 0);
                 let pad_oc = ctx.add_opcode(std_op::PAD, 1);
-                let pad_iv = ctx.fbb.create_vector(&[in_tensor, pad_tensor as i32]);
+                // WebNN fills maxPool2d's padding with the lowest value of the
+                // data type, so it never wins the max. TFLite's PAD fills with
+                // zero unless input[2] says otherwise, and zero would beat every
+                // negative operand in the window.
+                let fill =
+                    matches!(op, Operation::MaxPool2d { .. }).then(|| dtype_min_bytes(in_type));
+                let pad_iv = match &fill {
+                    Some(bytes) => {
+                        let v = ctx.add_constant("pad_fill", &[1], in_type, bytes);
+                        ctx.fbb
+                            .create_vector(&[in_tensor, pad_tensor as i32, v as i32])
+                    }
+                    None => ctx.fbb.create_vector(&[in_tensor, pad_tensor as i32]),
+                };
                 let pad_ov = ctx.fbb.create_vector(&[padded_tensor as i32]);
                 let pad_op = tflite::Operator::create(
                     &mut ctx.fbb,
@@ -3727,6 +4461,7 @@ fn build_extra_inputs<'a>(
     inputs: &mut Vec<i32>,
     tensor_map: &HashMap<u32, u32>,
     operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    in_type: tflite::TensorType,
 ) -> Result<bool, GraphError> {
     // Expand: add shape tensor as input[1]
     if let Operation::Expand { new_shape, .. } = op {
@@ -3772,10 +4507,11 @@ fn build_extra_inputs<'a>(
         return Ok(handled);
     }
 
-    // Pad: add paddings tensor as input[1]
+    // Pad: add paddings tensor as input[1] and the constant value as input[2].
     if let Operation::Pad {
         beginning_padding,
         ending_padding,
+        options,
         ..
     } = op
     {
@@ -3792,34 +4528,28 @@ fn build_extra_inputs<'a>(
             &pad_data,
         );
         inputs.push(pad_tensor as i32);
-        return Ok(false);
-    }
 
-    // Reverse: add axis tensor as input[1]
-    if let Operation::Reverse { options, .. } = op {
-        let axes: Vec<i32> = if let Some(opts) = options {
-            opts.axes
-                .as_deref()
-                .unwrap_or(&[])
-                .iter()
-                .map(|&a| a as i32)
-                .collect()
-        } else {
-            vec![]
+        // TFLite PAD v2 input[2]: scalar constant value (WebNN options.value).
+        let value = options.as_ref().and_then(|o| o.value.clone());
+        let f = match value {
+            Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
+            Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("Infinity") => {
+                f64::INFINITY
+            }
+            Some(serde_json::Value::String(s)) if s == "-Infinity" => f64::NEG_INFINITY,
+            Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("NaN") => f64::NAN,
+            _ => 0.0,
         };
-        let axes_data: Vec<u8> = if axes.is_empty() {
-            vec![0i32].iter().flat_map(|v| v.to_le_bytes()).collect()
-        } else {
-            axes.iter().flat_map(|v| v.to_le_bytes()).collect()
+        let value_bytes: Vec<u8> = match in_type {
+            tflite::TensorType::FLOAT32 => (f as f32).to_le_bytes().to_vec(),
+            tflite::TensorType::INT32 => (f as i32).to_le_bytes().to_vec(),
+            tflite::TensorType::INT64 => (f as i64).to_le_bytes().to_vec(),
+            tflite::TensorType::INT8 => vec![(f as i8) as u8],
+            tflite::TensorType::UINT8 => vec![(f as u8)],
+            _ => (f as f32).to_le_bytes().to_vec(),
         };
-        let ax_len = if axes.is_empty() { 1 } else { axes.len() };
-        let ax_tensor = ctx.add_constant(
-            "reverse_axes",
-            &[ax_len as i32],
-            tflite::TensorType::INT32,
-            &axes_data,
-        );
-        inputs.push(ax_tensor as i32);
+        let value_tensor = ctx.add_constant("pad_value", &[1], in_type, &value_bytes);
+        inputs.push(value_tensor as i32);
         return Ok(false);
     }
 
@@ -3935,9 +4665,52 @@ fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
 }
 
 /// Standard TFLite op codes matching tensorflow/lite/schema/schema.fbs.
+/// Builtin version to declare for `code`. BROADCAST_TO and PAD bumped their interface
+/// after the initial version; everything else stays there. The builtin versions that
+/// added optional broadcasting are deliberately not used: operands are broadcast
+/// explicitly instead (see [`TfliteContext::broadcast_operands`]), because this LiteRT
+/// build does not register those later versions for every op (LOGICAL_OR version 2, for
+/// instance, fails registration).
+fn opcode_version(code: i32) -> i32 {
+    if matches!(code, std_op::BROADCAST_TO | std_op::PAD) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Opcodes whose *operands* all broadcast into the result. TFLite's kernels derive a
+/// too-small output once a broadcast result reaches rank 5, so operands are
+/// pre-broadcast explicitly for these. Ops with parameter inputs (the axes of a
+/// reduction, the permutation of a transpose, ...) must not be listed: those inputs are
+/// not broadcastable and would be corrupted.
+const BROADCASTING_OPS: &[i32] = &[
+    std_op::ADD,
+    std_op::SUB,
+    std_op::MUL,
+    std_op::DIV,
+    std_op::POW,
+    std_op::MAXIMUM,
+    std_op::MINIMUM,
+    std_op::EQUAL,
+    std_op::NOT_EQUAL,
+    std_op::GREATER,
+    std_op::GREATER_EQUAL,
+    std_op::LESS,
+    std_op::LESS_EQUAL,
+    std_op::LOGICAL_AND,
+    std_op::LOGICAL_OR,
+    // SELECT_V2 broadcasts its three operands into the result. BATCH_MATMUL does *not*
+    // belong here: its operands keep their own shapes and only the batch dimensions
+    // broadcast, which the kernel already handles at any rank.
+    std_op::SELECT_V2,
+];
+
 mod std_op {
     pub const ADD: i32 = 0;
     pub const AVERAGE_POOL_2D: i32 = 1;
+    pub const ARG_MAX: i32 = 56;
+    pub const ARG_MIN: i32 = 79;
     pub const CONCATENATION: i32 = 2;
     pub const CONV_2D: i32 = 3;
     pub const FLOOR: i32 = 8;
@@ -3995,6 +4768,7 @@ mod std_op {
     pub const REDUCE_MIN: i32 = 89;
     pub const REDUCE_PROD: i32 = 81;
     pub const SELECT: i32 = 64;
+    pub const SELECT_V2: i32 = 123;
     pub const GATHER_ND: i32 = 107;
     pub const TRANSPOSE_CONV: i32 = 67;
     pub const PAD: i32 = 34;
@@ -4061,6 +4835,8 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::NotEqual { .. } => Some(std_op::NOT_EQUAL),
         Operation::Equal { .. } => Some(std_op::EQUAL),
         Operation::Cast { .. } => Some(53),
+        Operation::ArgMax { .. } => Some(std_op::ARG_MAX),
+        Operation::ArgMin { .. } => Some(std_op::ARG_MIN),
         Operation::Pad { .. } => Some(34),
         Operation::Slice { .. } => Some(65),
         Operation::LogicalNot { .. } => Some(std_op::LOGICAL_NOT),
@@ -4088,7 +4864,7 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::Sign { .. } => Some(std_op::SIGN),
         Operation::Squeeze { .. } => Some(std_op::SQUEEZE),
         Operation::Tile { .. } => Some(std_op::TILE),
-        Operation::Where { .. } => Some(std_op::SELECT),
+        Operation::Where { .. } => Some(std_op::SELECT_V2),
         Operation::L2Pool2d { .. } => Some(std_op::L2_POOL_2D),
         Operation::GatherND { .. } => Some(std_op::GATHER_ND),
         Operation::CumulativeSum { .. } => Some(std_op::CUMSUM),
@@ -4379,11 +5155,12 @@ fn register_native_tensors(
 fn build_native_operators<'a>(
     graph: &GraphInfo,
     ctx: &mut TfliteContext<'a>,
+    bool_override: &std::collections::HashSet<u32>,
     mut tensor_map: &mut HashMap<u32, u32>,
     mut operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
 ) -> Result<(), GraphError> {
     for op in &graph.operations {
-        // Identity: emit RESHAPE with same shape (Chromium/Servo approach).
+        // Identity: emit RESHAPE with same shape
         if ctx.build_identity_op(op, graph, &mut tensor_map, &mut operator_offsets) {
             continue;
         }
@@ -4439,7 +5216,8 @@ fn build_native_operators<'a>(
         );
 
         // logical_ops: LogicalAnd, LogicalOr, LogicalXor, LogicalNot
-        decomposed |= ctx.build_logical_ops(op, &mut tensor_map, &mut operator_offsets, &in_shape);
+        decomposed |=
+            ctx.build_logical_ops(op, graph, &mut tensor_map, &mut operator_offsets, &in_shape);
 
         // activation_ops: Elu, HardSigmoid, Softplus, Softsign
         decomposed |= ctx.build_activation_ops(
@@ -4499,12 +5277,12 @@ fn build_native_operators<'a>(
             continue;
         }
 
-        // scatter_nd_op: emulate with SCATTER_ND + WHERE (constant indices only)
+        // scatter_nd_op: emulate with SCATTER_ND + WHERE (constant or runtime indices)
         if matches!(op, Operation::ScatterND { .. }) {
             if !ctx.build_scatter_nd_op(op, graph, &mut tensor_map, &mut operator_offsets) {
                 return Err(GraphError::ConversionFailed {
                     format: "litert".to_string(),
-                    reason: "scatterND: non-constant indices not yet supported".to_string(),
+                    reason: "scatterND: unsupported indices shape or data".to_string(),
                 });
             }
             continue;
@@ -4512,6 +5290,35 @@ fn build_native_operators<'a>(
 
         // sub int8/uint8: TFLite's kernel aborts, emulate via INT32.
         if ctx.build_int8_sub_op(op, graph, &mut tensor_map, &mut operator_offsets, in_type) {
+            continue;
+        }
+
+        // Broadcasting binary ops at rank >= 5: broadcast explicitly, then run on
+        // equal shapes (TFLite's own broadcasting writes past the output there).
+        if ctx.build_broadcast_binary_op(
+            op,
+            graph,
+            bool_override,
+            &mut tensor_map,
+            &mut operator_offsets,
+        ) {
+            continue;
+        }
+
+        // argMax / argMin: ARG_MAX / ARG_MIN with the axis as a second input.
+        if ctx.build_arg_min_max_op(op, graph, &mut tensor_map, &mut operator_offsets, in_tensor) {
+            continue;
+        }
+
+        // Reverse: chain REVERSE_V2 per axis (TFLite rejects non-contiguous axes).
+        if ctx.build_reverse_op(
+            op,
+            &mut tensor_map,
+            &mut operator_offsets,
+            in_tensor,
+            &in_shape,
+            in_type,
+        ) {
             continue;
         }
 
@@ -4541,12 +5348,7 @@ fn build_native_operators<'a>(
             }
         };
 
-        let opcode_version = if tfl_opcode == std_op::BROADCAST_TO {
-            2
-        } else {
-            1
-        };
-        let opcode_idx = ctx.add_opcode(tfl_opcode, opcode_version);
+        let opcode_idx = ctx.add_opcode(tfl_opcode, opcode_version(tfl_opcode));
 
         let input_ids = op.inputs();
         let output_ids = op.outputs();
@@ -4595,16 +5397,132 @@ fn build_native_operators<'a>(
             &mut inputs,
             &tensor_map,
             &mut operator_offsets,
+            in_type,
         )? {
             continue;
         }
 
-        let outputs: Vec<i32> = output_ids
+        let final_outputs: Vec<i32> = output_ids
             .iter()
             .map(|&id| *tensor_map.get(&id).unwrap_or(&id) as i32)
             .collect();
+
+        // Output shape (spatial) shared by the pool and any correction ops.
+        let out_shape: Vec<i32> = graph
+            .operand(output_ids[0])
+            .map(|o| {
+                o.descriptor
+                    .shape
+                    .iter()
+                    .map(|d| match d {
+                        crate::graph::Dimension::Static(v) => *v as i32,
+                        _ => 1,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let mut op_outputs = final_outputs.clone();
+
+        // L2 pooling: TFLite's L2_POOL_2D averages over the window, while WebNN
+        // sums (sqrt of the sum of squares). Scale by sqrt(window area).
+        let l2_scale: Option<f32> = if let Operation::L2Pool2d { options, .. } = op {
+            let o = options.as_ref().cloned().unwrap_or_default();
+            let (fh, fw) = match o.window_dimensions.as_ref() {
+                Some(wd) if wd.len() >= 2 => (wd[0] as f32, wd[1] as f32),
+                _ => {
+                    if in_shape.len() >= 4 {
+                        (in_shape[1] as f32, in_shape[2] as f32)
+                    } else {
+                        (1.0, 1.0)
+                    }
+                }
+            };
+            Some((fh * fw).sqrt())
+        } else {
+            None
+        };
+        let mut l2_raw: Option<i32> = None;
+        if l2_scale.is_some() {
+            let raw = ctx.add_tensor("l2_pool_raw", &out_shape, in_type, 0) as i32;
+            op_outputs = vec![raw];
+            l2_raw = Some(raw);
+        }
+
+        // Average pooling: TFLite divides by the full window (padding zeros
+        // included); WebNN excludes padding. Divide by the pooled count of a
+        // 0-padded ones mask.
+        let mut avg_raw: Option<i32> = None;
+        let mut avg_count: Option<i32> = None;
+        if let Operation::AveragePool2d { options, .. } = op {
+            let o = options.as_ref().cloned().unwrap_or_default();
+            // The mask describes the tensor the pool consumes, so it must use the
+            // padding the prepad resolved: that can exceed the requested padding
+            // when outputSizes or ceil rounding demands it.
+            let pad = resolve_pool_pad(op, graph, &o)?;
+            if pad.len() >= 4 && pad.iter().any(|&v| v != 0) && in_shape.len() == 4 {
+                let (bh, eh, bw, ew) = (pad[0] as i32, pad[1] as i32, pad[2] as i32, pad[3] as i32);
+                let (n, h, w, c) = (in_shape[0], in_shape[1], in_shape[2], in_shape[3]);
+                let (ph, pw) = (h + bh + eh, w + bw + ew);
+                let padded_shape = vec![n, ph, pw, c];
+                let mut data = vec![0u8; (n * ph * pw * c) as usize * 4];
+                for ni in 0..n {
+                    for hi in 0..ph {
+                        for wi in 0..pw {
+                            for ci in 0..c {
+                                let idx = (((ni * ph + hi) * pw + wi) * c + ci) as usize;
+                                let valid = hi >= bh && hi < bh + h && wi >= bw && wi < bw + w;
+                                let v: f32 = if valid { 1.0 } else { 0.0 };
+                                data[idx * 4..(idx + 1) * 4].copy_from_slice(&v.to_le_bytes());
+                            }
+                        }
+                    }
+                }
+                let ones = ctx.add_constant("avgpool_ones", &padded_shape, in_type, &data);
+                let (fh, fw) = match o.window_dimensions.as_ref() {
+                    Some(wd) if wd.len() >= 2 => (wd[0] as i32, wd[1] as i32),
+                    _ => (h, w),
+                };
+                let (sh, sw) = if o.strides.len() >= 2 {
+                    (o.strides[0] as i32, o.strides[1] as i32)
+                } else {
+                    (1, 1)
+                };
+                let count = ctx.add_tensor("avgpool_count", &out_shape, in_type, 0) as i32;
+                let ocp = ctx.add_opcode(std_op::AVERAGE_POOL_2D, 1);
+                let po = tflite::Pool2DOptions::create(
+                    &mut ctx.fbb,
+                    &tflite::Pool2DOptionsArgs {
+                        padding: tflite::Padding::VALID,
+                        stride_w: sw,
+                        stride_h: sh,
+                        filter_width: fw,
+                        filter_height: fh,
+                        fused_activation_function: tflite::ActivationFunctionType::NONE,
+                    },
+                );
+                let iv = ctx.fbb.create_vector(&[ones as i32]);
+                let ov = ctx.fbb.create_vector(&[count]);
+                operator_offsets.push(tflite::Operator::create(
+                    &mut ctx.fbb,
+                    &tflite::OperatorArgs {
+                        opcode_index: ocp,
+                        inputs: Some(iv),
+                        outputs: Some(ov),
+                        builtin_options: Some(po.as_union_value()),
+                        builtin_options_type: tflite::BuiltinOptions::Pool2DOptions,
+                        ..Default::default()
+                    },
+                ));
+                let raw = ctx.add_tensor("avg_pool_raw", &out_shape, in_type, 0) as i32;
+                op_outputs = vec![raw];
+                avg_raw = Some(raw);
+                avg_count = Some(count);
+            }
+        }
+
         let inputs_vec = ctx.fbb.create_vector(&inputs);
-        let outputs_vec = ctx.fbb.create_vector(&outputs);
+        let outputs_vec = ctx.fbb.create_vector(&op_outputs);
 
         // Builtin options for the TFLite operator
         let (builtin_opts, builtin_opts_type) = ctx.create_builtin_options(op, graph, input_id)?;
@@ -4629,6 +5547,41 @@ fn build_native_operators<'a>(
             },
         );
         operator_offsets.push(tfl_op);
+
+        if let (Some(raw), Some(scale)) = (l2_raw, l2_scale) {
+            let scale_bytes: Vec<u8> = (scale as f32).to_le_bytes().to_vec();
+            let scale_t = ctx.add_constant("l2_pool_scale", &[1], in_type, &scale_bytes);
+            let oc = ctx.add_opcode(std_op::MUL, 1);
+            let iv = ctx.fbb.create_vector(&[raw, scale_t as i32]);
+            let ov = ctx.fbb.create_vector(&[final_outputs[0]]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut ctx.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
+        }
+        if let (Some(raw), Some(count)) = (avg_raw, avg_count) {
+            let oc = ctx.add_opcode(std_op::DIV, 1);
+            let iv = ctx.fbb.create_vector(&[raw, count]);
+            let ov = ctx.fbb.create_vector(&[final_outputs[0]]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut ctx.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
+        }
     }
 
     Ok(())
@@ -4648,7 +5601,13 @@ fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
         &weight_transpose,
         &filter_shape_swap,
     )?;
-    build_native_operators(graph, &mut ctx, &mut tensor_map, &mut operator_offsets)?;
+    build_native_operators(
+        graph,
+        &mut ctx,
+        &bool_override,
+        &mut tensor_map,
+        &mut operator_offsets,
+    )?;
 
     // Build subgraph — only include runtime inputs (not constants) in subgraph input list.
     let inputs_vec = ctx.fbb.create_vector(
@@ -5061,6 +6020,96 @@ mod tests {
         for op_type in &["logicalAnd", "logicalOr"] {
             let graph = make_binary(op_type, vec![4]);
             convert_ok(&graph);
+        }
+    }
+
+    fn make_scatter_nd(
+        input_shape: &[u32],
+        indices_shape: &[u32],
+        updates_shape: &[u32],
+        constant_indices: bool,
+    ) -> GraphInfo {
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: s(input_shape),
+            pending_permutation: vec![],
+        };
+        let idx_desc = OperandDescriptor {
+            data_type: DataType::Int32,
+            shape: s(indices_shape),
+            pending_permutation: vec![],
+        };
+        let upd_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: s(updates_shape),
+            pending_permutation: vec![],
+        };
+        let num_idx: usize = indices_shape.iter().product::<u32>() as usize;
+        let mut graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc.clone(),
+                    name: Some("input".into()),
+                },
+                Operand {
+                    kind: if constant_indices {
+                        OperandKind::Constant
+                    } else {
+                        OperandKind::Input
+                    },
+                    descriptor: idx_desc,
+                    name: Some("indices".into()),
+                },
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: upd_desc,
+                    name: Some("updates".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: input_desc,
+                    name: Some("output".into()),
+                },
+            ],
+            input_operands: vec![0, 2],
+            output_operands: vec![3],
+            operations: vec![op("scatterND", &[0, 1, 2], &[3])],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+        if constant_indices {
+            graph.constant_operand_ids_to_handles.insert(
+                1,
+                ConstantData {
+                    data: vec![0u8; num_idx * 4],
+                    label: None,
+                },
+            );
+        }
+        graph
+    }
+
+    #[test]
+    fn test_scatter_nd_nd_indices() {
+        // 3D indices [2, 1, 2] -> two batched coordinates of depth 2.
+        // input [3, 4]; updates = indicesShape[..2] ++ inputShape[2..] = [2, 1].
+        for constant in [false, true] {
+            convert_ok(&make_scatter_nd(&[3, 4], &[2, 1, 2], &[2, 1], constant));
+        }
+    }
+
+    #[test]
+    fn test_scatter_nd_5d_input() {
+        // High-rank input with 2D indices [4, 2]; updates [4, 2, 2, 2].
+        for constant in [false, true] {
+            convert_ok(&make_scatter_nd(
+                &[2, 2, 2, 2, 2],
+                &[4, 2],
+                &[4, 2, 2, 2],
+                constant,
+            ));
         }
     }
 }
