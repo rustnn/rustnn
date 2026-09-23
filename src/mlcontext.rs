@@ -22,6 +22,7 @@ use crate::error::Error;
 use crate::error::Result;
 #[cfg(feature = "dynamic-inputs")]
 use crate::error::ShapeInferenceError;
+#[cfg(feature = "dynamic-inputs")]
 use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
@@ -424,6 +425,7 @@ pub struct MLOperandDescriptor {
     shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
 }
 
+#[cfg(feature = "dynamic-inputs")]
 impl From<&MLOperandDescriptor> for MLDynamicOperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         MLDynamicOperandDescriptor {
@@ -459,6 +461,7 @@ pub struct MLDynamicOperandDescriptor {
     shape: Vec<MLDimension>,
 }
 
+#[cfg(feature = "dynamic-inputs")]
 impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLDynamicOperandDescriptor) -> Self {
         OperandDescriptor {
@@ -479,6 +482,7 @@ impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
     }
 }
 
+#[cfg(feature = "dynamic-inputs")]
 impl MLDynamicOperandDescriptor {
     pub fn new(data_type: MLOperandDataType, shape: Vec<MLDimension>) -> Self {
         Self { data_type, shape }

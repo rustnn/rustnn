@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::operator_options::{MLDimension, MLDynamicDimension};
 use crate::operators::Operation;
+use shapeinfer_symbolic::{Expression, expression::Shape};
 
 /// A dimension whose size is only known at dispatch time, bounded by `max_size`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -36,6 +37,14 @@ pub enum Dimension {
     Static(u32),
     /// Bounded dynamic size; requires the `dynamic-inputs` feature.
     Dynamic(DynamicDimension),
+    Expression(ExpressionDimension),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpressionDimension {
+    pub expression: String,
+    pub max_size: u32,
 }
 
 impl Dimension {
@@ -44,6 +53,7 @@ impl Dimension {
         match self {
             Self::Static(value) => *value,
             Self::Dynamic(dimension) => dimension.max_size,
+            Self::Expression(dimension) => dimension.max_size,
         }
     }
 }
@@ -56,6 +66,61 @@ pub fn to_dimension_vector(shape: &[u32]) -> Vec<Dimension> {
 /// Free-function form of [`Dimension::get_static_or_max_size`], handy in iterator chains.
 pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
     dim.get_static_or_max_size()
+}
+
+/// Convert a graph shape to a symbolic shape without replacing dynamic sizes by their bounds.
+pub fn to_symbolic_shape(shape: &[Dimension]) -> Result<Shape, GraphError> {
+    let expressions = shape
+        .iter()
+        .map(|dimension| match dimension {
+            Dimension::Static(value) => Ok(Expression::new_const(i64::from(*value))),
+            Dimension::Dynamic(value) => Ok(Expression::new_dynamic(&value.name)),
+            Dimension::Expression(value) => {
+                Expression::parse(&value.expression).map_err(|reason| {
+                    GraphError::ShapeInferenceFailed {
+                        reason: format!(
+                            "invalid symbolic dimension {}: {reason}",
+                            value.expression
+                        ),
+                    }
+                })
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Shape::from_vec(expressions))
+}
+
+/// Convert symbolic results back to graph dimensions, using known input bounds for derived sizes.
+pub fn from_symbolic_shape(
+    shape: &Shape,
+    bounds: &std::collections::BTreeMap<String, u32>,
+    max_sizes: &[u32],
+) -> Result<Vec<Dimension>, GraphError> {
+    shape
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| {
+            if let Some(value) = expression.as_const() {
+                return u32::try_from(value).map(Dimension::Static).map_err(|_| {
+                    GraphError::ShapeInferenceFailed {
+                        reason: format!("symbolic dimension {value} is outside the u32 range"),
+                    }
+                });
+            }
+            if let Some(name) = expression.as_dynamic()
+                && let Some(&max_size) = bounds.get(name)
+            {
+                return Ok(Dimension::Dynamic(DynamicDimension {
+                    name: name.to_owned(),
+                    max_size,
+                }));
+            }
+            Ok(Dimension::Expression(ExpressionDimension {
+                expression: expression.to_string(),
+                max_size: max_sizes[index],
+            }))
+        })
+        .collect()
 }
 
 impl From<MLDimension> for Dimension {
@@ -85,6 +150,10 @@ impl From<Dimension> for MLDimension {
             Dimension::Static(n) => MLDimension::Static(n),
             Dimension::Dynamic(d) => MLDimension::Dynamic(MLDynamicDimension {
                 name: d.name,
+                max_size: d.max_size,
+            }),
+            Dimension::Expression(d) => MLDimension::Dynamic(MLDynamicDimension {
+                name: d.expression,
                 max_size: d.max_size,
             }),
         }
@@ -257,7 +326,7 @@ impl OperandDescriptor {
     pub fn has_dynamic_dimensions(&self) -> bool {
         self.shape
             .iter()
-            .any(|dim| matches!(dim, Dimension::Dynamic(_)))
+            .any(|dim| !matches!(dim, Dimension::Static(_)))
     }
 
     /// The shape as plain sizes, or `None` if any dimension is dynamic.
@@ -266,7 +335,7 @@ impl OperandDescriptor {
         for dim in &self.shape {
             match dim {
                 Dimension::Static(v) => shape.push(*v),
-                Dimension::Dynamic(_) => return None,
+                Dimension::Dynamic(_) | Dimension::Expression(_) => return None,
             }
         }
         Some(shape)

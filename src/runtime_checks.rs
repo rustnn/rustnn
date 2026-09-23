@@ -140,6 +140,34 @@ impl RuntimeShapeState {
                             .insert(dynamic.name.clone(), BoundDynamicDim { value: actual });
                     }
                 }
+                Dimension::Expression(expression) => {
+                    let shape =
+                        crate::graph::to_symbolic_shape(std::slice::from_ref(expected_dim))?;
+                    let variables: std::collections::BTreeMap<&str, u32> = self
+                        .bound_dims
+                        .iter()
+                        .map(|(name, bound)| (name.as_str(), bound.value as u32))
+                        .collect();
+                    let expected = shapeinfer_symbolic::Context::new(
+                        &shapeinfer_symbolic::context::ContextOptions::default(),
+                    )
+                    .compute_shapes_cel_comcrete(&[shape], &variables)
+                    .map_err(|error| GraphError::ShapeInferenceFailed {
+                        reason: format!(
+                            "cannot resolve shape expression {}: {error}",
+                            expression.expression
+                        ),
+                    })?[0][0] as usize;
+                    if actual != expected {
+                        return Err(GraphError::RuntimeStaticDimensionMismatch {
+                            kind: kind.as_str().to_string(),
+                            name: name.to_string(),
+                            axis,
+                            expected: expected as u32,
+                            actual,
+                        });
+                    }
+                }
             }
         }
 

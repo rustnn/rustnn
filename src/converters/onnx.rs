@@ -306,6 +306,17 @@ impl OnnxConverter {
                         parts.push(name);
                     }
                 }
+                Dimension::Expression(dd) => {
+                    let name = format!("{}_dim{}_expression_bound", prefix, idx);
+                    initializers.push(TensorProto {
+                        name: name.clone(),
+                        data_type: ProtoDataType::Int64 as i32,
+                        dims: vec![1],
+                        int64_data: vec![dd.max_size as i64],
+                        ..Default::default()
+                    });
+                    parts.push(name);
+                }
             }
         }
 
@@ -10168,6 +10179,16 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
                 value: Some(
                     crate::protos::onnx::tensor_shape_proto::dimension::Value::DimParam(
                         dd.name.clone(),
+                    ),
+                ),
+                ..Default::default()
+            }
+        }
+        crate::graph::Dimension::Expression(dd) => {
+            crate::protos::onnx::tensor_shape_proto::Dimension {
+                value: Some(
+                    crate::protos::onnx::tensor_shape_proto::dimension::Value::DimParam(
+                        dd.expression.clone(),
                     ),
                 ),
                 ..Default::default()

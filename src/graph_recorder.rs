@@ -75,6 +75,15 @@ impl GraphRecorder {
         operation: Operation,
         output_names: Option<&[String]>,
     ) -> Result<Vec<MLOperand>, GraphBuilderError> {
+        self.record_operation_with_descriptors(operation, output_names, None)
+    }
+
+    pub(crate) fn record_operation_with_descriptors(
+        &mut self,
+        operation: Operation,
+        output_names: Option<&[String]>,
+        descriptors: Option<Vec<OperandDescriptor>>,
+    ) -> Result<Vec<MLOperand>, GraphBuilderError> {
         let output_ids = operation.output_operands();
         let expected_ids = self.next_output_ids(output_ids.len());
         if output_ids != expected_ids {
@@ -98,10 +107,20 @@ impl GraphRecorder {
             });
         }
 
-        let descriptors = if output_ids.is_empty() {
-            Vec::new()
-        } else {
-            infer_operation_descriptors(&operation, &self.graph)?
+        let descriptors = match descriptors {
+            Some(descriptors) if descriptors.len() == output_ids.len() => descriptors,
+            Some(descriptors) => {
+                return Err(GraphBuilderError::InconsistentGraphInfo {
+                    message: format!(
+                        "operation {} has {} descriptors for {} outputs",
+                        operation.op_type(),
+                        descriptors.len(),
+                        output_ids.len()
+                    ),
+                });
+            }
+            None if output_ids.is_empty() => Vec::new(),
+            None => infer_operation_descriptors(&operation, &self.graph)?,
         };
         let label = (!operation.label().is_empty()).then(|| operation.label().to_string());
         let operands = output_ids

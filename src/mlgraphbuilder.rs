@@ -25,7 +25,10 @@ use crate::graph_recorder::GraphRecorder;
 #[cfg(feature = "dynamic-inputs")]
 use crate::mlcontext::MLDynamicOperandDescriptor;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+    MLOperandDataType,
+};
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConv2dOptions,
     MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions, MLGatherOptions,
@@ -303,6 +306,7 @@ pub struct MLGraphBuilder<'context, 'builder> {
     backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
 
     recorder: Option<GraphRecorder>,
+    symbolic_context: Option<shapeinfer_symbolic::Context>,
 }
 
 #[derive(Debug)]
@@ -483,6 +487,913 @@ fn infer_shape_err(
     })
 }
 
+fn symbolic_descriptor(
+    operation: &Operation,
+    graph: &GraphInfo,
+    context: &mut shapeinfer_symbolic::Context,
+) -> Result<OperandDescriptor> {
+    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
+
+    let ids = operation.inputs();
+    let inputs: Vec<&Operand> = ids
+        .iter()
+        .map(|&id| {
+            graph
+                .operands
+                .get(id as usize)
+                .ok_or(GraphBuilderError::InvalidOperand(MLOperand {
+                    id: id as usize,
+                }))
+        })
+        .collect::<Result<_>>()?;
+    let input_handles: Vec<MLOperand> = ids
+        .iter()
+        .map(|&id| MLOperand { id: id as usize })
+        .collect();
+    let shapes: Vec<Shape> = inputs
+        .iter()
+        .map(|operand| {
+            crate::graph::to_symbolic_shape(&operand.descriptor.shape)
+                .map_err(|error| symbolic_error(operation, error.to_string()))
+        })
+        .collect::<Result<_>>()?;
+    let sym = |result: shapeinfer_symbolic::Result<Shape>| {
+        result.map_err(|error| symbolic_error(operation, error.to_string()))
+    };
+    let mut data_type = inputs
+        .first()
+        .map(|operand| operand.descriptor.data_type)
+        .unwrap_or(DataType::Float32);
+    let shape = match operation {
+        Operation::Add { .. }
+        | Operation::Sub { .. }
+        | Operation::Mul { .. }
+        | Operation::Div { .. }
+        | Operation::Pow { .. }
+        | Operation::Max { .. }
+        | Operation::Min { .. }
+        | Operation::Equal { .. }
+        | Operation::NotEqual { .. }
+        | Operation::Greater { .. }
+        | Operation::GreaterOrEqual { .. }
+        | Operation::Lesser { .. }
+        | Operation::LesserOrEqual { .. }
+        | Operation::LogicalAnd { .. }
+        | Operation::LogicalOr { .. }
+        | Operation::LogicalXor { .. }
+        | Operation::Prelu { .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            if matches!(
+                operation,
+                Operation::Equal { .. }
+                    | Operation::NotEqual { .. }
+                    | Operation::Greater { .. }
+                    | Operation::GreaterOrEqual { .. }
+                    | Operation::Lesser { .. }
+                    | Operation::LesserOrEqual { .. }
+                    | Operation::LogicalAnd { .. }
+                    | Operation::LogicalOr { .. }
+                    | Operation::LogicalXor { .. }
+            ) {
+                data_type = DataType::Uint8;
+            }
+            sym(shape_ops::broadcast(context, &shapes[0], &shapes[1]))?
+        }
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::ModulusFloor { .. } | Operation::ModulusTruncate { .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            sym(shape_ops::broadcast(context, &shapes[0], &shapes[1]))?
+        }
+        Operation::Where { .. } => {
+            if inputs[0].descriptor.data_type != DataType::Uint8 {
+                return Err(symbolic_error(operation, "where condition must be uint8"));
+            }
+            check_same_data_type(&input_handles[1..3], operation, &inputs[1..3])?;
+            data_type = inputs[1].descriptor.data_type;
+            let values = sym(shape_ops::broadcast(context, &shapes[1], &shapes[2]))?;
+            sym(shape_ops::broadcast(context, &shapes[0], &values))?
+        }
+        Operation::Matmul { .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            sym(shape_ops::matmul(context, &shapes[0], &shapes[1]))?
+        }
+        Operation::Gemm { options, .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            let opts = options.clone().unwrap_or_default();
+            let a: Vec<_> = shapes[0].iter().cloned().collect();
+            let b: Vec<_> = shapes[1].iter().cloned().collect();
+            if a.len() != 2 || b.len() != 2 {
+                return Err(symbolic_error(operation, "gemm requires rank-two inputs"));
+            }
+            let a = if opts.a_transpose {
+                Shape::from_vec(vec![a[1].clone(), a[0].clone()])
+            } else {
+                shapes[0].clone()
+            };
+            let b = if opts.b_transpose {
+                Shape::from_vec(vec![b[1].clone(), b[0].clone()])
+            } else {
+                shapes[1].clone()
+            };
+            let output = sym(shape_ops::matmul(context, &a, &b))?;
+            if let Some(c) = opts.c {
+                let c_shape =
+                    crate::graph::to_symbolic_shape(&graph.operands[c as usize].descriptor.shape)
+                        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+                sym(shape_ops::broadcast(context, &output, &c_shape))?
+            } else {
+                output
+            }
+        }
+        Operation::Conv2d { options, .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            let opts = options.clone().unwrap_or_default();
+            symbolic_conv_shape(operation, context, &shapes[0], &shapes[1], &opts)?
+        }
+        Operation::ConvTranspose2d { options, .. } => {
+            check_same_data_type(&input_handles[..2], operation, &inputs[..2])?;
+            let opts = options.clone().unwrap_or_default();
+            symbolic_conv_transpose_shape(operation, context, &shapes[0], &shapes[1], &opts)?
+        }
+        Operation::AveragePool2d { options, .. }
+        | Operation::MaxPool2d { options, .. }
+        | Operation::L2Pool2d { options, .. } => {
+            symbolic_pool_shape(operation, &shapes[0], &options.clone().unwrap_or_default())?
+        }
+        Operation::GlobalAveragePool { options, .. } | Operation::GlobalMaxPool { options, .. } => {
+            let opts = options.clone().unwrap_or_default();
+            let mut dims: Vec<_> = shapes[0].iter().cloned().collect();
+            if dims.len() != 4 {
+                return Err(symbolic_error(operation, "global pool requires rank four"));
+            }
+            let layout = opts.layout;
+            let axes = if layout == MLInputOperandLayout::Nhwc {
+                [1, 2]
+            } else {
+                [2, 3]
+            };
+            for axis in axes {
+                dims[axis] = Expression::new_const(1);
+            }
+            Shape::from_vec(dims)
+        }
+        Operation::Concat { axis, .. } => {
+            check_same_data_type(&input_handles, operation, &inputs)?;
+            sym(shape_ops::concat(context, &shapes, *axis as usize))?
+        }
+        Operation::Transpose { options, .. } => {
+            let permutation: Vec<usize> = options
+                .as_ref()
+                .filter(|o| !o.permutation.is_empty())
+                .map(|o| o.permutation.iter().map(|&v| v as usize).collect())
+                .unwrap_or_else(|| (0..shapes[0].rank_usize()).rev().collect());
+            sym(shape_ops::transpose(&shapes[0], &permutation))?
+        }
+        Operation::ReduceSum { options, .. }
+        | Operation::ReduceMean { options, .. }
+        | Operation::ReduceMax { options, .. }
+        | Operation::ReduceMin { options, .. }
+        | Operation::ReduceProduct { options, .. }
+        | Operation::ReduceL1 { options, .. }
+        | Operation::ReduceL2 { options, .. }
+        | Operation::ReduceLogSum { options, .. }
+        | Operation::ReduceLogSumExp { options, .. }
+        | Operation::ReduceSumSquare { options, .. } => {
+            let opts = options.clone().unwrap_or_default();
+            let axes: Vec<usize> = opts
+                .axes
+                .unwrap_or_else(|| (0..shapes[0].rank()).collect())
+                .into_iter()
+                .map(|axis| axis as usize)
+                .collect();
+            sym(shape_ops::reduce(&shapes[0], &axes, opts.keep_dimensions))?
+        }
+        Operation::ArgMax { axis, options, .. } | Operation::ArgMin { axis, options, .. } => {
+            let opts = options.clone().unwrap_or_default();
+            data_type = opts.output_data_type.into();
+            sym(shape_ops::reduce(
+                &shapes[0],
+                &[*axis as usize],
+                opts.keep_dimensions,
+            ))?
+        }
+        Operation::Tile { repetitions, .. } => sym(shape_ops::tile(&shapes[0], repetitions))?,
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::ReshapeTo2d { options, .. } => {
+            let axis = options.as_ref().map(|opts| opts.axis as usize).unwrap_or(1);
+            sym(shape_ops::flatten_at_axis(&shapes[0], axis))?
+        }
+        Operation::Squeeze { options, .. } => {
+            let dims: Vec<_> = shapes[0].iter().cloned().collect();
+            let axes: Vec<usize> =
+                if let Some(opts) = options.as_ref().filter(|opts| !opts.axes.is_empty()) {
+                    opts.axes.iter().map(|&axis| axis as usize).collect()
+                } else {
+                    dims.iter()
+                        .enumerate()
+                        .filter_map(|(i, dim)| (dim.as_const() == Some(1)).then_some(i))
+                        .collect()
+                };
+            sym(shape_ops::squeeze(context, &shapes[0], &axes))?
+        }
+        Operation::Unsqueeze { options, .. } => {
+            let axes: Vec<usize> = options
+                .as_ref()
+                .map(|o| o.axes.iter().map(|&v| v as usize).collect())
+                .unwrap_or_default();
+            sym(shape_ops::unsqueeze(&shapes[0], &axes))?
+        }
+        Operation::Pad {
+            beginning_padding,
+            ending_padding,
+            ..
+        } => {
+            let padding: Vec<u32> = beginning_padding
+                .iter()
+                .zip(ending_padding)
+                .map(|(&a, &b)| a.saturating_add(b))
+                .collect();
+            sym(shapeinfer_symbolic::context::pad(&shapes[0], &padding))?
+        }
+        Operation::Expand { new_shape, .. } | Operation::Reshape { new_shape, .. } => {
+            let target: Vec<Dimension> = new_shape.iter().cloned().map(Into::into).collect();
+            let target = crate::graph::to_symbolic_shape(&target)
+                .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            if matches!(operation, Operation::Expand { .. }) {
+                let _ = sym(shape_ops::broadcast(context, &shapes[0], &target))?;
+            }
+            target
+        }
+        Operation::Gather { options, .. } => {
+            let axis = options.as_ref().map(|o| o.axis as usize).unwrap_or(0);
+            let a: Vec<_> = shapes[0].iter().cloned().collect();
+            let b: Vec<_> = shapes[1].iter().cloned().collect();
+            if axis >= a.len() {
+                return Err(symbolic_error(operation, "gather axis out of range"));
+            }
+            Shape::from_vec(
+                a[..axis]
+                    .iter()
+                    .chain(&b)
+                    .chain(&a[axis + 1..])
+                    .cloned()
+                    .collect(),
+            )
+        }
+        Operation::GatherElements { .. } => shapes[1].clone(),
+        Operation::GatherND { .. } => {
+            let input_dims: Vec<_> = shapes[0].iter().cloned().collect();
+            let indices_dims: Vec<_> = shapes[1].iter().cloned().collect();
+            let Some(depth) = indices_dims.last().and_then(Expression::as_const) else {
+                return Err(symbolic_error(
+                    operation,
+                    "gatherND index depth must be static",
+                ));
+            };
+            let depth = usize::try_from(depth)
+                .map_err(|_| symbolic_error(operation, "negative gatherND index depth"))?;
+            if depth > input_dims.len() {
+                return Err(symbolic_error(
+                    operation,
+                    "gatherND index depth exceeds input rank",
+                ));
+            }
+            Shape::from_vec(
+                indices_dims[..indices_dims.len() - 1]
+                    .iter()
+                    .chain(&input_dims[depth..])
+                    .cloned()
+                    .collect(),
+            )
+        }
+        Operation::Slice {
+            starts,
+            sizes,
+            options,
+            ..
+        } => {
+            let target: Vec<Dimension> = sizes.iter().cloned().map(Into::into).collect();
+            let target = crate::graph::to_symbolic_shape(&target)
+                .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            let strides = options
+                .as_ref()
+                .filter(|o| !o.strides.is_empty())
+                .map(|o| o.strides.clone())
+                .unwrap_or_else(|| vec![1; shapes[0].rank_usize()]);
+            sym(shape_ops::slice(&shapes[0], starts, &target, &strides))?
+        }
+        Operation::Resample2d { options, .. } => {
+            let opts = options.clone().unwrap_or_default();
+            let mut dims: Vec<_> = shapes[0].iter().cloned().collect();
+            let axes = if opts.axes.len() == 2 {
+                [opts.axes[0] as usize, opts.axes[1] as usize]
+            } else {
+                [dims.len().saturating_sub(2), dims.len().saturating_sub(1)]
+            };
+            if axes.iter().any(|&axis| axis >= dims.len()) {
+                return Err(symbolic_error(operation, "resample axis out of range"));
+            }
+            if let Some(sizes) = opts.sizes.as_ref() {
+                if sizes.len() != 2 {
+                    return Err(symbolic_error(
+                        operation,
+                        "resample sizes must have two elements",
+                    ));
+                }
+                for (i, &axis) in axes.iter().enumerate() {
+                    dims[axis] = Expression::new_const(sizes[i] as i64);
+                }
+            } else {
+                let scales = if opts.scales.len() >= 2 {
+                    [opts.scales[0], opts.scales[1]]
+                } else {
+                    [1.0, 1.0]
+                };
+                for (i, &axis) in axes.iter().enumerate() {
+                    if (scales[i] - 1.0).abs() >= f32::EPSILON {
+                        dims[axis] = dims[axis]
+                            .clone()
+                            .round_scaled(scales[i])
+                            .map_err(|error| symbolic_error(operation, error.to_string()))?;
+                    }
+                }
+            }
+            Shape::from_vec(dims)
+        }
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::Resample2dDynamic { options, .. } => {
+            let opts = options.clone().unwrap_or_default();
+            let mut dims: Vec<_> = shapes[0].iter().cloned().collect();
+            let axes = if opts.axes.len() == 2 {
+                [opts.axes[0] as usize, opts.axes[1] as usize]
+            } else {
+                [dims.len().saturating_sub(2), dims.len().saturating_sub(1)]
+            };
+            if opts.scales.len() != 2 || axes.iter().any(|&axis| axis >= dims.len()) {
+                return Err(symbolic_error(
+                    operation,
+                    "dynamic resample needs two scales and valid axes",
+                ));
+            }
+            for (i, &axis) in axes.iter().enumerate() {
+                dims[axis] = dims[axis]
+                    .clone()
+                    .round_scaled(opts.scales[i])
+                    .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            }
+            Shape::from_vec(dims)
+        }
+        Operation::Cast {
+            data_type: target, ..
+        } => {
+            data_type = (*target).into();
+            shapes[0].clone()
+        }
+        Operation::QuantizeLinear { zero_point, .. } => {
+            data_type = zero_point
+                .and_then(|id| {
+                    graph
+                        .operands
+                        .get(id as usize)
+                        .map(|operand| operand.descriptor.data_type)
+                })
+                .unwrap_or(DataType::Uint8);
+            shapes[0].clone()
+        }
+        Operation::DequantizeLinear { scale, .. } => {
+            data_type = graph.operands[*scale as usize].descriptor.data_type;
+            shapes[0].clone()
+        }
+        Operation::GruCell {
+            hidden_state,
+            hidden_size,
+            ..
+        } => {
+            let hidden = &graph.operands[*hidden_state as usize].descriptor.shape;
+            if !hidden.is_empty() {
+                crate::graph::to_symbolic_shape(hidden)
+                    .map_err(|error| symbolic_error(operation, error.to_string()))?
+            } else {
+                let input_dims: Vec<_> = shapes[0].iter().cloned().collect();
+                let batch = input_dims
+                    .first()
+                    .ok_or_else(|| {
+                        symbolic_error(operation, "gruCell input has no batch dimension")
+                    })?
+                    .clone();
+                Shape::from_vec(vec![batch, Expression::new_const(*hidden_size as i64)])
+            }
+        }
+        Operation::Shape { .. } => {
+            data_type = DataType::Int64;
+            Shape::from_vec(vec![Expression::new_const(shapes[0].rank() as i64)])
+        }
+        Operation::IsNaN { .. } | Operation::IsInfinite { .. } | Operation::LogicalNot { .. } => {
+            data_type = DataType::Uint8;
+            shapes[0].clone()
+        }
+        Operation::Abs { .. }
+        | Operation::Ceil { .. }
+        | Operation::Cos { .. }
+        | Operation::Exp { .. }
+        | Operation::Elu { .. }
+        | Operation::Gelu { .. }
+        | Operation::Floor { .. }
+        | Operation::Log { .. }
+        | Operation::Neg { .. }
+        | Operation::Relu { .. }
+        | Operation::Sigmoid { .. }
+        | Operation::Sin { .. }
+        | Operation::Sqrt { .. }
+        | Operation::Tan { .. }
+        | Operation::Tanh { .. }
+        | Operation::Erf { .. }
+        | Operation::Reciprocal { .. }
+        | Operation::Sign { .. }
+        | Operation::Identity { .. }
+        | Operation::RoundEven { .. }
+        | Operation::Clamp { .. }
+        | Operation::HardSigmoid { .. }
+        | Operation::HardSwish { .. }
+        | Operation::InstanceNormalization { .. }
+        | Operation::LayerNormalization { .. }
+        | Operation::LeakyRelu { .. }
+        | Operation::Linear { .. }
+        | Operation::Reverse { .. }
+        | Operation::Softmax { .. }
+        | Operation::Softplus { .. }
+        | Operation::Softsign { .. }
+        | Operation::CumulativeSum { .. }
+        | Operation::Triangular { .. }
+        | Operation::BatchNormalization { .. }
+        | Operation::ScatterElements { .. }
+        | Operation::ScatterND { .. } => shapes[0].clone(),
+        _ => {
+            return Err(symbolic_error(
+                operation,
+                "symbolic inference for this operation is not implemented",
+            ));
+        }
+    };
+    context
+        .ensure_shape(&shape)
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    let bounds = symbolic_bounds(operation, graph);
+    let variables = bounds
+        .iter()
+        .map(|(name, &bound)| (name.as_str(), bound))
+        .collect();
+    let max_sizes = context
+        .compute_shape_upper_bounds(&shape, &variables)
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    let shape = crate::graph::from_symbolic_shape(&shape, &bounds, &max_sizes)
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    Ok(OperandDescriptor {
+        data_type,
+        shape,
+        pending_permutation: vec![],
+    })
+}
+
+fn symbolic_error(operation: &Operation, reason: impl Into<String>) -> GraphBuilderError {
+    Box::new(ShapeInferenceError::InferError {
+        op_name: "symbolic",
+        operation: operation.clone(),
+        source: GraphError::ShapeInferenceFailed {
+            reason: reason.into(),
+        },
+    })
+    .into()
+}
+
+fn operation_has_symbolic_shape_parameters(operation: &Operation) -> bool {
+    match operation {
+        Operation::Expand { new_shape, .. } | Operation::Reshape { new_shape, .. } => new_shape
+            .iter()
+            .any(|dimension| matches!(dimension, MLDimension::Dynamic(_))),
+        Operation::Slice { sizes, .. } => sizes
+            .iter()
+            .any(|dimension| matches!(dimension, MLDimension::Dynamic(_))),
+        _ => false,
+    }
+}
+
+fn symbolic_bounds(
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> std::collections::BTreeMap<String, u32> {
+    let mut bounds: std::collections::BTreeMap<String, u32> = graph
+        .operands
+        .iter()
+        .flat_map(|operand| operand.descriptor.shape.iter())
+        .filter_map(|dimension| match dimension {
+            Dimension::Dynamic(d) => Some((d.name.clone(), d.max_size)),
+            _ => None,
+        })
+        .collect();
+    let parameter_dimensions = match operation {
+        Operation::Expand { new_shape, .. } | Operation::Reshape { new_shape, .. } => {
+            Some(new_shape.as_slice())
+        }
+        Operation::Slice { sizes, .. } => Some(sizes.as_slice()),
+        _ => None,
+    };
+    if let Some(dimensions) = parameter_dimensions {
+        for dimension in dimensions {
+            if let MLDimension::Dynamic(d) = dimension {
+                bounds.insert(d.name.clone(), d.max_size);
+            }
+        }
+    }
+    bounds
+}
+
+fn symbolic_multi_descriptors(
+    operation: &Operation,
+    graph: &GraphInfo,
+    context: &mut shapeinfer_symbolic::Context,
+) -> Result<Vec<OperandDescriptor>> {
+    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
+    let input_id = operation
+        .inputs()
+        .first()
+        .copied()
+        .ok_or_else(|| symbolic_error(operation, "missing input"))?;
+    let input = graph
+        .operands
+        .get(input_id as usize)
+        .ok_or(GraphBuilderError::InvalidOperand(MLOperand {
+            id: input_id as usize,
+        }))?;
+    let input_shape = crate::graph::to_symbolic_shape(&input.descriptor.shape)
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    let output_shapes: Vec<Shape> = match operation {
+        Operation::Split {
+            splits,
+            split_equal_parts,
+            options,
+            ..
+        } => {
+            let axis = options.as_ref().map(|o| o.axis as usize).unwrap_or(0);
+            if let Some(parts) = split_equal_parts {
+                shape_ops::split_equal(context, &input_shape, axis, *parts)
+            } else {
+                shape_ops::split_sizes(context, &input_shape, axis, splits)
+            }
+            .map_err(|error| symbolic_error(operation, error.to_string()))?
+        }
+        Operation::Gru {
+            steps, hidden_size, ..
+        }
+        | Operation::Lstm {
+            steps, hidden_size, ..
+        } => {
+            let (direction, return_sequence) = match operation {
+                Operation::Gru { options, .. } => {
+                    let opts = options.clone().unwrap_or_default();
+                    (opts.direction, opts.return_sequence)
+                }
+                Operation::Lstm { options, .. } => {
+                    let opts = options.clone().unwrap_or_default();
+                    (opts.direction, opts.return_sequence)
+                }
+                _ => unreachable!(),
+            };
+            let direction: crate::operator_enums::MLRecurrentNetworkDirection =
+                serde_json::from_value(serde_json::Value::String(direction.to_ascii_lowercase()))
+                    .unwrap_or_default();
+            let directions =
+                if direction == crate::operator_enums::MLRecurrentNetworkDirection::Both {
+                    2
+                } else {
+                    1
+                };
+            let dimensions: Vec<_> = input_shape.iter().cloned().collect();
+            let batch = match dimensions.len() {
+                2 => dimensions[0].clone(),
+                3 => dimensions[1].clone(),
+                _ => {
+                    return Err(symbolic_error(
+                        operation,
+                        "recurrent input rank must be two or three",
+                    ));
+                }
+            };
+            let state = Shape::from_vec(vec![
+                Expression::new_const(directions),
+                batch.clone(),
+                Expression::new_const(*hidden_size as i64),
+            ]);
+            let mut outputs = if matches!(operation, Operation::Lstm { .. }) {
+                vec![state.clone(), state]
+            } else {
+                vec![state]
+            };
+            if return_sequence {
+                outputs.push(Shape::from_vec(vec![
+                    Expression::new_const(*steps as i64),
+                    Expression::new_const(directions),
+                    batch,
+                    Expression::new_const(*hidden_size as i64),
+                ]));
+            }
+            outputs
+        }
+        Operation::LstmCell {
+            hidden_state,
+            cell_state,
+            ..
+        } => [*hidden_state, *cell_state]
+            .iter()
+            .map(|&id| {
+                crate::graph::to_symbolic_shape(&graph.operands[id as usize].descriptor.shape)
+                    .map_err(|error| symbolic_error(operation, error.to_string()))
+            })
+            .collect::<Result<_>>()?,
+        _ => {
+            return Err(symbolic_error(
+                operation,
+                "symbolic multi-output inference is not implemented",
+            ));
+        }
+    };
+    let bounds = symbolic_bounds(operation, graph);
+    let variables = bounds
+        .iter()
+        .map(|(name, &bound)| (name.as_str(), bound))
+        .collect();
+    output_shapes
+        .iter()
+        .map(|shape| {
+            context
+                .ensure_shape(shape)
+                .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            let max_sizes = context
+                .compute_shape_upper_bounds(shape, &variables)
+                .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            let shape = crate::graph::from_symbolic_shape(shape, &bounds, &max_sizes)
+                .map_err(|error| symbolic_error(operation, error.to_string()))?;
+            Ok(OperandDescriptor {
+                data_type: input.descriptor.data_type,
+                shape,
+                pending_permutation: vec![],
+            })
+        })
+        .collect()
+}
+
+fn symbolic_conv_shape(
+    operation: &Operation,
+    context: &mut shapeinfer_symbolic::Context,
+    input: &shapeinfer_symbolic::expression::Shape,
+    filter: &shapeinfer_symbolic::expression::Shape,
+    options: &MLConv2dOptions,
+) -> Result<shapeinfer_symbolic::expression::Shape> {
+    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
+    let input: Vec<_> = input.iter().cloned().collect();
+    let filter: Vec<_> = filter.iter().cloned().collect();
+    if input.len() != 4 || filter.len() != 4 {
+        return Err(symbolic_error(
+            operation,
+            "conv2d requires rank-four input and filter",
+        ));
+    }
+    let input_layout = options.input_layout;
+    let nhwc = input_layout == MLInputOperandLayout::Nhwc;
+    let (channel, height, width) = if nhwc { (3, 1, 2) } else { (1, 2, 3) };
+    let filter_layout = options.filter_layout;
+    let (output_channels, filter_channels, kernel_h, kernel_w) = match filter_layout {
+        MLConv2dFilterOperandLayout::Hwio => (3, 2, 0, 1),
+        MLConv2dFilterOperandLayout::Ohwi => (0, 3, 1, 2),
+        MLConv2dFilterOperandLayout::Ihwo => (3, 0, 1, 2),
+        MLConv2dFilterOperandLayout::Oihw => (0, 1, 2, 3),
+    };
+    if options.groups == 0 {
+        return Err(symbolic_error(operation, "conv2d groups must be positive"));
+    }
+    context
+        .equal_dim(
+            &input[channel],
+            &(filter[filter_channels].clone() * Expression::new_const(options.groups as i64)),
+        )
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    let padding = if options.padding.is_empty() {
+        vec![0; 4]
+    } else {
+        options.padding.clone()
+    };
+    let strides = if options.strides.is_empty() {
+        vec![1; 2]
+    } else {
+        options.strides.clone()
+    };
+    let dilations = if options.dilations.is_empty() {
+        vec![1; 2]
+    } else {
+        options.dilations.clone()
+    };
+    if padding.len() != 4 || strides.len() != 2 || dilations.len() != 2 {
+        return Err(symbolic_error(
+            operation,
+            "conv2d padding, strides, or dilations have wrong length",
+        ));
+    }
+    let mut result = input.clone();
+    result[channel] = filter[output_channels].clone();
+    result[height] = shape_ops::window_output(
+        input[height].clone(),
+        filter[kernel_h].clone(),
+        [padding[0], padding[1]],
+        strides[0],
+        dilations[0],
+        false,
+    )
+    .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    result[width] = shape_ops::window_output(
+        input[width].clone(),
+        filter[kernel_w].clone(),
+        [padding[2], padding[3]],
+        strides[1],
+        dilations[1],
+        false,
+    )
+    .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    Ok(Shape::from_vec(result))
+}
+
+fn symbolic_pool_shape(
+    operation: &Operation,
+    input: &shapeinfer_symbolic::expression::Shape,
+    options: &MLPool2dOptions,
+) -> Result<shapeinfer_symbolic::expression::Shape> {
+    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
+    let mut result: Vec<_> = input.iter().cloned().collect();
+    if result.len() != 4 {
+        return Err(symbolic_error(operation, "pool2d requires rank-four input"));
+    }
+    let layout = options.layout;
+    let axes = if layout == MLInputOperandLayout::Nhwc {
+        [1, 2]
+    } else {
+        [2, 3]
+    };
+    if let Some(sizes) = &options.output_sizes {
+        if sizes.len() != 2 {
+            return Err(symbolic_error(
+                operation,
+                "pool output sizes need two elements",
+            ));
+        }
+        result[axes[0]] = Expression::new_const(sizes[0] as i64);
+        result[axes[1]] = Expression::new_const(sizes[1] as i64);
+        return Ok(Shape::from_vec(result));
+    }
+    let kernel = if let Some(window) = &options.window_dimensions {
+        if window.len() != 2 {
+            return Err(symbolic_error(operation, "pool window needs two elements"));
+        }
+        [
+            Expression::new_const(window[0] as i64),
+            Expression::new_const(window[1] as i64),
+        ]
+    } else {
+        [result[axes[0]].clone(), result[axes[1]].clone()]
+    };
+    let padding = if options.padding.is_empty() {
+        vec![0; 4]
+    } else {
+        options.padding.clone()
+    };
+    let strides = if options.strides.is_empty() {
+        vec![1; 2]
+    } else {
+        options.strides.clone()
+    };
+    let dilations = if options.dilations.is_empty() {
+        vec![1; 2]
+    } else {
+        options.dilations.clone()
+    };
+    if padding.len() != 4 || strides.len() != 2 || dilations.len() != 2 {
+        return Err(symbolic_error(
+            operation,
+            "pool padding, strides, or dilations have wrong length",
+        ));
+    }
+    let round_up = options.output_shape_rounding.eq_ignore_ascii_case("ceil");
+    for i in 0..2 {
+        result[axes[i]] = shape_ops::window_output(
+            result[axes[i]].clone(),
+            kernel[i].clone(),
+            [padding[2 * i], padding[2 * i + 1]],
+            strides[i],
+            dilations[i],
+            round_up,
+        )
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    }
+    Ok(Shape::from_vec(result))
+}
+
+fn symbolic_conv_transpose_shape(
+    operation: &Operation,
+    context: &mut shapeinfer_symbolic::Context,
+    input: &shapeinfer_symbolic::expression::Shape,
+    filter: &shapeinfer_symbolic::expression::Shape,
+    options: &MLConvTranspose2dOptions,
+) -> Result<shapeinfer_symbolic::expression::Shape> {
+    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
+    let input: Vec<_> = input.iter().cloned().collect();
+    let filter: Vec<_> = filter.iter().cloned().collect();
+    if input.len() != 4 || filter.len() != 4 {
+        return Err(symbolic_error(
+            operation,
+            "convTranspose2d requires rank-four input and filter",
+        ));
+    }
+    let input_layout = options.input_layout;
+    let (channel, height, width) = if input_layout == MLInputOperandLayout::Nhwc {
+        (3, 1, 2)
+    } else {
+        (1, 2, 3)
+    };
+    let filter_layout = options.filter_layout;
+    let (filter_channels, output_channels, kernel_h, kernel_w) = match filter_layout {
+        MLConvTranspose2dFilterOperandLayout::Iohw => (0, 1, 2, 3),
+        MLConvTranspose2dFilterOperandLayout::Hwoi => (3, 2, 0, 1),
+        MLConvTranspose2dFilterOperandLayout::Ohwi => (3, 0, 1, 2),
+    };
+    if options.groups == 0 {
+        return Err(symbolic_error(
+            operation,
+            "convTranspose2d groups must be positive",
+        ));
+    }
+    context
+        .equal_dim(&input[channel], &filter[filter_channels])
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    let padding = if options.padding.is_empty() {
+        vec![0; 4]
+    } else {
+        options.padding.clone()
+    };
+    let strides = if options.strides.is_empty() {
+        vec![1; 2]
+    } else {
+        options.strides.clone()
+    };
+    let dilations = if options.dilations.is_empty() {
+        vec![1; 2]
+    } else {
+        options.dilations.clone()
+    };
+    let output_padding = if options.output_padding.is_empty() {
+        vec![0; 2]
+    } else {
+        options.output_padding.clone()
+    };
+    if padding.len() != 4 || strides.len() != 2 || dilations.len() != 2 || output_padding.len() != 2
+    {
+        return Err(symbolic_error(
+            operation,
+            "convTranspose2d spatial options have wrong length",
+        ));
+    }
+    let mut result = input.clone();
+    result[channel] =
+        filter[output_channels].clone() * Expression::new_const(options.groups as i64);
+    if let Some(sizes) = &options.output_sizes {
+        if sizes.len() != 2 {
+            return Err(symbolic_error(
+                operation,
+                "convTranspose2d output sizes need two elements",
+            ));
+        }
+        result[height] = Expression::new_const(sizes[0] as i64);
+        result[width] = Expression::new_const(sizes[1] as i64);
+    } else {
+        result[height] = shape_ops::transposed_window_output(
+            input[height].clone(),
+            filter[kernel_h].clone(),
+            [padding[0], padding[1]],
+            strides[0],
+            dilations[0],
+            output_padding[0],
+        )
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+        result[width] = shape_ops::transposed_window_output(
+            input[width].clone(),
+            filter[kernel_w].clone(),
+            [padding[2], padding[3]],
+            strides[1],
+            dilations[1],
+            output_padding[1],
+        )
+        .map_err(|error| symbolic_error(operation, error.to_string()))?;
+    }
+    Ok(Shape::from_vec(result))
+}
+
 fn preserve_input_shape(
     input: MLOperand,
     _operation: &Operation,
@@ -639,6 +1550,7 @@ fn gather_nd_shape(
     let k = match indices_shape.last() {
         Some(Dimension::Static(v)) => *v as usize,
         Some(Dimension::Dynamic(d)) => d.max_size as usize,
+        Some(Dimension::Expression(d)) => d.max_size as usize,
         None => unreachable!("indices_shape.empty already covered"),
     };
     if k > input_op.descriptor.shape.len() {
@@ -2277,12 +3189,17 @@ fn shape_inference_single_output(
 }
 
 impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
+    pub fn symbolic_context(&self) -> Option<&shapeinfer_symbolic::Context> {
+        self.symbolic_context.as_ref()
+    }
+
     /// Create a builder that records a backend-agnostic [`GraphInfo`] without creating a runtime
     /// backend. This is used by tooling that serializes or forwards the recorded graph itself.
     pub fn new_uncompiled() -> MLGraphBuilder<'static, 'static> {
         MLGraphBuilder {
             backend: Box::new(UncompiledBackendBuilder),
             recorder: Some(GraphRecorder::new()),
+            symbolic_context: None,
         }
     }
 
@@ -2296,6 +3213,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(Self {
             backend,
             recorder: Some(GraphRecorder::new()),
+            symbolic_context: None,
         })
     }
 
@@ -2500,6 +3418,19 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .add_input(name.to_string(), descriptor.into());
+        let shape = crate::graph::to_symbolic_shape(
+            &self.recorder.as_ref().unwrap().graph().operands[id as usize].descriptor.shape,
+        )?;
+        let context = self.symbolic_context.get_or_insert_with(|| {
+            shapeinfer_symbolic::Context::new(
+                &shapeinfer_symbolic::context::ContextOptions::default(),
+            )
+        });
+        context
+            .ensure_shape(&shape)
+            .map_err(|error| GraphError::ShapeInferenceFailed {
+                reason: error.to_string(),
+            })?;
         Ok(MLOperand { id: id as usize })
     }
 
@@ -3443,11 +4374,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     fn add_single_output_operation(&mut self, operation: Operation) -> Result<MLOperand> {
         trace!("Adding operation {operation:?}");
+        let symbolic_descriptors = self.symbolic_descriptors_for(&operation)?;
         let recorder = self
             .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-        let mut outputs = recorder.record_operation(operation, None)?;
+        let mut outputs = recorder.record_operation_with_descriptors(operation, None, symbolic_descriptors)?;
         if outputs.len() != 1 {
             return Err(GraphBuilderError::InconsistentGraphInfo {
                 message: format!("single-output insertion returned {} outputs", outputs.len()),
@@ -3458,10 +4390,45 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     fn add_multi_output_operation(&mut self, operation: Operation) -> Result<Vec<MLOperand>> {
         trace!("Adding operation {operation:?}");
+        let symbolic_descriptors = self.symbolic_descriptors_for(&operation)?;
         self.recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
-            .record_operation(operation, None)
+            .record_operation_with_descriptors(operation, None, symbolic_descriptors)
+    }
+
+    fn symbolic_descriptors_for(
+        &mut self,
+        operation: &Operation,
+    ) -> Result<Option<Vec<OperandDescriptor>>> {
+        let graph = self
+            .recorder
+            .as_ref()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .graph();
+        let has_symbolic_input = operation.inputs().iter().any(|&id| {
+            graph.operands.get(id as usize).is_some_and(|operand| {
+                operand
+                    .descriptor
+                    .shape
+                    .iter()
+                    .any(|dimension| !matches!(dimension, Dimension::Static(_)))
+            })
+        });
+        if !operation_has_symbolic_shape_parameters(operation) && !has_symbolic_input {
+            return Ok(None);
+        }
+        let context = self.symbolic_context.get_or_insert_with(|| {
+            shapeinfer_symbolic::Context::new(
+                &shapeinfer_symbolic::context::ContextOptions::default(),
+            )
+        });
+        let descriptors = if operation.output_operands().len() == 1 {
+            vec![symbolic_descriptor(operation, graph, context)?]
+        } else {
+            symbolic_multi_descriptors(operation, graph, context)?
+        };
+        Ok(Some(descriptors))
     }
 
     /// Gated recurrent unit over `steps` time steps. Returns the final hidden state
@@ -3603,6 +4570,285 @@ mod test {
     };
 
     #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_broadcast_and_tile_keep_derived_dimension() {
+        use crate::graph::{Dimension, ExpressionDimension};
+        use crate::operator_enums::MLOperandDataType;
+        use crate::runtime_checks::{RuntimeShapeState, TensorKind};
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let x = builder
+            .dynamic_input(
+                "x",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "batch".into(),
+                            max_size: 10,
+                        }),
+                        MLDimension::Static(3),
+                    ],
+                ),
+            )
+            .unwrap();
+        let y = builder
+            .input(
+                "y",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 3]),
+            )
+            .unwrap();
+        let z = builder.add(x, y).unwrap();
+        let tiled = builder.tile(z, vec![2, 1]).unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
+        assert_eq!(
+            graph.operands[z.id].descriptor.shape[0],
+            Dimension::Dynamic(crate::graph::DynamicDimension {
+                name: "batch".into(),
+                max_size: 10
+            })
+        );
+        assert_eq!(
+            graph.operands[tiled.id].descriptor.shape[0],
+            Dimension::Expression(ExpressionDimension {
+                expression: "(batch * 2)".into(),
+                max_size: 20
+            })
+        );
+
+        let mut runtime = RuntimeShapeState::new();
+        runtime
+            .validate_shape(
+                "x",
+                &[4, 3],
+                &graph.operands[x.id].descriptor,
+                TensorKind::Input,
+            )
+            .unwrap();
+        runtime
+            .validate_shape(
+                "tiled",
+                &[8, 3],
+                &graph.operands[tiled.id].descriptor,
+                TensorKind::Output,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .validate_shape(
+                    "tiled",
+                    &[9, 3],
+                    &graph.operands[tiled.id].descriptor,
+                    TensorKind::Output
+                )
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_broadcast_rejects_incompatible_runtime_dimensions() {
+        use crate::operator_enums::MLOperandDataType;
+        use crate::runtime_checks::{RuntimeShapeState, TensorKind};
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let make_input = |builder: &mut MLGraphBuilder<'_, '_>, name: &str| {
+            builder
+                .dynamic_input(
+                    name,
+                    &MLDynamicOperandDescriptor::new(
+                        MLOperandDataType::Float32,
+                        vec![MLDimension::Dynamic(MLDynamicDimension {
+                            name: name.into(),
+                            max_size: 10,
+                        })],
+                    ),
+                )
+                .unwrap()
+        };
+        let left = make_input(&mut builder, "left");
+        let right = make_input(&mut builder, "right");
+        let output = builder.add(left, right).unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
+        let mut runtime = RuntimeShapeState::new();
+        runtime
+            .validate_shape(
+                "left",
+                &[2],
+                &graph.operands[left.id].descriptor,
+                TensorKind::Input,
+            )
+            .unwrap();
+        runtime
+            .validate_shape(
+                "right",
+                &[3],
+                &graph.operands[right.id].descriptor,
+                TensorKind::Input,
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .validate_shape(
+                    "out",
+                    &[3],
+                    &graph.operands[output.id].descriptor,
+                    TensorKind::Output
+                )
+                .is_err()
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_conv_and_split_preserve_dynamic_extent() {
+        use crate::graph::{Dimension, ExpressionDimension};
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "image",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Static(1),
+                        MLDimension::Static(3),
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "height".into(),
+                            max_size: 20,
+                        }),
+                        MLDimension::Static(10),
+                    ],
+                ),
+            )
+            .unwrap();
+        let filter = builder
+            .input(
+                "filter",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![8, 3, 3, 3]),
+            )
+            .unwrap();
+        let conv = builder.conv2d(input, filter).unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
+        assert_eq!(
+            graph.operands[conv.id].descriptor.shape[2],
+            Dimension::Expression(ExpressionDimension {
+                expression: "((((height + 0) - (((3 - 1) * 1) + 1)) / 1) + 1)".into(),
+                max_size: 18,
+            })
+        );
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "x",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "batch".into(),
+                            max_size: 12,
+                        }),
+                        MLDimension::Static(4),
+                    ],
+                ),
+            )
+            .unwrap();
+        let outputs = builder
+            .split_equal_with_options(input, 3, crate::operator_options::MLSplitOptions::default())
+            .unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
+        assert_eq!(
+            graph.operands[outputs[0].id].descriptor.shape[0],
+            Dimension::Expression(ExpressionDimension {
+                expression: "(batch / 3)".into(),
+                max_size: 4,
+            })
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_resample_scales_dynamic_spatial_dimension() {
+        use crate::graph::Dimension;
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "image",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Static(1),
+                        MLDimension::Static(3),
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "height".into(),
+                            max_size: 10,
+                        }),
+                        MLDimension::Static(10),
+                    ],
+                ),
+            )
+            .unwrap();
+        let output = builder
+            .resample2d_with_options(
+                input,
+                crate::operator_options::MLResample2dOptions {
+                    scales: vec![1.5, 1.0],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let graph = builder.recorder.as_ref().unwrap().graph();
+        assert!(matches!(
+            graph.operands[output.id].descriptor.shape[2],
+            Dimension::Expression(_)
+        ));
+        assert_eq!(
+            graph.operands[output.id].descriptor.shape[2].get_static_or_max_size(),
+            15
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_shape_parameter_routes_static_input() {
+        use crate::graph::{Dimension, DynamicDimension};
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .input(
+                "x",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![1, 3]),
+            )
+            .unwrap();
+        let output = builder
+            .expand(
+                input,
+                vec![
+                    MLDimension::Dynamic(MLDynamicDimension {
+                        name: "batch".into(),
+                        max_size: 10,
+                    }),
+                    MLDimension::Static(3),
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            builder.recorder.as_ref().unwrap().graph().operands[output.id]
+                .descriptor
+                .shape[0],
+            Dimension::Dynamic(DynamicDimension {
+                name: "batch".into(),
+                max_size: 10
+            })
+        );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
     use crate::{
         mlcontext::{MLDynamicOperandDescriptor, MLNamedShapes},
         operator_options::{MLDimension, MLDynamicDimension, MLOperatorOptions},
@@ -3657,12 +4903,12 @@ mod test {
                 .constant_from_value(crate::operator_enums::MLOperandDataType::Int64, 2u64) // TODO: this is different from dynamic shape explainer: there u32
                 .unwrap();
             let two_x_output = builder.mul(output, two).unwrap();
-            insta::assert_debug_snapshot!(builder.graph);
+            insta::assert_debug_snapshot!(builder.recorder.as_ref().unwrap().graph());
 
             let mut outputs = MLNamedOperands::new();
             outputs.insert("out1", output);
             outputs.insert("out2", two_x_output);
-            let mut graph = builder.build(&outputs).unwrap();
+            let _graph = builder.build(&outputs).unwrap();
 
             // transform descriptor into concrete shape. "fritz" is obviously 42
             let concrete_shape: Vec<_> = descriptor
