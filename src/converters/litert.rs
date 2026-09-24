@@ -22,7 +22,8 @@ use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
 use crate::backends::litert::{
-    is_spatial_op, transpose_hwio_to_ohwi, transpose_ihwo_to_ohwi, transpose_oihw_to_ohwi,
+    is_spatial_op, transpose_hwio_to_ohwi, transpose_hwoi_to_ohwi, transpose_ihwo_to_ohwi,
+    transpose_iohw_to_ohwi, transpose_oihw_to_ohwi,
 };
 
 /// Converts a graph to a TFLite flatbuffer for the LiteRT interpreter (NCHW operands become NHWC).
@@ -68,9 +69,18 @@ fn slice_ends_from_extents(
 
 macro_rules! scalar_const {
     ($ctx:expr, $name:expr, $val:expr, $tfl_type:expr) => {{
-        let bytes = match $tfl_type {
-            tflite::TensorType::FLOAT16 => ($val as f32).to_le_bytes().to_vec(),
-            _ => ($val as f32).to_le_bytes().to_vec(),
+        // The bytes have to match the tensor's own type: an f32 payload in an int8 or
+        // float16 scalar reads back as garbage.
+        let value: f64 = $val as f64;
+        let bytes: Vec<u8> = match $tfl_type {
+            tflite::TensorType::FLOAT16 => half::f16::from_f32(value as f32).to_le_bytes().to_vec(),
+            tflite::TensorType::INT32 => (value as i32).to_le_bytes().to_vec(),
+            tflite::TensorType::INT64 => (value as i64).to_le_bytes().to_vec(),
+            tflite::TensorType::UINT32 => (value as u32).to_le_bytes().to_vec(),
+            tflite::TensorType::UINT64 => (value as u64).to_le_bytes().to_vec(),
+            tflite::TensorType::INT8 => (value as i8).to_le_bytes().to_vec(),
+            tflite::TensorType::UINT8 => (value as u8).to_le_bytes().to_vec(),
+            _ => (value as f32).to_le_bytes().to_vec(),
         };
         $ctx.add_constant($name, &[1], $tfl_type, &bytes) as i32
     }};
@@ -1397,12 +1407,12 @@ impl<'a> TfliteContext<'a> {
                     .min_value
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
-                    .unwrap_or(f64::MIN) as f32;
+                    .unwrap_or(f64::MIN);
                 let max_val = opts
                     .max_value
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
-                    .unwrap_or(f64::MAX) as f32;
+                    .unwrap_or(f64::MAX);
                 let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
                 let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
                 let mid = emit_op!(
@@ -1429,7 +1439,7 @@ impl<'a> TfliteContext<'a> {
                     .min_value
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
-                    .unwrap_or(f64::MIN) as f32;
+                    .unwrap_or(f64::MIN);
                 let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
                 let out = emit_op!(
                     self,
@@ -1446,7 +1456,7 @@ impl<'a> TfliteContext<'a> {
                     .max_value
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
-                    .unwrap_or(f64::MAX) as f32;
+                    .unwrap_or(f64::MAX);
                 let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
                 let out = emit_op!(
                     self,
@@ -2540,7 +2550,7 @@ impl<'a> TfliteContext<'a> {
         else {
             return false;
         };
-        let oc = self.add_opcode(opcode, 2);
+        let oc = self.add_opcode(opcode, opcode_version(opcode));
         let iv = self.fbb.create_vector(&inputs);
         let ov = self.fbb.create_vector(&[out_tensor]);
         operator_offsets.push(tflite::Operator::create(
@@ -4407,13 +4417,14 @@ fn build_spatial_inputs<'a>(
 }
 
 /// Add axes input for reduce ops. Returns Ok(true) if op was handled (empty axes = identity).
-fn build_reduce_inputs(
-    ctx: &mut TfliteContext<'_>,
+fn build_reduce_inputs<'a>(
+    ctx: &mut TfliteContext<'a>,
     op: &Operation,
     tensor_map: &mut HashMap<u32, u32>,
     input_id: u32,
     in_shape: &[i32],
     inputs: &mut Vec<i32>,
+    operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
 ) -> Result<bool, GraphError> {
     let is_reduce = matches!(
         op,
@@ -4441,11 +4452,35 @@ fn build_reduce_inputs(
         _ => (0..in_shape.len() as i32).collect(),
     };
     if axes.is_empty() {
-        let input_tensor = *tensor_map.get(&input_id).unwrap_or(&input_id);
+        // Nothing to reduce, so the op is a copy of its input. Emit a RESHAPE into the
+        // operand's own tensor: mapping the output onto the input would alias a graph
+        // output to a graph input, which the runtime does not resolve.
+        let input_tensor = *tensor_map.get(&input_id).unwrap_or(&input_id) as i32;
+        let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let shape_tensor = ctx.add_constant(
+            "reduce_identity_shape",
+            &[in_shape.len() as i32],
+            tflite::TensorType::INT32,
+            &shape_bytes,
+        );
         for &out_id in op.outputs() {
-            tensor_map.insert(out_id, input_tensor);
+            let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+            let oc = ctx.add_opcode(std_op::RESHAPE, 1);
+            let iv = ctx.fbb.create_vector(&[input_tensor, shape_tensor as i32]);
+            let ov = ctx.fbb.create_vector(&[out_tensor]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut ctx.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: None,
+                    builtin_options_type: tflite::BuiltinOptions::NONE,
+                    ..Default::default()
+                },
+            ));
         }
-        return Ok(true); // skip this op
+        return Ok(true);
     }
     let axes_bytes: Vec<u8> = axes.iter().flat_map(|v| v.to_le_bytes()).collect();
     let ax_tensor = ctx.add_constant(
@@ -4950,6 +4985,52 @@ fn pre_scan_native(
         if !is_spatial_op(op) {
             continue;
         }
+        // ConvTranspose2d: TFLite's TRANSPOSE_CONV takes the filter as OHWI too — its kernel
+        // transposes back to HWOI — while WebNN defaults to IOHW here.
+        if let Operation::ConvTranspose2d { options, .. } = op {
+            let opts = options.as_ref().cloned().unwrap_or_default();
+            let filter_layout = if opts.filter_layout.is_empty() {
+                "iohw"
+            } else {
+                opts.filter_layout.as_str()
+            };
+            if filter_layout != "ohwi"
+                && let Some(fid) = op.inputs().get(1).copied()
+                && let (Some(cd), Some(fop)) = (
+                    graph.constant_operand_ids_to_handles.get(&fid),
+                    graph.operand(fid),
+                )
+            {
+                let dims: Vec<usize> = fop
+                    .descriptor
+                    .shape
+                    .iter()
+                    .map(|d| match d {
+                        crate::graph::Dimension::Static(v) => *v as usize,
+                        _ => 1,
+                    })
+                    .collect();
+                if dims.len() == 4 {
+                    let (d0, d1, d2, d3) = (dims[0], dims[1], dims[2], dims[3]);
+                    let esz = cd.data.len() / (d0 * d1 * d2 * d3);
+                    if esz > 0 && esz * d0 * d1 * d2 * d3 == cd.data.len() {
+                        let (data, shape) = match filter_layout {
+                            "hwoi" => (
+                                transpose_hwoi_to_ohwi(&cd.data, d0, d1, d2, d3),
+                                vec![d2 as i32, d0 as i32, d1 as i32, d3 as i32],
+                            ),
+                            _ => (
+                                transpose_iohw_to_ohwi(&cd.data, d0, d1, d2, d3),
+                                vec![d1 as i32, d2 as i32, d3 as i32, d0 as i32],
+                            ),
+                        };
+                        weight_transpose.insert(fid, data);
+                        filter_shape_swap.insert(fid, shape);
+                    }
+                }
+            }
+        }
+
         // Conv2d: transpose filter to OHWI (TFLite native format)
         if let Operation::Conv2d { options, .. } = op {
             let opts = options.as_ref().cloned().unwrap_or_default();
@@ -5156,6 +5237,88 @@ fn register_native_tensors(
     }
 
     Ok(())
+}
+
+/// Filter permutation from a WebNN convTranspose2d filter layout to TFLite's OHWI; `None`
+/// when the filter is already in that layout.
+fn conv_transpose_filter_perm(layout: &str) -> Option<[i32; 4]> {
+    match layout {
+        "iohw" => Some([1, 2, 3, 0]),
+        "hwoi" => Some([2, 0, 1, 3]),
+        _ => None,
+    }
+}
+
+/// Reorder a convTranspose2d filter that arrives as a graph input to OHWI, which TFLite's
+/// TRANSPOSE_CONV, like CONV_2D, expects. A constant filter was already transposed with its
+/// data by the pre-scan.
+fn build_conv_transpose_filter_layout<'a>(
+    ctx: &mut TfliteContext<'a>,
+    op: &Operation,
+    graph: &GraphInfo,
+    inputs: &mut [i32],
+    operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+) {
+    let Operation::ConvTranspose2d { options, .. } = op else {
+        return;
+    };
+    let Some(&filter_id) = op.inputs().get(1) else {
+        return;
+    };
+    let Some(operand) = graph.operand(filter_id) else {
+        return;
+    };
+    if operand.kind == crate::graph::OperandKind::Constant || inputs.len() < 2 {
+        return;
+    }
+    let opts = options.as_ref().cloned().unwrap_or_default();
+    let layout = if opts.filter_layout.is_empty() {
+        "iohw"
+    } else {
+        opts.filter_layout.as_str()
+    };
+    let Some(perm) = conv_transpose_filter_perm(layout) else {
+        return;
+    };
+    let dims: Vec<i32> = operand
+        .descriptor
+        .shape
+        .iter()
+        .map(|d| match d {
+            crate::graph::Dimension::Static(v) => *v as i32,
+            _ => 1,
+        })
+        .collect();
+    if dims.len() != 4 {
+        return;
+    }
+    let Ok(tfl_type) = datatype_to_tflite(operand.descriptor.data_type) else {
+        return;
+    };
+    let target: Vec<i32> = perm.iter().map(|&axis| dims[axis as usize]).collect();
+    let perm_buf: Vec<u8> = perm.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let perm_t = ctx.add_constant(
+        "conv_transpose_perm",
+        &[4],
+        tflite::TensorType::INT32,
+        &perm_buf,
+    );
+    let out_t = ctx.add_tensor("conv_transpose_filter_ohwi", &target, tfl_type, 0);
+    let oc = ctx.add_opcode(std_op::TRANSPOSE, 1);
+    let iv = ctx.fbb.create_vector(&[inputs[1], perm_t as i32]);
+    let ov = ctx.fbb.create_vector(&[out_t as i32]);
+    operator_offsets.push(tflite::Operator::create(
+        &mut ctx.fbb,
+        &tflite::OperatorArgs {
+            opcode_index: oc,
+            inputs: Some(iv),
+            outputs: Some(ov),
+            builtin_options: None,
+            builtin_options_type: tflite::BuiltinOptions::NONE,
+            ..Default::default()
+        },
+    ));
+    inputs[1] = out_t as i32;
 }
 
 fn build_native_operators<'a>(
@@ -5377,12 +5540,21 @@ fn build_native_operators<'a>(
 
         // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
         ctx.build_conv_transpose_op(op, graph, &tensor_map, &mut inputs);
+        build_conv_transpose_filter_layout(ctx, op, graph, &mut inputs, &mut operator_offsets);
 
         // Split: use SPLIT_V with [input, split_sizes, axis]
         ctx.build_split_op(op, graph, &tensor_map, &mut inputs);
 
         // Reduce ops: add axes input, handle empty-axes identity.
-        if build_reduce_inputs(ctx, op, &mut tensor_map, input_id, &in_shape, &mut inputs)? {
+        if build_reduce_inputs(
+            ctx,
+            op,
+            &mut tensor_map,
+            input_id,
+            &in_shape,
+            &mut inputs,
+            &mut operator_offsets,
+        )? {
             continue;
         }
 
