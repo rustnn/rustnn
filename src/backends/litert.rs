@@ -76,15 +76,19 @@ pub(crate) struct LiteRtGraph {
     compiled: NonNull<sys::LiteRtCompiledModelT>,
     model: NonNull<sys::LiteRtModelT>,
     _model_bytes: Box<[u8]>,
-    /// Names of input/output operands that were spatially transposed NCHW→NHWC.
-    spatial_operand_names: std::collections::HashSet<String>,
-    /// Filter operand names whose runtime data needs layout→OHWI transpose.
-    /// Maps filter name → (WebNN filter_layout, target shape, is_depthwise [unused]).
-    filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
-    /// Output operand names needing BOOL type (WHERE condition, comparison ops).
-    bool_operand_names: std::collections::HashSet<String>,
-    input_order: Vec<String>,
-    output_order: Vec<String>,
+    /// Operand ids that were spatially transposed NCHW→NHWC.
+    spatial_operand_ids: std::collections::HashSet<u32>,
+    /// Filter operand ids whose runtime data needs layout→OHWI transpose.
+    /// Maps filter id → (WebNN filter_layout, target shape, is_depthwise [unused]).
+    filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+    /// Operand ids needing BOOL type (WHERE condition, comparison ops).
+    bool_operand_ids: std::collections::HashSet<u32>,
+    /// Graph input names in signature order. See [`order_by_signature`].
+    input_order: Vec<(String, u32)>,
+    /// Graph output names in signature order, id included.
+    output_order: Vec<(String, u32)>,
+    /// Whether the graph was rewritten from float16 to float32. See [`emulate_float16`].
+    float16_emulated: bool,
 }
 
 unsafe impl Send for LiteRtGraph {}
@@ -94,11 +98,12 @@ impl LiteRtGraph {
     fn new(
         model_bytes: Vec<u8>,
         accelerator_bits: sys::LiteRtHwAcceleratorSet,
-        spatial_operand_names: std::collections::HashSet<String>,
-        filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
-        bool_operand_names: std::collections::HashSet<String>,
-        input_order: Vec<String>,
-        output_order: Vec<String>,
+        spatial_operand_ids: std::collections::HashSet<u32>,
+        filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+        bool_operand_ids: std::collections::HashSet<u32>,
+        input_order: Vec<(String, u32)>,
+        output_order: Vec<(String, u32)>,
+        float16_emulated: bool,
     ) -> Result<Self> {
         let owned = model_bytes.into_boxed_slice();
         unsafe {
@@ -136,11 +141,12 @@ impl LiteRtGraph {
                 compiled,
                 model,
                 _model_bytes: owned,
-                spatial_operand_names,
+                spatial_operand_ids,
                 filter_transpose_info,
-                bool_operand_names,
+                bool_operand_ids,
                 input_order,
                 output_order,
+                float16_emulated,
             })
         }
     }
@@ -314,6 +320,7 @@ pub fn is_spatial_op(op: &Operation) -> bool {
     matches!(
         op,
         Operation::Conv2d { .. }
+            | Operation::ConvTranspose2d { .. }
             | Operation::MaxPool2d { .. }
             | Operation::AveragePool2d { .. }
             | Operation::L2Pool2d { .. }
@@ -321,7 +328,11 @@ pub fn is_spatial_op(op: &Operation) -> bool {
     )
 }
 
-fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::HashSet<String> {
+/// Operands whose 4-D layout must be rewritten NCHW -> NHWC.
+///
+/// Keyed on operand id: names exist only for graph inputs and outputs, so a name-keyed
+/// set cannot contain an intermediate.
+fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::HashSet<u32> {
     let mut names = std::collections::HashSet::new();
     for op in &graph_info.operations {
         if !is_spatial_op(op) {
@@ -329,6 +340,13 @@ fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::Ha
         }
         let needs_nchw_swap = match op {
             Operation::Conv2d { options, .. } => {
+                let layout = options
+                    .as_ref()
+                    .map(|o| o.input_layout.as_str())
+                    .unwrap_or("");
+                layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
+            }
+            Operation::ConvTranspose2d { options, .. } => {
                 let layout = options
                     .as_ref()
                     .map(|o| o.input_layout.as_str())
@@ -353,36 +371,67 @@ fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::Ha
         for id in op.inputs() {
             if let Some(op_info) = graph_info.operand(id) {
                 if op_info.kind == crate::graph::OperandKind::Constant
-                    || (matches!(op, Operation::Conv2d { .. })
-                        && op.inputs().iter().position(|&x| x == id) == Some(1))
+                    || (matches!(
+                        op,
+                        Operation::Conv2d { .. } | Operation::ConvTranspose2d { .. }
+                    ) && op.inputs().iter().position(|&x| x == id) == Some(1))
                 {
                     continue;
                 }
                 if op_info.descriptor.shape.len() == 4 {
-                    if let Some(ref n) = op_info.name {
-                        names.insert(n.clone());
-                    }
+                    names.insert(id);
                 }
             }
         }
         for &id in op.outputs() {
             if let Some(op_info) = graph_info.operand(id) {
                 if op_info.descriptor.shape.len() == 4 {
-                    if let Some(ref n) = op_info.name {
-                        names.insert(n.clone());
-                    }
+                    names.insert(id);
                 }
             }
         }
     }
+
+    // Follow the dataflow through the ops below, so both sides of an op keep one layout.
+    loop {
+        let mut grew = false;
+        for op in &graph_info.operations {
+            // An op fed by a rewritten operand is rewritten too, otherwise it gets NHWC
+            // inputs and NCHW outputs.
+            if !op.inputs().iter().any(|id| names.contains(id)) {
+                continue;
+            }
+            // Filters keep their own layout; see `collect_filter_transpose_info`.
+            let filter_id = match op {
+                Operation::Conv2d { .. } | Operation::ConvTranspose2d { .. } => {
+                    op.inputs().get(1).copied()
+                }
+                _ => None,
+            };
+            for id in op.inputs().iter().chain(op.outputs()) {
+                if Some(*id) == filter_id {
+                    continue;
+                }
+                if let Some(op_info) = graph_info.operand(*id) {
+                    if op_info.descriptor.shape.len() == 4 && names.insert(*id) {
+                        grew = true;
+                    }
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+
     names
 }
 
 fn collect_filter_transpose_info(
     graph_info: &GraphInfo,
-    spatial_operand_names: &mut std::collections::HashSet<String>,
-) -> std::collections::HashMap<String, (String, Vec<i32>, bool)> {
-    let mut filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)> =
+    spatial_operand_names: &mut std::collections::HashSet<u32>,
+) -> std::collections::HashMap<u32, (String, Vec<i32>, bool)> {
+    let mut filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)> =
         std::collections::HashMap::new();
     for op in &graph_info.operations {
         let Operation::Conv2d { options, .. } = op else {
@@ -399,10 +448,8 @@ fn collect_filter_transpose_info(
                 if let Some(fop) = graph_info.operand(fid) {
                     if fop.descriptor.shape.len() == 4 {
                         if fop.kind == crate::graph::OperandKind::Constant {
-                            if let Some(ref fname) = fop.name {
-                                spatial_operand_names.remove(fname);
-                            }
-                        } else if let Some(ref fname) = fop.name {
+                            spatial_operand_names.remove(&fid);
+                        } else {
                             let orig_shape = fop
                                 .descriptor
                                 .shape
@@ -413,21 +460,15 @@ fn collect_filter_transpose_info(
                                 })
                                 .collect::<Vec<_>>();
                             let target_shape = ohwi_shape_from_layout(&orig_shape, filter_layout);
-                            spatial_operand_names.insert(fname.clone());
-                            filter_transpose_info.insert(
-                                fname.clone(),
-                                (filter_layout.to_string(), target_shape, false),
-                            );
+                            spatial_operand_names.insert(fid);
+                            filter_transpose_info
+                                .insert(fid, (filter_layout.to_string(), target_shape, false));
                         }
                     }
                 }
             }
         } else if let Some(&fid) = op.inputs().get(1) {
-            if let Some(fop) = graph_info.operand(fid) {
-                if let Some(ref fname) = fop.name {
-                    spatial_operand_names.remove(fname);
-                }
-            }
+            spatial_operand_names.remove(&fid);
         }
     }
     filter_transpose_info
@@ -436,8 +477,8 @@ fn collect_filter_transpose_info(
 fn collect_spatial_info(
     graph_info: &GraphInfo,
 ) -> (
-    std::collections::HashSet<String>,
-    std::collections::HashMap<String, (String, Vec<i32>, bool)>,
+    std::collections::HashSet<u32>,
+    std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
 ) {
     let mut spatial_operand_names = collect_spatial_operand_names(graph_info);
     let filter_transpose_info =
@@ -445,16 +486,15 @@ fn collect_spatial_info(
     (spatial_operand_names, filter_transpose_info)
 }
 
-fn collect_bool_operand_names(graph: &GraphInfo) -> std::collections::HashSet<String> {
+/// Operands read back as BOOL rather than their declared type, keyed on operand id.
+fn collect_bool_operand_names(graph: &GraphInfo) -> std::collections::HashSet<u32> {
     let mut names = std::collections::HashSet::new();
     for op in &graph.operations {
         match op {
             Operation::Where { .. } => {
                 if let Some(&cond_id) = op.inputs().get(0) {
-                    if let Some(op_info) = graph.operand(cond_id) {
-                        if let Some(ref n) = op_info.name {
-                            names.insert(n.clone());
-                        }
+                    if graph.operand(cond_id).is_some() {
+                        names.insert(cond_id);
                     }
                 }
             }
@@ -467,10 +507,8 @@ fn collect_bool_operand_names(graph: &GraphInfo) -> std::collections::HashSet<St
             | Operation::LesserOrEqual { .. }
             | Operation::NotEqual { .. } => {
                 for &out_id in op.outputs() {
-                    if let Some(op_info) = graph.operand(out_id) {
-                        if let Some(ref n) = op_info.name {
-                            names.insert(n.clone());
-                        }
+                    if graph.operand(out_id).is_some() {
+                        names.insert(out_id);
                     }
                 }
             }
@@ -482,7 +520,7 @@ fn collect_bool_operand_names(graph: &GraphInfo) -> std::collections::HashSet<St
 
 fn modify_graph_for_nhwc(
     graph: &mut GraphInfo,
-    spatial_operand_names: &std::collections::HashSet<String>,
+    spatial_operand_names: &std::collections::HashSet<u32>,
 ) {
     let mut skip_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for op in &graph.operations {
@@ -492,6 +530,62 @@ fn modify_graph_for_nhwc(
             }
         }
     }
+    // A rank-4 constant the closure pulled in is re-laid out with its consumers: a PReLU
+    // slope left in NCHW beside an NHWC input is not broadcastable. One that also feeds an
+    // op outside the rewrite is left alone.
+    let needs_swap = |op: &Operation| -> bool {
+        match op {
+            Operation::Conv2d { options, .. } => {
+                let l = options
+                    .as_ref()
+                    .map(|o| o.input_layout.as_str())
+                    .unwrap_or("");
+                l.is_empty() || l.eq_ignore_ascii_case("nchw")
+            }
+            Operation::MaxPool2d { options, .. }
+            | Operation::AveragePool2d { options, .. }
+            | Operation::L2Pool2d { options, .. } => {
+                let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                l.is_empty() || l.eq_ignore_ascii_case("nchw")
+            }
+            Operation::InstanceNormalization { options, .. } => {
+                let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                l.is_empty() || l.eq_ignore_ascii_case("nchw")
+            }
+            _ => false,
+        }
+    };
+    let rewriteable_constants: std::collections::HashSet<u32> =
+        graph
+            .operands
+            .iter()
+            .enumerate()
+            .filter(|(_, operand)| operand.kind == crate::graph::OperandKind::Constant)
+            .map(|(i, _)| i as u32)
+            .filter(|&id| {
+                // Rewritten when it is the rank-4 input of a spatial op, or when a consumer
+                // already has an operand in the set (the seed skips constants).
+                let feeds_spatial = graph
+                    .operations
+                    .iter()
+                    .any(|op| is_spatial_op(op) && needs_swap(op) && op.inputs().contains(&id));
+                if feeds_spatial {
+                    return true;
+                }
+                spatial_operand_names.contains(&id)
+                    && graph
+                        .operations
+                        .iter()
+                        .filter(|op| op.inputs().contains(&id))
+                        .all(|op| {
+                            is_spatial_op(op)
+                                || op.inputs().iter().chain(op.outputs()).any(|other| {
+                                    other != &id && spatial_operand_names.contains(other)
+                                })
+                        })
+            })
+            .collect();
+
     for (i, operand) in graph.operands.iter_mut().enumerate() {
         let id = i as u32;
         if skip_ids.contains(&id) {
@@ -500,39 +594,9 @@ fn modify_graph_for_nhwc(
         if operand.descriptor.shape.len() != 4 {
             continue;
         }
-        let name = operand.name.as_deref().unwrap_or("");
-        let in_set = spatial_operand_names.contains(name);
+        let in_set = spatial_operand_names.contains(&id);
         if operand.kind == crate::graph::OperandKind::Constant {
-            let is_spatial_input = graph.operations.iter().any(|op| {
-                is_spatial_op(op)
-                    && op.inputs().contains(&id)
-                    && match op {
-                        Operation::Conv2d { options, .. } => {
-                            let l = options
-                                .as_ref()
-                                .map(|o| o.input_layout.as_str())
-                                .unwrap_or("");
-                            l.is_empty() || l.eq_ignore_ascii_case("nchw")
-                        }
-                        Operation::MaxPool2d { options, .. }
-                        | Operation::AveragePool2d { options, .. }
-                        | Operation::L2Pool2d { options, .. } => {
-                            let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
-                            l.is_empty() || l.eq_ignore_ascii_case("nchw")
-                        }
-                        Operation::InstanceNormalization { options, .. } => {
-                            let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
-                            l.is_empty() || l.eq_ignore_ascii_case("nchw")
-                        }
-                        _ => false,
-                    }
-            });
-            // Skip if not a spatial input, or if shared with non-spatial ops (would corrupt data).
-            let has_non_spatial_consumer = graph
-                .operations
-                .iter()
-                .any(|other_op| !is_spatial_op(other_op) && other_op.inputs().contains(&id));
-            if !is_spatial_input || has_non_spatial_consumer {
+            if !rewriteable_constants.contains(&id) {
                 continue;
             }
         } else if !in_set {
@@ -576,6 +640,182 @@ fn modify_graph_for_nhwc(
             }
         }
     }
+
+    // resample2d needs the operand's new shape rather than a stored axis.
+    let nhwc_shape_by_id: std::collections::HashMap<u32, Vec<u32>> = graph
+        .operands
+        .iter()
+        .enumerate()
+        .filter_map(|(i, operand)| {
+            if operand.descriptor.shape.len() != 4 {
+                return None;
+            }
+            let dims = operand
+                .descriptor
+                .shape
+                .iter()
+                .map(|d| match d {
+                    crate::graph::Dimension::Static(v) => Some(*v),
+                    _ => None,
+                })
+                .collect::<Option<Vec<u32>>>()?;
+            Some((i as u32, dims))
+        })
+        .collect();
+
+    // Operators naming an axis, or carrying per-axis arrays, still refer to NCHW
+    // positions and are remapped alongside the operand.
+    for op in graph.operations.iter_mut() {
+        // The parameters handled below address the operand the op reads, so the op is
+        // remapped exactly when one of its inputs was. Transpose is the exception: its
+        // permutation spans both sides, and it can sit on the boundary itself.
+        let remap = match op {
+            Operation::Transpose { .. } => op
+                .inputs()
+                .iter()
+                .chain(op.outputs())
+                .any(|id| spatial_operand_names.contains(id)),
+            _ => op
+                .inputs()
+                .first()
+                .is_some_and(|id| spatial_operand_names.contains(id)),
+        };
+        if !remap {
+            continue;
+        }
+        match op {
+            Operation::Concat { axis, .. } => *axis = nchw_axis_to_nhwc(*axis),
+            Operation::Softmax { axis, .. } => *axis = nchw_axis_to_nhwc(*axis),
+            Operation::Split { options, .. } => {
+                if let Some(options) = options {
+                    options.axis = nchw_axis_to_nhwc(options.axis);
+                }
+            }
+            Operation::Pad {
+                beginning_padding,
+                ending_padding,
+                ..
+            } => {
+                *beginning_padding = permute_nchw_to_nhwc(beginning_padding);
+                *ending_padding = permute_nchw_to_nhwc(ending_padding);
+            }
+            Operation::Slice {
+                starts,
+                sizes,
+                options,
+                ..
+            } => {
+                *starts = permute_nchw_to_nhwc(starts);
+                *sizes = permute_nchw_to_nhwc(sizes);
+                if let Some(options) = options {
+                    options.strides = permute_nchw_to_nhwc(&options.strides);
+                }
+            }
+            // Rank-4 only: rank-changing targets are barriers, not relabels.
+            Operation::Reshape { new_shape, .. } => {
+                *new_shape = permute_nchw_to_nhwc(new_shape);
+            }
+            Operation::ReduceSum { options, .. }
+            | Operation::ReduceMean { options, .. }
+            | Operation::ReduceMax { options, .. }
+            | Operation::ReduceMin { options, .. }
+            | Operation::ReduceProduct { options, .. }
+            | Operation::ReduceL1 { options, .. }
+            | Operation::ReduceL2 { options, .. }
+            | Operation::ReduceLogSum { options, .. }
+            | Operation::ReduceLogSumExp { options, .. }
+            | Operation::ReduceSumSquare { options, .. } => {
+                if let Some(axes) = options.as_mut().and_then(|o| o.axes.as_mut()) {
+                    for axis in axes.iter_mut() {
+                        *axis = nchw_axis_to_nhwc(*axis);
+                    }
+                }
+            }
+            Operation::Transpose { input, options, .. } => {
+                let input_relaid = spatial_operand_names.contains(input);
+                let options = options.get_or_insert_with(Default::default);
+                if options.permutation.is_empty() {
+                    // An empty permutation means a full reversal; materialise it first.
+                    options.permutation = (0..4u32).rev().collect();
+                }
+                options.permutation = if input_relaid {
+                    fold_relayout_into_permutation(&options.permutation)
+                } else {
+                    // Output-only relayout: the transpose must map NHWC to NHWC.
+                    fold_output_relayout_into_permutation(&options.permutation)
+                };
+            }
+            Operation::Resample2d { input, options, .. } => {
+                let Some(options) = options.as_mut() else {
+                    continue;
+                };
+                for axis in options.axes.iter_mut() {
+                    *axis = nchw_axis_to_nhwc(*axis);
+                }
+                // The kernel resizes the last two dims, so the sizes come from the
+                // rewritten shape, where H and W are axes 1 and 2 — the same assumption
+                // Chromium's TFLite builder makes.
+                if options.sizes.is_none() && options.scales.len() >= 2 {
+                    if let Some(shape) = nhwc_shape_by_id.get(input) {
+                        options.sizes = Some(vec![
+                            (shape[1] as f32 * options.scales[0]) as u32,
+                            (shape[2] as f32 * options.scales[1]) as u32,
+                        ]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Rewrites a permutation for the case where both operands are relaid out. The relayout
+/// is `R = [0, 2, 3, 1]`, so it conjugates the original permutation with `R`.
+fn fold_relayout_into_permutation(permutation: &[u32]) -> Vec<u32> {
+    const R: [u32; 4] = [0, 2, 3, 1];
+    const R_INV: [u32; 4] = [0, 3, 1, 2];
+    if permutation.len() != 4 || permutation.iter().any(|&p| p >= 4) {
+        return permutation.to_vec();
+    }
+    (0..4)
+        .map(|i| R_INV[permutation[R[i] as usize] as usize])
+        .collect()
+}
+
+/// Rewrites a permutation when only the transpose's output is relaid out, mapping NHWC to
+/// NHWC.
+fn fold_output_relayout_into_permutation(permutation: &[u32]) -> Vec<u32> {
+    const R: [u32; 4] = [0, 2, 3, 1];
+    if permutation.len() != 4 || permutation.iter().any(|&p| p >= 4) {
+        return permutation.to_vec();
+    }
+    (0..4).map(|i| permutation[R[i] as usize]).collect()
+}
+
+/// Maps an axis index from NCHW order to its position in NHWC order.
+fn nchw_axis_to_nhwc(axis: u32) -> u32 {
+    debug_assert!(axis < 4, "axis {axis} is not a rank-4 NCHW axis");
+    match axis {
+        0 => 0,
+        1 => 3,
+        2 => 1,
+        3 => 2,
+        other => other,
+    }
+}
+
+/// Reorders a full-rank per-axis array from NCHW order to NHWC order; shorter arrays are
+/// returned unchanged.
+fn permute_nchw_to_nhwc<T: Clone>(values: &[T]) -> Vec<T> {
+    if values.len() != 4 {
+        return values.to_vec();
+    }
+    vec![
+        values[0].clone(),
+        values[2].clone(),
+        values[3].clone(),
+        values[1].clone(),
+    ]
 }
 
 impl fmt::Debug for LiteRtContext {
@@ -655,6 +895,50 @@ pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usiz
     out
 }
 
+/// Transpose weight data from IOHW (`[I, O, H, W]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_iohw_to_ohwi(data: &[u8], i: usize, o: usize, h: usize, w: usize) -> Vec<u8> {
+    let esz = data.len() / (i * o * h * w);
+    if esz == 0 || esz * i * o * h * w != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((ii * o + oo) * h + hh) * w + ww;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Transpose weight data from HWOI (`[H, W, O, I]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_hwoi_to_ohwi(data: &[u8], h: usize, w: usize, o: usize, i: usize) -> Vec<u8> {
+    let esz = data.len() / (h * w * o * i);
+    if esz == 0 || esz * h * w * o * i != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((hh * w + ww) * o + oo) * i + ii;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Transpose weight data from HWIO (`[H, W, I, O]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usize) -> Vec<u8> {
     let esz = data.len() / (h * w * i * o);
@@ -705,6 +989,8 @@ fn transpose_filter_to_ohwi(data: &[u8], shape: &[u64], layout: &str) -> Vec<u8>
     match layout {
         "hwio" => transpose_hwio_to_ohwi(data, s(0), s(1), s(2), s(3)),
         "ihwo" => transpose_ihwo_to_ohwi(data, s(0), s(1), s(2), s(3)),
+        "iohw" => transpose_iohw_to_ohwi(data, s(0), s(1), s(2), s(3)),
+        "hwoi" => transpose_hwoi_to_ohwi(data, s(0), s(1), s(2), s(3)),
         _ => transpose_oihw_to_ohwi(data, s(0), s(1), s(2), s(3)), // "oihw" default
     }
 }
@@ -717,69 +1003,181 @@ fn ohwi_shape_from_layout(shape: &[i32], layout: &str) -> Vec<i32> {
     match layout {
         "hwio" => vec![shape[3], shape[0], shape[1], shape[2]],
         "ihwo" => vec![shape[3], shape[1], shape[2], shape[0]],
+        "iohw" => vec![shape[1], shape[2], shape[3], shape[0]],
+        "hwoi" => vec![shape[2], shape[0], shape[1], shape[3]],
         "ohwi" => shape.to_vec(),
         _ => vec![shape[0], shape[2], shape[3], shape[1]], // "oihw" default
     }
 }
 
-/// Orders `names` as the compiled model's signature declares them.
-///
-/// LiteRT binds buffers to signature slots positionally, while `MLNamedTensors` iterates
-/// alphabetically. Undeclared names are appended rather than dropped.
+/// Orders `names` as the model's signature declares them: LiteRT binds buffers to
+/// signature slots positionally, while `MLNamedTensors` iterates alphabetically.
 fn order_by_signature<'a>(
-    order: &'a [String],
-    names: &MLNamedTensors<'a>,
-) -> Vec<(&'a str, &'a MLTensor)> {
-    let mut ordered: Vec<(&'a str, &'a MLTensor)> = order
+    order: &'a [(String, u32)],
+    names: &'a MLNamedTensors<'a>,
+) -> Vec<(&'a str, u32, &'a MLTensor)> {
+    let mut ordered: Vec<(&'a str, u32, &'a MLTensor)> = order
         .iter()
-        .filter_map(|name| names.get(name.as_str()).map(|t| (name.as_str(), *t)))
+        .filter_map(|(name, operand_id)| {
+            names
+                .get(name.as_str())
+                .map(|t| (name.as_str(), *operand_id, *t))
+        })
         .collect();
-    for (name, tensor) in names {
-        if !order.iter().any(|declared| declared == *name) {
-            ordered.push((name, *tensor));
+    // Keep anything bound but not declared, so the mismatch surfaces downstream.
+    if ordered.len() != names.len() {
+        for (name, tensor) in names {
+            if !order.iter().any(|(declared, _)| declared == *name) {
+                // No id is known for an undeclared binding; `u32::MAX` matches nothing.
+                ordered.push((name, u32::MAX, *tensor));
+            }
         }
     }
     ordered
 }
 
+/// Element type the model uses for a caller-side buffer.
+fn model_element_type(t: &MLTensor) -> litert::ElementType {
+    if t.descriptor().data_type() == MLOperandDataType::Float16 {
+        litert::ElementType::Float32
+    } else {
+        ml_operand_to_litert_element_type(t.descriptor().data_type()).expect("element type")
+    }
+}
+
+fn tensor_dims(t: &MLTensor) -> Vec<i32> {
+    t.descriptor().shape().iter().map(|&d| d as i32).collect()
+}
+
+fn fp16_to_f32(data: &[u8]) -> Vec<u8> {
+    data.chunks_exact(2)
+        .flat_map(|p| {
+            half::f16::from_le_bytes([p[0], p[1]])
+                .to_f32()
+                .to_le_bytes()
+        })
+        .collect()
+}
+
+fn f32_to_fp16(data: &[u8]) -> Vec<u8> {
+    data.chunks_exact(4)
+        .flat_map(|w| {
+            half::f16::from_f32(f32::from_le_bytes([w[0], w[1], w[2], w[3]])).to_le_bytes()
+        })
+        .collect()
+}
+
+/// Rewrites a float16 graph to float32, its constants included.
+///
+/// TFLite has no float16 kernels, so a model containing FLOAT16 tensors fails to allocate.
+/// Graphs that cast *to* float16 are left alone: the rounding is what they test.
+fn emulate_float16(graph: &mut GraphInfo) -> bool {
+    let is_fp16 = |dt: crate::graph::DataType| dt == crate::graph::DataType::Float16;
+    if !graph
+        .operands
+        .iter()
+        .any(|o| is_fp16(o.descriptor.data_type))
+    {
+        return false;
+    }
+    if graph.operations.iter().any(|op| {
+        matches!(op, Operation::Cast { data_type, .. } if *data_type == MLOperandDataType::Float16)
+    }) {
+        return false;
+    }
+    for (id, operand) in graph.operands.iter_mut().enumerate() {
+        if !is_fp16(operand.descriptor.data_type) {
+            continue;
+        }
+        operand.descriptor.data_type = crate::graph::DataType::Float32;
+        if let Some(constant) = graph.constant_operand_ids_to_handles.get_mut(&(id as u32)) {
+            constant.data = fp16_to_f32(&constant.data);
+        }
+    }
+    for op in graph.operations.iter_mut() {
+        if let Operation::ArgMax {
+            options: Some(options),
+            ..
+        }
+        | Operation::ArgMin {
+            options: Some(options),
+            ..
+        } = op
+            && options.output_data_type == MLOperandDataType::Float16
+        {
+            options.output_data_type = MLOperandDataType::Float32;
+        }
+    }
+    true
+}
+
 fn build_input_handles(
-    sorted_inputs: &[(&str, &MLTensor)],
+    sorted_inputs: &[(&str, u32, &MLTensor)],
     tensors: &mut [LiteRtTensor],
-    spatial_names: &std::collections::HashSet<String>,
-    filter_info: &std::collections::HashMap<String, (String, Vec<i32>, bool)>,
+    spatial_ids: &std::collections::HashSet<u32>,
+    filter_info: &std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+    float16_emulated: bool,
 ) -> (Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>) {
     let mut in_raw = Vec::with_capacity(sorted_inputs.len());
     let mut temp_in_tensors: Vec<LiteRtTensor> = Vec::new();
-    for (name, t) in sorted_inputs {
-        if spatial_names.contains(*name) {
+    for (_name, operand_id, t) in sorted_inputs {
+        let fp16 = float16_emulated && t.descriptor().data_type() == MLOperandDataType::Float16;
+        // Convert float16 first, so the transpose below works on float32.
+        let model_data = |tensors: &[LiteRtTensor]| {
+            let logical = t.descriptor().rustnn_required_bytes();
+            let mut raw = vec![0u8; logical];
+            tensors[t.id].read(&mut raw).ok();
+            if fp16 { fp16_to_f32(&raw) } else { raw }
+        };
+        if spatial_ids.contains(operand_id) {
             let shape = t.descriptor().shape();
             if shape.len() == 4 {
-                if let Some((filter_layout, target_shape, _is_depthwise)) = filter_info.get(*name) {
-                    let element_type =
-                        ml_operand_to_litert_element_type(t.descriptor().data_type())
-                            .expect("filter element type");
-                    let temp = LiteRtTensor::create_litert_tensor(target_shape, element_type, true)
-                        .expect("temp filter tensor");
-                    let logical = t.descriptor().rustnn_required_bytes();
-                    let mut src_data = vec![0u8; logical];
-                    tensors[t.id].read(&mut src_data).ok();
-                    let transposed = transpose_filter_to_ohwi(&src_data, shape, filter_layout);
+                if let Some((filter_layout, target_shape, _is_depthwise)) =
+                    filter_info.get(operand_id)
+                {
+                    let temp = LiteRtTensor::create_litert_tensor(
+                        target_shape,
+                        model_element_type(t),
+                        true,
+                    )
+                    .expect("temp filter tensor");
+                    let transposed =
+                        transpose_filter_to_ohwi(&model_data(tensors), shape, filter_layout);
                     temp.write(&transposed).ok();
                     temp_in_tensors.push(temp);
                     in_raw.push(temp_in_tensors.last().unwrap().handle);
                     continue;
                 }
-                let logical = t.descriptor().rustnn_required_bytes();
-                let mut nchw_data = vec![0u8; logical];
-                tensors[t.id].read(&mut nchw_data).ok();
-                let nhwc_data = transpose_nchw_to_nhwc(&nchw_data, shape);
-                let temp =
-                    LiteRtTensor::new_with_layout(t.descriptor(), true).expect("temp input tensor");
+                let nhwc_data = transpose_nchw_to_nhwc(&model_data(tensors), shape);
+                let temp = if fp16 {
+                    let dims = vec![
+                        shape[0] as i32,
+                        shape[2] as i32,
+                        shape[3] as i32,
+                        shape[1] as i32,
+                    ];
+                    LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, true)
+                        .expect("temp input tensor")
+                } else {
+                    LiteRtTensor::new_with_layout(t.descriptor(), true).expect("temp input tensor")
+                };
                 temp.write(&nhwc_data).ok();
                 temp_in_tensors.push(temp);
                 in_raw.push(temp_in_tensors.last().unwrap().handle);
                 continue;
             }
+        }
+        if fp16 {
+            let temp = LiteRtTensor::create_litert_tensor(
+                &tensor_dims(t),
+                litert::ElementType::Float32,
+                false,
+            )
+            .expect("float32 input tensor");
+            temp.write(&model_data(tensors)).ok();
+            temp_in_tensors.push(temp);
+            in_raw.push(temp_in_tensors.last().unwrap().handle);
+            continue;
         }
         in_raw.push(tensors[t.id].handle);
     }
@@ -787,15 +1185,31 @@ fn build_input_handles(
 }
 
 fn build_output_handles(
-    sorted_outputs: &[(&str, &MLTensor)],
+    sorted_outputs: &[(&str, u32, &MLTensor)],
     tensors: &[LiteRtTensor],
-    spatial_names: &std::collections::HashSet<String>,
-    bool_operand_names: &std::collections::HashSet<String>,
+    spatial_ids: &std::collections::HashSet<u32>,
+    bool_operand_ids: &std::collections::HashSet<u32>,
+    float16_emulated: bool,
 ) -> (Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>) {
     let mut out_raw = Vec::with_capacity(sorted_outputs.len());
     let mut temp_out_tensors: Vec<LiteRtTensor> = Vec::new();
-    for (name, t) in sorted_outputs {
-        if spatial_names.contains(*name) {
+    for (_name, operand_id, t) in sorted_outputs {
+        let spatial = spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4;
+        if float16_emulated && t.descriptor().data_type() == MLOperandDataType::Float16 {
+            let dims = tensor_dims(t);
+            let dims = if spatial {
+                vec![dims[0], dims[2], dims[3], dims[1]]
+            } else {
+                dims
+            };
+            let temp =
+                LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, spatial)
+                    .expect("float32 output tensor");
+            temp_out_tensors.push(temp);
+            out_raw.push(temp_out_tensors.last().unwrap().handle);
+            continue;
+        }
+        if spatial_ids.contains(operand_id) {
             let shape = t.descriptor().shape();
             if shape.len() == 4 {
                 let temp = LiteRtTensor::new_with_layout(t.descriptor(), true)
@@ -805,7 +1219,7 @@ fn build_output_handles(
                 continue;
             }
         }
-        if bool_operand_names.contains(*name) {
+        if bool_operand_ids.contains(operand_id) {
             let dims: Vec<i32> = t.descriptor().shape().iter().map(|&d| d as i32).collect();
             let temp = LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Bool, false)
                 .expect("bool output tensor");
@@ -819,22 +1233,36 @@ fn build_output_handles(
 }
 
 fn readback_outputs(
-    sorted_outputs: &[(&str, &MLTensor)],
+    sorted_outputs: &[(&str, u32, &MLTensor)],
     out_raw: &[sys::LiteRtTensorBuffer],
     temp_out_tensors: &[LiteRtTensor],
     tensors: &mut [LiteRtTensor],
-    bool_operand_names: &std::collections::HashSet<String>,
-    spatial_names: &std::collections::HashSet<String>,
+    bool_operand_ids: &std::collections::HashSet<u32>,
+    spatial_ids: &std::collections::HashSet<u32>,
+    float16_emulated: bool,
 ) {
-    for ((name, t), out_handle) in sorted_outputs.iter().zip(out_raw.iter()) {
-        if bool_operand_names.contains(*name) {
+    for ((_name, operand_id, t), out_handle) in sorted_outputs.iter().zip(out_raw.iter()) {
+        if float16_emulated && t.descriptor().data_type() == MLOperandDataType::Float16 {
+            let logical = t.descriptor().rustnn_required_bytes();
+            let mut buf = vec![0u8; logical * 2];
+            if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
+                temp.read(&mut buf).ok();
+                let shape = t.descriptor().shape();
+                let buf = if spatial_ids.contains(operand_id) && shape.len() == 4 {
+                    transpose_nhwc_to_nchw(&buf, shape)
+                } else {
+                    buf
+                };
+                tensors[t.id].write(&f32_to_fp16(&buf)).ok();
+            }
+        } else if bool_operand_ids.contains(operand_id) {
             let logical = t.descriptor().rustnn_required_bytes();
             let mut buf = vec![0u8; logical];
             if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
                 temp.read(&mut buf).ok();
                 tensors[t.id].write(&buf).ok();
             }
-        } else if spatial_names.contains(*name) {
+        } else if spatial_ids.contains(operand_id) {
             let shape = t.descriptor().shape();
             if shape.len() == 4 {
                 let logical = t.descriptor().rustnn_required_bytes();
@@ -1002,15 +1430,17 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
         let (in_raw, _temp_in_tensors) = build_input_handles(
             &sorted_inputs,
             &mut self.tensors,
-            &lite_graph.spatial_operand_names,
+            &lite_graph.spatial_operand_ids,
             &lite_graph.filter_transpose_info,
+            lite_graph.float16_emulated,
         );
 
         let (mut out_raw, temp_out_tensors) = build_output_handles(
             &sorted_outputs,
             &self.tensors,
-            &lite_graph.spatial_operand_names,
-            &lite_graph.bool_operand_names,
+            &lite_graph.spatial_operand_ids,
+            &lite_graph.bool_operand_ids,
+            lite_graph.float16_emulated,
         );
 
         lite_graph.run(&in_raw, &mut out_raw)?;
@@ -1020,8 +1450,9 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             &out_raw,
             &temp_out_tensors,
             &mut self.tensors,
-            &lite_graph.bool_operand_names,
-            &lite_graph.spatial_operand_names,
+            &lite_graph.bool_operand_ids,
+            &lite_graph.spatial_operand_ids,
+            lite_graph.float16_emulated,
         );
 
         Ok(())
@@ -1043,10 +1474,14 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
         let (input_descriptors, output_descriptors) = graph_info
             .io_binding_maps()
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
-        // The model's signature keeps the order the operands were declared in.
-        let operand_order = |ids: &[u32]| -> Vec<String> {
+        let operand_order = |ids: &[u32]| -> Vec<(String, u32)> {
             ids.iter()
-                .filter_map(|&id| graph_info.operand(id).and_then(|o| o.name.clone()))
+                .filter_map(|&id| {
+                    graph_info
+                        .operand(id)
+                        .and_then(|o| o.name.clone())
+                        .map(|name| (name, id))
+                })
                 .collect()
         };
         let input_order = operand_order(&graph_info.input_operands);
@@ -1054,18 +1489,22 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
 
         let (spatial_operand_names, filter_transpose_info) = collect_spatial_info(&graph_info);
         let mut graph_info = graph_info;
+        // A float16 graph runs as float32; the buffers convert at dispatch.
+        let float16_emulated = emulate_float16(&mut graph_info);
         modify_graph_for_nhwc(&mut graph_info, &spatial_operand_names);
         let tflite_bytes = LiteRtConverter.convert(&graph_info)?.data;
-        let bool_operand_names = collect_bool_operand_names(&graph_info);
+
+        let bool_operand_ids = collect_bool_operand_names(&graph_info);
 
         let graph = LiteRtGraph::new(
             tflite_bytes,
             self.accelerator_bits,
             spatial_operand_names,
             filter_transpose_info,
-            bool_operand_names,
+            bool_operand_ids,
             input_order,
             output_order,
+            float16_emulated,
         )
         .map_err(|e| Error::GraphBuildError {
             source: format!("failed to compile model: {e}").into(),
@@ -1116,5 +1555,58 @@ mod tests {
         let mut read_buf = vec![0u8; 8];
         ctx.read_tensor(&tensor, &mut read_buf).unwrap();
         assert_eq!(read_buf, data);
+    }
+
+    #[test]
+    fn nchw_axes_map_to_their_nhwc_positions() {
+        assert_eq!([0, 1, 2, 3].map(nchw_axis_to_nhwc), [0, 3, 1, 2]);
+    }
+
+    #[test]
+    fn per_axis_arrays_are_reordered_or_left_alone() {
+        assert_eq!(permute_nchw_to_nhwc(&[1, 2, 3, 4]), vec![1, 3, 4, 2]);
+        assert_eq!(permute_nchw_to_nhwc(&[1, 2]), vec![1, 2]);
+        assert_eq!(permute_nchw_to_nhwc(&[1, 2, 3, 4, 5]), vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn relayout_conjugates_a_both_sides_permutation() {
+        assert_eq!(
+            fold_relayout_into_permutation(&[0, 1, 2, 3]),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            fold_relayout_into_permutation(&[0, 2, 3, 1]),
+            vec![0, 2, 3, 1]
+        );
+        assert_eq!(
+            fold_relayout_into_permutation(&[0, 3, 1, 2]),
+            vec![0, 3, 1, 2]
+        );
+        assert_eq!(
+            fold_relayout_into_permutation(&[1, 0, 2, 3]),
+            vec![3, 1, 2, 0]
+        );
+        assert_eq!(
+            fold_relayout_into_permutation(&[0, 1, 2, 4]),
+            vec![0, 1, 2, 4]
+        );
+        assert_eq!(fold_relayout_into_permutation(&[1, 0]), vec![1, 0]);
+    }
+
+    #[test]
+    fn relayout_prefixes_an_output_only_permutation() {
+        assert_eq!(
+            fold_output_relayout_into_permutation(&[0, 1, 2, 3]),
+            vec![0, 2, 3, 1]
+        );
+        assert_eq!(
+            fold_output_relayout_into_permutation(&[0, 3, 1, 2]),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            fold_output_relayout_into_permutation(&[0, 1, 2, 4]),
+            vec![0, 1, 2, 4]
+        );
     }
 }
