@@ -1279,7 +1279,8 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 [[package]]
 name = "hiai-rs"
 version = "0.1.0"
-source = "git+https://github.com/rustnn/hiai-rs?rev=a7b8ae5#a7b8ae5e4c62920bdc529af6113853196197295a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8edfc930471aed98c09b7b57b60e71f000e0fcb132ed7e7428fce6719f8fa6e0"
 dependencies = [
  "hiai-rs-sys",
  "log",
@@ -1289,7 +1290,8 @@ dependencies = [
 [[package]]
 name = "hiai-rs-sys"
 version = "0.1.0"
-source = "git+https://github.com/rustnn/hiai-rs?rev=a7b8ae5#a7b8ae5e4c62920bdc529af6113853196197295a"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50d9e8096e1e9e61e6180952fc1bbc811a1579ed1e24c98602ea235189661472"
 dependencies = [
  "bindgen",
  "cc",
