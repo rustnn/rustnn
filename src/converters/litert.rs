@@ -653,6 +653,72 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
+    /// Logical AND/OR for a result of rank 5 or higher: the BOOL kernels of
+    /// LOGICAL_AND/LOGICAL_OR reject those operands (kLiteRtStatusErrorInvalidArgument),
+    /// while MINIMUM/MAXIMUM broadcast at any rank. Both inputs are normalised to BOOL
+    /// first, so their 0/1 values make min and max the logical AND and OR.
+    fn build_rank5_logical(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        a_bool: i32,
+        a_shape: &[i32],
+        b_bool: i32,
+        b_shape: &[i32],
+        opcode: i32,
+        prefix: &str,
+        out_shape: &[i32],
+    ) -> i32 {
+        let a32 = self.add_tensor(
+            &format!("{prefix}_a32"),
+            a_shape,
+            tflite::TensorType::INT32,
+            0,
+        ) as i32;
+        let b32 = self.add_tensor(
+            &format!("{prefix}_b32"),
+            b_shape,
+            tflite::TensorType::INT32,
+            0,
+        ) as i32;
+        self.emit_cast_op(
+            operator_offsets,
+            a_bool,
+            tflite::TensorType::BOOL,
+            a32,
+            tflite::TensorType::INT32,
+        );
+        self.emit_cast_op(
+            operator_offsets,
+            b_bool,
+            tflite::TensorType::BOOL,
+            b32,
+            tflite::TensorType::INT32,
+        );
+        let res32 = emit_op!(
+            self,
+            operator_offsets,
+            opcode,
+            [a32, b32],
+            &format!("{prefix}_i32"),
+            out_shape,
+            tflite::TensorType::INT32
+        );
+        let out = self.add_tensor(
+            &format!("{prefix}_u8"),
+            out_shape,
+            tflite::TensorType::UINT8,
+            0,
+        ) as i32;
+        self.emit_cast_op(
+            operator_offsets,
+            res32,
+            tflite::TensorType::INT32,
+            out,
+            tflite::TensorType::UINT8,
+        );
+        out
+    }
+
     fn build_logical_ops(
         &mut self,
         op: &Operation,
@@ -678,6 +744,20 @@ impl<'a> TfliteContext<'a> {
             let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
             let a_bool = cast_to_bool!(self, operator_offsets, a_t, "la", &a_shape);
             let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lb", &b_shape);
+            if out_shape.len() >= 5 {
+                let out = self.build_rank5_logical(
+                    operator_offsets,
+                    a_bool,
+                    &a_shape,
+                    b_bool,
+                    &b_shape,
+                    std_op::MINIMUM,
+                    "land",
+                    &out_shape,
+                );
+                tensor_map.insert(out_id, out as u32);
+                return true;
+            }
             let res_bool = emit_op!(
                 self,
                 operator_offsets,
@@ -700,6 +780,20 @@ impl<'a> TfliteContext<'a> {
             let b_t = *tensor_map.get(b).unwrap_or(b) as i32;
             let a_bool = cast_to_bool!(self, operator_offsets, a_t, "loa", &a_shape);
             let b_bool = cast_to_bool!(self, operator_offsets, b_t, "lob", &b_shape);
+            if out_shape.len() >= 5 {
+                let out = self.build_rank5_logical(
+                    operator_offsets,
+                    a_bool,
+                    &a_shape,
+                    b_bool,
+                    &b_shape,
+                    std_op::MAXIMUM,
+                    "lor",
+                    &out_shape,
+                );
+                tensor_map.insert(out_id, out as u32);
+                return true;
+            }
             let res_bool = emit_op!(
                 self,
                 operator_offsets,
@@ -2164,78 +2258,35 @@ impl<'a> TfliteContext<'a> {
                 )
             }
             Operation::ReduceLogSumExp { .. } => {
-                // Stable: log(sum(exp(x - max))) + max to avoid overflow/underflow.
-                // Step 1: reduce_max to get max over reduction axes
-                let max_tensor =
-                    self.add_tensor(&format!("{prefix}_max"), &reduced_shape, in_type, 0);
-                let oc_max = self.add_opcode(std_op::REDUCE_MAX, 1);
-                let iv_max = self.fbb.create_vector(&[in_tensor, axes_tensor as i32]);
-                let ov_max = self.fbb.create_vector(&[max_tensor as i32]);
-                let ro = tflite::ReducerOptions::create(
-                    &mut self.fbb,
-                    &tflite::ReducerOptionsArgs { keep_dims },
+                // Stable: log(sum(exp(x - max))) + max, which cannot overflow. Every step
+                // keeps the reduced axes as 1s, because TFLite broadcasts by rank: a max
+                // held in the lower-rank shape would be applied to the wrong axes when
+                // keepDimensions is false. The kept axes are dropped at the end.
+                let mut kept_shape = in_shape.to_vec();
+                for &ax in &axes {
+                    if (ax as usize) < kept_shape.len() {
+                        kept_shape[ax as usize] = 1;
+                    }
+                }
+                let max_tensor = reduce_op!(
+                    self,
+                    operator_offsets,
+                    std_op::REDUCE_MAX,
+                    [in_tensor, axes_tensor as i32],
+                    &format!("{prefix}_max"),
+                    &kept_shape,
+                    in_type
                 );
-                operator_offsets.push(tflite::Operator::create(
-                    &mut self.fbb,
-                    &tflite::OperatorArgs {
-                        opcode_index: oc_max,
-                        inputs: Some(iv_max),
-                        outputs: Some(ov_max),
-                        builtin_options: Some(ro.as_union_value()),
-                        builtin_options_type: tflite::BuiltinOptions::ReducerOptions,
-                        ..Default::default()
-                    },
-                ));
-
-                // x - max (with broadcast: if keep_dims, TFLite handles; else expand)
-                let stabilized = if keep_dims {
-                    emit_op!(
-                        self,
-                        operator_offsets,
-                        std_op::SUB,
-                        [in_tensor, max_tensor as i32],
-                        &format!("{prefix}_stab"),
-                        in_shape,
-                        in_type
-                    )
-                } else {
-                    // Expand max from reduced shape back to full input shape
-                    let expanded =
-                        self.add_tensor(&format!("{prefix}_max_expand"), in_shape, in_type, 0);
-                    let shape_bytes: Vec<u8> =
-                        in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
-                    let shape_const = self.add_constant(
-                        &format!("{prefix}_expand_shape"),
-                        &[in_shape.len() as i32],
-                        tflite::TensorType::INT32,
-                        &shape_bytes,
-                    );
-                    let oc_exp = self.add_opcode(std_op::BROADCAST_TO, 2);
-                    let iv_exp = self
-                        .fbb
-                        .create_vector(&[max_tensor as i32, shape_const as i32]);
-                    let ov_exp = self.fbb.create_vector(&[expanded as i32]);
-                    operator_offsets.push(tflite::Operator::create(
-                        &mut self.fbb,
-                        &tflite::OperatorArgs {
-                            opcode_index: oc_exp,
-                            inputs: Some(iv_exp),
-                            outputs: Some(ov_exp),
-                            builtin_options: None,
-                            builtin_options_type: tflite::BuiltinOptions::NONE,
-                            ..Default::default()
-                        },
-                    ));
-                    emit_op!(
-                        self,
-                        operator_offsets,
-                        std_op::SUB,
-                        [in_tensor, expanded as i32],
-                        &format!("{prefix}_stab"),
-                        in_shape,
-                        in_type
-                    )
-                };
+                // x - max, broadcast back over the reduced axes.
+                let stabilized = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUB,
+                    [in_tensor, max_tensor as i32],
+                    &format!("{prefix}_stab"),
+                    in_shape,
+                    in_type
+                );
                 // exp(x - max)
                 let exp_val = emit_op!(
                     self,
@@ -2246,36 +2297,72 @@ impl<'a> TfliteContext<'a> {
                     in_shape,
                     in_type
                 );
-                // sum(exp(x - max))
-                let sum_val = emit_op!(
+                // sum(exp(x - max)), log of it, plus max back.
+                let sum_val = reduce_op!(
                     self,
                     operator_offsets,
                     std_op::SUM,
                     [exp_val, axes_tensor as i32],
                     &format!("{prefix}_sum"),
-                    &reduced_shape,
+                    &kept_shape,
                     in_type
                 );
-                // log(sum)
                 let log_val = emit_op!(
                     self,
                     operator_offsets,
                     std_op::LOG,
                     [sum_val],
                     &format!("{prefix}_log"),
-                    &reduced_shape,
+                    &kept_shape,
                     in_type
                 );
-                // + max
-                emit_op!(
+                let result = emit_op!(
                     self,
                     operator_offsets,
                     std_op::ADD,
                     [log_val, max_tensor as i32],
                     &format!("{prefix}_out"),
-                    &reduced_shape,
+                    &kept_shape,
                     in_type
-                )
+                );
+                if keep_dims {
+                    result
+                } else {
+                    // The kept axes hold one element each, so a RESHAPE to the declared
+                    // shape keeps the element order.
+                    let out_tensor =
+                        self.add_tensor(&format!("{prefix}_dropped"), &reduced_shape, in_type, 0);
+                    let shape_bytes: Vec<u8> =
+                        reduced_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    let shape_const = self.add_constant(
+                        &format!("{prefix}_dropped_shape"),
+                        &[reduced_shape.len() as i32],
+                        tflite::TensorType::INT32,
+                        &shape_bytes,
+                    );
+                    let shape_vec = self.fbb.create_vector(&reduced_shape);
+                    let ro = tflite::ReshapeOptions::create(
+                        &mut self.fbb,
+                        &tflite::ReshapeOptionsArgs {
+                            new_shape: Some(shape_vec),
+                        },
+                    );
+                    let oc = self.add_opcode(std_op::RESHAPE, 1);
+                    let iv = self.fbb.create_vector(&[result, shape_const as i32]);
+                    let ov = self.fbb.create_vector(&[out_tensor as i32]);
+                    operator_offsets.push(tflite::Operator::create(
+                        &mut self.fbb,
+                        &tflite::OperatorArgs {
+                            opcode_index: oc,
+                            inputs: Some(iv),
+                            outputs: Some(ov),
+                            builtin_options: Some(ro.as_union_value()),
+                            builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                            ..Default::default()
+                        },
+                    ));
+                    out_tensor as i32
+                }
             }
             Operation::ReduceSumSquare { .. } => {
                 let squared = emit_op!(
@@ -4283,18 +4370,13 @@ fn build_spatial_inputs<'a>(
         let input_ids = op.inputs();
         if options.as_ref().and_then(|o| o.bias).is_none() && input_ids.len() >= 2 {
             if let Some(fop) = graph.operand(input_ids[1]) {
-                let oc = fop
-                    .descriptor
-                    .shape
-                    .first()
-                    .and_then(|d| {
-                        if let crate::graph::Dimension::Static(v) = d {
-                            Some(*v as i32)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(1);
+                let opts = options.as_ref().cloned().unwrap_or_default();
+                let layout = if opts.filter_layout.is_empty() {
+                    "oihw"
+                } else {
+                    opts.filter_layout.as_str()
+                };
+                let oc = filter_output_channels(&fop.descriptor.shape, layout);
                 let tt = datatype_to_tflite(fop.descriptor.data_type)?;
                 let esz = 4;
                 inputs.push(
@@ -4305,22 +4387,17 @@ fn build_spatial_inputs<'a>(
     }
 
     // TFLite ConvTranspose2d always requires a bias tensor. Add zero bias.
-    if let Operation::ConvTranspose2d { .. } = op {
+    if let Operation::ConvTranspose2d { options, .. } = op {
         let input_ids = op.inputs();
         if input_ids.len() >= 2 {
             if let Some(fop) = graph.operand(input_ids[1]) {
-                let oc = fop
-                    .descriptor
-                    .shape
-                    .first()
-                    .and_then(|d| {
-                        if let crate::graph::Dimension::Static(v) = d {
-                            Some(*v as i32)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(1);
+                let opts = options.as_ref().cloned().unwrap_or_default();
+                let layout = if opts.filter_layout.is_empty() {
+                    "iohw"
+                } else {
+                    opts.filter_layout.as_str()
+                };
+                let oc = filter_output_channels(&fop.descriptor.shape, layout);
                 let tt = datatype_to_tflite(fop.descriptor.data_type)?;
                 let esz = 4;
                 inputs.push(
@@ -4739,8 +4816,9 @@ const BROADCASTING_OPS: &[i32] = &[
     std_op::GREATER_EQUAL,
     std_op::LESS,
     std_op::LESS_EQUAL,
-    std_op::LOGICAL_AND,
-    std_op::LOGICAL_OR,
+    // LOGICAL_AND and LOGICAL_OR are absent: their kernels reject rank-5 operands, so
+    // `build_logical_ops` lowers those to MINIMUM/MAXIMUM over the normalised 0/1 values
+    // instead of broadcasting them like the other ops here.
     // SELECT_V2 broadcasts its three operands into the result. BATCH_MATMUL does *not*
     // belong here: its operands keep their own shapes and only the batch dimensions
     // broadcast, which the kernel already handles at any rank.
@@ -4845,6 +4923,23 @@ fn is_depthwise_conv2d(op: &Operation, graph: &GraphInfo) -> bool {
         }
     }
     false
+}
+
+/// Output-channel count of a conv filter, whose axis follows the filter layout:
+/// `oihw`/`ohwi` keep them first, `iohw` second, `hwio`/`ihwo`/`hwoi` last.
+fn filter_output_channels(shape: &[Dimension], layout: &str) -> i32 {
+    let axis = match layout {
+        "oihw" | "ohwi" => 0,
+        "iohw" => 1,
+        _ => 3,
+    };
+    shape
+        .get(axis)
+        .and_then(|d| match d {
+            Dimension::Static(v) => Some(*v as i32),
+            _ => None,
+        })
+        .unwrap_or(1)
 }
 
 fn tflite_opcode(op: &Operation) -> Option<i32> {
