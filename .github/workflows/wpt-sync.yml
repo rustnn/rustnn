@@ -68,6 +68,20 @@ jobs:
       - name: Sync ONNX expected failures
         run: make wpt-sync-onnx
 
+      - name: Record pass totals
+        run: |
+          {
+            for backend in litert onnx; do
+              summary="/tmp/wpt_${backend}_summary.txt"
+              if [ -f "$summary" ]; then
+                cat "$summary"
+              else
+                echo "${backend}: run did not complete"
+              fi
+            done
+          } > sync-summary-linux.txt
+          cat sync-summary-linux.txt
+
       - name: Generate patch
         run: |
           git add -A WPT_REVISION tests/wpt_conformance
@@ -78,7 +92,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: linux-sync-patch
-          path: linux-sync.patch
+          path: |
+            linux-sync.patch
+            sync-summary-linux.txt
 
   coreml-sync:
     name: Sync CoreML (macOS)
@@ -120,6 +136,13 @@ jobs:
       - name: Sync CoreML expected failures
         run: make wpt-sync-coreml
 
+      - name: Record pass totals
+        run: |
+          summary="/tmp/wpt_coreml_summary.txt"
+          if [ -f "$summary" ]; then cat "$summary"; else echo "coreml: run did not complete"; fi \
+            > sync-summary-coreml.txt
+          cat sync-summary-coreml.txt
+
       - name: Generate patch
         run: |
           git add -A tests/wpt_conformance/coreml_expected_failures.txt
@@ -130,7 +153,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coreml-sync-patch
-          path: coreml-sync.patch
+          path: |
+            coreml-sync.patch
+            sync-summary-coreml.txt
 
   aggregate:
     name: Open sync PR
@@ -158,6 +183,16 @@ jobs:
             fi
           done
 
+      - name: Collect pass totals
+        id: pass-totals
+        run: |
+          {
+            echo "lines<<EOF"
+            cat /tmp/patches/*/sync-summary-*.txt 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          cat /tmp/patches/*/sync-summary-*.txt 2>/dev/null || true
+
       - name: Generate PR body
         run: node scripts/summarize_wpt_changes.mjs > pr-body.md
 
@@ -169,7 +204,10 @@ jobs:
         uses: peter-evans/create-pull-request@v7
         with:
           branch: chore/wpt-sync
-          commit-message: "chore(wpt): Sync expected failures with WPT (${{ steps.sync-date.outputs.date }})"
+          commit-message: |
+            chore(wpt): Sync expected failures with WPT (${{ steps.sync-date.outputs.date }})
+
+            ${{ steps.pass-totals.outputs.lines }}
           title: "chore(wpt): Sync expected failures with WPT (${{ steps.sync-date.outputs.date }})"
           body-path: pr-body.md
           delete-branch: true
