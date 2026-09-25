@@ -3088,6 +3088,167 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
+    /// GATHER / GATHER_ND indices. TFLite reads signed indices within [0, N); WebNN
+    /// additionally allows uint32 and defines negative and out-of-range values, with the
+    /// spec clamping them and counting a negative index from the end of the dimension.
+    /// Cast to int32 and fold every coordinate into [0, N_x - 1], one N_x per coordinate.
+    fn build_gather_indices(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        inputs: &mut [i32],
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) {
+        let static_dim = |d: &Dimension| match d {
+            Dimension::Static(v) => Some(*v as i32),
+            _ => None,
+        };
+        let (indices_id, sizes): (u32, Vec<i32>) = match op {
+            Operation::Gather {
+                input,
+                indices,
+                options,
+                ..
+            } => {
+                let Some(input_operand) = graph.operand(*input) else {
+                    return;
+                };
+                let rank = input_operand.descriptor.shape.len() as i32;
+                let axis = options.as_ref().map(|o| o.axis as i32).unwrap_or(0);
+                let axis = if axis < 0 { rank + axis } else { axis };
+                let Some(size) = input_operand
+                    .descriptor
+                    .shape
+                    .get(axis as usize)
+                    .and_then(static_dim)
+                else {
+                    return;
+                };
+                (*indices, vec![size])
+            }
+            Operation::GatherND { input, indices, .. } => {
+                let (Some(input_operand), Some(indices_operand)) =
+                    (graph.operand(*input), graph.operand(*indices))
+                else {
+                    return;
+                };
+                let Some(coords) = indices_operand.descriptor.shape.last().and_then(static_dim)
+                else {
+                    return;
+                };
+                let mut sizes = Vec::with_capacity(coords as usize);
+                for axis in 0..coords as usize {
+                    let Some(size) = input_operand
+                        .descriptor
+                        .shape
+                        .get(axis)
+                        .and_then(static_dim)
+                    else {
+                        return;
+                    };
+                    sizes.push(size);
+                }
+                (*indices, sizes)
+            }
+            _ => return,
+        };
+        if inputs.len() < 2 || sizes.is_empty() {
+            return;
+        }
+        let Some(indices_operand) = graph.operand(indices_id) else {
+            return;
+        };
+        let Ok(in_type) = datatype_to_tflite(indices_operand.descriptor.data_type) else {
+            return;
+        };
+        let idx_shape = dimensions_to_i32(&indices_operand.descriptor.shape);
+        // TFLite takes int32 or int64 indices; every other dtype WebNN allows is widened,
+        // and the normalisation constants match whichever of the two is used.
+        let original = inputs[1];
+        let (work_type, cur) = if matches!(
+            in_type,
+            tflite::TensorType::INT32 | tflite::TensorType::INT64
+        ) {
+            (in_type, original)
+        } else {
+            let widened =
+                self.add_tensor("gather_idx_i32", &idx_shape, tflite::TensorType::INT32, 0) as i32;
+            self.emit_cast_op(
+                operator_offsets,
+                original,
+                in_type,
+                widened,
+                tflite::TensorType::INT32,
+            );
+            (tflite::TensorType::INT32, widened)
+        };
+        let size_const = |this: &mut Self, name: &str, values: &[i32]| {
+            let bytes: Vec<u8> = if work_type == tflite::TensorType::INT64 {
+                values
+                    .iter()
+                    .flat_map(|v| (*v as i64).to_le_bytes())
+                    .collect()
+            } else {
+                values.iter().flat_map(|v| v.to_le_bytes()).collect()
+            };
+            this.add_constant(name, &[values.len() as i32], work_type, &bytes) as i32
+        };
+        let sizes_t = size_const(self, "gather_sizes", &sizes);
+        let last_t = size_const(
+            self,
+            "gather_last",
+            &sizes.iter().map(|s| s - 1).collect::<Vec<_>>(),
+        );
+        let zero_t = size_const(self, "gather_zero", &[0]);
+        // A negative index counts from the end, and whatever is left is clamped into
+        // [0, N - 1].
+        let negative = emit_op!(
+            self,
+            operator_offsets,
+            std_op::LESS,
+            [cur, zero_t],
+            "gather_negative",
+            &idx_shape,
+            tflite::TensorType::BOOL
+        );
+        let shifted = emit_op!(
+            self,
+            operator_offsets,
+            std_op::ADD,
+            [cur, sizes_t],
+            "gather_shift",
+            &idx_shape,
+            work_type
+        );
+        let from_end = emit_op!(
+            self,
+            operator_offsets,
+            std_op::SELECT_V2,
+            [negative, shifted, cur],
+            "gather_from_end",
+            &idx_shape,
+            work_type
+        );
+        let upper = emit_op!(
+            self,
+            operator_offsets,
+            std_op::MINIMUM,
+            [from_end, last_t],
+            "gather_upper",
+            &idx_shape,
+            work_type
+        );
+        inputs[1] = emit_op!(
+            self,
+            operator_offsets,
+            std_op::MAXIMUM,
+            [upper, zero_t],
+            "gather_clamped",
+            &idx_shape,
+            work_type
+        );
+    }
+
     /// GatherElements: emulate with GATHER_ND + coordinate conversion.
     fn build_gather_elements_op(
         &mut self,
@@ -5621,6 +5782,9 @@ fn build_native_operators<'a>(
             .iter()
             .map(|&id| *tensor_map.get(&id).unwrap_or(&id) as i32)
             .collect();
+
+        // Gather / GatherND: fold the indices into the range TFLite reads.
+        ctx.build_gather_indices(op, graph, &mut inputs, &mut operator_offsets);
 
         // Spatial ops: add Conv2d zero bias + explicit padding PAD.
         build_spatial_inputs(
