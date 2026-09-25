@@ -1,4 +1,4 @@
-name: WPT Expected-Failures Sync
+name: WPT Expectations Sync
 
 on:
   schedule:
