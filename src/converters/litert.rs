@@ -1448,7 +1448,9 @@ impl<'a> TfliteContext<'a> {
                 } else {
                     round_val
                 };
-                // Cast the float result to the quantized output type.
+                // Cast the float result to the quantized output type. The spec clamps to
+                // the range of that type, which the CAST alone does not do: a value past
+                // the range would wrap, e.g. 445 to -67 in int8.
                 let out_dt = graph
                     .operand(out_id)
                     .map(|o| {
@@ -1456,8 +1458,33 @@ impl<'a> TfliteContext<'a> {
                             .unwrap_or(tflite::TensorType::UINT8)
                     })
                     .unwrap_or(tflite::TensorType::UINT8);
+                let rounded = match quantize_clamp_bounds(out_dt) {
+                    Some((low, high)) => {
+                        let high_t = scalar_const!(self, "q_max", high, in_type);
+                        let low_t = scalar_const!(self, "q_min", low, in_type);
+                        let upper = emit_op!(
+                            self,
+                            operator_offsets,
+                            std_op::MINIMUM,
+                            [cur, high_t],
+                            &format!("q_clamp_high_{out_id}"),
+                            &out_shape,
+                            in_type
+                        );
+                        emit_op!(
+                            self,
+                            operator_offsets,
+                            std_op::MAXIMUM,
+                            [upper, low_t],
+                            &format!("q_clamp_low_{out_id}"),
+                            &out_shape,
+                            in_type
+                        )
+                    }
+                    None => cur,
+                };
                 let cast_out = self.add_tensor(&format!("q_cast_{out_id}"), &out_shape, out_dt, 0);
-                self.emit_cast_op(operator_offsets, cur, in_type, cast_out as i32, out_dt);
+                self.emit_cast_op(operator_offsets, rounded, in_type, cast_out as i32, out_dt);
                 tensor_map.insert(out_id, cast_out as u32);
                 true
             }
@@ -5101,6 +5128,19 @@ fn filter_output_channels(shape: &[Dimension], layout: &str) -> i32 {
             _ => None,
         })
         .unwrap_or(1)
+}
+
+/// The range a quantized type holds, for the clamp `quantizeLinear` applies. Types
+/// wider than the ones TFLite stores quantized are left to the CAST.
+fn quantize_clamp_bounds(dt: tflite::TensorType) -> Option<(f32, f32)> {
+    match dt {
+        tflite::TensorType::INT4 => Some((-8.0, 7.0)),
+        tflite::TensorType::INT8 => Some((-128.0, 127.0)),
+        tflite::TensorType::UINT8 => Some((0.0, 255.0)),
+        tflite::TensorType::INT16 => Some((-32768.0, 32767.0)),
+        tflite::TensorType::UINT16 => Some((0.0, 65535.0)),
+        _ => None,
+    }
 }
 
 fn tflite_opcode(op: &Operation) -> Option<i32> {
