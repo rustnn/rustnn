@@ -524,7 +524,7 @@ fn modify_graph_for_nhwc(
 ) {
     let mut skip_ids: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for op in &graph.operations {
-        if let Operation::Conv2d { .. } = op {
+        if let Operation::Conv2d { .. } | Operation::ConvTranspose2d { .. } = op {
             if let Some(&fid) = op.inputs().get(1) {
                 skip_ids.insert(fid);
             }
@@ -536,6 +536,13 @@ fn modify_graph_for_nhwc(
     let needs_swap = |op: &Operation| -> bool {
         match op {
             Operation::Conv2d { options, .. } => {
+                let l = options
+                    .as_ref()
+                    .map(|o| o.input_layout.as_str())
+                    .unwrap_or("");
+                l.is_empty() || l.eq_ignore_ascii_case("nchw")
+            }
+            Operation::ConvTranspose2d { options, .. } => {
                 let l = options
                     .as_ref()
                     .map(|o| o.input_layout.as_str())
