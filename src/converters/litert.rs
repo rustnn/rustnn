@@ -581,8 +581,15 @@ impl<'a> TfliteContext<'a> {
             } else {
                 (1..rank).collect()
             };
-            // LiteRT's MEAN only keeps dimensions when it reduces the trailing ones, so
-            // other axes are transposed into place first and the result transposed back.
+            // A list that repeats an axis or names one above the rank would build an
+            // invalid permutation.
+            let mut distinct = norm_axes.clone();
+            distinct.sort_unstable();
+            distinct.dedup();
+            if distinct.len() != norm_axes.len() || norm_axes.iter().any(|&axis| axis >= rank) {
+                return false;
+            }
+            // LiteRT's MEAN only keeps dimensions when it reduces the trailing ones.
             let trailing: Vec<usize> = ((rank - norm_axes.len())..rank).collect();
             let (work_tensor, work_shape, restore) = if norm_axes != trailing {
                 let others: Vec<usize> = (0..rank).filter(|a| !norm_axes.contains(a)).collect();
@@ -695,10 +702,9 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
-    /// Logical AND/OR for a result of rank 5 or higher: the BOOL kernels of
-    /// LOGICAL_AND/LOGICAL_OR reject those operands (kLiteRtStatusErrorInvalidArgument),
-    /// while MINIMUM/MAXIMUM broadcast at any rank. Both inputs are normalised to BOOL
-    /// first, so their 0/1 values make min and max the logical AND and OR.
+    /// Logical AND/OR over a result of rank 5 or higher: their kernels reject those
+    /// operands, while MINIMUM/MAXIMUM broadcast at any rank. The inputs are already
+    /// normalised to 0/1, so min and max are the logical AND and OR.
     fn build_rank5_logical(
         &mut self,
         operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
@@ -1490,9 +1496,8 @@ impl<'a> TfliteContext<'a> {
                 } else {
                     round_val
                 };
-                // Cast the float result to the quantized output type. The spec clamps to
-                // the range of that type, which the CAST alone does not do: a value past
-                // the range would wrap, e.g. 445 to -67 in int8.
+                // The spec clamps to the range of the quantized type; a bare CAST wraps
+                // instead (445 lands in an int8 tensor as -67).
                 let out_dt = graph
                     .operand(out_id)
                     .map(|o| {
@@ -3157,10 +3162,9 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
-    /// GATHER / GATHER_ND indices. TFLite reads signed indices within [0, N); WebNN
-    /// additionally allows uint32 and defines negative and out-of-range values, with the
-    /// spec clamping them and counting a negative index from the end of the dimension.
-    /// Cast to int32 and fold every coordinate into [0, N_x - 1], one N_x per coordinate.
+    /// GATHER / GATHER_ND indices, which TFLite reads signed and within [0, N). WebNN
+    /// also allows uint32 and counts a negative index from the end, clamping whatever is
+    /// left over, so each coordinate is folded into [0, N_x - 1].
     fn build_gather_indices(
         &mut self,
         op: &Operation,
@@ -3231,8 +3235,7 @@ impl<'a> TfliteContext<'a> {
             return;
         };
         let idx_shape = dimensions_to_i32(&indices_operand.descriptor.shape);
-        // TFLite takes int32 or int64 indices; every other dtype WebNN allows is widened,
-        // and the normalisation constants match whichever of the two is used.
+        // uint32 is widened to int64: above 2^31 it would read as negative in int32.
         let original = inputs[1];
         let (work_type, cur) = if matches!(
             in_type,
@@ -3240,16 +3243,14 @@ impl<'a> TfliteContext<'a> {
         ) {
             (in_type, original)
         } else {
-            let widened =
-                self.add_tensor("gather_idx_i32", &idx_shape, tflite::TensorType::INT32, 0) as i32;
-            self.emit_cast_op(
-                operator_offsets,
-                original,
-                in_type,
-                widened,
-                tflite::TensorType::INT32,
-            );
-            (tflite::TensorType::INT32, widened)
+            let target = if in_type == tflite::TensorType::UINT32 {
+                tflite::TensorType::INT64
+            } else {
+                tflite::TensorType::INT32
+            };
+            let widened = self.add_tensor("gather_idx_wide", &idx_shape, target, 0) as i32;
+            self.emit_cast_op(operator_offsets, original, in_type, widened, target);
+            (target, widened)
         };
         let size_const = |this: &mut Self, name: &str, values: &[i32]| {
             let bytes: Vec<u8> = if work_type == tflite::TensorType::INT64 {
@@ -3269,8 +3270,7 @@ impl<'a> TfliteContext<'a> {
             &sizes.iter().map(|s| s - 1).collect::<Vec<_>>(),
         );
         let zero_t = size_const(self, "gather_zero", &[0]);
-        // A negative index counts from the end, and whatever is left is clamped into
-        // [0, N - 1].
+        // From the end for a negative index, then clamped into [0, N - 1].
         let negative = emit_op!(
             self,
             operator_offsets,
@@ -3318,6 +3318,45 @@ impl<'a> TfliteContext<'a> {
         );
     }
 
+    /// Opcode and builtin options of a RESIZE kernel. WebNN resamples with half pixel
+    /// centres, like Chromium's TFLite backend; TFLite's defaults differ.
+    fn resize_options(
+        &mut self,
+        nearest: bool,
+    ) -> (
+        i32,
+        WIPOffset<flatbuffers::UnionWIPOffset>,
+        tflite::BuiltinOptions,
+    ) {
+        if nearest {
+            let ro = tflite::ResizeNearestNeighborOptions::create(
+                &mut self.fbb,
+                &tflite::ResizeNearestNeighborOptionsArgs {
+                    align_corners: false,
+                    half_pixel_centers: true,
+                },
+            );
+            (
+                std_op::RESIZE_NEAREST_NEIGHBOR,
+                ro.as_union_value(),
+                tflite::BuiltinOptions::ResizeNearestNeighborOptions,
+            )
+        } else {
+            let ro = tflite::ResizeBilinearOptions::create(
+                &mut self.fbb,
+                &tflite::ResizeBilinearOptionsArgs {
+                    align_corners: false,
+                    half_pixel_centers: true,
+                },
+            );
+            (
+                std_op::RESIZE_BILINEAR,
+                ro.as_union_value(),
+                tflite::BuiltinOptions::ResizeBilinearOptions,
+            )
+        }
+    }
+
     /// Emit a TRANSPOSE of `tensor` into `perm` order, returning the permuted tensor.
     fn emit_transpose_op(
         &mut self,
@@ -3353,9 +3392,8 @@ impl<'a> TfliteContext<'a> {
         out
     }
 
-    /// resample2d over axes the RESIZE kernels do not work on. They always resize the
-    /// second and third dimension, so the resampled axes are transposed into place, the
-    /// result resized, and the transposed tensor transposed back.
+    /// resample2d over axes the RESIZE kernels do not resize: they always resize the
+    /// second and third dimension, so those axes are transposed into place and back.
     fn build_resample2d_op(
         &mut self,
         op: &Operation,
@@ -3422,33 +3460,7 @@ impl<'a> TfliteContext<'a> {
         );
         let resized = self.add_tensor("resample_axes_out", &resized_shape, tfl_type, 0) as i32;
         let (opcode, builtin_options, builtin_options_type) =
-            if is_nearest_resample(options.as_ref()) {
-                let ro = tflite::ResizeNearestNeighborOptions::create(
-                    &mut self.fbb,
-                    &tflite::ResizeNearestNeighborOptionsArgs {
-                        align_corners: false,
-                        half_pixel_centers: true,
-                    },
-                );
-                (
-                    std_op::RESIZE_NEAREST_NEIGHBOR,
-                    ro.as_union_value(),
-                    tflite::BuiltinOptions::ResizeNearestNeighborOptions,
-                )
-            } else {
-                let ro = tflite::ResizeBilinearOptions::create(
-                    &mut self.fbb,
-                    &tflite::ResizeBilinearOptionsArgs {
-                        align_corners: false,
-                        half_pixel_centers: true,
-                    },
-                );
-                (
-                    std_op::RESIZE_BILINEAR,
-                    ro.as_union_value(),
-                    tflite::BuiltinOptions::ResizeBilinearOptions,
-                )
-            };
+            self.resize_options(is_nearest_resample(options.as_ref()));
         let oc = self.add_opcode(opcode, opcode_version(opcode));
         let iv = self.fbb.create_vector(&[permuted, steps_t as i32]);
         let ov = self.fbb.create_vector(&[resized]);
@@ -3468,26 +3480,14 @@ impl<'a> TfliteContext<'a> {
         for (position, &axis) in perm.iter().enumerate() {
             inverse[axis as usize] = position as i32;
         }
-        let out_tensor = self.add_tensor("resample_axes_result", &out_shape, tfl_type, 0) as i32;
-        let iv = {
-            let bytes: Vec<u8> = inverse.iter().flat_map(|v| v.to_le_bytes()).collect();
-            let inv_t =
-                self.add_constant("resample_axes_inv", &[4], tflite::TensorType::INT32, &bytes);
-            self.fbb.create_vector(&[resized, inv_t as i32])
-        };
-        let oc = self.add_opcode(std_op::TRANSPOSE, 1);
-        let ov = self.fbb.create_vector(&[out_tensor]);
-        operator_offsets.push(tflite::Operator::create(
-            &mut self.fbb,
-            &tflite::OperatorArgs {
-                opcode_index: oc,
-                inputs: Some(iv),
-                outputs: Some(ov),
-                builtin_options: None,
-                builtin_options_type: tflite::BuiltinOptions::NONE,
-                ..Default::default()
-            },
-        ));
+        let out_tensor = self.emit_transpose_op(
+            operator_offsets,
+            resized,
+            &out_shape,
+            &inverse,
+            tfl_type,
+            "resample_axes_result",
+        );
         tensor_map.insert(out_id, out_tensor as u32);
         true
     }
@@ -4198,21 +4198,23 @@ impl<'a> TfliteContext<'a> {
                 &shape_bytes,
             );
 
-            // Add zero bias
+            // Add zero bias. TFLite requires one element per output channel, which
+            // TRANSPOSE_CONV takes from the first dimension of the OHWI filter.
             let filter_id = input_ids[1];
+            let opts = match op {
+                Operation::ConvTranspose2d { options, .. } => {
+                    options.as_ref().cloned().unwrap_or_default()
+                }
+                _ => Default::default(),
+            };
+            let layout = if opts.filter_layout.is_empty() {
+                "iohw"
+            } else {
+                opts.filter_layout.as_str()
+            };
             let oc = graph
                 .operand(filter_id)
-                .and_then(|o| {
-                    o.descriptor
-                        .shape
-                        .iter()
-                        .rev()
-                        .nth(2)
-                        .and_then(|d| match d {
-                            crate::graph::Dimension::Static(v) => Some(*v as i32),
-                            _ => None,
-                        })
-                })
+                .map(|o| filter_output_channels(&o.descriptor.shape, layout))
                 .unwrap_or(1);
             let in_type = graph
                 .operand(input_ids[0])
@@ -4525,33 +4527,9 @@ impl<'a> TfliteContext<'a> {
                 )
             }
             Operation::Resample2d { options, .. } => {
-                // WebNN resamples with half pixel centres, as Chromium's TFLite backend
-                // does; TFLite's own default (both flags false) is a different mapping.
-                if is_nearest_resample(options.as_ref()) {
-                    let ro = tflite::ResizeNearestNeighborOptions::create(
-                        &mut self.fbb,
-                        &tflite::ResizeNearestNeighborOptionsArgs {
-                            align_corners: false,
-                            half_pixel_centers: true,
-                        },
-                    );
-                    (
-                        Some(ro.as_union_value()),
-                        tflite::BuiltinOptions::ResizeNearestNeighborOptions,
-                    )
-                } else {
-                    let ro = tflite::ResizeBilinearOptions::create(
-                        &mut self.fbb,
-                        &tflite::ResizeBilinearOptionsArgs {
-                            align_corners: false,
-                            half_pixel_centers: true,
-                        },
-                    );
-                    (
-                        Some(ro.as_union_value()),
-                        tflite::BuiltinOptions::ResizeBilinearOptions,
-                    )
-                }
+                let (_, builtin_options, builtin_options_type) =
+                    self.resize_options(is_nearest_resample(options.as_ref()));
+                (Some(builtin_options), builtin_options_type)
             }
             Operation::Cast { data_type, .. } => {
                 let out_dt = datatype_to_tflite(crate::graph::DataType::from(*data_type))?;
@@ -4793,27 +4771,6 @@ fn build_spatial_inputs<'a>(
                 let opts = options.as_ref().cloned().unwrap_or_default();
                 let layout = if opts.filter_layout.is_empty() {
                     "oihw"
-                } else {
-                    opts.filter_layout.as_str()
-                };
-                let oc = filter_output_channels(&fop.descriptor.shape, layout);
-                let tt = datatype_to_tflite(fop.descriptor.data_type)?;
-                let esz = 4;
-                inputs.push(
-                    ctx.add_constant("bias", &[oc], tt, &vec![0u8; oc as usize * esz]) as i32,
-                );
-            }
-        }
-    }
-
-    // TFLite ConvTranspose2d always requires a bias tensor. Add zero bias.
-    if let Operation::ConvTranspose2d { options, .. } = op {
-        let input_ids = op.inputs();
-        if input_ids.len() >= 2 {
-            if let Some(fop) = graph.operand(input_ids[1]) {
-                let opts = options.as_ref().cloned().unwrap_or_default();
-                let layout = if opts.filter_layout.is_empty() {
-                    "iohw"
                 } else {
                     opts.filter_layout.as_str()
                 };
@@ -5203,11 +5160,12 @@ fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
 
 /// Standard TFLite op codes matching tensorflow/lite/schema/schema.fbs.
 /// Builtin version to declare for `code`. BROADCAST_TO and PAD bumped their interface
-/// after the initial version; everything else stays there. The builtin versions that
-/// added optional broadcasting are deliberately not used: operands are broadcast
-/// explicitly instead (see [`TfliteContext::broadcast_operands`]), because this LiteRT
-/// build does not register those later versions for every op (LOGICAL_OR version 2, for
-/// instance, fails registration).
+/// after the initial version, and the RESIZE kernels need version 3 for their
+/// `half_pixel_centers` option. The builtin versions that added optional broadcasting are
+/// deliberately not used: operands are broadcast explicitly instead (see
+/// [`TfliteContext::broadcast_operands`]), because this LiteRT build does not register
+/// those later versions for every op (LOGICAL_OR version 2, for instance, fails
+/// registration).
 fn opcode_version(code: i32) -> i32 {
     if matches!(
         code,
@@ -5358,12 +5316,14 @@ fn is_depthwise_conv2d(op: &Operation, graph: &GraphInfo) -> bool {
     false
 }
 
-/// Output-channel count of a conv filter, whose axis follows the filter layout:
-/// `oihw`/`ohwi` keep them first, `iohw` second, `hwio`/`ihwo`/`hwoi` last.
+/// Output-channel count of a conv filter. The axis follows the layout, across both
+/// vocabularies: conv2d's `oihw`/`hwio`/`ohwi`/`ihwo` and convTranspose2d's
+/// `iohw`/`hwoi`/`ohwi`. `ohwi` is spelled the same in both.
 fn filter_output_channels(shape: &[Dimension], layout: &str) -> i32 {
     let axis = match layout {
         "oihw" | "ohwi" => 0,
         "iohw" => 1,
+        "hwoi" => 2,
         _ => 3,
     };
     shape
@@ -5375,8 +5335,8 @@ fn filter_output_channels(shape: &[Dimension], layout: &str) -> i32 {
         .unwrap_or(1)
 }
 
-/// The range a quantized type holds, for the clamp `quantizeLinear` applies. Types
-/// wider than the ones TFLite stores quantized are left to the CAST.
+/// The range of a quantized type, which `quantizeLinear` clamps to. Wider types are
+/// left to the CAST.
 fn quantize_clamp_bounds(dt: tflite::TensorType) -> Option<(f32, f32)> {
     match dt {
         tflite::TensorType::INT4 => Some((-8.0, 7.0)),
@@ -5841,29 +5801,14 @@ fn build_conv_transpose_filter_layout<'a>(
         return;
     };
     let target: Vec<i32> = perm.iter().map(|&axis| dims[axis as usize]).collect();
-    let perm_buf: Vec<u8> = perm.iter().flat_map(|v| v.to_le_bytes()).collect();
-    let perm_t = ctx.add_constant(
-        "conv_transpose_perm",
-        &[4],
-        tflite::TensorType::INT32,
-        &perm_buf,
+    inputs[1] = ctx.emit_transpose_op(
+        operator_offsets,
+        inputs[1],
+        &target,
+        &perm,
+        tfl_type,
+        "conv_transpose_filter_ohwi",
     );
-    let out_t = ctx.add_tensor("conv_transpose_filter_ohwi", &target, tfl_type, 0);
-    let oc = ctx.add_opcode(std_op::TRANSPOSE, 1);
-    let iv = ctx.fbb.create_vector(&[inputs[1], perm_t as i32]);
-    let ov = ctx.fbb.create_vector(&[out_t as i32]);
-    operator_offsets.push(tflite::Operator::create(
-        &mut ctx.fbb,
-        &tflite::OperatorArgs {
-            opcode_index: oc,
-            inputs: Some(iv),
-            outputs: Some(ov),
-            builtin_options: None,
-            builtin_options_type: tflite::BuiltinOptions::NONE,
-            ..Default::default()
-        },
-    ));
-    inputs[1] = out_t as i32;
 }
 
 fn build_native_operators<'a>(
@@ -6088,6 +6033,19 @@ fn build_native_operators<'a>(
             in_type,
             &mut operator_offsets,
         )?;
+
+        // TRANSPOSE_CONV carries no dilation factors, so a dilated transposed
+        // convolution would come out undilated rather than fail.
+        if let Operation::ConvTranspose2d { options, .. } = op
+            && options
+                .as_ref()
+                .is_some_and(|o| o.dilations.iter().any(|&d| d > 1))
+        {
+            return Err(GraphError::ConversionFailed {
+                format: "litert".to_string(),
+                reason: "convTranspose2d: dilations other than 1 are not supported".to_string(),
+            });
+        }
 
         // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
         ctx.build_conv_transpose_op(op, graph, &tensor_map, &mut inputs);

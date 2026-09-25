@@ -648,28 +648,6 @@ fn modify_graph_for_nhwc(
         }
     }
 
-    // resample2d needs the operand's new shape rather than a stored axis.
-    let nhwc_shape_by_id: std::collections::HashMap<u32, Vec<u32>> = graph
-        .operands
-        .iter()
-        .enumerate()
-        .filter_map(|(i, operand)| {
-            if operand.descriptor.shape.len() != 4 {
-                return None;
-            }
-            let dims = operand
-                .descriptor
-                .shape
-                .iter()
-                .map(|d| match d {
-                    crate::graph::Dimension::Static(v) => Some(*v),
-                    _ => None,
-                })
-                .collect::<Option<Vec<u32>>>()?;
-            Some((i as u32, dims))
-        })
-        .collect();
-
     // Operators naming an axis, or carrying per-axis arrays, still refer to NCHW
     // positions and are remapped alongside the operand.
     for op in graph.operations.iter_mut() {
@@ -756,19 +734,13 @@ fn modify_graph_for_nhwc(
                 let Some(options) = options.as_mut() else {
                     continue;
                 };
+                // The default axes are the last two dimensions; a rewritten rank-4
+                // operand has them at 1 and 2, which is what the remap below produces.
+                if options.axes.is_empty() && spatial_operand_names.contains(input) {
+                    options.axes = vec![2, 3];
+                }
                 for axis in options.axes.iter_mut() {
                     *axis = nchw_axis_to_nhwc(*axis);
-                }
-                // The kernel resizes the last two dims, so the sizes come from the
-                // rewritten shape, where H and W are axes 1 and 2 — the same assumption
-                // Chromium's TFLite builder makes.
-                if options.sizes.is_none() && options.scales.len() >= 2 {
-                    if let Some(shape) = nhwc_shape_by_id.get(input) {
-                        options.sizes = Some(vec![
-                            (shape[1] as f32 * options.scales[0]) as u32,
-                            (shape[2] as f32 * options.scales[1]) as u32,
-                        ]);
-                    }
                 }
             }
             _ => {}
