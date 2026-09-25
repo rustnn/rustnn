@@ -44,6 +44,7 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `fmt`, `fmt-check`, `lint` | rustfmt (apply / check), clippy only |
 | `clean`, `clean-all` | `cargo clean`; also the docs site and coverage output |
 | `onnxruntime-download` | Fetch the pinned ONNX Runtime into `target/onnxruntime`; export `ORT_DYLIB_PATH` afterwards |
+| `trtxruntime-download` | Fetch the pinned TensorRT-RTX SDK into `target/tensorrt-rtx`; `test-wpt-trtx` configures its build and runtime paths |
 | `run` | Validate `examples/sample_graph.json` with the CLI |
 | `viz` | Export the sample graph as Graphviz DOT |
 | `onnx`, `onnx-validate` | Convert the sample graph to ONNX (`GRAPH_FILE=...` selects another graph); also execute it with ONNX Runtime |
