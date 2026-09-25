@@ -11681,8 +11681,8 @@ mod tests {
                 };
                 let graph = GraphInfo {
                     operands: vec![
-                        operand("lhs", OperandKind::Input, data_type.clone()),
-                        operand("rhs", OperandKind::Input, data_type.clone()),
+                        operand("lhs", OperandKind::Input, data_type),
+                        operand("rhs", OperandKind::Input, data_type),
                         operand("result", OperandKind::Output, DataType::Uint8),
                     ],
                     input_operands: vec![0, 1],
