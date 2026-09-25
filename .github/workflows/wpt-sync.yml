@@ -194,6 +194,8 @@ jobs:
           cat /tmp/patches/*/sync-summary-*.txt 2>/dev/null || true
 
       - name: Generate PR body
+        env:
+          PASS_TOTALS: ${{ steps.pass-totals.outputs.lines }}
         run: node scripts/summarize_wpt_changes.mjs > pr-body.md
 
       - name: Get sync date

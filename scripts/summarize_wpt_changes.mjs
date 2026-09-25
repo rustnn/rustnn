@@ -70,10 +70,23 @@ function setName(map, backend, name) {
   if (!map.has(backend)) map.set(backend, new Set());
   map.get(backend).add(name);
 }
-function countItems(backendSets) {
-  let total = 0;
-  for (const names of backendSets.values()) total += names.size;
-  return total;
+// Pass totals of the sync runs, as recorded by the jobs in PASS_TOTALS
+// ("<backend>: <n> passed, <n> skipped, <n> failed" per line).
+function passTotals() {
+  const totals = [];
+  const notes = [];
+  for (const line of (process.env.PASS_TOTALS ?? '').split('\n')) {
+    const text = line.trim();
+    if (!text) continue;
+    const m = text.match(/^(\w+): (\d+) passed, (\d+) skipped, (\d+) failed$/);
+    if (m) {
+      totals.push({ backend: m[1], passed: m[2], skipped: m[3], failed: m[4] });
+    } else {
+      notes.push(text);
+    }
+  }
+  totals.sort((a, b) => a.backend.localeCompare(b.backend));
+  return { totals, notes };
 }
 
 for (const line of entries) {
@@ -149,10 +162,25 @@ if (allBackends.size > 0) {
   out.push('');
 }
 
-out.push('## Stats');
-out.push('');
-out.push(`[${countItems(newPasses)} new passes, ${countItems(newFailures)} new failures]`);
-out.push('');
+// Totals of the runs themselves, not of the diff: the Summary table above
+// already accounts for the entries this sync adds or removes.
+const { totals, notes } = passTotals();
+if (totals.length > 0 || notes.length > 0) {
+  out.push('## Stats');
+  out.push('');
+  if (totals.length > 0) {
+    out.push('| Backend | Passed | Skipped | Failed |');
+    out.push('|---------|--------|---------|--------|');
+    for (const t of totals) {
+      out.push(`| ${t.backend} | ${t.passed} | ${t.skipped} | ${t.failed} |`);
+    }
+    out.push('');
+  }
+  if (notes.length > 0) {
+    out.push(...notes);
+    out.push('');
+  }
+}
 
 function listTransitions(title, backendSets) {
   const items = [];
