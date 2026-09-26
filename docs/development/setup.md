@@ -48,6 +48,8 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `viz` | Export the sample graph as Graphviz DOT |
 | `onnx`, `onnx-validate` | Convert the sample graph to ONNX (`GRAPH_FILE=...` selects another graph); also execute it with ONNX Runtime |
 | `coreml`, `coreml-validate` | CoreML conversion and execution (macOS) |
+| `build-coreml`, `test-coreml` | Build all targets; run library and ordinary integration tests. `COREML_FEATURES=coreml-runtime` also checks the build without dynamic inputs |
+| `test-coreml-gather` | Focused active-dimension gather regressions, including scalar indices; `TEST_FILTER` selects a test |
 | `litert`, `cann` | LiteRT and CANN conversion of the sample graph |
 | `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
 | `validate-all-env` | Build, unit tests, ONNX and CoreML validation in one run |

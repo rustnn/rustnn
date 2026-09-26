@@ -645,6 +645,46 @@ mod tests {
     }
 
     #[test]
+    fn infer_shape_tensor_type_through_unsqueeze() {
+        let text = r#"
+        webnn_graph "shape_type_test" v2 {
+            inputs { x: f32[2, 3, 4]; }
+            nodes {
+                shape_out = shape(x);
+                expanded_shape = unsqueeze(shape_out, axes=[0]);
+            }
+            outputs { expanded_shape; }
+        }"#;
+        let graph_json = webnn_graph::parser::parse_wg_text(text).expect("parse");
+        let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
+
+        let shape_output = graph_info.operations[0]
+            .output_operand()
+            .expect("shape output");
+        let unsqueeze_output = graph_info.operations[1]
+            .output_operand()
+            .expect("unsqueeze output");
+        assert_eq!(
+            graph_info.operands[shape_output as usize]
+                .descriptor
+                .data_type,
+            DataType::Int64
+        );
+        assert_eq!(
+            graph_info.operands[unsqueeze_output as usize]
+                .descriptor
+                .data_type,
+            DataType::Int64
+        );
+        assert_eq!(
+            graph_info.operands[unsqueeze_output as usize]
+                .descriptor
+                .shape,
+            to_dimension_vector(&[1, 3])
+        );
+    }
+
+    #[test]
     fn test_datatype_conversion() {
         let types = vec![
             DataType::Float32,
