@@ -8,6 +8,7 @@ litert::arg_min_max::argMin_uint32_4D_tensor__axis_1__all_options
 litert::arg_min_max::argMin_uint64_4D_tensor__axis_1__all_options
 litert::averagePool2d::averagePool2d_float16_4D_tensor_options_dilations
 litert::averagePool2d::averagePool2d_float32_4D_tensor_options_dilations
+litert::cast::cast_uint32_4D_tensor_to_uint64
 litert::clamp::clamp_uint32_1D_tensor
 litert::clamp::clamp_uint64_1D_tensor_with_Number_min_and_max
 litert::clamp::clamp_uint64_1D_tensor_with_bigint_max

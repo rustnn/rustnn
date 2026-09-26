@@ -1016,11 +1016,11 @@ fn order_by_signature<'a>(
 }
 
 /// Element type the model uses for a caller-side buffer.
-fn model_element_type(t: &MLTensor) -> litert::ElementType {
+fn model_element_type(t: &MLTensor) -> Result<litert::ElementType> {
     if t.descriptor().data_type() == MLOperandDataType::Float16 {
-        litert::ElementType::Float32
+        Ok(litert::ElementType::Float32)
     } else {
-        ml_operand_to_litert_element_type(t.descriptor().data_type()).expect("element type")
+        ml_operand_to_litert_element_type(t.descriptor().data_type())
     }
 }
 
@@ -1096,7 +1096,7 @@ fn build_input_handles(
     spatial_ids: &std::collections::HashSet<u32>,
     filter_info: &std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
     float16_emulated: bool,
-) -> (Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>) {
+) -> Result<(Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>)> {
     let mut in_raw = Vec::with_capacity(sorted_inputs.len());
     let mut temp_in_tensors: Vec<LiteRtTensor> = Vec::new();
     for (_name, operand_id, t) in sorted_inputs {
@@ -1108,51 +1108,42 @@ fn build_input_handles(
             tensors[t.id].read(&mut raw).ok();
             if fp16 { fp16_to_f32(&raw) } else { raw }
         };
-        if spatial_ids.contains(operand_id) {
+        if spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4 {
             let shape = t.descriptor().shape();
-            if shape.len() == 4 {
-                if let Some((filter_layout, target_shape, _is_depthwise)) =
-                    filter_info.get(operand_id)
-                {
-                    let temp = LiteRtTensor::create_litert_tensor(
-                        target_shape,
-                        model_element_type(t),
-                        true,
-                    )
-                    .expect("temp filter tensor");
-                    let transposed =
-                        transpose_filter_to_ohwi(&model_data(tensors), shape, filter_layout);
-                    temp.write(&transposed).ok();
-                    temp_in_tensors.push(temp);
-                    in_raw.push(temp_in_tensors.last().unwrap().handle);
-                    continue;
-                }
-                let nhwc_data = transpose_nchw_to_nhwc(&model_data(tensors), shape);
-                let temp = if fp16 {
-                    let dims = vec![
-                        shape[0] as i32,
-                        shape[2] as i32,
-                        shape[3] as i32,
-                        shape[1] as i32,
-                    ];
-                    LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, true)
-                        .expect("temp input tensor")
-                } else {
-                    LiteRtTensor::new_with_layout(t.descriptor(), true).expect("temp input tensor")
-                };
-                temp.write(&nhwc_data).ok();
+            if let Some((filter_layout, target_shape, _is_depthwise)) = filter_info.get(operand_id)
+            {
+                let temp =
+                    LiteRtTensor::create_litert_tensor(target_shape, model_element_type(t)?, true)?;
+                let transposed =
+                    transpose_filter_to_ohwi(&model_data(tensors), shape, filter_layout);
+                temp.write(&transposed).ok();
                 temp_in_tensors.push(temp);
                 in_raw.push(temp_in_tensors.last().unwrap().handle);
                 continue;
             }
+            let nhwc_data = transpose_nchw_to_nhwc(&model_data(tensors), shape);
+            let temp = if fp16 {
+                let dims = vec![
+                    shape[0] as i32,
+                    shape[2] as i32,
+                    shape[3] as i32,
+                    shape[1] as i32,
+                ];
+                LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, true)?
+            } else {
+                LiteRtTensor::new_with_layout(t.descriptor(), true)?
+            };
+            temp.write(&nhwc_data).ok();
+            temp_in_tensors.push(temp);
+            in_raw.push(temp_in_tensors.last().unwrap().handle);
+            continue;
         }
         if fp16 {
             let temp = LiteRtTensor::create_litert_tensor(
                 &tensor_dims(t),
                 litert::ElementType::Float32,
                 false,
-            )
-            .expect("float32 input tensor");
+            )?;
             temp.write(&model_data(tensors)).ok();
             temp_in_tensors.push(temp);
             in_raw.push(temp_in_tensors.last().unwrap().handle);
@@ -1160,7 +1151,7 @@ fn build_input_handles(
         }
         in_raw.push(tensors[t.id].handle);
     }
-    (in_raw, temp_in_tensors)
+    Ok((in_raw, temp_in_tensors))
 }
 
 fn build_output_handles(
@@ -1169,7 +1160,7 @@ fn build_output_handles(
     spatial_ids: &std::collections::HashSet<u32>,
     bool_operand_ids: &std::collections::HashSet<u32>,
     float16_emulated: bool,
-) -> (Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>) {
+) -> Result<(Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>)> {
     let mut out_raw = Vec::with_capacity(sorted_outputs.len());
     let mut temp_out_tensors: Vec<LiteRtTensor> = Vec::new();
     for (_name, operand_id, t) in sorted_outputs {
@@ -1182,33 +1173,27 @@ fn build_output_handles(
                 dims
             };
             let temp =
-                LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, spatial)
-                    .expect("float32 output tensor");
+                LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Float32, spatial)?;
             temp_out_tensors.push(temp);
             out_raw.push(temp_out_tensors.last().unwrap().handle);
             continue;
         }
-        if spatial_ids.contains(operand_id) {
-            let shape = t.descriptor().shape();
-            if shape.len() == 4 {
-                let temp = LiteRtTensor::new_with_layout(t.descriptor(), true)
-                    .expect("temp output tensor");
-                temp_out_tensors.push(temp);
-                out_raw.push(temp_out_tensors.last().unwrap().handle);
-                continue;
-            }
+        if spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4 {
+            let temp = LiteRtTensor::new_with_layout(t.descriptor(), true)?;
+            temp_out_tensors.push(temp);
+            out_raw.push(temp_out_tensors.last().unwrap().handle);
+            continue;
         }
         if bool_operand_ids.contains(operand_id) {
             let dims: Vec<i32> = t.descriptor().shape().iter().map(|&d| d as i32).collect();
-            let temp = LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Bool, false)
-                .expect("bool output tensor");
+            let temp = LiteRtTensor::create_litert_tensor(&dims, litert::ElementType::Bool, false)?;
             temp_out_tensors.push(temp);
             out_raw.push(temp_out_tensors.last().unwrap().handle);
             continue;
         }
         out_raw.push(tensors[t.id].handle);
     }
-    (out_raw, temp_out_tensors)
+    Ok((out_raw, temp_out_tensors))
 }
 
 fn readback_outputs(
@@ -1241,16 +1226,14 @@ fn readback_outputs(
                 temp.read(&mut buf).ok();
                 tensors[t.id].write(&buf).ok();
             }
-        } else if spatial_ids.contains(operand_id) {
+        } else if spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4 {
             let shape = t.descriptor().shape();
-            if shape.len() == 4 {
-                let logical = t.descriptor().rustnn_required_bytes();
-                let mut nhwc_buf = vec![0u8; logical];
-                if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
-                    temp.read(&mut nhwc_buf).ok();
-                    let nchw_data = transpose_nhwc_to_nchw(&nhwc_buf, shape);
-                    tensors[t.id].write(&nchw_data).ok();
-                }
+            let logical = t.descriptor().rustnn_required_bytes();
+            let mut nhwc_buf = vec![0u8; logical];
+            if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
+                temp.read(&mut nhwc_buf).ok();
+                let nchw_data = transpose_nhwc_to_nchw(&nhwc_buf, shape);
+                tensors[t.id].write(&nchw_data).ok();
             }
         }
     }
@@ -1412,7 +1395,7 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             &lite_graph.spatial_operand_ids,
             &lite_graph.filter_transpose_info,
             lite_graph.float16_emulated,
-        );
+        )?;
 
         let (mut out_raw, temp_out_tensors) = build_output_handles(
             &sorted_outputs,
@@ -1420,7 +1403,7 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             &lite_graph.spatial_operand_ids,
             &lite_graph.bool_operand_ids,
             lite_graph.float16_emulated,
-        );
+        )?;
 
         lite_graph.run(&in_raw, &mut out_raw)?;
 
