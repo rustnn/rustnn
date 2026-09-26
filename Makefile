@@ -18,12 +18,25 @@ CAPI_RUST_LOG ?= info
 ORT_VERSION ?= 1.29.0
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
+TRT_VERSION ?= 1.6.1.120
+TRT_CUDA_VERSION ?= 13.4
+TRT_BASE ?= https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6
+TRT_DIR ?= target/tensorrt-rtx
+TRT_SDK_DIR ?= $(TRT_DIR)/TensorRT-RTX-$(TRT_VERSION)
 CHROMEDRIVER_CACHE ?= $(CURDIR)/.cache/chromedriver
 CHROMEDRIVER ?= $(CHROMEDRIVER_CACHE)/chromedriver
 
 # Platform detection
 UNAME_S := $(shell uname)
 UNAME_M := $(shell uname -m)
+
+ifeq ($(OS),Windows_NT)
+	TRT_ARCHIVE ?= TensorRT-RTX-$(TRT_VERSION)-Windows-amd64-cuda-$(TRT_CUDA_VERSION)-Release-external.zip
+	TRT_ENV_VARS = TENSORRT_SDK_DIR="$(abspath $(TRT_SDK_DIR))" PATH="$(abspath $(TRT_SDK_DIR))/bin:$(abspath $(TRT_SDK_DIR))/lib:$$PATH"
+else ifeq ($(UNAME_S),Linux)
+	TRT_ARCHIVE ?= TensorRT-RTX-$(TRT_VERSION)-Linux-$(UNAME_M)-cuda-$(TRT_CUDA_VERSION)-Release-external.tar.zst
+	TRT_ENV_VARS = TENSORRT_SDK_DIR="$(abspath $(TRT_SDK_DIR))" LD_LIBRARY_PATH="$(abspath $(TRT_SDK_DIR))/lib:$(ORT_LIB_DIR_ABS):$$LD_LIBRARY_PATH"
+endif
 
 # Set platform-specific ONNX Runtime tarball name
 ifeq ($(UNAME_S),Darwin)
@@ -93,7 +106,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 	test-wpt-coreml-report build-coreml test-coreml test-wpt-op test-wpt-report test-wpt-cann \
 	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
 	webnn-chromedriver test-webnn-wpt-chrome test-webnn-wpt-chrome-headless \
-	onnxruntime-download onnx onnx-validate coreml coreml-validate litert cann \
+	onnxruntime-download trtxruntime-download onnx onnx-validate coreml coreml-validate litert cann \
 	cann-build cann-device-test validate-cann-env validate-all-env capi-examples
 
 clean:
@@ -166,8 +179,8 @@ test-webnn-wpt-chrome-headless: require-wpt-cache webnn-chromedriver
 test-wpt: onnxruntime-download
 	$(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features onnx-runtime -- --test-threads 1
 
-test-wpt-trtx:
-	$(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
+test-wpt-trtx: onnxruntime-download trtxruntime-download
+	$(ORT_ENV_VARS) $(TRT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
 
 test-wpt-litert:
 	@HOST_TRIPLE=$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2); \
@@ -302,6 +315,25 @@ onnxruntime-download:
 			tar -xzf $(ORT_DIR)/$(ORT_TARBALL) -C $(ORT_DIR); \
 		fi; \
 		echo "[OK] ONNX Runtime downloaded and extracted"; \
+	fi
+
+trtxruntime-download:
+	@test -n "$(TRT_ARCHIVE)" || (echo "No TensorRT-RTX SDK archive configured for this platform" >&2; exit 1)
+	@if [ -f "$(TRT_SDK_DIR)/include/NvInfer.h" ]; then \
+		echo "TensorRT-RTX already downloaded at $(TRT_SDK_DIR)"; \
+	else \
+		set -eu; \
+		mkdir -p "$(TRT_DIR)" "$(dir $(TRT_SDK_DIR))"; \
+		tmp="$$(mktemp -d "$(TRT_DIR)/download.XXXXXX")"; \
+		trap 'rm -rf "$$tmp"' EXIT; \
+		curl -fL --retry 3 "$(TRT_BASE)/$(TRT_ARCHIVE)" -o "$$tmp/$(TRT_ARCHIVE)"; \
+		case "$(TRT_ARCHIVE)" in \
+			*.zip) unzip -q "$$tmp/$(TRT_ARCHIVE)" -d "$$tmp" ;; \
+			*.tar.zst) tar --zstd -xf "$$tmp/$(TRT_ARCHIVE)" -C "$$tmp" ;; \
+		esac; \
+		test -f "$$tmp/TensorRT-RTX-$(TRT_VERSION)/include/NvInfer.h"; \
+		mv "$$tmp/TensorRT-RTX-$(TRT_VERSION)" "$(TRT_SDK_DIR)"; \
+		echo "TensorRT-RTX $(TRT_VERSION) downloaded to $(TRT_SDK_DIR)"; \
 	fi
 
 onnx: onnxruntime-download
@@ -439,6 +471,7 @@ help:
 	@echo ""
 	@echo "ONNX Conversion:"
 	@echo "  onnxruntime-download - Download ONNX Runtime"
+	@echo "  trtxruntime-download - Download TensorRT-RTX SDK"
 	@echo "  onnx               - Convert graph to ONNX format"
 	@echo "  onnx-validate      - Convert and validate ONNX graph"
 	@echo ""
