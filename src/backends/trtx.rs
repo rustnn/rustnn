@@ -432,7 +432,7 @@ static JIT_CACHE: LazyLock<CacheResult<TrtxCache>> = LazyLock::new(|| TrtxCache:
 #[cfg(not(feature = "trtx-enterprise"))]
 static TRTX_RUNTIME_CACHE: LazyLock<Mutex<HashMap<String, Arc<trtx::RuntimeCache>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
+static TRTX_SUFFIX_ENGINES: LazyLock<String> = LazyLock::new(|| {
     format!(
         "trtx_{}.{}.{}_{}",
         unsafe { trtx::trtx_sys::get_tensorrt_major_version() },
@@ -441,10 +441,18 @@ static TRTX_SUFFIX: LazyLock<String> = LazyLock::new(|| {
         SOURCE_HASH
     )
 });
+static TRTX_SUFFIX_JIT_CACHE: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "trtx_{}.{}.{}",
+        unsafe { trtx::trtx_sys::get_tensorrt_major_version() },
+        unsafe { trtx::trtx_sys::get_tensorrt_minor_version() },
+        unsafe { trtx::trtx_sys::get_tensorrt_patch_version() },
+    )
+});
 
 #[cfg(not(feature = "trtx-enterprise"))]
 fn jit_cache_disk_key(device_cache_id: &str) -> String {
-    format!("{device_cache_id}_{}.cache", *TRTX_SUFFIX)
+    format!("{device_cache_id}_{}.cache", *TRTX_SUFFIX_JIT_CACHE)
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'context> {
@@ -472,7 +480,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let key =
                 // if deciding to do hashing for non_refittable_constants
                 //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
-                graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::None);
+                graph.hash_identifier(&TRTX_SUFFIX_ENGINES, WeightsToHash::None);
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
@@ -538,7 +546,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let mut key = graph.hash_identifier(
                 &format!(
                     "{}_{:x}",
-                    TRTX_SUFFIX.as_str(),
+                    TRTX_SUFFIX_ENGINES.as_str(),
                     self.config.lock().unwrap().flags()
                 ),
                 WeightsToHash::Some(&non_refittable_constants),
