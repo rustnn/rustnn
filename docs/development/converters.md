@@ -97,6 +97,8 @@ Rules that hold for every converter:
   edits invalidate cached engines; changes to builder flags do not. Delete the cache directories
   when in doubt.
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+- `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
+  a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
 ### CoreML
 
