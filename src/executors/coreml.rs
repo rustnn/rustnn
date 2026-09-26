@@ -215,6 +215,8 @@ pub fn run_coreml_with_inputs_cached(
 }
 
 /// Run CoreML inference with runtime descriptor checks for dynamic dimensions.
+/// Invalid inputs or compilation failures fail the call; output validation
+/// failures are reported in the corresponding compute-policy attempt.
 pub fn run_coreml_with_inputs_checked(
     model_bytes: &[u8],
     inputs: Vec<CoremlInput>,
@@ -1246,7 +1248,7 @@ fn run_impl_zeroed_with_weights(
             // The shim returns a retained provider; release it after collecting.
             let _output_provider_guard = ReleaseOnDrop(output_provider);
 
-            match collect_outputs(output_provider) {
+            match collect_outputs(output_provider, model, None) {
                 Ok(outputs) => attempts.push(CoremlRunAttempt {
                     compute_unit: name,
                     result: Ok(outputs),
@@ -1436,7 +1438,7 @@ fn run_impl_with_inputs_with_weights(
             // The shim returns a retained provider; release it after collecting.
             let _output_provider_guard = ReleaseOnDrop(output_provider);
 
-            match collect_outputs(output_provider) {
+            match collect_outputs(output_provider, model, output_descriptors) {
                 Ok(outputs) => attempts.push(CoremlRunAttempt {
                     compute_unit: name,
                     result: Ok(outputs),
@@ -1456,52 +1458,115 @@ fn run_impl_with_inputs_with_weights(
         }
 
         if let Some(descriptors) = output_descriptors {
-            for attempt in &attempts {
-                if let Ok(outputs) = &attempt.result {
-                    let mut actual_output_shapes = HashMap::new();
-                    for output in outputs {
-                        let mut shape = Vec::with_capacity(output.shape.len());
-                        for &dim in &output.shape {
-                            let dim = usize::try_from(dim).map_err(|_| {
-                                GraphError::CoremlRuntimeFailed {
-                                    reason: format!(
-                                        "output `{}` has invalid negative dimension {}",
-                                        output.name, dim
-                                    ),
-                                }
-                            })?;
-                            shape.push(dim);
-                        }
-                        actual_output_shapes.insert(output.name.clone(), shape);
-                    }
-                    runtime_shape_state.validate_named_shapes(
-                        &actual_output_shapes,
-                        descriptors,
-                        TensorKind::Output,
-                    )?;
-                }
-            }
+            validate_attempt_outputs(&mut attempts, &runtime_shape_state, descriptors);
         }
 
         Ok(attempts)
     }
 }
 
-unsafe fn collect_outputs(provider: *mut Object) -> Result<Vec<CoremlOutput>, GraphError> {
+/// Output failures belong to their compute-policy attempt, just like load and
+/// prediction failures. Keep other attempts available for inspection or fallback.
+fn validate_attempt_outputs(
+    attempts: &mut [CoremlRunAttempt],
+    input_shape_state: &RuntimeShapeState,
+    descriptors: &HashMap<String, OperandDescriptor>,
+) {
+    for attempt in attempts {
+        let Ok(outputs) = &attempt.result else {
+            continue;
+        };
+        let validation = (|| {
+            let mut actual_output_shapes = HashMap::new();
+            for output in outputs {
+                let mut shape = Vec::with_capacity(output.shape.len());
+                for &dim in &output.shape {
+                    let dim =
+                        usize::try_from(dim).map_err(|_| GraphError::CoremlRuntimeFailed {
+                            reason: format!(
+                                "output `{}` has invalid negative dimension {}",
+                                output.name, dim
+                            ),
+                        })?;
+                    shape.push(dim);
+                }
+                actual_output_shapes.insert(output.name.clone(), shape);
+            }
+            // Output-only symbols from one attempt must not bind another, even
+            // when validation partially succeeds before reporting an error.
+            input_shape_state.clone().validate_named_shapes(
+                &actual_output_shapes,
+                descriptors,
+                TensorKind::Output,
+            )
+        })();
+        if let Err(error) = validation {
+            attempt.result = Err(error.to_string());
+        }
+    }
+}
+
+fn collect_named_outputs(
+    mut advertised_names: Vec<String>,
+    expected: Option<&HashMap<String, OperandDescriptor>>,
+    mut lookup: impl FnMut(&str) -> Result<CoremlOutput, GraphError>,
+) -> Result<Vec<CoremlOutput>, GraphError> {
+    if let Some(expected) = expected {
+        advertised_names.extend(expected.keys().cloned());
+    }
+    // Query every expected name directly, but retain advertised extras so the
+    // checked path still rejects unexpected outputs instead of hiding them.
+    advertised_names.sort();
+    advertised_names.dedup();
+    advertised_names.iter().map(|name| lookup(name)).collect()
+}
+
+unsafe fn nsarray_to_strings(array: *mut Object) -> Vec<String> {
+    let count: usize = msg_send![array, count];
+    (0..count)
+        .map(|index| {
+            let name: *mut Object = msg_send![array, objectAtIndex: index];
+            unsafe { nsstring_to_string(name) }
+        })
+        .collect()
+}
+
+unsafe fn collect_outputs(
+    provider: *mut Object,
+    model: *mut Object,
+    expected: Option<&HashMap<String, OperandDescriptor>>,
+) -> Result<Vec<CoremlOutput>, GraphError> {
     let feature_names: *mut Object = msg_send![provider, featureNames];
     let names_array: *mut Object = msg_send![feature_names, allObjects];
-    let count: usize = msg_send![names_array, count];
+    let advertised_names = unsafe { nsarray_to_strings(names_array) };
 
-    let mut outputs = Vec::new();
-    for idx in 0..count {
-        let name_obj: *mut Object = msg_send![names_array, objectAtIndex: idx];
-        let rust_name = unsafe { nsstring_to_string(name_obj) };
+    let lookup_error = |name: &str, detail: &str| {
+        let model_description: *mut Object = msg_send![model, modelDescription];
+        let descriptions: *mut Object = msg_send![model_description, outputDescriptionsByName];
+        let keys: *mut Object = msg_send![descriptions, allKeys];
+        let declared_names = unsafe { nsarray_to_strings(keys) };
+        let class_name: *mut Object = msg_send![provider, className];
+        let class_name = unsafe { nsstring_to_string(class_name) };
+        GraphError::CoremlRuntimeFailed {
+            reason: format!(
+                "output `{name}` {detail}; provider class={class_name}, advertised outputs={advertised_names:?}, model-declared outputs={declared_names:?}"
+            ),
+        }
+    };
+
+    collect_named_outputs(advertised_names.clone(), expected, |name| {
+        let name_obj = unsafe { nsstring_from_str(name)? };
         let value: *mut Object = msg_send![provider, featureValueForName: name_obj];
+        if value.is_null() {
+            return Err(lookup_error(name, "direct lookup returned nil"));
+        }
         let array: *mut Object = msg_send![value, multiArrayValue];
         if array.is_null() {
-            return Err(GraphError::CoremlRuntimeFailed {
-                reason: format!("output `{}` is not a MLMultiArray", rust_name),
-            });
+            let feature_type: i64 = msg_send![value, type];
+            return Err(lookup_error(
+                name,
+                &format!("direct lookup returned feature type {feature_type}, not a MLMultiArray"),
+            ));
         }
         let data_type: i64 = msg_send![array, dataType];
         let shape_nsarray: *mut Object = msg_send![array, shape];
@@ -1510,14 +1575,13 @@ unsafe fn collect_outputs(provider: *mut Object) -> Result<Vec<CoremlOutput>, Gr
         // Extract actual data from MLMultiArray
         let data = unsafe { extract_mlmultiarray_data(array, data_type, &shape)? };
 
-        outputs.push(CoremlOutput {
-            name: rust_name,
+        Ok(CoremlOutput {
+            name: name.to_string(),
             shape,
             data_type_code: data_type,
             data,
-        });
-    }
-    Ok(outputs)
+        })
+    })
 }
 
 unsafe fn extract_mlmultiarray_data(
@@ -2099,6 +2163,210 @@ fn copy_dir_recursively(src: &Path, dst: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod checked_attempt_tests {
+    use super::*;
+    use crate::graph::DynamicDimension;
+
+    fn descriptor(shape: Vec<Dimension>) -> OperandDescriptor {
+        OperandDescriptor {
+            data_type: DataType::Float32,
+            shape,
+            pending_permutation: vec![],
+        }
+    }
+
+    fn dynamic(name: &str) -> Dimension {
+        Dimension::Dynamic(DynamicDimension {
+            name: name.into(),
+            max_size: 8,
+        })
+    }
+
+    fn output(shape: &[i64]) -> CoremlOutput {
+        let count: usize = shape.iter().map(|&dim| dim.max(0) as usize).product();
+        CoremlOutput {
+            name: "result".into(),
+            shape: shape.to_vec(),
+            data_type_code: 65568,
+            data: vec![42.; count],
+        }
+    }
+
+    fn attempt(compute_unit: &'static str, outputs: Vec<CoremlOutput>) -> CoremlRunAttempt {
+        CoremlRunAttempt {
+            compute_unit,
+            result: Ok(outputs),
+        }
+    }
+
+    #[test]
+    fn collection_queries_expected_names_missing_from_advertisement() {
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        let mut queried = Vec::new();
+        let outputs = collect_named_outputs(vec![], Some(&descriptors), |name| {
+            queried.push(name.to_string());
+            Ok(output(&[2]))
+        })
+        .unwrap();
+        assert_eq!(queried, ["result"]);
+        assert_eq!(outputs[0].name, "result");
+        assert_eq!(outputs[0].data, [42., 42.]);
+    }
+
+    #[test]
+    fn collection_retains_unexpected_advertised_outputs_for_validation() {
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        let mut queried = Vec::new();
+        let outputs = collect_named_outputs(
+            vec!["result".into(), "extra".into()],
+            Some(&descriptors),
+            |name| {
+                queried.push(name.to_string());
+                let mut value = output(&[2]);
+                value.name = name.into();
+                Ok(value)
+            },
+        )
+        .unwrap();
+        assert_eq!(queried, ["extra", "result"]);
+        let mut attempts = [attempt("CPU_ONLY", outputs)];
+        validate_attempt_outputs(&mut attempts, &RuntimeShapeState::new(), &descriptors);
+        assert_eq!(
+            attempts[0].result.as_ref().unwrap_err(),
+            "unexpected runtime output tensor `extra`"
+        );
+    }
+
+    #[test]
+    fn collection_propagates_failed_direct_lookup() {
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        let error = collect_named_outputs(vec![], Some(&descriptors), |name| {
+            Err(GraphError::CoremlRuntimeFailed {
+                reason: format!("{name}: direct lookup returned nil"),
+            })
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("result: direct lookup returned nil")
+        );
+    }
+
+    #[test]
+    fn missing_output_does_not_discard_other_attempts_or_existing_errors() {
+        let mut attempts = vec![
+            attempt("CPU_AND_NE", vec![]),
+            CoremlRunAttempt {
+                compute_unit: "ALL",
+                result: Err("prediction failed".into()),
+            },
+            attempt("CPU_ONLY", vec![output(&[2])]),
+        ];
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        validate_attempt_outputs(&mut attempts, &RuntimeShapeState::new(), &descriptors);
+
+        assert_eq!(
+            attempts
+                .iter()
+                .map(|attempt| attempt.compute_unit)
+                .collect::<Vec<_>>(),
+            ["CPU_AND_NE", "ALL", "CPU_ONLY"]
+        );
+        assert_eq!(
+            attempts[0].result.as_ref().unwrap_err(),
+            "missing runtime output tensor `result`"
+        );
+        assert_eq!(
+            attempts[1].result.as_ref().unwrap_err(),
+            "prediction failed"
+        );
+        assert_eq!(attempts[2].result.as_ref().unwrap()[0].data, [42., 42.]);
+    }
+
+    #[test]
+    fn malformed_output_shapes_fail_only_their_own_attempt() {
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        for (shape, expected_error) in [
+            (vec![-1], "invalid negative dimension -1"),
+            (vec![2, 1], "rank mismatch"),
+            (vec![3], "dimension 0 mismatch"),
+        ] {
+            let mut attempts = vec![
+                attempt("CPU_AND_NE", vec![output(&shape)]),
+                attempt("CPU_ONLY", vec![output(&[2])]),
+            ];
+            validate_attempt_outputs(&mut attempts, &RuntimeShapeState::new(), &descriptors);
+            assert!(
+                attempts[0]
+                    .result
+                    .as_ref()
+                    .unwrap_err()
+                    .contains(expected_error)
+            );
+            assert_eq!(attempts[1].result.as_ref().unwrap()[0].shape, [2]);
+        }
+    }
+
+    #[test]
+    fn cpu_output_failure_remains_visible_after_accelerated_success() {
+        let mut attempts = vec![
+            attempt("ALL", vec![output(&[2])]),
+            attempt("CPU_ONLY", vec![]),
+        ];
+        let descriptors =
+            HashMap::from([("result".into(), descriptor(vec![Dimension::Static(2)]))]);
+        validate_attempt_outputs(&mut attempts, &RuntimeShapeState::new(), &descriptors);
+        assert!(attempts[0].result.is_ok());
+        assert_eq!(attempts[1].compute_unit, "CPU_ONLY");
+        assert!(attempts[1].result.is_err());
+    }
+
+    #[test]
+    fn every_attempt_preserves_input_dynamic_dimension_bindings() {
+        let descriptors = HashMap::from([("result".into(), descriptor(vec![dynamic("rows")]))]);
+        let mut input_state = RuntimeShapeState::new();
+        input_state
+            .validate_shape("data", &[2], &descriptors["result"], TensorKind::Input)
+            .unwrap();
+        let mut attempts = vec![
+            attempt("ALL", vec![output(&[3])]),
+            attempt("CPU_ONLY", vec![output(&[2])]),
+        ];
+        validate_attempt_outputs(&mut attempts, &input_state, &descriptors);
+        assert!(
+            attempts[0]
+                .result
+                .as_ref()
+                .unwrap_err()
+                .contains("dynamic dimension `rows` mismatch")
+        );
+        assert!(attempts[1].result.is_ok());
+    }
+
+    #[test]
+    fn output_bindings_from_failed_attempt_do_not_leak_to_next_attempt() {
+        let descriptors = HashMap::from([(
+            "result".into(),
+            descriptor(vec![dynamic("output_rows"), Dimension::Static(1)]),
+        )]);
+        // The first output binds output_rows=2 before failing its second axis.
+        let mut attempts = vec![
+            attempt("ALL", vec![output(&[2, 2])]),
+            attempt("CPU_ONLY", vec![output(&[3, 1])]),
+        ];
+        validate_attempt_outputs(&mut attempts, &RuntimeShapeState::new(), &descriptors);
+        assert!(attempts[0].result.is_err());
+        assert_eq!(attempts[1].result.as_ref().unwrap()[0].shape, [3, 1]);
+    }
 }
 
 #[cfg(test)]

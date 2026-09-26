@@ -105,8 +105,16 @@ Rules that hold for every converter:
   float32.
 - Comparison results are `uint8`; `reduceLogSumExp` uses the max-shifted form; reductions with
   empty `axes` and `resample2d` on arbitrary axes are lowered explicitly.
+- Gather-family index normalization uses active indexed dimensions, not their declared maxima.
+  Scalar `gather` indices stay as one-element vectors through normalization and gathering;
+  an axis-specific squeeze removes only the indexed dimension afterward. This avoids native
+  scalar-index gather failures while retaining dynamic extents and unrelated singleton axes.
+  A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
+  inside CoreML and widening the public int64 result at readback. Imported shape tensors
+  retain their type and rank through the shared `unsqueeze` inference path.
 
 ### LiteRT
 
