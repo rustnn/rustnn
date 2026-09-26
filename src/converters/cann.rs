@@ -22,13 +22,17 @@
 //! - `cann-runtime-mock`: validate ops, return placeholder bytes.
 
 use crate::error::GraphError;
+#[cfg(feature = "cann-runtime")]
+use crate::graph::DataType;
 use crate::graph::GraphInfo;
 #[cfg(any(feature = "cann-runtime", test))]
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
 
-// Maps a WebNN op to its HIAI IR op name, or `None` if unsupported.
+// Maps a WebNN op to the DDK operator type registered for it, or `None` if it has no
+// lowering (`None` also covers ops an earlier block lowers itself). The name is not a
+// label: it goes to `cann_operator_create_registered`, so a typo emits a wrong model.
 #[cfg(any(feature = "cann-runtime", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
@@ -85,6 +89,8 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::Conv2d { .. } => Some("Conv2D"),
         // Lowered to Conv2D (stride=1 + recomputed pads); native ConvTranspose unsupported.
         Operation::ConvTranspose2d { .. } => Some("Conv2D"),
+        // All three poolings share one registered type; the `mode` attr set at wiring time
+        // (0=max, 1=avg, 2=l2) picks the algorithm.
         Operation::MaxPool2d { .. } => Some("MaxPool"),
         Operation::AveragePool2d { .. } => Some("AvgPool"),
         Operation::L2Pool2d { .. } => Some("MaxPool"),
@@ -114,6 +120,7 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::Split { .. } => Some("Split"),
         Operation::Concat { .. } => Some("Concat"),
         Operation::Pad { .. } => Some("Pad"),
+        // HiAI has no squeeze/unsqueeze op; both are registered as Reshape.
         Operation::Squeeze { .. } => Some("Reshape"),
         Operation::Unsqueeze { .. } => Some("Reshape"),
         Operation::Expand { .. } => Some("Expand"),
@@ -133,18 +140,16 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
 
         // ── Other ────────────────────────────────────────────────────
         Operation::Resample2d { .. } => Some("Resample2D"),
-        Operation::GlobalAveragePool { .. } => None,
-        Operation::GlobalMaxPool { .. } => None,
 
-        // ── Needs decomposition ───────────────────────────────────────
+        // ── Lowered by a dedicated block (reached before this table) ───
         Operation::Identity { .. } => None,
         Operation::Prelu { .. } => None,
         Operation::Linear { .. } => None,
-        Operation::LayerNormalization { .. } => None,
-        Operation::Triangular { .. } => None,
         Operation::IsNaN { .. } => None,
         Operation::IsInfinite { .. } => None,
         Operation::Reverse { .. } => None,
+        Operation::GlobalAveragePool { .. } => None,
+        Operation::GlobalMaxPool { .. } => None,
 
         // ── Not supported ─────────────────────────────────────────────
         Operation::Constant { .. }
@@ -153,10 +158,112 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         | Operation::ScatterElements { .. }
         | Operation::InstanceNormalization { .. }
         | Operation::QuantizeLinear { .. }
+        | Operation::LayerNormalization { .. }
+        | Operation::Triangular { .. }
         | Operation::Gru { .. }
         | Operation::GruCell { .. }
         | Operation::Lstm { .. }
         | Operation::LstmCell { .. } => None,
+    }
+}
+
+// Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
+// them to FLOAT would reinterpret packed nibbles as float.
+#[cfg(feature = "cann-runtime")]
+fn is_supported_dtype(data_type: DataType) -> bool {
+    !matches!(data_type, DataType::Int4 | DataType::Uint4)
+}
+
+// Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
+// not lower. Orphaned operands left behind by a rewrite are not counted.
+#[cfg(feature = "cann-runtime")]
+fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
+    graph
+        .operands
+        .iter()
+        .enumerate()
+        .filter(|(_, operand)| operand.descriptor.shape.len() > 4)
+        .map(|(id, _)| id as u32)
+        .filter(|&id| {
+            graph.input_operands.contains(&id)
+                || graph.output_operands.contains(&id)
+                || graph.operations.iter().any(|op| op.inputs().contains(&id))
+        })
+        .collect()
+}
+
+// Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
+// instead of panicking in a `CString`/`bytemuck` call. `GraphValidator` checks the
+// constant-length rule too, but `MLContext` and `GraphConverter` do not run it.
+#[cfg(feature = "cann-runtime")]
+fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
+    for (i, operand) in graph.operands.iter().enumerate() {
+        if !is_supported_dtype(operand.descriptor.data_type) {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!(
+                    "unsupported data type {:?} on operand {i}",
+                    operand.descriptor.data_type
+                ),
+            });
+        }
+        // Only these names become `CString`s; intermediate operand names are never emitted, so
+        // they are not checked.
+        let named = graph.input_operands.contains(&(i as u32))
+            || graph.output_operands.contains(&(i as u32))
+            || graph
+                .constant_operand_ids_to_handles
+                .contains_key(&(i as u32));
+        if named
+            && let Some(name) = operand.name.as_deref()
+            && name.as_bytes().contains(&0)
+        {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!("operand {i} name contains a NUL byte"),
+            });
+        }
+    }
+
+    // A blob that does not match its descriptor would be truncated (f16) or panic in
+    // `bytemuck` (f32) once the dequantizer indexes it.
+    for (&id, constant) in graph.constant_operand_ids_to_handles.iter() {
+        let Some(expected) = graph.operands[id as usize].descriptor.byte_length() else {
+            continue; // Dynamic shape: nothing to check against.
+        };
+        if constant.data.len() != expected {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!(
+                    "constant operand {id} has {} byte(s) but its descriptor needs {expected}",
+                    constant.data.len()
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+// Spatial axes a global pool reduces: the trailing two for NCHW, 1..2 for NHWC. Reducing
+// them in place matches transposing to NCHW first, so no transpose is emitted. An unset
+// layout means NCHW.
+#[cfg(feature = "cann-runtime")]
+fn global_pool_axes(
+    rank: usize,
+    options: &Option<crate::operator_options::MLPool2dOptions>,
+) -> Vec<i32> {
+    let rank = rank as i32;
+    let is_nhwc = options
+        .as_ref()
+        .map(|o| o.layout.eq_ignore_ascii_case("nhwc"))
+        .unwrap_or(false);
+    if is_nhwc && rank >= 3 {
+        vec![1, 2]
+    } else if rank >= 2 {
+        vec![rank - 2, rank - 1]
+    } else {
+        vec![0]
     }
 }
 
@@ -299,13 +406,6 @@ mod adapter {
         }
     }
 
-    // Data types the CANN adapter can represent. Int4/Uint4 are excluded: there
-    // is no CANN data type for them, and mapping them to FLOAT would silently
-    // reinterpret the packed nibbles as float.
-    fn is_supported_dtype(data_type: DataType) -> bool {
-        !matches!(data_type, DataType::Int4 | DataType::Uint4)
-    }
-
     // Detect the `x[1,H,W,C] op mask[1,H,W,1]` pair that the NPU's elementary
     // kernels reject: `mask` is a 4-D single-channel constant broadcast across
     // the channel dim. Returns `(x_id, mask_id, x_is_lhs)`.
@@ -331,6 +431,15 @@ mod adapter {
         }
     }
 
+    // True if `id` is a rank-4 constant with a single trailing dim, i.e. shaped like the
+    // `[1,H,W,1]` mask `channel_broadcast_operands` accepts. For near-miss logging.
+    fn looks_like_channel_mask(graph: &GraphInfo, id: u32) -> bool {
+        graph.constant_operand_ids_to_handles.contains_key(&id) && {
+            let s = descriptor_dims(&graph.operands[id as usize].descriptor);
+            s.len() == 4 && s[3] == 1
+        }
+    }
+
     // Emit a `[1,H,W,1]` single-channel mask constant as an NCHW `[1,1,H,W]`
     // constant. The row-major data is identical (C == 1), so no transpose is
     // needed — only the shape array changes.
@@ -346,13 +455,27 @@ mod adapter {
             return Ok(handle);
         }
         let data = &graph.constant_operand_ids_to_handles[&mask_id].data;
-        let s = descriptor_dims(&graph.operands[mask_id as usize].descriptor);
+        let descriptor = &graph.operands[mask_id as usize].descriptor;
+        let s = descriptor_dims(descriptor);
         let shape = [1i64, 1, s[1], s[2]];
+        // Keep the mask's own dtype: an f16 mask declared FLOAT is twice its real size.
+        let elements: usize = shape.iter().map(|&d| d as usize).product();
+        let expected = elements * descriptor.data_type.bytes_per_element();
+        if data.len() != expected {
+            return Err(GraphError::ConversionFailed {
+                format: "cann".into(),
+                reason: format!(
+                    "channel mask {mask_id} has {} byte(s) but shape {shape:?} with {:?} needs {expected}",
+                    data.len(),
+                    descriptor.data_type
+                ),
+            });
+        }
         let const_op = make_const(
             &format!("mask_nchw_{mask_id}"),
             data,
             &shape,
-            ddk_CannDataType::CANN_DT_FLOAT,
+            cann_data_type(descriptor.data_type),
             0, // FORMAT_NCHW
         );
         extra_ops.push(const_op);
@@ -360,7 +483,7 @@ mod adapter {
         Ok(const_op)
     }
 
-    // `RUSTNN_DEBUG=2`: log every op's input/output shapes.
+    // `RUSTNN_DEBUG=2`: log every op's input/output shapes (model structure).
     fn dump_op_shapes(graph: &GraphInfo) {
         for (i, op) in graph.operations.iter().enumerate() {
             let fmt = |ids: &[u32]| -> String {
@@ -664,6 +787,7 @@ mod adapter {
         match dtype {
             DataType::Int8 => data.iter().map(|&b| b as i8 as f32).collect(),
             DataType::Uint8 => data.iter().map(|&b| b as f32).collect(),
+            // Constants are stored little-endian; no byte swap for another host order.
             DataType::Float16 => data
                 .chunks_exact(2)
                 .map(|b| half::f16::from_le_bytes([b[0], b[1]]).to_f32())
@@ -1019,19 +1143,25 @@ mod adapter {
         let rewritten = super::rewrite_attention_5d(graph);
         let graph = rewritten.as_ref().unwrap_or(graph);
 
-        // Reject data types the adapter cannot represent up front, so an
-        // Int4/Uint4 operand fails loudly instead of being emitted as FLOAT.
-        for (i, operand) in graph.operands.iter().enumerate() {
-            if !is_supported_dtype(operand.descriptor.data_type) {
-                return Err(GraphError::ConversionFailed {
-                    format: "cann".into(),
-                    reason: format!(
-                        "unsupported data type {:?} on operand {i}",
-                        operand.descriptor.data_type
-                    ),
-                });
-            }
+        // `rewrite_attention_5d` matches one pattern, so a rank-5 operand surviving it reaches a
+        // 4-D-only kernel. Warn; the device run reports the rest.
+        let rank5 = super::live_operands_rank_over_4(graph);
+        if !rank5.is_empty() {
+            log::warn!(
+                "[cann] graph keeps {} operand(s) of rank > 4 (up to {} dims) that the 5-D \
+                 attention rewrite did not match: {:?}. The NPU kernels are 4-D, so these will \
+                 most likely fail on device.",
+                rank5.len(),
+                rank5
+                    .iter()
+                    .map(|&id| graph.operands[id as usize].descriptor.shape.len())
+                    .max()
+                    .unwrap_or(0),
+                &rank5[..rank5.len().min(8)]
+            );
         }
+
+        super::check_encodable(graph)?;
 
         if std::env::var("RUSTNN_DEBUG")
             .map(|v| v == "2")
@@ -1815,8 +1945,14 @@ mod adapter {
                 continue;
             }
 
-            // globalAveragePool = ReduceMean over spatial (H, W) axes.
-            if let Operation::GlobalAveragePool { input, outputs, .. } = op {
+            // globalAveragePool = ReduceMean over the spatial axes.
+            if let Operation::GlobalAveragePool {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
                 let out_id = outputs[0];
                 let mean = create_op(
                     "ReduceMean",
@@ -1824,12 +1960,10 @@ mod adapter {
                     &mut guard.extra_ops,
                 )?;
                 connect_src_input(mean, "x", *input, &handles, &split_out)?;
-                let rank = graph.operands[*input as usize].descriptor.shape.len();
-                let axes: Vec<i32> = if rank >= 2 {
-                    vec![(rank as i32) - 2, (rank as i32) - 1]
-                } else {
-                    vec![0]
-                };
+                let axes = global_pool_axes(
+                    graph.operands[*input as usize].descriptor.shape.len(),
+                    options,
+                );
                 let axes_const = make_const(
                     &format!("global_avg_pool_axes_{out_id}"),
                     bytemuck::cast_slice(&axes),
@@ -1845,8 +1979,14 @@ mod adapter {
                 continue;
             }
 
-            // globalMaxPool = ReduceMax over spatial (H, W) axes.
-            if let Operation::GlobalMaxPool { input, outputs, .. } = op {
+            // globalMaxPool = ReduceMax over the spatial axes.
+            if let Operation::GlobalMaxPool {
+                input,
+                options,
+                outputs,
+                ..
+            } = op
+            {
                 let out_id = outputs[0];
                 let max = create_op(
                     "ReduceMax",
@@ -1854,12 +1994,10 @@ mod adapter {
                     &mut guard.extra_ops,
                 )?;
                 connect_src_input(max, "x", *input, &handles, &split_out)?;
-                let rank = graph.operands[*input as usize].descriptor.shape.len();
-                let axes: Vec<i32> = if rank >= 2 {
-                    vec![(rank as i32) - 2, (rank as i32) - 1]
-                } else {
-                    vec![0]
-                };
+                let axes = global_pool_axes(
+                    graph.operands[*input as usize].descriptor.shape.len(),
+                    options,
+                );
                 let axes_const = make_const(
                     &format!("global_max_pool_axes_{out_id}"),
                     bytemuck::cast_slice(&axes),
@@ -2029,21 +2167,27 @@ mod adapter {
                 set_int64_attr(cast, "src_dtype", cann_data_type(src_dtype) as i64);
                 set_int64_attr(cast, "dst_dtype", ddk_CannDataType::CANN_DT_FLOAT as i64);
 
-                let sub = create_op(
-                    "Sub",
-                    &format!("dequant_sub_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_input(sub, "x1", cast)?;
-                if let Some(zp_id) = zero_point {
+                // With no zero point the value is already unbiased, so Mul reads the Cast output: a Sub
+                // with only x1 connected would be rejected or read garbage.
+                let x1 = if let Some(zp_id) = zero_point {
+                    let sub = create_op(
+                        "Sub",
+                        &format!("dequant_sub_{out_id}"),
+                        &mut guard.extra_ops,
+                    )?;
+                    connect_input(sub, "x1", cast)?;
                     connect_input(sub, "x2", handles[*zp_id as usize])?;
-                }
+                    sub
+                } else {
+                    cast
+                };
+
                 let mul = create_op(
                     "Mul",
                     &format!("dequant_mul_{out_id}"),
                     &mut guard.extra_ops,
                 )?;
-                connect_input(mul, "x1", sub)?;
+                connect_input(mul, "x1", x1)?;
                 connect_input(mul, "x2", scale_handle)?;
 
                 handles[out_id as usize] = mul;
@@ -2092,6 +2236,17 @@ mod adapter {
                 // transpose back. `x` must be a single-output producer.
                 let channel_bcast = channel_broadcast_operands(graph, a, b)
                     .filter(|(x_id, _, _)| !split_out.contains_key(x_id));
+                // A mask that nearly matches (batch > 1, another axis order) is emitted unwrapped and
+                // may only fail on device; log it for tracing.
+                if channel_bcast.is_none()
+                    && (looks_like_channel_mask(graph, a) || looks_like_channel_mask(graph, b))
+                {
+                    log::debug!(
+                        "[cann-debug] op {} has a single-channel constant operand that does \
+                         not match the [1,H,W,1] mask pattern; left unwrapped",
+                        op.label()
+                    );
+                }
                 if let Some((x_id, mask_id, x_is_lhs)) = channel_bcast {
                     let x_nchw = emit_transpose(
                         &format!("bcast_x_nchw_{}", op_outputs(op)[0]),
@@ -3821,7 +3976,15 @@ impl GraphConverter for CannConverter {
     }
 
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError> {
-        let data = encode_via_adapter(graph).or_else(|_| build_hiai_ir_model_mock(graph))?;
+        let data = match encode_via_adapter(graph) {
+            Ok(bytes) => bytes,
+            // Fall back to placeholder bytes, but say why: a consumer cannot otherwise tell a real
+            // compile from a stub.
+            Err(e) => {
+                log::warn!("[cann] encode failed, returning placeholder model bytes: {e}");
+                build_hiai_ir_model_mock(graph)?
+            }
+        };
 
         Ok(ConvertedGraph {
             format: "cann",
