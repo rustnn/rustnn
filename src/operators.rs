@@ -61,7 +61,11 @@ use crate::{
 /// One variant per WebNN graph builder. Each variant has named operand fields and the
 /// corresponding options struct, so operand roles are explicit and independent of
 /// input_operands order.
+///
+/// Variant fields are operand indices named after the specification arguments plus `options`
+/// and `outputs`; they are not documented individually.
 #[derive(Debug, Clone, PartialEq, Hash)]
+#[allow(missing_docs)]
 pub enum Operation {
     // ---------- Binary element-wise (MLOperatorOptions) ----------
     /// [add()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-add)
@@ -1571,9 +1575,7 @@ impl Operation {
                 obj.insert("axis".to_string(), serde_json::json!(axis));
             }
             Operation::Expand { new_shape, .. } => {
-                if !new_shape.is_empty()
-                    && let Ok(v) = serde_json::to_value(new_shape)
-                {
+                if let Ok(v) = serde_json::to_value(new_shape) {
                     obj.insert("newShape".to_string(), v);
                 }
             }
@@ -1637,14 +1639,12 @@ impl Operation {
                     obj.insert("splits".to_string(), serde_json::json!(splits));
                 }
             }
-            Operation::Tile { repetitions, .. } if !repetitions.is_empty() => {
+            Operation::Tile { repetitions, .. } => {
                 obj.insert("repetitions".to_string(), serde_json::json!(repetitions));
             }
             Operation::Reshape { new_shape, .. } => {
-                if !new_shape.is_empty()
-                    && let Ok(val) = serde_json::to_value(new_shape)
-                {
-                    obj.insert("newShape".to_string(), val);
+                if let Ok(value) = serde_json::to_value(new_shape) {
+                    obj.insert("newShape".to_string(), value);
                 }
             }
             _ => {}
@@ -1657,6 +1657,7 @@ impl Operation {
         self.attributes().get(key)
     }
 
+    /// The label when set, otherwise the operation type name.
     pub fn display_name(&self) -> String {
         let l = self.label();
         if !l.is_empty() {
@@ -2636,7 +2637,7 @@ impl Operation {
             }),
             "expand" if !input_operands.is_empty() => Some(Operation::Expand {
                 input: at(input_operands, 0)?,
-                new_shape: extras.expand_new_shape,
+                new_shape: extras.expand_new_shape?,
                 options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2758,8 +2759,8 @@ impl Operation {
             }),
             "pad" if !input_operands.is_empty() => Some(Operation::Pad {
                 input: at(input_operands, 0)?,
-                beginning_padding: extras.beginning_padding,
-                ending_padding: extras.ending_padding,
+                beginning_padding: extras.beginning_padding?,
+                ending_padding: extras.ending_padding?,
                 options: attributes.as_pad().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2852,7 +2853,7 @@ impl Operation {
             }
             "reshape" if !input_operands.is_empty() => Some(Operation::Reshape {
                 input: at(input_operands, 0)?,
-                new_shape: extras.reshape_new_shape.clone(),
+                new_shape: extras.reshape_new_shape.clone()?,
                 options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2881,8 +2882,8 @@ impl Operation {
             }),
             "slice" if !input_operands.is_empty() => Some(Operation::Slice {
                 input: at(input_operands, 0)?,
-                starts: extras.starts,
-                sizes: extras.sizes,
+                starts: extras.starts?,
+                sizes: extras.sizes?,
                 options: attributes.as_slice().cloned(),
                 outputs: outputs.to_vec(),
             }),
@@ -2910,7 +2911,7 @@ impl Operation {
             }),
             "tile" if !input_operands.is_empty() => Some(Operation::Tile {
                 input: at(input_operands, 0)?,
-                repetitions: extras.repetitions.clone(),
+                repetitions: extras.repetitions.clone()?,
                 options: attributes.as_operator().cloned(),
                 outputs: outputs.to_vec(),
             }),

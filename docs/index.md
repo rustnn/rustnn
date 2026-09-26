@@ -1,98 +1,115 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/tarekziade/rustnn/refs/heads/main/logo/rustnn.png" alt="rustnn logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/rustnn/rustnn/main/logo/rustnn.png" alt="rustnn logo" width="200"/>
 </div>
 
-# WebNN Python API Documentation
+# rustnn
 
-Welcome to the WebNN Python API documentation. This library provides Python bindings for the [W3C WebNN (Web Neural Network) API](https://www.w3.org/TR/webnn/), enabling you to build, validate, and execute neural network graphs in Python.
+rustnn is a Rust implementation of the [W3C WebNN API](https://www.w3.org/TR/webnn/). It records
+neural network graphs with a WebNN-style builder, validates and shape-infers them, and executes
+them on a pluggable backend.
 
-## Overview
+**Experimental.** rustnn is a development release. APIs change without notice and the crate is
+not meant for production use. The API on this site is on the `main` branch and is used as a git
+dependency; the `rustnn` crate on crates.io (0.5.x) is the earlier converter and loader crate
+without `MLContext`.
 
-The WebNN Python API allows you to:
+## What rustnn provides
 
-- **Build neural network graphs** using a simple, intuitive Python API
-- **Validate graphs** using the same validation logic as web browsers
-- **Convert graphs** to ONNX and CoreML formats
-- **Execute models** on CPU, GPU, or Neural Engine (macOS)
-- **Integrate seamlessly** with NumPy for tensor operations
+- **The WebNN API in Rust.** `MLContext`, `MLGraphBuilder`, `MLGraph`, `MLTensor` and
+  `dispatch` mirror the JavaScript API. rustnn-specific additions carry a `rustnn_` prefix.
+- **Backends selected at context creation.** ONNX Runtime, NVIDIA TensorRT-RTX, Apple CoreML,
+  LiteRT and Huawei CANN, chosen from the WebNN `accelerated` and power-preference hints or
+  forced with a backend hint. A browser WebNN backend for `wasm32` is in progress.
+- **Graph interchange.** Loads `.webnn` text and JSON graphs written by the
+  [webnn-graph](https://github.com/rustnn/webnn-graph) crate and by
+  [onnx2webnn](https://github.com/rustnn/onnx2webnn), saves graphs with `.safetensors`
+  weights, and exports ONNX and CoreML models and, with their features, TensorRT engines,
+  TFLite and CANN models.
+- **Conformance.** The upstream WebNN Web Platform Tests run in-repo against every backend on
+  each pull request; the nightly [WPT dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
+  shows per-operation results.
 
-## Key Features
+## Quick example
 
-- ✓ **W3C Standard Compliant** - Implements the official WebNN specification
-- ✓ **85 Operations** - 89% coverage of WebNN spec operations
-- ✓ **Type-Safe** - Full type hints for IDE autocomplete
-- ✓ **NumPy Integration** - Seamless conversion between NumPy arrays
-- ✓ **Multiple Backends** - ONNX Runtime (CPU/GPU) and CoreML (macOS)
-- ✓ **Actual Execution** - Run models with real tensor inputs/outputs
-- ✓ **Async Support** - Non-blocking execution with Python asyncio
-- ✓ **Fast** - Built with Rust and PyO3 for maximum performance
-- ✓ **Cross-Platform** - Works on Linux, macOS, and Windows
+```rust
+use rustnn::mlcontext::{
+    MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+    MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+};
+use rustnn::operator_enums::MLOperandDataType;
 
-## Quick Example
+fn main() -> rustnn::error::Result<()> {
+    // Pick a backend from the WebNN hints: not accelerated selects a CPU device.
+    let options = MLContextOptions::new(MLPowerPreference::Default, false);
+    let mut context = MLContext::create(&options)?;
 
-```python
-import webnn
-import numpy as np
+    // Record y = relu(x + 1) and compile it for the selected backend.
+    let mut builder = MLGraphBuilder::new(&mut context)?;
+    let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x = builder.input("x", &descriptor)?;
+    let one = builder.constant_from_slice(&descriptor, &[1.0f32; 4])?;
+    let sum = builder.add(x, one)?;
+    let y = builder.relu(sum)?;
+    let mut graph_outputs = MLNamedOperands::new();
+    graph_outputs.insert("y", y);
+    let mut graph = builder.build(&graph_outputs)?;
 
-# Create ML context with device hints
-ml = webnn.ML()
-context = ml.create_context(accelerated=True)  # Request GPU/NPU if available
-builder = context.create_graph_builder()
+    // Tensors live on the backend device; flags control host access.
+    let tensor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x_tensor = context.create_tensor(&tensor.to_writable())?;
+    let y_tensor = context.create_tensor(&tensor.to_readable())?;
+    context.write_tensor(&x_tensor, &[-2.0f32, -1.0, 0.0, 1.0])?;
 
-# Build a simple computation: z = relu(x + y)
-x = builder.input("x", [2, 3], "float32")
-y = builder.input("y", [2, 3], "float32")
-z = builder.add(x, y)
-output = builder.relu(z)
+    let mut inputs = MLNamedTensors::new();
+    inputs.insert("x", &x_tensor);
+    let mut outputs = MLNamedTensors::new();
+    outputs.insert("y", &y_tensor);
+    context.dispatch(&mut graph, &inputs, &outputs)?;
 
-# Compile the graph (backend-agnostic)
-graph = builder.build({"output": output})
-
-# Execute with actual data
-x_data = np.array([[1, -2, 3], [4, -5, 6]], dtype=np.float32)
-y_data = np.array([[-1, 2, -3], [-4, 5, -6]], dtype=np.float32)
-results = context.compute(graph, {"x": x_data, "y": y_data})
-
-print(results["output"])  # [[0. 0. 0.] [0. 0. 0.]]
-
-# Export to ONNX for deployment
-context.convert_to_onnx(graph, "model.onnx")
+    let mut result = [0.0f32; 4];
+    context.read_tensor(&y_tensor, &mut result)?;
+    assert_eq!(result, [0.0, 0.0, 1.0, 2.0]);
+    Ok(())
+}
 ```
 
-## Installation
+Depend on rustnn with a backend feature on the dependency line
+(`rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }`), point
+`ORT_DYLIB_PATH` at the ONNX Runtime shared library and `cargo run` (see
+[Getting Started](user-guide/getting-started.md)). This API is on the `main` branch; the
+`rustnn` crate published on crates.io (0.5.x) predates it, so depend on the git repository until
+the next release.
 
-### From Source
+## Documentation map
 
-```bash
-# Clone the repository
-git clone https://github.com/tarekziade/rustnn.git
-cd rustnn
+| Section | Content |
+|---|---|
+| [Getting Started](user-guide/getting-started.md) | Requirements, adding the crate, first graph, loading `.webnn` files, the CLI |
+| [API Overview](user-guide/api-reference.md) | The WebNN API types, builder conventions, options, data types, errors |
+| [Backends](user-guide/backends.md) | Selection rules and per-backend requirements, execution model and test coverage |
+| [Examples](user-guide/examples.md) | The example programs in `examples/` and short recipes |
+| [Advanced Topics](user-guide/advanced.md) | Backend hints and options, dynamic shapes, saving and exporting graphs, caching, debugging |
+| [Troubleshooting](user-guide/troubleshooting.md) | Error messages by phase, their causes and fixes |
+| [Rust API Reference](https://rustnn.github.io/rustnn/api/rustnn/) | Generated rustdoc for every public item, deployed from `main`; locally `make docs-api` writes it to `target/doc/rustnn/` |
+| [Architecture](architecture/overview.md) | Layers, data flow, module map and design decisions |
+| [Development](development/setup.md) | Toolchain, build and test commands, adding operations and backends, CI |
+| [Converter Internals](development/converters.md) | The converter contract, backend-specific lowering rules, debugging emitted models |
+| [Documentation Policy](development/documentation-policy.md) | What to update when code changes; rules for contributors and coding agents |
+| [Implementation Status](development/implementation-status.md) | API surface, backend status and known gaps |
+| [Backend Operator Support](development/backend-operator-support.md) | Generated operation-by-backend matrix |
+| [WPT Conformance Guide](testing/wpt-test-guide.md) | Running and triaging the Web Platform Tests |
+| [TensorRT-RTX](integration/tensorrt.md) | The native TensorRT backend, caching and precision |
+| [CoreML](integration/coreml.md), [LiteRT](integration/litert.md), [CANN](integration/cann.md), [Browser WebNN](integration/webnn-browser.md) | Requirements, device mapping, testing and limits per backend |
+| [WebNN Specification and rustnn](reference/webnn-spec.md) | Where each specification concept lives in the Rust API |
+| [Graph Files and Weights](reference/graph-files.md) | The `.webnn` text and JSON formats, external weights, backend export formats |
 
-# Install maturin
-pip install maturin
+## Python
 
-# Build and install
-maturin develop --features python
-```
-
-### From PyPI
-
-```bash
-pip install pywebnn
-```
-
-## Documentation Structure
-
-- **[Getting Started](user-guide/getting-started.md)** - Installation and first steps
-- **[API Reference](user-guide/api-reference.md)** - Complete API documentation
-- **[Examples](user-guide/examples.md)** - Code examples and tutorials
-- **[Advanced Topics](user-guide/advanced.md)** - Advanced usage patterns
+Python bindings live in the separate [pywebnn](https://github.com/rustnn/pywebnn) package, which
+uses rustnn as its core library. This repository contains no Python API.
 
 ## Support
 
-- **GitHub Issues**: [Report bugs or request features](https://github.com/tarekziade/rustnn/issues)
-- **Specification**: [W3C WebNN Spec](https://www.w3.org/TR/webnn/)
-
-## License
-
-Apache-2.0 License - See [LICENSE](https://github.com/tarekziade/rustnn/blob/main/LICENSE) for details.
+- Issues and discussions: [github.com/rustnn/rustnn](https://github.com/rustnn/rustnn/issues)
+- Specification: [W3C WebNN](https://www.w3.org/TR/webnn/)
+- License: Apache-2.0 ([LICENSE](https://github.com/rustnn/rustnn/blob/main/LICENSE))

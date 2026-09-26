@@ -330,6 +330,7 @@ pub fn build_method_args(
         }
 
         if let Some(arr) = value.as_array()
+            && !arr.is_empty()
             && arr.iter().all(|x| is_operand_ref(x, operand_names))
         {
             let ops: Vec<MLOperand> = arr
@@ -670,7 +671,7 @@ fn invoke_builder_method(
             let opts = operator_options.as_conv2d().cloned().unwrap_or_default();
             Ok(InvokeResult::Single(
                 builder
-                    .conv2_with_options(input, filter, opts)
+                    .conv2d_with_options(input, filter, opts)
                     .map_err(|e| e.to_string())?,
             ))
         }
@@ -819,7 +820,18 @@ fn invoke_builder_method(
             let opts = operator_options.as_slice().cloned().unwrap_or_default();
             Ok(InvokeResult::Single(
                 builder
-                    .slice_with_options(input, &extras.starts, &extras.sizes, opts)
+                    .slice_with_options(
+                        input,
+                        &extras
+                            .starts
+                            .clone()
+                            .ok_or_else(|| op_err(op_name, "requires starts"))?,
+                        &extras
+                            .sizes
+                            .clone()
+                            .ok_or_else(|| op_err(op_name, "requires sizes"))?,
+                        opts,
+                    )
                     .map_err(|e| e.to_string())?,
             ))
         }
@@ -946,21 +958,12 @@ fn invoke_builder_method(
         }
         "pad" => {
             let input = expect_operand(args, 0, op_name)?;
-            let mut beginning = extras.beginning_padding;
-            let mut ending = extras.ending_padding;
-            if beginning.is_empty() && ending.is_empty() {
-                let rank = builder
-                    .rustnn_operand_shape(input)
-                    .map_err(|e| e.to_string())?
-                    .len();
-                beginning = vec![0u32; rank];
-                ending = vec![0u32; rank];
-            } else if beginning.is_empty() || ending.is_empty() {
-                return Err(op_err(
-                    op_name,
-                    "requires beginningPadding and endingPadding",
-                ));
-            }
+            let beginning = extras
+                .beginning_padding
+                .ok_or_else(|| op_err(op_name, "requires beginningPadding"))?;
+            let ending = extras
+                .ending_padding
+                .ok_or_else(|| op_err(op_name, "requires endingPadding"))?;
             let opts = operator_options.as_pad().cloned().unwrap_or_default();
             Ok(InvokeResult::Single(
                 builder
@@ -983,7 +986,10 @@ fn invoke_builder_method(
                 builder
                     .reshape_with_options(
                         input,
-                        extras.reshape_new_shape.clone(),
+                        extras
+                            .reshape_new_shape
+                            .clone()
+                            .ok_or_else(|| op_err(op_name, "requires newShape"))?,
                         base_operator_options(&operator_options),
                     )
                     .map_err(|e| e.to_string())?,
@@ -995,7 +1001,10 @@ fn invoke_builder_method(
                 builder
                     .expand_with_options(
                         input,
-                        extras.expand_new_shape.clone(),
+                        extras
+                            .expand_new_shape
+                            .clone()
+                            .ok_or_else(|| op_err(op_name, "requires newShape"))?,
                         base_operator_options(&operator_options),
                     )
                     .map_err(|e| e.to_string())?,
@@ -1007,7 +1016,10 @@ fn invoke_builder_method(
                 builder
                     .tile_with_options(
                         input,
-                        extras.repetitions.clone(),
+                        extras
+                            .repetitions
+                            .clone()
+                            .ok_or_else(|| op_err(op_name, "requires repetitions"))?,
                         base_operator_options(&operator_options),
                     )
                     .map_err(|e| e.to_string())?,

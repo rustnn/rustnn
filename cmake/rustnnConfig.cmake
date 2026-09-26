@@ -1,0 +1,26 @@
+get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+find_path(RUSTNN_INCLUDE_DIR
+  NAMES rustnn/rustnn.h rustnn/rustnn.hpp
+  HINTS "${PACKAGE_PREFIX_DIR}/include"
+  NO_DEFAULT_PATH
+  REQUIRED)
+
+find_library(RUSTNN_LIBRARY
+  NAMES rustnn
+  HINTS "${PACKAGE_PREFIX_DIR}/lib" "${PACKAGE_PREFIX_DIR}/lib64"
+  PATH_SUFFIXES "${CMAKE_LIBRARY_ARCHITECTURE}"
+  NO_DEFAULT_PATH
+  REQUIRED)
+
+if(NOT TARGET rustnn::rustnn)
+  add_library(rustnn::rustnn UNKNOWN IMPORTED)
+  set_target_properties(rustnn::rustnn PROPERTIES
+    IMPORTED_LOCATION "${RUSTNN_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "${RUSTNN_INCLUDE_DIR}")
+endif()
+
+set(rustnn_FOUND TRUE)
+set(RUSTNN_FOUND TRUE)
+set(RUSTNN_LIBRARIES rustnn::rustnn)
+set(RUSTNN_INCLUDE_DIRS "${RUSTNN_INCLUDE_DIR}")

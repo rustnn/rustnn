@@ -7,6 +7,8 @@ rust-version = "1.97"
 description = "W3C WebNN implementation with ONNX, CoreML, and TensorRT backends [DO NOT USE IN PRODUCTION - Development Release]"
 license = "Apache-2.0"
 repository = "https://github.com/rustnn/rustnn"
+homepage = "https://rustnn.github.io/rustnn/"
+documentation = "https://rustnn.github.io/rustnn/api/rustnn/"
 keywords = ["webnn", "onnx", "coreml", "tensorrt", "neural-networks"]
 categories = ["science", "api-bindings"]
 exclude = [
@@ -19,15 +21,23 @@ exclude = [
     "!README.md",
 ]
 
+# docs.rs builds with the backends that compile on Linux so their APIs appear in the docs.
+[package.metadata.docs.rs]
+features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "dynamic-inputs"]
+
 # The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to `cfg(feature = "cargo-clippy")`,
 # which rustc flags as an unexpected cfg. A file-level `#![allow(unexpected_cfgs)]` does not
 # suppress it because the diagnostic originates inside the external macro; declaring the value
 # here (crate-wide check-cfg) is the reliable fix and keeps CI's `-D warnings` green.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))', 'cfg(web_sys_unstable_apis)'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(feature, values("cargo-clippy"))',
+    'cfg(web_sys_unstable_apis)',
+] }
 
 [features]
 default = []
+capi = ["dep:pretty_env_logger"]
 dynamic-inputs = []
 coreml-runtime = ["objc", "block"]
 onnx-runtime = ["ort", "ndarray"]
@@ -42,7 +52,63 @@ cann-runtime-mock = []
 native-examples = []
 wpt-embed-corpus = []
 webnn-wpt-tests = ["wpt-embed-corpus"]
-webnn-runtime = ["wasm-bindgen", "web-sys", "js-sys", "pollster", "wasm-bindgen-futures", "Ml", "MlArgMinMaxOptions", "MlBatchNormalizationOptions", "MlClampOptions", "MlContext", "MlContextOptions", "MlConv2dFilterOperandLayout", "MlConv2dOptions", "MlConvTranspose2dFilterOperandLayout", "MlConvTranspose2dOptions", "MlCumulativeSumOptions", "MlEluOptions", "MlGatherOptions", "MlGemmOptions", "MlGraph", "MlGraphBuilder", "MlGruCellOptions", "MlGruOptions", "MlGruWeightLayout", "MlHardSigmoidOptions", "MlInputOperandLayout", "MlInstanceNormalizationOptions", "MlInterpolationMode", "MlLayerNormalizationOptions", "MlLeakyReluOptions", "MlLinearOptions", "MlLstmCellOptions", "MlLstmOptions", "MlLstmWeightLayout", "MlOperand", "MlOperandDataType", "MlOperandDescriptor", "MlOperatorOptions", "MlPadOptions", "MlPaddingMode", "MlPool2dOptions", "MlPowerPreference", "MlRecurrentNetworkActivation", "MlRecurrentNetworkDirection", "MlReduceOptions", "MlResample2dOptions", "MlReverseOptions", "MlRoundingType", "MlScatterOptions", "MlSliceOptions", "MlSplitOptions", "MlTensor", "MlTensorDescriptor", "MlTransposeOptions", "MlTriangularOptions"]
+webnn-runtime = [
+    "wasm-bindgen",
+    "web-sys",
+    "js-sys",
+    "pollster",
+    "wasm-bindgen-futures",
+    "Ml",
+    "MlArgMinMaxOptions",
+    "MlBatchNormalizationOptions",
+    "MlClampOptions",
+    "MlContext",
+    "MlContextOptions",
+    "MlConv2dFilterOperandLayout",
+    "MlConv2dOptions",
+    "MlConvTranspose2dFilterOperandLayout",
+    "MlConvTranspose2dOptions",
+    "MlCumulativeSumOptions",
+    "MlEluOptions",
+    "MlGatherOptions",
+    "MlGemmOptions",
+    "MlGraph",
+    "MlGraphBuilder",
+    "MlGruCellOptions",
+    "MlGruOptions",
+    "MlGruWeightLayout",
+    "MlHardSigmoidOptions",
+    "MlInputOperandLayout",
+    "MlInstanceNormalizationOptions",
+    "MlInterpolationMode",
+    "MlLayerNormalizationOptions",
+    "MlLeakyReluOptions",
+    "MlLinearOptions",
+    "MlLstmCellOptions",
+    "MlLstmOptions",
+    "MlLstmWeightLayout",
+    "MlOperand",
+    "MlOperandDataType",
+    "MlOperandDescriptor",
+    "MlOperatorOptions",
+    "MlPadOptions",
+    "MlPaddingMode",
+    "MlPool2dOptions",
+    "MlPowerPreference",
+    "MlRecurrentNetworkActivation",
+    "MlRecurrentNetworkDirection",
+    "MlReduceOptions",
+    "MlResample2dOptions",
+    "MlReverseOptions",
+    "MlRoundingType",
+    "MlScatterOptions",
+    "MlSliceOptions",
+    "MlSplitOptions",
+    "MlTensor",
+    "MlTensorDescriptor",
+    "MlTransposeOptions",
+    "MlTriangularOptions",
+]
 pollster = ["dep:pollster"]
 
 MimeTypeArray = []
@@ -126,7 +192,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = { version = "3.8", features = ["base64"] }
 thiserror = "2.0"
-base64 = "0.22"
+base64 = "0.23"
 prost = "0.12"
 prost-types = "0.12"
 bytes = "1.6"
@@ -141,22 +207,21 @@ ort = { version = "=2.0.0-rc.13", optional = true, features = [
     "api-27",
 ] }
 half = "2.4"
-safetensors = "0.7"
 trtx = { version = "0.8.0", optional = true }
 litert = { version = "0.2.1", optional = true }
 litert-sys = { version = "0.2.1", optional = true }
 flatbuffers = { version = "25.12", optional = true }
 regex = "1.11"
-hiai-rs = { git = "https://github.com/rustnn/hiai-rs", rev = "a7b8ae5", optional = true }
+hiai-rs = { version = "0.1.0", optional = true }
 webnn-graph = { git = "https://github.com/rustnn/webnn-graph", branch = "main" }
 webnn-onnx-utils = { git = "https://github.com/rustnn/webnn-onnx-utils", branch = "main" }
 
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true }
 log = "0.4.29"
-pretty_env_logger = "0.5.0"
+pretty_env_logger = { version = "0.5.0", optional = true }
 seahash = "4.1.0"
-dirs = "6.0.0"
-zstd = { version = "0.13", optional = true }
+dirs = "7.0.0"
+zstd = { version = "0.14", optional = true }
 
 
 web-sys = { version = "0.3.104", features = [
@@ -170,7 +235,8 @@ js-sys = { version = "0.3.104", optional = true }
 wasm-bindgen-futures = { version = "0.4.77", optional = true }
 
 # The exception feature is needed to avoid undefined behavior when objc throws exceptions
-objc = { version = "0.2", optional = true, features = [] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
+objc = { version = "0.2", optional = true, features = [
+] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
 block = { version = "0.1", optional = true }
 pollster = { version = "1.0.1", optional = true }
 
@@ -179,23 +245,29 @@ pollster = { version = "1.0.1", optional = true }
 objc = { version = "0.2", optional = true, features = ["exception"] }
 
 [build-dependencies]
-prost-build = "0.12"
+# cleanup-markdown rewrites the .proto comments as Markdown and fences their code blocks as
+# text, so the generated docs keep Apple's comments without producing failing doctests.
+prost-build = { version = "0.12", features = ["cleanup-markdown"] }
 cc = "1.0"
 seahash = "4.1.0"
 
 [dev-dependencies]
+safetensors = "0.8"
 half = "2.4"
-insta = { version = "1.47.2", features = ["yaml"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-dirs = "6.0.0"
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+] }
 anyhow = "1.0.102"
 futures-util = "0.3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+] }
 libtest-mimic = "0.8.2"
 pretty_env_logger = "0.5.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
@@ -217,11 +289,66 @@ name = "smollm_mlcontext"
 path = "examples/smollm_mlcontext.rs"
 required-features = ["native-examples"]
 
-[profile.dev.package]
-insta.opt-level = 3
-similar.opt-level = 3
-
 [lib]
 name = "rustnn"
 crate-type = ["rlib"]
 doctest = false
+
+[package.metadata.capi.header]
+# Used as header file name. By default this is equal to the crate name.
+# The name can be with or without the header filename extension `.h`
+name = "rustnn"
+# Install the header into a subdirectory with the name of the crate. This
+# is enabled by default, pass `false` or "" to disable it.
+subdirectory = "rustnn"
+# Generate the header file with `cbindgen`, or copy a pre-generated header
+# from the `assets` subdirectory. By default a header is generated.
+generation = true
+# Can be use to disable header generation completely.
+# This can be used when generating dynamic modules instead of an actual library.
+enabled = true
+
+[package.metadata.capi.pkg_config]
+# Used as the package name in the pkg-config file and defaults to the crate name.
+name = "rustnn"
+# Used as the pkg-config file name and defaults to the crate name.
+filename = "rustnn"
+# Used as the package description in the pkg-config file and defaults to the crate description.
+description = "C API for the rustnn WebNN implementation"
+# Used as the package version in the pkg-config file and defaults to the crate version.
+version = "0.5.11"
+# Used as the Requires field in the pkg-config file, if defined
+#requires = "gstreamer-1.0, gstreamer-base-1.0"
+# Used as the Requires.private field in the pkg-config file, if defined
+#requires_private = "gobject-2.0, glib-2.0 >= 2.56.0, gmodule-2.0"
+# Strip the include search path from the last n components, useful to support installing in a
+# subdirectory but then include with the path. By default it is 0.
+#strip_include_path_components = 0
+
+[package.metadata.capi.library]
+# Used as the library name and defaults to the crate name. This might get
+# prefixed with `lib` depending on the target platform.
+name = "rustnn"
+# Used as library version and defaults to the crate version. How this is used
+# depends on the target platform.
+version = "0.5.11"
+# Used to disable versioning links when installing the dynamic library
+versioning = true
+# Instead of using semver, select a fixed number of version components for your SONAME version suffix:
+# Setting this to 1 with a version of 0.0.0 allows a suffix of `.so.0`
+# Setting this to 3 always includes the full version in the SONAME (indicate any update is ABI breaking)
+#version_suffix_components = 2
+# Add `-Cpanic=abort` to the RUSTFLAGS automatically, it may be useful in case
+# something might panic in the crates used by the library.
+rustflags = "-Cpanic=abort"
+# Used to disable the generation of additional import library file in platforms
+# that have the concept such as Windows
+import_library = true
+
+[package.metadata.capi.install.data]
+subdirectory = "rustnn"
+asset = [
+    { from = "cmake/rustnnConfig.cmake.in", to = "rustnn/cmake" },
+    { from = "cmake/rustnnConfig.cmake", to = "rustnn/cmake" },
+    { from = "cmake/rustnnConfigVersion.cmake", to = "rustnn/cmake" },
+]

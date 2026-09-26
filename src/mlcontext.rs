@@ -1,3 +1,14 @@
+//! WebNN `MLContext`, `MLGraph`, `MLTensor` and `MLOperand`.
+//!
+//! [`MLContext::create`] selects a backend from [`MLContextOptions`] (see
+//! [`crate::backend_selection`]), [`MLGraphBuilder`] compiles a graph for that backend, and
+//! [`MLContext::dispatch`] executes it on tensors created by [`MLContext::create_tensor`].
+//! Methods that are not part of the WebNN specification carry a `rustnn_` prefix.
+//!
+//! Async parts of the JavaScript API (`compute`, `readTensor`, `writeTensor`) are
+//! synchronous here; the corresponding methods are marked `//async` in the source until an
+//! async API is settled. Methods that still `todo!()` are listed in `docs/development/implementation-status.md`.
+
 #![allow(dead_code, unused_variables)]
 
 use log::{debug, info};
@@ -11,6 +22,7 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
+use crate::operator_options::OperandIndex;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
 use crate::backends::cann::CannContext;
@@ -148,16 +160,19 @@ impl<'context> MLBackendGraph<'context> {
 
 // types for MLContext
 
+/// Placeholder for the WebGPU device of `ML.createContext(GPUDevice)`; not implemented yet.
 // aka WebGpuDevice
 #[derive(Debug)]
 pub struct GpuDevice {}
 
+/// Reason a context was lost. <https://www.w3.org/TR/webnn/#api-mlcontext>
 #[derive(Debug)]
 pub struct MLContextLostInfo {
     message: String,
 }
 
 impl MLContextLostInfo {
+    /// Human-readable description of why the context was lost.
     pub fn message(&self) -> &str {
         &self.message
     }
@@ -181,29 +196,37 @@ pub struct MLTensor {
 }
 
 impl MLTensor {
+    /// Element data type.
     pub fn data_type(&self) -> MLOperandDataType {
         self.descriptor.data_type
     }
+    /// Active shape; changed by `MLContext::rustnn_resize_tensor` for dynamic graphs.
     pub fn shape(&self) -> &[u64] {
         &self.descriptor.shape
     }
+    /// Whether `MLContext::read_tensor` may read this tensor.
     pub fn readable(&self) -> bool {
         self.descriptor.readable
     }
+    /// Whether `MLContext::write_tensor` may write this tensor.
     pub fn writable(&self) -> bool {
         self.descriptor.writable
     }
+    /// Whether the tensor was created as a constant.
     pub fn constant(&self) -> bool {
         self.constant
     }
+    /// Not implemented: dropping the tensor releases it. <https://www.w3.org/TR/webnn/#api-mltensor-destroy>
     // TODO: or replace by Rust's drop?
-    pub fn destoy(&self) {
+    pub fn destroy(&self) {
         todo!() // destroying needs to cancel pending promises
     }
+    /// Not implemented.
     pub fn destroyed(&self) -> bool {
         todo!() // JS has a isDestroyed method
     }
 
+    /// Bytes a host buffer needs for `read_tensor` / `write_tensor` (4-bit types are packed).
     pub fn rustnn_required_bytes(&self) -> usize {
         self.descriptor.rustnn_required_bytes()
     }
@@ -213,12 +236,17 @@ impl MLTensor {
     }
 }
 
+/// A graph compiled for one backend by [`MLGraphBuilder::build`]. <https://www.w3.org/TR/webnn/#api-mlgraph>
+///
+/// `input_descriptors` and `output_descriptors` are the named graph inputs and outputs that
+/// [`MLContext::dispatch`] validates tensor bindings against.
 #[derive(Debug)]
 pub struct MLGraph<'context> {
     pub(crate) backend: MLBackendGraph<'context>,
 
-    // inputs/outputs of compiled graph
+    /// Graph inputs by name, as declared with `MLGraphBuilder::input`.
     pub input_descriptors: HashMap<String, OperandDescriptor>,
+    /// Graph outputs by name, as passed to `MLGraphBuilder::build`.
     pub output_descriptors: HashMap<String, OperandDescriptor>,
 }
 
@@ -307,10 +335,13 @@ impl<'context> MLGraph<'context> {
     }
 }
 
+/// Placeholder for `MLContext.opSupportLimits()`; not implemented yet.
 #[derive(Debug)]
 pub struct MLOpSupportLimits {}
 
-// https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor
+/// Data type and shape of a graph operand. <https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor>
+///
+/// Shapes are `u64` here (the specification uses `unsigned long`).
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLOperandDescriptor {
     data_type: MLOperandDataType,
@@ -332,22 +363,27 @@ impl From<&MLOperandDescriptor> for OperandDescriptor {
 }
 
 impl MLOperandDescriptor {
+    /// Descriptor for `data_type` and `shape` (an empty shape is a scalar).
     pub fn new(data_type: MLOperandDataType, shape: Vec<u64>) -> Self {
         Self { data_type, shape }
     }
 
+    /// Element data type.
     pub fn data_type(&self) -> MLOperandDataType {
         self.data_type
     }
 
+    /// Dimensions, outermost first.
     pub fn shape(&self) -> &[u64] {
         &self.shape
     }
 
+    /// Replace the data type.
     pub fn set_data_type(&mut self, data_type: MLOperandDataType) {
         self.data_type = data_type;
     }
 
+    /// Replace the shape.
     pub fn set_shape(&mut self, shape: Vec<u64>) {
         self.shape = shape;
     }
@@ -358,7 +394,10 @@ impl MLOperandDescriptor {
     }
 }
 
-/// https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor
+/// Shape, data type and host-access flags of an [`MLTensor`].
+///
+/// A tensor is neither readable nor writable by default; use [`Self::to_readable`] /
+/// [`Self::to_writable`] or the setters. <https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor>
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLTensorDescriptor {
     operand_descriptor: MLOperandDescriptor,
@@ -366,6 +405,11 @@ pub struct MLTensorDescriptor {
     writable: bool,
 }
 
+/// Handle to an operand recorded by an [`MLGraphBuilder`]. <https://www.w3.org/TR/webnn/#api-mloperand>
+///
+/// The handle is an index into the builder's graph; shape and data type are looked up with
+/// [`MLOperand::shape`] / [`MLOperand::data_type`] or, while building, with
+/// [`MLGraphBuilder::rustnn_operand_shape`] / [`MLGraphBuilder::rustnn_operand_data_type`].
 #[derive(Debug, Eq, PartialEq, Default, Copy, Clone, Hash)]
 pub struct MLOperand {
     pub(crate) id: usize,
@@ -374,6 +418,7 @@ pub struct MLOperand {
 // TODO: actually, WebNN requires shape, data_type directly on MLOperand
 // would require MLOperand==Operand and we give the user &MLOperand or Rc<MLOperand>
 impl MLOperand {
+    /// Shape of the operand in `graph` (dynamic dimensions report their maximum size).
     pub fn shape(self, graph: &GraphInfo) -> Result<Vec<u64>> {
         let operand = get_operand(self, graph)?;
 
@@ -385,10 +430,23 @@ impl MLOperand {
             .collect())
     }
 
+    /// Data type of the operand in `graph`.
     pub fn data_type(self, graph: &GraphInfo) -> Result<MLOperandDataType> {
         let operand = get_operand(self, graph)?;
 
         Ok(operand.descriptor.data_type.try_into()?)
+    }
+
+    /// Index of the operand in its builder's graph (rustnn extension). Operand fields of the
+    /// `ML*Options` structs, such as `MLConv2dOptions::bias`, take this index.
+    pub fn rustnn_index(self) -> OperandIndex {
+        self.id as OperandIndex
+    }
+}
+
+impl From<MLOperand> for OperandIndex {
+    fn from(operand: MLOperand) -> Self {
+        operand.rustnn_index()
     }
 }
 
@@ -413,6 +471,7 @@ impl std::ops::DerefMut for MLTensorDescriptor {
 }
 
 impl MLTensorDescriptor {
+    /// Descriptor with both host-access flags off.
     pub fn new(data_type: MLOperandDataType, shape: Vec<u64>) -> Self {
         Self {
             operand_descriptor: MLOperandDescriptor { data_type, shape },
@@ -420,6 +479,7 @@ impl MLTensorDescriptor {
             readable: false,
         }
     }
+    /// Descriptor with the data type and shape of an operand descriptor and both flags off.
     pub fn from_operand_descriptor(operand_descriptor: &MLOperandDescriptor) -> Self {
         Self {
             operand_descriptor: operand_descriptor.clone(),
@@ -427,36 +487,44 @@ impl MLTensorDescriptor {
             readable: false,
         }
     }
+    /// Whether the tensor may be read with `MLContext::read_tensor`.
     pub fn readable(&self) -> bool {
         self.readable
     }
 
+    /// Whether the tensor may be written with `MLContext::write_tensor`.
     pub fn writable(&self) -> bool {
         self.writable
     }
 
+    /// Set the writable flag.
     pub fn set_writable(&mut self, writable: bool) {
         self.writable = writable;
     }
 
+    /// Set the readable flag.
     pub fn set_readable(&mut self, readable: bool) {
         self.readable = readable;
     }
 
+    /// Data type and shape part of the descriptor.
     pub fn operand_descriptor(&self) -> &MLOperandDescriptor {
         &self.operand_descriptor
     }
 
+    /// Replace the data type and shape part of the descriptor.
     pub fn set_operand_descriptor(&mut self, operand_descriptor: MLOperandDescriptor) {
         self.operand_descriptor = operand_descriptor;
     }
 
+    /// Copy with the writable flag set.
     pub fn to_writable(&self) -> Self {
         let mut copy = self.clone();
         copy.writable = true;
         copy
     }
 
+    /// Copy with the readable flag set.
     pub fn to_readable(&self) -> Self {
         let mut copy = self.clone();
         copy.readable = true;
@@ -464,6 +532,11 @@ impl MLTensorDescriptor {
     }
 }
 
+/// Execution context bound to one backend device. <https://www.w3.org/TR/webnn/#api-mlcontext>
+///
+/// Create it with [`MLContext::create`], build graphs with [`MLGraphBuilder::new`], create
+/// tensors with [`MLContext::create_tensor`], and run graphs with [`MLContext::dispatch`].
+/// The context is `Send + Sync`, so it can be shared behind a `Mutex` across threads.
 // TODO: this is wrong. must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
 #[derive(Debug)]
 pub struct MLContext<'context> {
@@ -472,6 +545,13 @@ pub struct MLContext<'context> {
 }
 
 impl<'context> MLContext<'context> {
+    /// Select a backend device for `options` and create the context.
+    ///
+    /// The WebNN hints (`accelerated`, power preference) and the rustnn hints
+    /// ([`MLContextOptions::with_rustnn_backend_hint`], [`MLContextOptions::with_rustnn_device_hint`])
+    /// are resolved by [`crate::backend_selection`]. Fails with
+    /// [`Error::NoBackendAvailable`] or [`Error::NoBackendAvailableForBackendHint`] when no
+    /// compiled backend can serve the request.
     // those are methods on `create_context`
     //pub async
     pub fn create(options: &MLContextOptions) -> Result<Self> {
@@ -499,6 +579,7 @@ impl<'context> MLContext<'context> {
         Ok(Self { backend, device })
     }
 
+    /// Not implemented: `ML.createContext(GPUDevice)`.
     #[expect(unreachable_code)]
     pub async fn create_from_gpu_device(gpu_device: &GpuDevice) -> Result<Self> {
         let device = select_backend_by_gpu(gpu_device)?;
@@ -511,14 +592,23 @@ impl<'context> MLContext<'context> {
         };
         Ok(Self { backend, device })
     }
+    /// Whether the selected device is a GPU or NPU rather than a CPU.
     pub fn accelerated(&self) -> bool {
         self.backend.accelerated()
     }
 
+    /// Build a graph loaded from rustnn's `.webnn`/`.json` formats.
+    pub fn rustnn_build_graph(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>> {
+        let mut builder = self.backend.create_builder()?;
+        builder.build(graph)
+    }
+
+    /// Not implemented: `MLContext.lost`.
     pub async fn lost(&self) -> MLContextLostInfo {
         todo!()
     }
 
+    /// Not implemented: `MLContext.createConstantTensor`. Use `MLGraphBuilder::constant_from_slice`.
     pub async fn create_constant_tensor(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -527,28 +617,39 @@ impl<'context> MLContext<'context> {
         todo!()
     }
 
+    /// Allocate a tensor on the backend device. <https://www.w3.org/TR/webnn/#api-mlcontext-createtensor>
     // async
     pub fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
         self.backend.create_tensor(descriptor)
     }
 
+    /// Not implemented: dropping the context releases it. <https://www.w3.org/TR/webnn/#api-mlcontext-destroy>
     // omit destroy()? We're not JS, objects can be destroyed via drop, we could do destroy stuff in Drop
     pub fn destroy(self) {
         todo!()
     }
 
+    /// Backend selected for this context (rustnn extension).
     pub fn rustnn_backend(&self) -> Backend {
         self.device.backend()
     }
 
+    /// Backend device selected for this context (rustnn extension).
     pub fn rustnn_device(&self) -> BackendDevice {
         self.device
     }
 
+    /// Device class (CPU, GPU or NPU) of the selected device (rustnn extension).
     pub fn rustnn_device_type(&self) -> DeviceType {
         self.device.device_type()
     }
 
+    /// Execute `graph` with the named input and output tensors.
+    /// <https://www.w3.org/TR/webnn/#api-mlcontext-dispatch>
+    ///
+    /// Before the backend runs, rustnn rejects a tensor bound under two names
+    /// ([`Error::DuplicateTensorBinding`]) and checks every binding's name, shape and data
+    /// type against the compiled graph ([`Error::GraphDispatchError`]).
     pub fn dispatch(
         &mut self,
         graph: &mut MLGraph,
@@ -564,10 +665,14 @@ impl<'context> MLContext<'context> {
         self.backend.dispatch(graph, inputs, outputs)
     }
 
+    /// Not implemented: `MLContext.opSupportLimits()`. Backend coverage is in the generated
+    /// operator support report.
     pub fn op_support_limits(&self) -> MLOpSupportLimits {
         todo!()
     }
 
+    /// Copy a readable tensor into `array`; `array` must hold exactly
+    /// [`MLTensor::rustnn_required_bytes`] bytes. <https://www.w3.org/TR/webnn/#api-mlcontext-readtensor>
     //async
     pub fn read_tensor<T: bytemuck::Pod>(
         &mut self,
@@ -594,6 +699,8 @@ impl<'context> MLContext<'context> {
             .read_tensor(tensor, bytemuck::cast_slice_mut(array))
     }
 
+    /// Copy `array` into a writable tensor; `array` must hold exactly
+    /// [`MLTensor::rustnn_required_bytes`] bytes. <https://www.w3.org/TR/webnn/#api-mlcontext-writetensor>
     //async
     pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
         debug!(
@@ -616,10 +723,15 @@ impl<'context> MLContext<'context> {
             .write_tensor(tensor, bytemuck::cast_slice(array))
     }
 
+    /// Change the active shape of a tensor without reallocating (rustnn extension for
+    /// graphs built with the `dynamic-inputs` feature). The new shape must fit the capacity
+    /// reserved with [`Self::rustnn_set_tensor_capacity`].
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
         self.backend.rustnn_resize_tensor(tensor, new_shape)
     }
 
+    /// Reserve storage for the largest shape a tensor will take (rustnn extension); see
+    /// [`Self::rustnn_resize_tensor`].
     pub fn rustnn_set_tensor_capacity(
         &mut self,
         tensor: &mut MLTensor,

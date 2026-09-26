@@ -1,6 +1,6 @@
 # WPT Test Guide
 
-The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests) against rustnn's WebNN API (`MLGraphBuilder` + `MLContext::dispatch`). Tests are loaded live from `.https.any.js` files via a Node.js bridge — there is no checked-in JSON snapshot of the corpus.
+The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.com/web-platform-tests/wpt/tree/master/webnn/conformance_tests) against rustnn's WebNN API (`MLGraphBuilder` + `MLContext::dispatch`). Tests are loaded live from `.https.any.js` files via a Node.js bridge — there is no checked-in JSON dump of the corpus.
 
 **Entry point:** `tests/run_wpt_conformance.rs`  
 **Harness modules:** `tests/wpt_conformance/`
@@ -9,8 +9,12 @@ The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.c
 
 - **Node.js** on `PATH` (used by `scripts/wpt_bridge/dump_corpus.mjs`)
 - **WPT corpus** in `.cache/wpt` (fetched automatically on first run, or manually via `make fetch-wpt`)
-- **ONNX Runtime** for the default `onnx` backend (`make onnxruntime-download` is a dependency of `make test-wpt`)
-- **TensorRT** (optional) for the `trtx` backend — requires `trtx-runtime` feature and a working GPU; unavailable backends are skipped at startup
+- **ONNX Runtime** for the default `onnx` backend (`make onnxruntime-download` is a dependency of `make test-wpt`; set `ORT_DYLIB_PATH` when running cargo directly)
+- **TensorRT-RTX** (optional) for the `trtx` backend: `trtx-runtime` feature and an NVIDIA GPU
+- **LiteRT** (optional) for the `litert` backend: `litert-runtime` feature and `flatc` at build time; `make test-wpt-litert` sets the library path
+- **CoreML** (optional, macOS) for the `coreml` backend: `coreml-runtime` feature
+
+Unavailable backends are skipped at startup with a log message.
 
 ## Quick start
 
@@ -18,7 +22,7 @@ The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.c
 # Fetch WPT corpus (optional — first run auto-fetches if missing)
 make fetch-wpt
 
-# Full suite on ONNX CPU (~2482 cases, ~15–25 s)
+# Full suite on ONNX CPU (well under a minute in a release build)
 make test-wpt
 
 # Filter by operation name
@@ -26,6 +30,10 @@ make test-wpt-op OP=relu
 
 # Full suite on TensorRT (skips if GPU unavailable)
 make test-wpt-trtx
+
+# LiteRT, and CoreML on macOS
+make test-wpt-litert
+make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
@@ -67,9 +75,20 @@ trtx::clamp::clamp_uint64_1D_tensor_with_bigint_max
 | `make fetch-wpt` | Download/update WPT corpus into `.cache/wpt` |
 | `make test-wpt` | Full suite, ONNX CPU backend |
 | `make test-wpt-trtx` | Full suite, TensorRT backend |
+<<<<<<< HEAD
 | `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
 | `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
 | `make test-wpt-cann` | Full suite on the CANN/HiAI NPU (cross-compiled for OHOS, run over `hdc`) |
+||||||| parent of ad69c55f (Initial doc cleanup)
+| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
+| `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
+=======
+| `make test-wpt-litert` | Full suite, LiteRT backend |
+| `make test-wpt-coreml` | Full suite, CoreML backend (macOS); `make test-wpt-coreml-report` also writes the JSON report |
+| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`); `WPT_BACKEND=<backend>` selects the backend |
+| `make test-wpt-report` | Full run with JSON/HTML reports even on failures; `WPT_BACKEND=onnx|trtx|litert|coreml` picks the backend |
+| `make wpt-sync-onnx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-trtx` | Regenerate PASS snapshots and expected-failure lists against the pinned corpus |
+>>>>>>> ad69c55f (Initial doc cleanup)
 
 Equivalent `cargo` invocations:
 
@@ -91,11 +110,21 @@ Set `WPT_BACKEND` to limit which backends register trials:
 
 | Value | Backend | Notes |
 |-------|---------|-------|
+<<<<<<< HEAD
 | `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
 | `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
 | `cann` | CANN/HiAI NPU | `MLPowerPreference::Default`, `accelerated=true`; on-device only |
+||||||| parent of ad69c55f (Initial doc cleanup)
+| `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
+| `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
+=======
+| `onnx` | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
+| `trtx` | TensorRT-RTX | `MLPowerPreference::HighPerformance`, `accelerated=true`; requires the `trtx-runtime` feature |
+| `litert` | LiteRT | requires the `litert-runtime` feature |
+| `coreml` | CoreML | macOS, requires the `coreml-runtime` feature |
+>>>>>>> ad69c55f (Initial doc cleanup)
 
-Aliases: `ort`, `cpu`, `tensorrt`, `trt` are also accepted.
+Aliases: `ort`, `cpu`, `onnx-cpu`, `ort-cpu` (onnx); `tensorrt`, `trt` (trtx); `tflite` (litert); `core-ml`, `mlprogram` (coreml).
 
 When `WPT_BACKEND` is unset, all **available** backends register trials. Unavailable backends (e.g. TRTX without a GPU) are skipped with a log message — they do not count as skips in the summary.
 
@@ -124,7 +153,13 @@ make test-wpt-cann
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WPT_DIR` | `.cache/wpt` | Path to WPT checkout |
+<<<<<<< HEAD
 | `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert`, `coreml`, or `cann` |
+||||||| parent of ad69c55f (Initial doc cleanup)
+| `WPT_BACKEND` | (all available) | Limit backend: `onnx` or `trtx` |
+=======
+| `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert` or `coreml` |
+>>>>>>> ad69c55f (Initial doc cleanup)
 | `WPT_REPORT_JSON` | (none; `reports/wpt-conformance.json` when `CI` is set) | Write structured pass/fail JSON report |
 | `WPT_REPORT_HTML` | (derived from JSON path) | HTML report path; set to empty string to disable |
 | `WPT_AUDIT` | (off) | Enable per-pass error metrics collection (see [Audit mode](#audit-mode)) |
@@ -161,7 +196,7 @@ python scripts/analyze_wpt_audit.py reports/wpt-trtx-audit.json
 At the end of the run:
 
 ```
-[WPT audit] 2482 passed, 143 flagged -> reports/wpt-trtx-audit.json
+[WPT audit] <passed> passed, <flagged> flagged -> reports/wpt-trtx-audit.json
 ```
 
 ### Audit JSON fields
@@ -219,13 +254,17 @@ Report schema: per-file summaries, per-case status (`pass`/`fail`/`skip`), durat
 
 ## Failure tracking
 
-A test is either passing or failing:
+Every backend records conformance the same way: a test passes by completing, and fails
+unless it is listed as a known failure.
 
-- **Passing** → a PASS snapshot (`tests/snapshots/run_wpt_conformance__{backend}_{test}.snap`).
-  Used by `onnx`, `trtx`, and `litert`. CoreML produces no snapshots.
+- **Passing** → the trial completes and its results match the WPT expected data.
 - **Failing** → listed in `tests/wpt_conformance/{backend}_expected_failures.txt`
-  (one `{backend}::{operation}::{name}` per line). Used by `coreml` and `litert`.
-  The test still runs, but its failure is non-fatal.
+  (one `{backend}::{operation}::{name}` per line). The trial still runs, but its failure is
+  non-fatal.
+
+Because the lists are the only recorded baseline, a listed trial that starts passing is not
+flagged: refresh the lists with the sync targets below, which regenerate them from a run
+(`scripts/update_expected_failures.sh` blanks the list first, so every failure surfaces).
 
 The WPT corpus is pinned by the `WPT_REVISION` file (a commit SHA checked out by
 `make fetch-wpt`), so CI is reproducible. At startup the harness compares the
@@ -234,14 +273,14 @@ when the revision cannot be determined). Set `WPT_STRICT_REVISION=1` to turn tha
 warning into a hard failure. Regenerate against the pinned corpus with:
 
 ```bash
-make wpt-sync-onnx     # ONNX PASS snapshots
-make wpt-sync-litert   # LiteRT PASS snapshots + expected-failures
+make wpt-sync-onnx     # ONNX expected-failures
+make wpt-sync-litert   # LiteRT expected-failures
 make wpt-sync-coreml   # macOS: coreml expected-failures
-make wpt-sync-trtx     # TensorRT PASS snapshots (requires a GPU)
+make wpt-sync-trtx     # TensorRT expected-failures (requires an NVIDIA GPU)
 make wpt-sync-cann     # CANN expected-failures (requires a device)
 ```
 
-A scheduled workflow (`.github/workflows/snapshot-sync.yml`) runs these and opens a PR.
+A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a PR.
 
 ## Troubleshooting
 
@@ -251,6 +290,8 @@ A scheduled workflow (`.github/workflows/snapshot-sync.yml`) runs these and open
 
 **TRTX backend skipped** — TensorRT is not available (no GPU, missing drivers, or `trtx-runtime` feature not enabled). Only `onnx` trials will run.
 
+**`No WPT backends available`** (exit code 2) — a backend feature is compiled in but none of its runtimes could be created; check `ORT_DYLIB_PATH` or the TensorRT library. A build without any backend feature (plain `cargo test`) prints a notice and exits successfully instead, so the harness does not break the default test run.
+
 **Parse warnings (`file_errors`)** — Some WPT files may fail to parse; warnings are logged but do not fail the run.
 
-**Slow TRTX runs** — TensorRT engine compilation per trial makes debug builds slow (~25–30 min for 2482 cases). Use `make test-wpt-op OP=<op>` to iterate on a single operation.
+**Slow TRTX runs** — TensorRT engine compilation per trial makes a full debug-build run take tens of minutes. Use `make test-wpt-op OP=<op>` to iterate on a single operation.

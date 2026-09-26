@@ -40,6 +40,13 @@ jobs:
         working-directory: rustnnpt
         run: npm run test:wpt:fetch
 
+      - name: Align rustnnpt webnn-graph with this PR
+        working-directory: rustnnpt
+        run: |
+          WEBNN_GRAPH_DEP="$(sed -n '/^webnn-graph = /p' ../rustnn/Cargo.toml)"
+          test -n "$WEBNN_GRAPH_DEP"
+          sed -i "s|^webnn-graph = .*|$WEBNN_GRAPH_DEP|" Cargo.toml crates/wpt-runner/Cargo.toml
+
       - name: Pin rustnnpt to this PR rustnn SHA
         working-directory: rustnnpt
         run: |

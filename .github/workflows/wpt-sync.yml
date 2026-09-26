@@ -1,0 +1,218 @@
+name: WPT Expectations Sync
+
+on:
+  schedule:
+    # Weekly on Monday at 03:00 UTC.
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: wpt-sync
+  cancel-in-progress: false
+
+jobs:
+  linux-sync:
+    name: Sync ONNX + LiteRT (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
+          sudo chmod +x /usr/local/bin/flatc
+          flatc --version
+
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/wpt
+          key: wpt-linux-${{ hashFiles('WPT_REVISION') }}
+          restore-keys: |
+            wpt-linux-
+
+      - name: Cache litert-sys libraries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/litert-sys
+          key: linux-litert-sys
+
+      - name: Resolve WPT pin
+        run: |
+          SHA=$(git ls-remote https://github.com/web-platform-tests/wpt.git refs/heads/master | cut -f1)
+          [ -n "$SHA" ] || { echo "failed to resolve WPT master SHA"; exit 1; }
+          echo "$SHA" > WPT_REVISION
+          echo "resolved WPT pin: $SHA"
+
+      - name: Sync LiteRT expected failures
+        run: make wpt-sync-litert
+
+      - name: Sync ONNX expected failures
+        run: make wpt-sync-onnx
+
+      - name: Record pass totals
+        run: |
+          {
+            for backend in litert onnx; do
+              summary="/tmp/wpt_${backend}_summary.txt"
+              if [ -f "$summary" ]; then
+                cat "$summary"
+              else
+                echo "${backend}: run did not complete"
+              fi
+            done
+          } > sync-summary-linux.txt
+          cat sync-summary-linux.txt
+
+      - name: Generate patch
+        run: |
+          git add -A WPT_REVISION tests/wpt_conformance
+          git diff --cached > linux-sync.patch
+          echo "linux-sync patch: $(wc -c < linux-sync.patch) bytes"
+
+      - name: Upload patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-sync-patch
+          path: |
+            linux-sync.patch
+            sync-summary-linux.txt
+
+  coreml-sync:
+    name: Sync CoreML (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protobuf/flatbuffer compiler
+        run: |
+          brew install protobuf flatbuffers
+          protoc --version
+
+      - name: Cache WPT checkout
+        uses: actions/cache@v4
+        with:
+          path: .cache/wpt
+          key: wpt-macos-${{ hashFiles('WPT_REVISION') }}
+          restore-keys: |
+            wpt-macos-
+
+      - name: Resolve WPT pin
+        run: |
+          SHA=$(git ls-remote https://github.com/web-platform-tests/wpt.git refs/heads/master | cut -f1)
+          [ -n "$SHA" ] || { echo "failed to resolve WPT master SHA"; exit 1; }
+          echo "$SHA" > WPT_REVISION
+          echo "resolved WPT pin: $SHA"
+
+      - name: Sync CoreML expected failures
+        run: make wpt-sync-coreml
+
+      - name: Record pass totals
+        run: |
+          summary="/tmp/wpt_coreml_summary.txt"
+          if [ -f "$summary" ]; then cat "$summary"; else echo "coreml: run did not complete"; fi \
+            > sync-summary-coreml.txt
+          cat sync-summary-coreml.txt
+
+      - name: Generate patch
+        run: |
+          git add -A tests/wpt_conformance/coreml_expected_failures.txt
+          git diff --cached --binary > coreml-sync.patch
+          echo "coreml-sync patch: $(wc -c < coreml-sync.patch) bytes"
+
+      - name: Upload patch
+        uses: actions/upload-artifact@v4
+        with:
+          name: coreml-sync-patch
+          path: |
+            coreml-sync.patch
+            sync-summary-coreml.txt
+
+  aggregate:
+    name: Open sync PR
+    needs: [linux-sync, coreml-sync]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download patches
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/patches
+
+      - name: Apply patches
+        run: |
+          for f in /tmp/patches/*/*.patch; do
+            if [ -s "$f" ]; then
+              echo "applying $(basename "$f")"
+              git apply --whitespace=nowarn "$f"
+            fi
+          done
+
+      - name: Collect pass totals
+        id: pass-totals
+        run: |
+          {
+            echo "lines<<EOF"
+            cat /tmp/patches/*/sync-summary-*.txt 2>/dev/null || true
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          cat /tmp/patches/*/sync-summary-*.txt 2>/dev/null || true
+
+      - name: Generate PR body
+        env:
+          PASS_TOTALS: ${{ steps.pass-totals.outputs.lines }}
+        run: node scripts/summarize_wpt_changes.mjs > pr-body.md
+
+      - name: Get sync date
+        id: sync-date
+        run: echo "date=$(date +%d-%m-%Y)" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/wpt-sync
+          commit-message: |
+            chore(wpt): Sync expected failures with WPT (${{ steps.sync-date.outputs.date }})
+
+            ${{ steps.pass-totals.outputs.lines }}
+          title: "chore(wpt): Sync expected failures with WPT (${{ steps.sync-date.outputs.date }})"
+          body-path: pr-body.md
+          delete-branch: true
+          add-paths: |
+            WPT_REVISION
+            tests/wpt_conformance

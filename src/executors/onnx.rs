@@ -1,7 +1,14 @@
+//! One-shot ONNX Runtime execution of converted models (legacy; see [`crate::executors`]).
+//!
+//! [`run_onnx_with_inputs`] loads the model bytes (plus optional external weights) into a new
+//! session on every call. [`run_onnx_with_inputs_checked`] additionally validates the inputs
+//! against WebNN descriptors, and [`run_onnx_zeroed`] feeds zero inputs (CLI `--run-onnx`).
+
 #![cfg(feature = "onnx-runtime")]
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Once;
 
 use log::{info, warn};
@@ -44,22 +51,34 @@ pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
     result
 }
 
+/// Output metadata reported by [`run_onnx_zeroed`].
 #[derive(Debug, Clone)]
 pub struct OnnxOutput {
+    /// ONNX output name.
     pub name: String,
+    /// Shape as reported by ONNX Runtime.
     pub shape: Vec<i64>,
+    /// ONNX element type name.
     pub data_type: String,
 }
 
 /// Tensor data for different types
 pub enum TensorData {
+    /// 32-bit floats.
     Float32(Vec<f32>),
+    /// 16-bit floats as raw bits.
     Float16(Vec<u16>), // f16 stored as u16 bits
+    /// Signed 8-bit integers.
     Int8(Vec<i8>),
+    /// Unsigned 8-bit integers.
     Uint8(Vec<u8>),
+    /// Signed 32-bit integers.
     Int32(Vec<i32>),
+    /// Unsigned 32-bit integers.
     Uint32(Vec<u32>),
+    /// Signed 64-bit integers.
     Int64(Vec<i64>),
+    /// Unsigned 64-bit integers.
     Uint64(Vec<u64>),
 }
 
@@ -80,22 +99,33 @@ impl TensorData {
 
 /// Input tensor data for ONNX execution
 pub struct OnnxInput {
+    /// ONNX input name.
     pub name: String,
+    /// Shape of the data.
     pub shape: Vec<usize>,
+    /// Typed element data.
     pub data: TensorData,
 }
 
 /// Output tensor with actual data
 pub struct OnnxOutputWithData {
+    /// ONNX output name.
     pub name: String,
+    /// Shape of the output.
     pub shape: Vec<usize>,
+    /// Values converted to `f64` (lossy for 64-bit integers; see the typed fields).
     pub data: Vec<f64>,
+    /// Exact values for float32 outputs.
     pub float32_data: Option<Vec<f32>>,
+    /// Exact values for boolean outputs.
     pub bool_data: Option<Vec<bool>>,
+    /// Exact values for int64 outputs.
     pub int64_data: Option<Vec<i64>>,
+    /// Exact values for uint64 outputs.
     pub uint64_data: Option<Vec<u64>>,
 }
 
+/// Load an ONNX model and run it once with zero-filled inputs; returns output metadata only.
 pub fn run_onnx_zeroed(
     model_bytes: &[u8],
     _inputs: &HashMap<String, OperandDescriptor>,
@@ -195,6 +225,30 @@ pub fn run_onnx_with_inputs(
     run_onnx_with_inputs_impl(model_bytes, external_weights, inputs, None, None)
 }
 
+/// Run an ONNX model from disk with actual input tensors.
+///
+/// Unlike the in-memory entry point, loading from a path lets ONNX Runtime
+/// resolve standard external-data files relative to the model location.
+pub fn run_onnx_path_with_inputs(
+    model_path: impl AsRef<Path>,
+    inputs: Vec<OnnxInput>,
+) -> Result<Vec<OnnxOutputWithData>, GraphError> {
+    ensure_ort_initialized()?;
+    let session = Session::builder()
+        .map_err(|e| GraphError::OnnxRuntimeFailed {
+            reason: format!("session builder failed: {e}"),
+        })?
+        .with_optimization_level(GraphOptimizationLevel::Disable)
+        .map_err(|e| GraphError::OnnxRuntimeFailed {
+            reason: format!("set opt level failed: {e}"),
+        })?
+        .commit_from_file(model_path)
+        .map_err(|e| GraphError::OnnxRuntimeFailed {
+            reason: format!("load model failed: {e}"),
+        })?;
+    run_onnx_session_with_inputs(session, inputs, None, None)
+}
+
 /// Same as [`run_onnx_with_inputs`], plus optional WebNN operand descriptor validation.
 ///
 /// For each map that is `Some`, validates actual tensor shapes against that map (inputs before the
@@ -244,15 +298,24 @@ fn run_onnx_with_inputs_impl(
                 reason: format!("set external initializer failed: {e}"),
             })?;
     }
-    let mut session =
+    let session =
         builder
             .commit_from_memory(model_bytes)
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("load model failed: {e}"),
             })?;
 
-    // Extract output names for later use
+    run_onnx_session_with_inputs(session, inputs, input_descriptors, output_descriptors)
+}
+
+fn run_onnx_session_with_inputs(
+    mut session: Session,
+    inputs: Vec<OnnxInput>,
+    input_descriptors: Option<&HashMap<String, OperandDescriptor>>,
+    output_descriptors: Option<&HashMap<String, OperandDescriptor>>,
+) -> Result<Vec<OnnxOutputWithData>, GraphError> {
     let output_names: Vec<String> = session
+        // Extract output names for later use.
         .outputs()
         .iter()
         .map(|o| o.name().to_string())

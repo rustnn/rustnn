@@ -1,10 +1,11 @@
 //! CoreML backend for the unified WebNN IDL API (macOS only).
 //!
-//! Mirrors the ONNX Runtime backend in `src/backends/ort.rs`: a [`CoremlContext`]
-//! owns raw-byte host tensor storage, a [`CoremlBuilder`] converts a [`GraphInfo`]
-//! to a CoreML MLProgram and compiles it once, and [`CoremlGraph`] holds the
+//! Mirrors the ONNX Runtime backend in `src/backends/ort.rs`: a `CoremlContext`
+//! owns raw-byte host tensor storage, a `CoremlBuilder` converts a [`GraphInfo`]
+//! to a CoreML MLProgram and compiles it once, and `CoremlGraph` holds the
 //! compiled model for repeated dispatch.
-
+//!
+#![doc = include_str!("../../docs/integration/coreml.md")]
 #![cfg(feature = "coreml-runtime")]
 
 use std::collections::HashMap;
@@ -120,6 +121,22 @@ fn supports_in_memory_asset(graph: &GraphInfo) -> bool {
         Operation::Neg { input, .. } => graph
             .operand(*input)
             .is_some_and(|operand| operand.descriptor.data_type == DataType::Int32),
+        // Integer triangular subtraction is exact through URL compilation;
+        // the memory path loses low bits of retained int32 values beyond 2^24.
+        Operation::Triangular { input, options, .. } => {
+            let upper = options
+                .as_ref()
+                .and_then(|options| options.upper)
+                .unwrap_or(true);
+            let diagonal = options
+                .as_ref()
+                .map(|options| options.diagonal)
+                .unwrap_or(0);
+            ((upper && diagonal > 0) || (!upper && diagonal < 0))
+                && graph
+                    .operand(*input)
+                    .is_some_and(|operand| operand.descriptor.data_type == DataType::Int32)
+        }
         _ => false,
     })
 }
@@ -431,6 +448,50 @@ mod test {
     }
 
     #[test]
+    fn triangular_url_compilation_is_limited_to_excluded_main_int32() {
+        use crate::graph::{
+            DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
+        };
+        use crate::operator_options::MLTriangularOptions;
+        use crate::operators::Operation;
+
+        for dtype in [DataType::Float16, DataType::Float32, DataType::Int32] {
+            for upper in [false, true] {
+                for diagonal in [-1, 0, 1] {
+                    let graph = GraphInfo {
+                        operands: vec![Operand {
+                            kind: OperandKind::Input,
+                            name: Some("input".into()),
+                            descriptor: OperandDescriptor {
+                                data_type: dtype,
+                                shape: to_dimension_vector(&[3, 3]),
+                                pending_permutation: vec![],
+                            },
+                        }],
+                        operations: vec![Operation::Triangular {
+                            input: 0,
+                            options: Some(MLTriangularOptions {
+                                upper: Some(upper),
+                                diagonal,
+                                ..Default::default()
+                            }),
+                            outputs: vec![1],
+                        }],
+                        ..Default::default()
+                    };
+                    let needs_url = dtype == DataType::Int32
+                        && ((upper && diagonal > 0) || (!upper && diagonal < 0));
+                    assert_eq!(
+                        super::supports_in_memory_asset(&graph),
+                        !needs_url,
+                        "{dtype:?}, upper={upper}, diagonal={diagonal}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn runtime_descriptor_checks_dimensions_and_byte_length() {
         use crate::graph::{DataType, OperandDescriptor, to_dimension_vector};
         let descriptor = OperandDescriptor {
@@ -728,6 +789,44 @@ mod test {
         let mut result = vec![0.0f32; 4];
         context.read_tensor(&out, &mut result).unwrap();
         assert_eq!(result, &[1.0f32, 3., 1., 5.]);
+    }
+
+    #[test]
+    fn coreml_not_equal_uint8_promotes_inputs_and_executes() {
+        let _ = pretty_env_logger::try_init();
+        let Some(mut context) = coreml_context() else {
+            return;
+        };
+
+        let desc = MLOperandDescriptor::new(MLOperandDataType::Uint8, vec![5]);
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &desc).unwrap();
+        let b = builder.input("b", &desc).unwrap();
+        let output = builder.not_equal(a, b).unwrap();
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("out", output);
+        let mut graph = builder.build(&outputs).unwrap();
+
+        let mut io_desc = MLTensorDescriptor::from_operand_descriptor(&desc);
+        io_desc.set_writable(true);
+        io_desc.set_readable(true);
+        let a = context.create_tensor(&io_desc).unwrap();
+        let b = context.create_tensor(&io_desc).unwrap();
+        let out = context.create_tensor(&io_desc).unwrap();
+
+        context.write_tensor(&a, &[0u8, 1, 2, 255, 5]).unwrap();
+        context.write_tensor(&b, &[0u8, 0, 2, 4, 255]).unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &MLNamedTensors::from([("a", &a), ("b", &b)]),
+                &MLNamedTensors::from([("out", &out)]),
+            )
+            .unwrap();
+
+        let mut result = vec![0u8; 5];
+        context.read_tensor(&out, &mut result).unwrap();
+        assert_eq!(result, [0, 1, 0, 1, 1]);
     }
 
     #[test]

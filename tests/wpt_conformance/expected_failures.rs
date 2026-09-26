@@ -1,4 +1,9 @@
 //! Backend-specific WPT failures that are allowed without skipping execution.
+//!
+//! Every backend records conformance this way: a trial passes by completing, and fails
+//! unless its sanitized libtest id appears in [`is_expected_failure`]'s list. There is no
+//! PASS baseline besides these lists, so a listed trial that starts passing is not flagged
+//! as such; regenerate the lists with the `wpt-sync-*` Makefile targets.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -11,6 +16,12 @@ static LITERT_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
 
 static CANN_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| parse_expected_failures(include_str!("cann_expected_failures.txt")));
+
+static ONNX_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| parse_expected_failures(include_str!("onnx_expected_failures.txt")));
+
+static TRTX_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| parse_expected_failures(include_str!("trtx_expected_failures.txt")));
 
 fn parse_expected_failures(contents: &'static str) -> HashSet<&'static str> {
     contents
@@ -29,6 +40,8 @@ pub fn is_expected_failure(backend: &str, trial_name: &str) -> bool {
         "coreml" => COREML_EXPECTED_FAILURES.contains(trial_name),
         "litert" => LITERT_EXPECTED_FAILURES.contains(trial_name),
         "cann" => CANN_EXPECTED_FAILURES.contains(trial_name),
+        "onnx" => ONNX_EXPECTED_FAILURES.contains(trial_name),
+        "trtx" => TRTX_EXPECTED_FAILURES.contains(trial_name),
         _ => false,
     }
 }
@@ -47,6 +60,8 @@ mod tests {
         let coreml_entries = entries(include_str!("coreml_expected_failures.txt"));
         let litert_entries = entries(include_str!("litert_expected_failures.txt"));
         let cann_entries = entries(include_str!("cann_expected_failures.txt"));
+        let onnx_entries = entries(include_str!("onnx_expected_failures.txt"));
+        let trtx_entries = entries(include_str!("trtx_expected_failures.txt"));
 
         assert_eq!(coreml_entries.len(), super::COREML_EXPECTED_FAILURES.len());
         assert!(
@@ -62,6 +77,10 @@ mod tests {
         );
         assert_eq!(cann_entries.len(), super::CANN_EXPECTED_FAILURES.len());
         assert!(cann_entries.iter().all(|entry| entry.starts_with("cann::")));
+        assert_eq!(onnx_entries.len(), super::ONNX_EXPECTED_FAILURES.len());
+        assert!(onnx_entries.iter().all(|entry| entry.starts_with("onnx::")));
+        assert_eq!(trtx_entries.len(), super::TRTX_EXPECTED_FAILURES.len());
+        assert!(trtx_entries.iter().all(|entry| entry.starts_with("trtx::")));
     }
 
     #[test]

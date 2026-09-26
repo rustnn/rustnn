@@ -1,3 +1,18 @@
+//! WebNN `MLGraphBuilder`: records operations into a [`GraphInfo`] and compiles it.
+//!
+//! Every WebNN builder method exists in two forms: `op(...)` with default options and
+//! `op_with_options(..., options)` taking the matching `ML*Options` struct from
+//! [`crate::operator_options`]. Snake case replaces the JavaScript camel case
+//! (`conv_transpose2d`, `reduce_log_sum_exp`); `where` is `where_` because it is a keyword.
+//! Shape inference runs when an operation is recorded, so shape errors surface immediately as
+//! [`GraphBuilderError::ShapeInferenceError`].
+//!
+//! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
+//! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
+//! without a backend, for tooling that only needs the [`GraphInfo`]
+//! ([`MLGraphBuilder::finish_graph_info`]) or the `.webnn` export
+//! ([`MLGraphBuilder::rustnn_save_webnn`]).
+
 use std::collections::HashMap;
 
 use bytemuck::NoUninit;
@@ -6,6 +21,7 @@ use webnn_graph::serialize::SerializeOptions;
 
 use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
+use crate::graph_recorder::GraphRecorder;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::MLOperandDataType;
 use crate::operator_options::{
@@ -35,13 +51,19 @@ use crate::{
     mlcontext::{MLBackendBuilder, MLContext},
 };
 
+/// Result of the operation-recording methods; `build` and friends use [`crate::error::Result`].
 pub type Result<T> = std::result::Result<T, GraphBuilderError>;
 
+/// Records a WebNN graph and compiles it for a backend. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder>
+///
+/// A builder produces exactly one graph: after [`MLGraphBuilder::build`] or
+/// [`MLGraphBuilder::finish_graph_info`] every further call fails with
+/// [`GraphBuilderError::GraphAlreadyBuilt`].
 #[derive(Debug)]
 pub struct MLGraphBuilder<'context, 'builder> {
     backend: Box<dyn MLBackendBuilder<'context, 'builder> + 'builder>,
 
-    graph: Option<GraphInfo>,
+    recorder: Option<GraphRecorder>,
 }
 
 #[derive(Debug)]
@@ -242,6 +264,16 @@ fn constant_shape(
     })?;
     let shape = options
         .shape
+        .as_ref()
+        .ok_or_else(|| {
+            Box::new(ShapeInferenceError::InferError {
+                op_name: "constant",
+                operation: operation.clone(),
+                source: GraphError::ShapeInferenceFailed {
+                    reason: "constant is missing its required shape".to_string(),
+                },
+            })
+        })?
         .iter()
         .copied()
         .map(Dimension::Static)
@@ -1048,14 +1080,17 @@ fn dequantize_linear_shape(
 ///
 /// Extra parameters must match `Operation` field names (e.g. `axis: u32` for `Softmax`).
 macro_rules! impl_unary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
-        impl_unary_op! {$fn_name, $fn_with_options, $op, MLOperatorOptions}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
+        impl_unary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, MLOperatorOptions}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, input: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options(input, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             input: MLOperand,
@@ -1071,12 +1106,14 @@ macro_rules! impl_unary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
         $option_type:ident,
         $( $extra:ident : $ety:ty ),+ $(,)?
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(
             &mut self,
             input: MLOperand,
@@ -1085,6 +1122,8 @@ macro_rules! impl_unary_op {
             self.$fn_with_options(input, $( $extra ),+, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             input: MLOperand,
@@ -1105,17 +1144,20 @@ macro_rules! impl_unary_op {
 
 /// Generates `fn_name(a, b)` and `fn_with_options(a, b, options)` on `MLGraphBuilder`.
 macro_rules! impl_binary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
-        impl_binary_op! {$fn_name, $fn_with_options, $op, MLOperatorOptions}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
+        impl_binary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, MLOperatorOptions}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
-        impl_binary_op! {$fn_name, $fn_with_options, $op, $option_type, a, b}
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident) => {
+        impl_binary_op! {$(#[$meta])* $fn_name, $fn_with_options, $op, $option_type, a, b}
     };
-    ($fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident, $arg1:ident, $arg2:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident, $option_type:ident, $arg1:ident, $arg2:ident) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, $arg1: MLOperand, $arg2: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options($arg1, $arg2, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -1141,8 +1183,9 @@ macro_rules! impl_binary_op {
 ///
 /// Operand parameter names must match `Operation` field names (e.g. `condition`, `true_value`, `false_value` for `Where`).
 macro_rules! impl_ternary_op {
-    ($fn_name:ident, $fn_with_options:ident, $op:ident) => {
+    ($(#[$meta:meta])* $fn_name:ident, $fn_with_options:ident, $op:ident) => {
         impl_ternary_op! {
+            $(#[$meta])*
             $fn_name,
             $fn_with_options,
             $op,
@@ -1153,6 +1196,7 @@ macro_rules! impl_ternary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
@@ -1161,6 +1205,7 @@ macro_rules! impl_ternary_op {
         $arg3:ident
     ) => {
         impl_ternary_op! {
+            $(#[$meta])*
             $fn_name,
             $fn_with_options,
             $op,
@@ -1171,6 +1216,7 @@ macro_rules! impl_ternary_op {
         }
     };
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_options:ident,
         $op:ident,
@@ -1179,6 +1225,7 @@ macro_rules! impl_ternary_op {
         $arg2:ident,
         $arg3:ident
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(
             &mut self,
             $arg1: MLOperand,
@@ -1188,6 +1235,8 @@ macro_rules! impl_ternary_op {
             self.$fn_with_options($arg1, $arg2, $arg3, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -1215,6 +1264,7 @@ macro_rules! impl_ternary_op {
 /// Two required operands plus an optional third (`quantizeLinear` / `dequantizeLinear`).
 macro_rules! impl_ternary_optional_op {
     (
+        $(#[$meta:meta])*
         $fn_name:ident,
         $fn_with_three:ident,
         $fn_with_options:ident,
@@ -1224,10 +1274,13 @@ macro_rules! impl_ternary_optional_op {
         $arg2:ident,
         $optional:ident
     ) => {
+        $(#[$meta])*
         pub fn $fn_name(&mut self, $arg1: MLOperand, $arg2: MLOperand) -> Result<MLOperand> {
             self.$fn_with_options($arg1, $arg2, None, $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with the optional `", stringify!($optional), "` operand.")]
         pub fn $fn_with_three(
             &mut self,
             $arg1: MLOperand,
@@ -1237,6 +1290,8 @@ macro_rules! impl_ternary_optional_op {
             self.$fn_with_options($arg1, $arg2, Some($optional), $option_type::default())
         }
 
+        $(#[$meta])*
+        #[doc = concat!("\n\nSame as [`Self::", stringify!($fn_name), "`] with an optional `", stringify!($optional), "` operand and explicit [`", stringify!($option_type), "`].")]
         pub fn $fn_with_options(
             &mut self,
             $arg1: MLOperand,
@@ -1349,37 +1404,31 @@ fn lstm_cell_output_shapes(
 }
 
 fn gru_cell_shape(
-    input: MLOperand,
+    _input: MLOperand,
     hidden_state: MLOperand,
-    hidden_size: u32,
+    _hidden_size: u32,
     operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let hidden_state_desc = &graph.operands[hidden_state.id].descriptor;
-    if !hidden_state_desc.shape.is_empty() {
+    if hidden_state_desc.shape.len() == 2 {
         return Ok(hidden_state_desc.clone());
-    }
-
-    let input_shape = &graph.operands[input.id].descriptor.shape;
-    if input_shape.len() == 2 && hidden_size > 0 {
-        return Ok(OperandDescriptor {
-            data_type: graph.operands[input.id].descriptor.data_type,
-            shape: to_dimension_vector(&[get_static_or_max_size(&input_shape[0]), hidden_size]),
-            pending_permutation: vec![],
-        });
     }
 
     Err(Box::new(ShapeInferenceError::InferError {
         op_name: "gruCell",
         operation: operation.clone(),
         source: GraphError::ShapeInferenceFailed {
-            reason: "unable to infer gruCell output shape".to_string(),
+            reason: format!(
+                "gruCell hiddenState must be rank 2, got rank {}",
+                hidden_state_desc.shape.len()
+            ),
         },
     })
     .into())
 }
 
-fn shape_inference_multi_output(
+fn infer_descriptors_unchecked(
     operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<Vec<OperandDescriptor>> {
@@ -1421,6 +1470,28 @@ fn shape_inference_multi_output(
         } => lstm_cell_output_shapes(*hidden_state, *cell_state, graph),
         op => Ok(vec![shape_inference_single_output(op, graph)?]),
     }
+}
+
+/// Canonical operation inference used by every graph construction path.
+///
+/// The operation must already contain its prospective output ids. No graph
+/// mutation occurs here.
+pub(crate) fn infer_operation_descriptors(
+    operation: &Operation,
+    graph: &GraphInfo,
+) -> Result<Vec<OperandDescriptor>> {
+    let descriptors = infer_descriptors_unchecked(operation, graph)?;
+    let expected = operation.output_operands().len();
+    if descriptors.len() != expected {
+        return Err(GraphBuilderError::InconsistentGraphInfo {
+            message: format!(
+                "operation {} inferred {} descriptors for {expected} outputs",
+                operation.op_type(),
+                descriptors.len()
+            ),
+        });
+    }
+    Ok(descriptors)
 }
 
 #[expect(unused_variables)]
@@ -2004,10 +2075,12 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     pub fn new_uncompiled() -> MLGraphBuilder<'static, 'static> {
         MLGraphBuilder {
             backend: Box::new(UncompiledBackendBuilder),
-            graph: Some(Default::default()),
+            recorder: Some(GraphRecorder::new()),
         }
     }
 
+    /// Create a builder whose [`Self::build`] compiles for the backend of `context`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor>
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
     where
         'context: 'builder,
@@ -2015,10 +2088,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         let backend = context.backend.create_builder()?;
         Ok(Self {
             backend,
-            graph: Some(Default::default()),
+            recorder: Some(GraphRecorder::new()),
         })
     }
 
+    /// Compile an already complete [`GraphInfo`] (for example one returned by
+    /// [`crate::load_graph_from_path`]) for this builder's backend, bypassing the recording
+    /// methods. rustnn extension.
     pub fn build_graph_info(
         &mut self,
         graph: GraphInfo,
@@ -2028,23 +2104,16 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     /// Serialize the in-progress graph (with outputs marked) as `.webnn` text for debugging.
     pub fn rustnn_webnn_text_for_outputs(&self, outputs: &MLNamedOperands) -> Option<String> {
-        let graph = self.graph.as_ref()?;
+        let mut recorder = self.recorder.as_ref()?.clone();
         if outputs.is_empty() {
             return None;
         }
-
-        let mut graph = graph.clone();
-        graph.output_operands.clear();
         for (name, operand) in outputs {
-            let op = graph.operands.get_mut(operand.id)?;
-            if op.kind == OperandKind::Input || op.kind == OperandKind::Constant {
-                return None;
-            }
-            op.kind = OperandKind::Output;
-            op.name = Some(name.to_string());
-            graph.output_operands.push(operand.id as u32);
+            recorder
+                .mark_output(operand.id as u32, name.to_string())
+                .ok()?;
         }
-        graph.output_operands.sort_unstable();
+        let graph = recorder.into_graph().ok()?;
 
         let graph_json = to_graph_json(&graph, false).ok()?;
         webnn_graph::serialize::serialize_graph_to_wg_text(
@@ -2074,7 +2143,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             return Err(GraphBuilderError::EmptyOutputHashMap.into());
         }
         let graph = self
-            .graph
+            .recorder
             .as_ref()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
 
@@ -2116,6 +2185,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         crate::webnn_save::write_webnn_and_safetensors(graph, &output_names, path.as_ref())
     }
 
+    /// Mark `outputs` as the graph outputs and compile the graph for the backend.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-build>
+    ///
+    /// Fails when `outputs` is empty, names an input or constant, or maps two names to one
+    /// operand. Output names become the keys that [`MLContext::dispatch`] expects.
     /*async*/
     pub fn build(
         &mut self,
@@ -2137,7 +2211,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
 
         let mut graph = self
-            .graph
+            .recorder
             .take()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
 
@@ -2157,35 +2231,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                 }
             }
 
-            if let Some(op) = graph.operands.get_mut(operand.id) {
-                // spec: If operand is in this’s graph’s inputs or constants, then return a new promise in realm rejected with a TypeError.
-                if op.kind == OperandKind::Input {
-                    return Err(GraphBuilderError::RequestedInputAsOutput {
-                        operand: op.clone(),
-                        id: operand.id,
-                    }
-                    .into());
-                } else if op.kind == OperandKind::Constant {
-                    return Err(GraphBuilderError::RequestedConstantAsOutput {
-                        operand: op.clone(),
-                        id: operand.id,
-                    }
-                    .into());
-                }
-                op.kind = OperandKind::Output;
-                op.name = Some(name.to_string());
-            } else {
-                return Err(GraphBuilderError::BuildWithInvalidOperand {
-                    operand: *operand,
-                    name: name.to_string(),
-                }
-                .into());
-            }
-            graph.output_operands.push(operand.id as u32);
+            graph.mark_output(operand.id as u32, name.to_string())?;
         }
-        // HashMap iteration order is nondeterministic; keep output_operands in operand-index order.
-        graph.output_operands.sort_unstable();
-
         debug!("Building graph with {} operands", graph.operands.len());
         // Verbose info for small graphs
         if graph.operands.len() < 20 {
@@ -2203,7 +2250,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             });
         }
 
-        Ok(graph)
+        graph.into_graph().map_err(Into::into)
     }
 
     /// Debug tool to check operand shape
@@ -2214,7 +2261,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         // this should be either &[MLDimension] or &[u32], &[u64], whatever shape the public API has
     ) -> crate::error::Result<Vec<u64>> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         operand.shape(graph)
@@ -2228,34 +2275,27 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         // this should be either MLDimension or &[u32]
     ) -> crate::error::Result<MLOperandDataType> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         operand.data_type(graph)
     }
 
+    /// Declare a named graph input. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-input>
+    ///
+    /// The name is the key used for the input tensor in [`MLContext::dispatch`].
     pub fn input(
         &mut self,
         name: &str,
         descriptor: &MLOperandDescriptor,
     ) -> crate::error::Result<MLOperand> {
         debug!("Adding input {name:?} {descriptor:?}");
-        let operand = Operand {
-            descriptor: descriptor.into(),
-            kind: OperandKind::Input,
-            name: Some(name.to_string()),
-        };
-
-        let graph = self
-            .graph
+        let id = self
+            .recorder
             .as_mut()
-            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-
-        let id = graph.operands.len();
-        graph.operands.push(operand);
-        graph.input_operands.push(id as u32);
-
-        Ok(MLOperand { id })
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .add_input(name.to_string(), descriptor.into());
+        Ok(MLOperand { id: id as usize })
     }
 
     // MLGraphBuilder.constant
@@ -2263,10 +2303,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     // three flavors
     //
     // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant
+
+    /// Constant from an existing [`MLTensor`]. Not implemented yet.
     pub fn constant_from_tensor(&mut self, _tensor: MLTensor) -> crate::error::Result<MLOperand> {
         todo!("not implemented yet. requires backend integration")
     }
 
+    /// Constant from an owned vector of plain-old-data values; the byte size must match
+    /// `descriptor`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant>
     pub fn constant_from_vec<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2283,33 +2327,25 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .into());
         }
 
-        let operand = Operand {
-            descriptor: descriptor.into(),
-            kind: OperandKind::Constant,
-            name: None,
-        };
-
-        let graph = self
-            .graph
+        let recorder = self
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-
-        let id = graph.operands.len();
-        graph.operands.push(operand);
-        graph
-            .id_to_constant_tensor_operand_map
-            .insert(id as u32, format!("{id}"));
-        graph.constant_operand_ids_to_handles.insert(
-            id as u32,
+        let id = recorder.graph().operands.len() as u32;
+        recorder.add_constant(
+            None,
+            descriptor.into(),
             crate::ConstantData {
                 data: bytemuck::cast_slice(values.as_slice()).to_vec(),
                 label: None,
             },
+            Some(id.to_string()),
         );
-
-        Ok(MLOperand { id })
+        Ok(MLOperand { id: id as usize })
     }
 
+    /// Constant copied from a slice of plain-old-data values; the byte size must match
+    /// `descriptor`.
     pub fn constant_from_slice<T: NoUninit>(
         &mut self,
         descriptor: &MLOperandDescriptor,
@@ -2340,35 +2376,28 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             }
             .into());
         }
-        let operand = Operand {
-            descriptor: descriptor.into(),
-            kind: OperandKind::Constant,
-            name: None,
-        };
-
-        let graph = self
-            .graph
+        let recorder = self
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-
-        let id = graph.operands.len();
-        graph.operands.push(operand);
-        graph
-            .id_to_constant_tensor_operand_map
-            .insert(id as u32, format!("{id}"));
-        graph
-            .constant_operand_ids_to_handles
-            .insert(id as u32, crate::ConstantData { data, label: None });
-
-        Ok(MLOperand { id })
+        let id = recorder.graph().operands.len() as u32;
+        recorder.add_constant(
+            None,
+            descriptor.into(),
+            crate::ConstantData { data, label: None },
+            Some(id.to_string()),
+        );
+        Ok(MLOperand { id: id as usize })
     }
 
-    pub fn constant_from_value<T>(
+    /// Scalar constant from a single value. Not implemented yet; use
+    /// [`Self::constant_from_slice`] with an empty shape instead.
+    pub fn constant_from_value<T: bytemuck::Pod>(
         &mut self,
-        _data_type: MLOperandDataType,
-        _value: T,
+        data_type: MLOperandDataType,
+        value: T,
     ) -> crate::error::Result<MLOperand> {
-        todo!()
+        self.constant_from_slice::<T>(&MLOperandDescriptor::new(data_type, vec![]), &[value])
     }
 
     // internal methods
@@ -2379,7 +2408,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         build: impl FnOnce(u32, u32, Option<Options>) -> Operation,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2395,7 +2424,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         build: impl FnOnce(u32, u32, u32, Option<Options>) -> Operation,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2412,7 +2441,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         build: impl FnOnce(u32, u32, u32, u32, Option<Options>) -> Operation,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2435,7 +2464,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         build: impl FnOnce(u32, u32, Option<u32>, u32, Option<Options>) -> Operation,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2449,37 +2478,106 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         ))
     }
 
-    impl_binary_op!(add, add_with_options, Add);
-    impl_binary_op!(sub, sub_with_options, Sub);
-    impl_binary_op!(mul, mul_with_options, Mul);
-    impl_binary_op!(div, div_with_options, Div);
-    impl_binary_op!(pow, pow_with_options, Pow);
-    impl_binary_op!(max, max_with_options, Max);
-    impl_binary_op!(min, min_with_options, Min);
-    impl_binary_op!(equal, equal_with_options, Equal);
-    impl_binary_op!(greater, greater_with_options, Greater);
     impl_binary_op!(
+        /// Element-wise addition with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        add, add_with_options, Add);
+    impl_binary_op!(
+        /// Element-wise subtraction with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        sub, sub_with_options, Sub);
+    impl_binary_op!(
+        /// Element-wise multiplication with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        mul, mul_with_options, Mul);
+    impl_binary_op!(
+        /// Element-wise division with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        div, div_with_options, Div);
+    impl_binary_op!(
+        /// Element-wise power `a ^ b` with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        pow, pow_with_options, Pow);
+    impl_binary_op!(
+        /// Element-wise maximum with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        max, max_with_options, Max);
+    impl_binary_op!(
+        /// Element-wise minimum with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary>
+        min, min_with_options, Min);
+    impl_binary_op!(
+        /// Element-wise `a == b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        equal, equal_with_options, Equal);
+    impl_binary_op!(
+        /// Element-wise `a > b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        greater, greater_with_options, Greater);
+    impl_binary_op!(
+        /// Element-wise `a >= b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
         greater_or_equal,
         greater_or_equal_with_options,
         GreaterOrEqual
     );
-    impl_binary_op!(lesser, lesser_with_options, Lesser);
-    impl_binary_op!(lesser_or_equal, lesser_or_equal_with_options, LesserOrEqual);
-    impl_binary_op!(not_equal, not_equal_with_options, NotEqual);
-    impl_binary_op!(logical_and, logical_and_with_options, LogicalAnd);
-    impl_binary_op!(logical_or, logical_or_with_options, LogicalOr);
-    impl_binary_op!(logical_xor, logical_xor_with_options, LogicalXor);
-    impl_binary_op!(matmul, matmul_with_options, Matmul);
-    impl_binary_op!(gemm, gemm_with_options, Gemm, MLGemmOptions);
     impl_binary_op!(
+        /// Element-wise `a < b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        lesser, lesser_with_options, Lesser);
+    impl_binary_op!(
+        /// Element-wise `a <= b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        lesser_or_equal, lesser_or_equal_with_options, LesserOrEqual);
+    impl_binary_op!(
+        /// Element-wise `a != b`; `uint8` result with broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        not_equal, not_equal_with_options, NotEqual);
+    impl_binary_op!(
+        /// Element-wise logical AND of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_and, logical_and_with_options, LogicalAnd);
+    impl_binary_op!(
+        /// Element-wise logical OR of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_or, logical_or_with_options, LogicalOr);
+    impl_binary_op!(
+        /// Element-wise logical XOR of `uint8` inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_xor, logical_xor_with_options, LogicalXor);
+    impl_binary_op!(
+        /// Matrix product of the last two dimensions with batch broadcasting.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-matmul>
+        matmul, matmul_with_options, Matmul);
+    impl_binary_op!(
+        /// General matrix multiplication `alpha * A * B + beta * C` for 2-D inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gemm>
+        gemm, gemm_with_options, Gemm, MLGemmOptions);
+    impl_binary_op!(
+        /// 2-D convolution of `input` with `filter`; layouts, strides, padding, dilations, groups and bias come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d>
         conv2d,
-        conv2_with_options,
+        conv2d_with_options,
         Conv2d,
         MLConv2dOptions,
         input,
         filter
     );
+
+    /// Former name of [`Self::conv2d_with_options`], kept for compatibility.
+    #[deprecated(note = "renamed to conv2d_with_options")]
+    pub fn conv2_with_options(
+        &mut self,
+        input: MLOperand,
+        filter: MLOperand,
+        options: MLConv2dOptions,
+    ) -> Result<MLOperand> {
+        self.conv2d_with_options(input, filter, options)
+    }
+
     impl_binary_op!(
+        /// 2-D transposed (fractionally strided) convolution.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d>
         conv_transpose2d,
         conv_transpose2d_with_options,
         ConvTranspose2d,
@@ -2488,10 +2586,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         filter
     );
 
+    /// Splits `input` along axis 0 into pieces of the given sizes; `splits` must sum to the
+    /// dimension. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split>
     pub fn split(&mut self, input: MLOperand, splits: &[u32]) -> Result<Vec<MLOperand>> {
         self.split_with_options(input, splits, MLSplitOptions::default())
     }
 
+    /// Same as [`Self::split`] with explicit [`MLSplitOptions`] (the split axis).
     pub fn split_with_options(
         &mut self,
         input: MLOperand,
@@ -2499,7 +2600,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLSplitOptions,
     ) -> Result<Vec<MLOperand>> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let output_ids: Vec<u32> = (0u32..splits.len() as u32)
@@ -2516,6 +2617,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// Splits `input` into `num_splits` equal pieces along the axis of the options.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split>
     pub fn split_equal_with_options(
         &mut self,
         input: MLOperand,
@@ -2523,7 +2626,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLSplitOptions,
     ) -> Result<Vec<MLOperand>> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let output_ids: Vec<u32> = (0u32..num_splits)
@@ -2541,6 +2644,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     impl_ternary_op!(
+        /// Batch normalization with per-channel `mean` and `variance`; optional `scale` and `bias` come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-batchnorm>
         batch_normalization,
         batch_normalization_with_options,
         BatchNormalization,
@@ -2550,6 +2655,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         variance
     );
     impl_ternary_op!(
+        /// Selects `true_value` where `condition` is non-zero and `false_value` elsewhere.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-where>
         where_,
         where_with_options,
         Where,
@@ -2558,6 +2665,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         false_value
     );
     impl_ternary_op!(
+        /// Copies `updates` into a copy of `input` at the slices addressed by `indices`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatternd>
         scatter_nd,
         scatter_nd_with_options,
         ScatterND,
@@ -2566,6 +2675,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         updates
     );
     impl_ternary_op!(
+        /// Copies `updates` into a copy of `input` at `indices` along `axis`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatterelements>
         scatter_elements,
         scatter_elements_with_options,
         ScatterElements,
@@ -2575,6 +2686,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         updates
     );
     impl_ternary_optional_op!(
+        /// Quantizes `input` with `scale` and an optional `zero_point` to the zero point data type (default `uint8`).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear>
         quantize_linear,
         quantize_linear_with_zeropoint,
         quantize_linear_with_options,
@@ -2585,6 +2698,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         zero_point
     );
     impl_ternary_optional_op!(
+        /// Dequantizes `input` with `scale` and an optional `zero_point` to the scale data type.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear>
         dequantize_linear,
         dequantize_linear_with_zeropoint,
         dequantize_linear_with_options,
@@ -2595,6 +2710,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         zero_point
     );
 
+    /// Extracts a window that begins at `starts` and spans `sizes`, one entry per dimension.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-slice>
     pub fn slice(
         &mut self,
         input: MLOperand,
@@ -2608,6 +2725,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.slice_with_options(input, starts, sizes, opts)
     }
 
+    /// Same as [`Self::slice`] with explicit [`MLSliceOptions`] (per-dimension strides).
     pub fn slice_with_options(
         &mut self,
         input: MLOperand,
@@ -2616,7 +2734,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLSliceOptions,
     ) -> Result<MLOperand> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let output_id = graph.operands.len();
@@ -2631,59 +2749,147 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_single_output_operation(operation)
     }
 
-    impl_unary_op!(abs, abs_with_options, Abs);
-    impl_unary_op!(round_even, round_even_with_options, RoundEven);
-    impl_unary_op!(ceil, ceil_with_options, Ceil);
-    impl_unary_op!(cos, cos_with_options, Cos);
-    impl_unary_op!(elu, elu_with_options, Elu, MLEluOptions);
     impl_unary_op!(
+        /// Element-wise absolute value.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        abs, abs_with_options, Abs);
+    impl_unary_op!(
+        /// Element-wise rounding to the nearest integer, ties to even.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        round_even, round_even_with_options, RoundEven);
+    impl_unary_op!(
+        /// Element-wise rounding up to the nearest integer.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        ceil, ceil_with_options, Ceil);
+    impl_unary_op!(
+        /// Element-wise cosine.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        cos, cos_with_options, Cos);
+    impl_unary_op!(
+        /// Exponential linear unit; `alpha` scales the negative branch.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-elu>
+        elu, elu_with_options, Elu, MLEluOptions);
+    impl_unary_op!(
+        /// Piecewise linear approximation of sigmoid, `clamp(alpha * x + beta, 0, 1)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-sigmoid>
         hard_sigmoid,
         hard_sigmoid_with_options,
         HardSigmoid,
         MLHardSigmoidOptions
     );
-    impl_unary_op!(hard_swish, hard_swish_with_options, HardSwish);
     impl_unary_op!(
+        /// Hard swish activation `x * clamp(x + 3, 0, 6) / 6`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-swish>
+        hard_swish, hard_swish_with_options, HardSwish);
+    impl_unary_op!(
+        /// Leaky rectified linear unit; `alpha` is the slope for negative inputs.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-leakyrelu>
         leaky_relu,
         leaky_relu_with_options,
         LeakyRelu,
         MLLeakyReluOptions
     );
-    impl_unary_op!(exp, exp_with_options, Exp);
-    impl_unary_op!(floor, floor_with_options, Floor);
-    impl_unary_op!(gelu, gelu_with_options, Gelu);
-    impl_unary_op!(log, log_with_options, Log);
-    impl_unary_op!(neg, neg_with_options, Neg);
-    impl_unary_op!(relu, relu_with_options, Relu);
-    impl_unary_op!(sigmoid, sigmoid_with_options, Sigmoid);
-    impl_unary_op!(sin, sin_with_options, Sin);
-    impl_unary_op!(sqrt, sqrt_with_options, Sqrt);
-    impl_unary_op!(tan, tan_with_options, Tan);
-    impl_unary_op!(tanh, tanh_with_options, Tanh);
     impl_unary_op!(
+        /// Element-wise exponential `e^x`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        exp, exp_with_options, Exp);
+    impl_unary_op!(
+        /// Element-wise rounding down to the nearest integer.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        floor, floor_with_options, Floor);
+    impl_unary_op!(
+        /// Gaussian error linear unit `x * 0.5 * (1 + erf(x / sqrt(2)))`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gelu-method>
+        gelu, gelu_with_options, Gelu);
+    impl_unary_op!(
+        /// Element-wise natural logarithm.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        log, log_with_options, Log);
+    impl_unary_op!(
+        /// Element-wise negation.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        neg, neg_with_options, Neg);
+    impl_unary_op!(
+        /// Rectified linear unit, `max(0, x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-relu-method>
+        relu, relu_with_options, Relu);
+    impl_unary_op!(
+        /// Logistic sigmoid `1 / (1 + e^-x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-sigmoid-method>
+        sigmoid, sigmoid_with_options, Sigmoid);
+    impl_unary_op!(
+        /// Element-wise sine.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sin, sin_with_options, Sin);
+    impl_unary_op!(
+        /// Element-wise square root.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sqrt, sqrt_with_options, Sqrt);
+    impl_unary_op!(
+        /// Element-wise tangent.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        tan, tan_with_options, Tan);
+    impl_unary_op!(
+        /// Hyperbolic tangent.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tanh-method>
+        tanh, tanh_with_options, Tanh);
+    impl_unary_op!(
+        /// Permutes the dimensions (`permutation` in the options, default: reversed order).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-transpose>
         transpose,
         transpose_with_options,
         Transpose,
         MLTransposeOptions
     );
-    impl_unary_op!(squeeze, squeeze_with_options, Squeeze, MLSqueezeOptions);
     impl_unary_op!(
+        /// Removes size-1 dimensions (all, or the `axes` of the options). Kept from the WebNN emulation appendix.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
+        squeeze, squeeze_with_options, Squeeze, MLSqueezeOptions);
+    impl_unary_op!(
+        /// Inserts size-1 dimensions at the `axes` of the options. Kept from the WebNN emulation appendix.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
         unsqueeze,
         unsqueeze_with_options,
         Unsqueeze,
         MLUnsqueezeOptions
     );
-    impl_unary_op!(erf, erf_with_options, Erf);
-    impl_unary_op!(reciprocal, reciprocal_with_options, Reciprocal);
-    impl_unary_op!(sign, sign_with_options, Sign);
-    impl_unary_op!(logical_not, logical_not_with_options, LogicalNot);
-    impl_unary_op!(identity, identity_with_options, Identity);
+    impl_unary_op!(
+        /// Element-wise Gauss error function.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        erf, erf_with_options, Erf);
+    impl_unary_op!(
+        /// Element-wise reciprocal `1 / x`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        reciprocal, reciprocal_with_options, Reciprocal);
+    impl_unary_op!(
+        /// Element-wise sign (`-1`, `0` or `1`).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        sign, sign_with_options, Sign);
+    impl_unary_op!(
+        /// Element-wise logical NOT of a `uint8` input.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical>
+        logical_not, logical_not_with_options, LogicalNot);
+    impl_unary_op!(
+        /// Copies the input unchanged.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        identity, identity_with_options, Identity);
 
     // Unary ops with extra method parameters (Option B).
-    impl_unary_op!(arg_min, arg_min_with_options, ArgMin, MLArgMinMaxOptions, axis: u32);
-    impl_unary_op!(arg_max, arg_max_with_options, ArgMax, MLArgMinMaxOptions, axis: u32);
-    impl_unary_op!(softmax, softmax_with_options, Softmax, MLOperatorOptions, axis: u32);
     impl_unary_op!(
+        /// Index of the minimum along `axis`; the output data type comes from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax>
+        arg_min, arg_min_with_options, ArgMin, MLArgMinMaxOptions, axis: u32);
+    impl_unary_op!(
+        /// Index of the maximum along `axis`; the output data type comes from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax>
+        arg_max, arg_max_with_options, ArgMax, MLArgMinMaxOptions, axis: u32);
+    impl_unary_op!(
+        /// Softmax along `axis`; the values along that axis sum to one.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softmax-method>
+        softmax, softmax_with_options, Softmax, MLOperatorOptions, axis: u32);
+    impl_unary_op!(
+        /// Cumulative sum along `axis`; `exclusive` and `reversed` come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cumulativesum>
         cumulative_sum,
         cumulative_sum_with_options,
         CumulativeSum,
@@ -2691,6 +2897,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         axis: u32
     );
     impl_unary_op!(
+        /// Converts the elements to another data type.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cast>
         cast,
         cast_with_options,
         Cast,
@@ -2698,6 +2906,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         data_type: MLOperandDataType
     );
     impl_unary_op!(
+        /// Broadcasts the input to `new_shape`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-expand>
         expand,
         expand_with_options,
         Expand,
@@ -2705,6 +2915,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         new_shape: Vec<MLDimension>
     );
     impl_unary_op!(
+        /// Reinterprets the input with `new_shape`; the element count must not change.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method>
         reshape,
         reshape_with_options,
         Reshape,
@@ -2712,6 +2924,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         new_shape: Vec<MLDimension>
     );
     impl_unary_op!(
+        /// Repeats the input `repetitions` times along each dimension.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tile>
         tile,
         tile_with_options,
         Tile,
@@ -2719,6 +2933,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         repetitions: Vec<u32>
     );
     impl_unary_op!(
+        /// Pads each dimension by `beginning_padding` and `ending_padding`; mode and value come from the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pad>
         pad,
         pad_with_options,
         Pad,
@@ -2729,117 +2945,184 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     // Unary ops without extra method parameters (not yet on the builder).
     impl_unary_op!(
+        /// Instance normalization over the spatial dimensions of each channel.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-instancenorm>
         instance_normalization,
         instance_normalization_with_options,
         InstanceNormalization,
         MLInstanceNormalizationOptions
     );
     impl_unary_op!(
+        /// Layer normalization over the `axes` of the options (default: all but the first dimension).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-layernorm>
         layer_normalization,
         layer_normalization_with_options,
         LayerNormalization,
         MLLayerNormalizationOptions
     );
-    impl_unary_op!(linear, linear_with_options, Linear, MLLinearOptions);
-    impl_unary_op!(clamp, clamp_with_options, Clamp, MLClampOptions);
     impl_unary_op!(
+        /// Linear transform `alpha * x + beta`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-linear>
+        linear, linear_with_options, Linear, MLLinearOptions);
+    impl_unary_op!(
+        /// Clamps every element to the `[min_value, max_value]` range of the options.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-clamp>
+        clamp, clamp_with_options, Clamp, MLClampOptions);
+    impl_unary_op!(
+        /// Resizes two spatial dimensions by `scales` or to `sizes` with nearest-neighbor or linear interpolation.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-resample2d-method>
         resample2d,
         resample2d_with_options,
         Resample2d,
         MLResample2dOptions
     );
-    impl_unary_op!(reverse, reverse_with_options, Reverse, MLReverseOptions);
-    impl_unary_op!(softplus, softplus_with_options, Softplus);
-    impl_unary_op!(softsign, softsign_with_options, Softsign);
-    impl_unary_op!(is_nan, is_nan_with_options, IsNaN);
-    impl_unary_op!(is_infinite, is_infinite_with_options, IsInfinite);
-    impl_unary_op!(shape, shape_with_options, Shape);
     impl_unary_op!(
+        /// Reverses the order of elements along the `axes` of the options (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reverse-method>
+        reverse, reverse_with_options, Reverse, MLReverseOptions);
+    impl_unary_op!(
+        /// Softplus activation `ln(1 + e^x)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softplus-method>
+        softplus, softplus_with_options, Softplus);
+    impl_unary_op!(
+        /// Softsign activation `x / (1 + |x|)`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softsign-method>
+        softsign, softsign_with_options, Softsign);
+    impl_unary_op!(
+        /// Element-wise NaN test; the `uint8` result is `1` where the input is NaN.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        is_nan, is_nan_with_options, IsNaN);
+    impl_unary_op!(
+        /// Element-wise infinity test; the `uint8` result is `1` where the input is infinite.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary>
+        is_infinite, is_infinite_with_options, IsInfinite);
+    impl_unary_op!(
+        /// Returns the shape of the input as a 1-D `int64` tensor (rustnn extension used by onnx2webnn exports; not part of the WebNN specification).
+        shape, shape_with_options, Shape);
+    impl_unary_op!(
+        /// Keeps the upper or lower triangle of the last two dimensions and zeroes the rest.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-triangular>
         triangular,
         triangular_with_options,
         Triangular,
         MLTriangularOptions
     );
     impl_unary_op!(
+        /// 2-D average pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
         average_pool2d,
         average_pool2d_with_options,
         AveragePool2d,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// 2-D max pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
         max_pool2d,
         max_pool2d_with_options,
         MaxPool2d,
         MLPool2dOptions
     );
-    impl_unary_op!(l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
     impl_unary_op!(
+        /// 2-D L2-norm pooling over the spatial dimensions.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-l2>
+        l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
+    impl_unary_op!(
+        /// Average pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `average_pool2d` with the default window).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
         global_average_pool,
         global_average_pool_with_options,
         GlobalAveragePool,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// Max pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `max_pool2d` with the default window).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
         global_max_pool,
         global_max_pool_with_options,
         GlobalMaxPool,
         MLPool2dOptions
     );
     impl_unary_op!(
+        /// Sum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_sum,
         reduce_sum_with_options,
         ReduceSum,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Arithmetic mean over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_mean,
         reduce_mean_with_options,
         ReduceMean,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Maximum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_max,
         reduce_max_with_options,
         ReduceMax,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Minimum over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_min,
         reduce_min_with_options,
         ReduceMin,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Product over `axes` (default: all).
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_product,
         reduce_product_with_options,
         ReduceProduct,
         MLReduceOptions
     );
-    impl_unary_op!(reduce_l1, reduce_l1_with_options, ReduceL1, MLReduceOptions);
-    impl_unary_op!(reduce_l2, reduce_l2_with_options, ReduceL2, MLReduceOptions);
     impl_unary_op!(
+        /// L1 norm (sum of absolute values) over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
+        reduce_l1, reduce_l1_with_options, ReduceL1, MLReduceOptions);
+    impl_unary_op!(
+        /// L2 norm (square root of the sum of squares) over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
+        reduce_l2, reduce_l2_with_options, ReduceL2, MLReduceOptions);
+    impl_unary_op!(
+        /// Logarithm of the sum over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_log_sum,
         reduce_log_sum_with_options,
         ReduceLogSum,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Logarithm of the sum of exponentials over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_log_sum_exp,
         reduce_log_sum_exp_with_options,
         ReduceLogSumExp,
         MLReduceOptions
     );
     impl_unary_op!(
+        /// Sum of squares over `axes`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_sum_square,
         reduce_sum_square_with_options,
         ReduceSumSquare,
         MLReduceOptions
     );
 
+    /// Gathers slices of `input` along the axis of the options (default 0) at `indices`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gather>
     pub fn gather(&mut self, input: MLOperand, indices: MLOperand) -> Result<MLOperand> {
         self.gather_with_options(input, indices, MLGatherOptions::default())
     }
 
+    /// Same as [`Self::gather`] with explicit [`MLGatherOptions`].
     pub fn gather_with_options(
         &mut self,
         input: MLOperand,
@@ -2847,7 +3130,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLGatherOptions,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2861,10 +3144,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Gathers single elements of `input` along the axis of the options; `indices` has the
+    /// output shape. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gatherelements>
     pub fn gather_elements(&mut self, input: MLOperand, indices: MLOperand) -> Result<MLOperand> {
         self.gather_elements_with_options(input, indices, MLGatherOptions::default())
     }
 
+    /// Same as [`Self::gather_elements`] with explicit [`MLGatherOptions`].
     pub fn gather_elements_with_options(
         &mut self,
         input: MLOperand,
@@ -2872,7 +3158,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLGatherOptions,
     ) -> Result<MLOperand> {
         let output_id = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
             .operands
@@ -2887,6 +3173,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     impl_binary_op!(
+        /// Gathers slices addressed by the last dimension of `indices`.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gathernd>
         gather_nd,
         gather_nd_with_options,
         GatherND,
@@ -2895,6 +3183,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         indices
     );
     impl_binary_op!(
+        /// Parametric rectified linear unit; `slope` broadcasts against `input` for negative values.
+        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-prelu>
         prelu,
         prelu_with_options,
         Prelu,
@@ -2903,10 +3193,13 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         slope
     );
 
+    /// Concatenates `inputs` along `axis`; all other dimensions must match.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat>
     pub fn concat(&mut self, inputs: &[MLOperand], axis: u32) -> Result<MLOperand> {
         self.concat_with_options(inputs, axis, MLOperatorOptions::default())
     }
 
+    /// Same as [`Self::concat`] with explicit [`MLOperatorOptions`].
     pub fn concat_with_options(
         &mut self,
         inputs: &[MLOperand],
@@ -2914,7 +3207,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLOperatorOptions,
     ) -> Result<MLOperand> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let output_id = graph.operands.len();
@@ -2929,54 +3222,30 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
     fn add_single_output_operation(&mut self, operation: Operation) -> Result<MLOperand> {
         trace!("Adding operation {operation:?}");
-        let graph = self
-            .graph
+        let recorder = self
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-        let output_id = graph.operands.len();
-
-        let output_operand = Operand {
-            kind: OperandKind::Intermediate,
-            descriptor: shape_inference_single_output(&operation, graph)?,
-            name: (!operation.label().is_empty()).then(|| operation.label().to_string()),
-        };
-        trace!("  Adding operand {output_operand:?}");
-        graph.operands.push(output_operand);
-        graph.operations.push(operation);
-
-        Ok(MLOperand { id: output_id })
+        let mut outputs = recorder.record_operation(operation, None)?;
+        if outputs.len() != 1 {
+            return Err(GraphBuilderError::InconsistentGraphInfo {
+                message: format!("single-output insertion returned {} outputs", outputs.len()),
+            });
+        }
+        Ok(outputs.remove(0))
     }
 
     fn add_multi_output_operation(&mut self, operation: Operation) -> Result<Vec<MLOperand>> {
         trace!("Adding operation {operation:?}");
-        let graph = self
-            .graph
+        self.recorder
             .as_mut()
-            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
-        let mut splits = shape_inference_multi_output(&operation, graph)?;
-
-        let mut output = vec![];
-        let name_prefix = operation
-            .label()
-            .is_empty()
-            .then(|| operation.label().to_string());
-
-        for (i, s) in splits.drain(..).enumerate() {
-            let output_id = graph.operands.len();
-            let output_operand = Operand {
-                kind: OperandKind::Intermediate,
-                descriptor: s,
-                name: name_prefix.as_ref().map(|prefix| format!("{prefix}_{i}")),
-            };
-            trace!(" Adding operand {output_operand:?}");
-            graph.operands.push(output_operand);
-            output.push(MLOperand { id: output_id })
-        }
-        graph.operations.push(operation);
-
-        Ok(output)
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?
+            .record_operation(operation, None)
     }
 
+    /// Gated recurrent unit over `steps` time steps. Returns the final hidden state
+    /// `[num_directions, batch, hidden_size]` and, with `return_sequence`, the per-step states
+    /// `[steps, num_directions, batch, hidden_size]`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gru>
     pub fn gru_with_options(
         &mut self,
         input: MLOperand,
@@ -2988,7 +3257,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     ) -> Result<Vec<MLOperand>> {
         let output_count = if options.return_sequence { 2 } else { 1 };
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let base = graph.operands.len() as u32;
@@ -3005,6 +3274,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// One gated recurrent unit step; returns the new hidden state `[batch, hidden_size]`.
+    /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-grucell>
     pub fn gru_cell_with_options(
         &mut self,
         input: MLOperand,
@@ -3015,7 +3286,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLGruCellOptions,
     ) -> Result<MLOperand> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let output_id = graph.operands.len() as u32;
@@ -3030,6 +3301,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         })
     }
 
+    /// Long short-term memory network over `steps` time steps. Returns the final hidden state,
+    /// the final cell state (both `[num_directions, batch, hidden_size]`) and, with
+    /// `return_sequence`, the per-step hidden states. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstm>
     pub fn lstm_with_options(
         &mut self,
         input: MLOperand,
@@ -3041,7 +3315,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     ) -> Result<Vec<MLOperand>> {
         let output_count = if options.return_sequence { 3 } else { 2 };
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let base = graph.operands.len() as u32;
@@ -3058,6 +3332,8 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         self.add_multi_output_operation(operation)
     }
 
+    /// One long short-term memory step; returns the new hidden state and cell state, both
+    /// `[batch, hidden_size]`. <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstmcell>
     #[allow(clippy::too_many_arguments)]
     pub fn lstm_cell_with_options(
         &mut self,
@@ -3070,7 +3346,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         options: MLLstmCellOptions,
     ) -> Result<Vec<MLOperand>> {
         let graph = self
-            .graph
+            .recorder
             .as_mut()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
         let base = graph.operands.len() as u32;
@@ -3099,7 +3375,87 @@ mod test {
             MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
         },
         mlgraphbuilder::MLGraphBuilder,
+        operator_options::{
+            MLDimension, MLGemmOptions, MLSplitOptions, MLSqueezeOptions, MLUnsqueezeOptions,
+        },
+        operators::Operation,
     };
+
+    #[test]
+    fn conv2d_bias_through_options_uses_operand_index() {
+        use crate::operator_options::MLConv2dOptions;
+        use crate::operators::Operation;
+
+        let f32_desc = |shape: Vec<u64>| {
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, shape)
+        };
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder.input("input", &f32_desc(vec![1, 1, 4, 4])).unwrap();
+        let filter = builder
+            .constant_from_slice(&f32_desc(vec![2, 1, 3, 3]), &[0.5f32; 18])
+            .unwrap();
+        let bias = builder
+            .constant_from_slice(&f32_desc(vec![2]), &[1.0f32, 2.0])
+            .unwrap();
+        let options = MLConv2dOptions {
+            bias: Some(bias.rustnn_index()),
+            ..Default::default()
+        };
+        let output = builder.conv2d_with_options(input, filter, options).unwrap();
+        assert_eq!(
+            builder.rustnn_operand_shape(output).unwrap(),
+            vec![1, 2, 2, 2]
+        );
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("output", output);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        let conv_options = graph
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Conv2d { options, .. } => options.as_ref(),
+                _ => None,
+            })
+            .expect("conv2d recorded");
+        assert_eq!(conv_options.bias, Some(u32::from(bias)));
+    }
+
+    #[test]
+    fn builder_and_graph_json_loader_record_equivalent_static_graphs() {
+        let descriptor = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![2, 3],
+        );
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder.input("input", &descriptor).unwrap();
+        let result = builder.relu(input).unwrap();
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("result", result);
+        let built = builder.finish_graph_info(&outputs).unwrap();
+
+        let json = crate::webnn_json::to_graph_json(&built, false).unwrap();
+        let loaded = crate::webnn_json::from_graph_json(&json).unwrap();
+
+        assert_eq!(loaded.input_operands, built.input_operands);
+        assert_eq!(loaded.output_operands, built.output_operands);
+        assert_eq!(loaded.operations.len(), built.operations.len());
+        assert_eq!(
+            loaded.operations[0].op_type(),
+            built.operations[0].op_type()
+        );
+        assert_eq!(loaded.operands.len(), built.operands.len());
+        for (actual, expected) in loaded.operands.iter().zip(&built.operands) {
+            assert_eq!(actual.kind, expected.kind);
+            assert_eq!(actual.name, expected.name);
+            assert_eq!(actual.descriptor.data_type, expected.descriptor.data_type);
+            assert_eq!(actual.descriptor.shape, expected.descriptor.shape);
+            assert_eq!(
+                actual.descriptor.pending_permutation,
+                expected.descriptor.pending_permutation
+            );
+        }
+    }
 
     #[test]
     fn add_inputs() {
@@ -3120,7 +3476,7 @@ mod test {
 
         let a = builder.input("a", &desc).unwrap();
         let b = builder.input("b", &desc).unwrap();
-        assert_eq!(builder.graph.as_ref().unwrap().operands.len(), 2);
+        assert_eq!(builder.recorder.as_ref().unwrap().operands.len(), 2);
 
         let mut outputs = MLNamedOperands::new();
         outputs.insert("out1", a);
@@ -3137,7 +3493,7 @@ mod test {
         let mut builder = MLGraphBuilder::new(&mut context).unwrap();
         let a = builder.input("a", &desc).unwrap();
         let b = builder.input("b", &desc).unwrap();
-        assert_eq!(builder.graph.as_ref().unwrap().operands.len(), 2);
+        assert_eq!(builder.recorder.as_ref().unwrap().operands.len(), 2);
         let out1 = builder.identity(a).unwrap();
         let out2 = builder.add(a, b).unwrap();
         let mut outputs = MLNamedOperands::new();
@@ -3433,6 +3789,97 @@ mod test {
     }
 
     #[test]
+    fn rustnn_save_webnn_round_trips_packed_4bit_constants_and_executes() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+
+        let uint4_desc =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Uint4, vec![3]);
+        let int4_desc =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Int4, vec![4]);
+        let scale_desc =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, vec![1]);
+        let output_desc =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, vec![7]);
+        let uint4_bytes = crate::graph::pack_uint4(&[0, 7, 15]);
+        let int4_bytes = crate::graph::pack_int4(&[-8, -1, 0, 7]);
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let uint4 = builder
+            .constant_from_bytes(&uint4_desc, uint4_bytes.clone())
+            .unwrap();
+        let int4 = builder
+            .constant_from_bytes(&int4_desc, int4_bytes.clone())
+            .unwrap();
+        let scale = builder.constant_from_slice(&scale_desc, &[1.0f32]).unwrap();
+        let uint4_float = builder.dequantize_linear(uint4, scale).unwrap();
+        let int4_float = builder.dequantize_linear(int4, scale).unwrap();
+        let output = builder.concat(&[uint4_float, int4_float], 0).unwrap();
+        let mut named_outputs = MLNamedOperands::new();
+        named_outputs.insert("output", output);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("packed-4bit.webnn");
+        builder
+            .rustnn_save_webnn(&named_outputs, &webnn_path)
+            .unwrap();
+        drop(builder);
+
+        let archive_bytes = std::fs::read(webnn_path.with_extension("safetensors")).unwrap();
+        let (_, metadata) = safetensors::SafeTensors::read_metadata(&archive_bytes).unwrap();
+        assert_eq!(
+            metadata
+                .metadata()
+                .as_ref()
+                .and_then(|metadata| metadata.get(webnn_graph::PACKED_4BIT_METADATA_KEY))
+                .map(String::as_str),
+            Some(webnn_graph::PACKED_4BIT_METADATA_VERSION)
+        );
+        let archive = safetensors::SafeTensors::deserialize(&archive_bytes).unwrap();
+        let saved_uint4 = archive.tensor("operand_0").unwrap();
+        assert_eq!(saved_uint4.dtype(), safetensors::Dtype::U8);
+        assert_eq!(saved_uint4.shape(), [2]);
+        assert_eq!(saved_uint4.data(), uint4_bytes);
+        let saved_int4 = archive.tensor("operand_1").unwrap();
+        assert_eq!(saved_int4.dtype(), safetensors::Dtype::U8);
+        assert_eq!(saved_int4.shape(), [2]);
+        assert_eq!(saved_int4.data(), int4_bytes);
+        assert_eq!(
+            archive.tensor("operand_2").unwrap().dtype(),
+            safetensors::Dtype::F32
+        );
+
+        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        assert_eq!(
+            loaded.operands[0].descriptor.data_type,
+            crate::graph::DataType::Uint4
+        );
+        assert_eq!(loaded.operands[0].descriptor.static_or_max_shape(), vec![3]);
+        assert_eq!(loaded.constant_operand_ids_to_handles[&0].data, uint4_bytes);
+        assert_eq!(
+            loaded.operands[1].descriptor.data_type,
+            crate::graph::DataType::Int4
+        );
+        assert_eq!(loaded.operands[1].descriptor.static_or_max_shape(), vec![4]);
+        assert_eq!(loaded.constant_operand_ids_to_handles[&1].data, int4_bytes);
+
+        let mut graph = context.rustnn_build_graph(loaded).unwrap();
+        let mut output_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&output_desc);
+        output_tensor_desc.set_readable(true);
+        let output_tensor = context.create_tensor(&output_tensor_desc).unwrap();
+        let inputs = MLNamedTensors::new();
+        let outputs = MLNamedTensors::from([("output", &output_tensor)]);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut actual = vec![0.0f32; 7];
+        context.read_tensor(&output_tensor, &mut actual).unwrap();
+        assert_eq!(actual, vec![0.0, 7.0, 15.0, -8.0, -1.0, 0.0, 7.0]);
+    }
+
+    #[test]
     fn rustnn_save_webnn_emits_named_constant_weight_ref() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
@@ -3547,5 +3994,262 @@ mod test {
             }
         );
         assert!(!webnn_path.exists());
+    }
+
+    #[test]
+    fn rustnn_saved_shape_operations_reload_and_execute() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+        let input_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![1, 4],
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let input = builder.input("input", &input_desc).unwrap();
+        let sliced = builder
+            .slice(
+                input,
+                &[0, 0],
+                &[MLDimension::Static(1), MLDimension::Static(2)],
+            )
+            .unwrap();
+        let concatenated = builder.concat(&[sliced, sliced], 1).unwrap();
+        let reshaped = builder
+            .reshape(
+                concatenated,
+                vec![MLDimension::Static(2), MLDimension::Static(2)],
+            )
+            .unwrap();
+        let expanded = builder
+            .unsqueeze_with_options(
+                reshaped,
+                MLUnsqueezeOptions {
+                    axes: vec![0],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let squeezed = builder
+            .squeeze_with_options(
+                expanded,
+                MLSqueezeOptions {
+                    axes: vec![0],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut named_outputs = MLNamedOperands::new();
+        named_outputs.insert("output", squeezed);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("shape-ops.webnn");
+        builder
+            .rustnn_save_webnn(&named_outputs, &webnn_path)
+            .unwrap();
+        drop(builder);
+
+        let text = std::fs::read_to_string(&webnn_path).unwrap();
+        assert!(text.contains("starts=[0, 0]"));
+        assert!(text.contains("sizes=[1, 2]"));
+        assert!(text.contains("axis=1"));
+        assert!(text.contains("newShape=[2, 2]"));
+        assert!(text.contains("unsqueeze("));
+        assert!(text.contains("squeeze("));
+        assert!(text.contains("axes=[0]"));
+
+        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        let output_id = loaded.output_operands[0];
+        assert_eq!(
+            loaded.operands[output_id as usize]
+                .descriptor
+                .static_or_max_shape(),
+            vec![2, 2]
+        );
+        let mut graph = context.rustnn_build_graph(loaded).unwrap();
+
+        let mut input_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&input_desc);
+        input_tensor_desc.set_writable(true);
+        let output_operand_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![2, 2],
+        );
+        let mut output_tensor_desc =
+            MLTensorDescriptor::from_operand_descriptor(&output_operand_desc);
+        output_tensor_desc.set_readable(true);
+        let input_tensor = context.create_tensor(&input_tensor_desc).unwrap();
+        let output_tensor = context.create_tensor(&output_tensor_desc).unwrap();
+        context
+            .write_tensor(&input_tensor, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let inputs = MLNamedTensors::from([("input", &input_tensor)]);
+        let outputs = MLNamedTensors::from([("output", &output_tensor)]);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut actual = vec![0.0f32; 4];
+        context.read_tensor(&output_tensor, &mut actual).unwrap();
+        assert_eq!(actual, vec![1.0, 2.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn rustnn_saved_gemm_bias_reloads_by_operand_name_and_executes() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+        let matrix_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![2, 2],
+        );
+        let bias_desc =
+            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, vec![2]);
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let input = builder.input("input", &matrix_desc).unwrap();
+        let weights = builder
+            .constant_from_slice(&matrix_desc, &[1.0f32, 0.0, 0.0, 1.0])
+            .unwrap();
+        let bias = builder
+            .constant_from_slice(&bias_desc, &[10.0f32, 20.0])
+            .unwrap();
+        let output = builder
+            .gemm_with_options(
+                input,
+                weights,
+                MLGemmOptions {
+                    c: Some(bias.id as u32),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut named_outputs = MLNamedOperands::new();
+        named_outputs.insert("output", output);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("gemm.webnn");
+        builder
+            .rustnn_save_webnn(&named_outputs, &webnn_path)
+            .unwrap();
+        drop(builder);
+
+        let text = std::fs::read_to_string(&webnn_path).unwrap();
+        let gemm_line = text.lines().find(|line| line.contains("gemm(")).unwrap();
+        assert!(gemm_line.contains("c=\"operand_2\""));
+
+        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        let c = loaded
+            .operations
+            .iter()
+            .find_map(|operation| match operation {
+                Operation::Gemm { options, .. } => options.as_ref().and_then(|options| options.c),
+                _ => None,
+            })
+            .expect("reloaded Gemm bias operand");
+        assert_eq!(
+            loaded.operands[c as usize].descriptor.static_or_max_shape(),
+            vec![2]
+        );
+        let mut graph = context.rustnn_build_graph(loaded).unwrap();
+
+        let mut input_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&matrix_desc);
+        input_tensor_desc.set_writable(true);
+        let mut output_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&matrix_desc);
+        output_tensor_desc.set_readable(true);
+        let input_tensor = context.create_tensor(&input_tensor_desc).unwrap();
+        let output_tensor = context.create_tensor(&output_tensor_desc).unwrap();
+        context
+            .write_tensor(&input_tensor, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let inputs = MLNamedTensors::from([("input", &input_tensor)]);
+        let outputs = MLNamedTensors::from([("output", &output_tensor)]);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut actual = vec![0.0f32; 4];
+        context.read_tensor(&output_tensor, &mut actual).unwrap();
+        assert_eq!(actual, vec![11.0, 22.0, 13.0, 24.0]);
+    }
+
+    #[test]
+    fn rustnn_saved_split_outputs_reload_and_execute() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+        let mut context = context.unwrap();
+        let input_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![1, 4],
+        );
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let input = builder.input("input", &input_desc).unwrap();
+        let split = builder
+            .split_with_options(
+                input,
+                &[1, 3],
+                MLSplitOptions {
+                    axis: 1,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut named_outputs = MLNamedOperands::new();
+        named_outputs.insert("left", split[0]);
+        named_outputs.insert("right", split[1]);
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let webnn_path = temp_dir.path().join("split.webnn");
+        builder
+            .rustnn_save_webnn(&named_outputs, &webnn_path)
+            .unwrap();
+        drop(builder);
+
+        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        let output_shapes = loaded
+            .output_operands
+            .iter()
+            .map(|&id| {
+                loaded.operands[id as usize]
+                    .descriptor
+                    .static_or_max_shape()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(output_shapes, vec![vec![1, 1], vec![1, 3]]);
+        let mut graph = context.rustnn_build_graph(loaded).unwrap();
+
+        let mut input_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&input_desc);
+        input_tensor_desc.set_writable(true);
+        let mut left_desc = MLTensorDescriptor::from_operand_descriptor(&MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            vec![1, 1],
+        ));
+        left_desc.set_readable(true);
+        let mut right_desc =
+            MLTensorDescriptor::from_operand_descriptor(&MLOperandDescriptor::new(
+                crate::operator_enums::MLOperandDataType::Float32,
+                vec![1, 3],
+            ));
+        right_desc.set_readable(true);
+        let input_tensor = context.create_tensor(&input_tensor_desc).unwrap();
+        let left_tensor = context.create_tensor(&left_desc).unwrap();
+        let right_tensor = context.create_tensor(&right_desc).unwrap();
+        context
+            .write_tensor(&input_tensor, &[1.0f32, 2.0, 3.0, 4.0])
+            .unwrap();
+        let inputs = MLNamedTensors::from([("input", &input_tensor)]);
+        let outputs = MLNamedTensors::from([("left", &left_tensor), ("right", &right_tensor)]);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+
+        let mut left = vec![0.0f32; 1];
+        let mut right = vec![0.0f32; 3];
+        context.read_tensor(&left_tensor, &mut left).unwrap();
+        context.read_tensor(&right_tensor, &mut right).unwrap();
+        assert_eq!(left, vec![1.0]);
+        assert_eq!(right, vec![2.0, 3.0, 4.0]);
     }
 }

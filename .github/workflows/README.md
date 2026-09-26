@@ -1,167 +1,32 @@
 # GitHub Actions Workflows
 
-This directory contains GitHub Actions workflows for the project.
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (ONNX Runtime, TensorRT, LiteRT, CANN, CoreML on macOS, wasm32 with `webnn-runtime`), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with warnings denied (`make docs-api`), operator report drift check (`make docs-backend-ops-check`) with the generator's unit tests, MkDocs strict build, version check on release tags |
+| `wpt-conformance.yml` | push, pull request | WPT conformance suites: ONNX Runtime and LiteRT on Linux (LiteRT non-blocking), CoreML on macOS; uploads JSON and HTML reports |
+| `wpt-conformance-nightly.yml` | schedule, manual | Full WPT run with reports, then builds the documentation site with rustdoc under `/api/` and the conformance dashboard under `/wpt-conformance/`, and deploys to GitHub Pages |
+| `snapshot-sync.yml` | weekly (Monday 03:00 UTC), manual | Regenerates PASS snapshots and expected-failure lists for LiteRT, ONNX Runtime and CoreML against the pinned WPT revision and opens a pull request with the diff |
+| `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn revision and enforces a minimum pass rate |
+| `docs.yml` | push to `main` (docs, `mkdocs.yml`, `src/`, `Cargo.toml`, `Makefile`), pull request, manual | MkDocs strict build, rustdoc embedded under `/api/`, cached WPT report embedded, deploy to GitHub Pages from `main` |
+| `docs-pr.yml` | pull request touching docs | MkDocs strict build, rustdoc build, link check, status comment on the PR |
+| `publish.yml` | GitHub release, manual | fmt, clippy, tests, `cargo publish` to crates.io |
 
-## PyPI Publishing Workflow
+## Conventions
 
-### `publish-pypi.yml` - Build and Publish to PyPI
+- The Rust version is pinned in `rust-toolchain.toml`; every workflow that installs Rust pins
+  the same version. Bump them together (the toolchain file lists the workflows).
+- `protoc` is installed in every job; `flatc` in jobs that build the `litert-runtime` feature.
+- TensorRT-RTX has no GPU runner. CI compiles the backend (`cargo check -F trtx-runtime
+  --all-targets`); its WPT snapshots are regenerated locally with `make wpt-sync-trtx`.
+- macOS CI builds and tests CoreML with and without dynamic inputs using `make build-coreml`
+  and `make test-coreml`. `make test-coreml-gather` also runs the focused gather bounds and
+  scalar-index shape regressions; numerical checks remain strict.
+- The documentation site combines three generated parts: MkDocs pages from `docs/`, rustdoc from
+  `make docs-api`, and the WPT dashboard cached by the nightly workflow. Test a docs change
+  locally with `make ci-docs` and `make docs-api`.
 
-Builds wheels for multiple platforms and publishes the PyWebNN package to PyPI.
+## Pages deployment
 
-**Triggers:**
-- GitHub releases (automatic publish on new release)
-- Manual trigger via workflow_dispatch (with publish flag)
-
-**What it does:**
-1. **Builds wheels** for multiple platforms:
-   - Linux: x86_64 and aarch64 (manylinux)
-   - macOS: x86_64 (Intel) and aarch64 (Apple Silicon)
-   - Windows: x64 and x86
-2. **Builds source distribution** (sdist)
-3. **Publishes to PyPI** (only on releases or manual trigger with publish=true)
-
-**Setup Requirements:**
-
-To enable PyPI publishing, configure trusted publishing:
-
-1. Go to [PyPI](https://pypi.org) and create an account
-2. Create a new project named `pywebnn`
-3. Go to project settings → Publishing → Add trusted publisher
-4. Configure the trusted publisher:
-   - **Owner**: your-github-username
-   - **Repository**: rustnn
-   - **Workflow**: publish-pypi.yml
-   - **Environment**: pypi
-5. In your GitHub repository:
-   - Go to Settings → Environments → New environment
-   - Name it `pypi`
-   - Add protection rules as needed
-
-**Publishing a New Release:**
-
-1. Update version in `pyproject.toml`
-2. Create a new Git tag:
-   ```bash
-   git tag v0.1.0
-   git push origin v0.1.0
-   ```
-3. Create a GitHub release from the tag
-4. The workflow will automatically build and publish to PyPI
-
-**Manual Publishing:**
-
-For testing or manual releases:
-
-1. Go to Actions → Publish to PyPI
-2. Click "Run workflow"
-3. Set `publish` to `true` to actually publish (or `false` for testing builds)
-4. Click "Run workflow"
-
-**Testing Locally:**
-
-Before publishing, test the build locally:
-
-```bash
-# Build wheels
-maturin build --release --features python
-
-# Check the built wheel
-pip install target/wheels/pywebnn-*.whl
-
-# Test the package
-python -c "import webnn; print(webnn.__version__)"
-```
-
-## Documentation Workflows
-
-### `docs.yml` - Build and Deploy Documentation
-
-Builds and deploys the documentation to GitHub Pages.
-
-**Triggers:**
-- Push to `main` branch (with changes to docs, mkdocs.yml, or Python code)
-- Pull requests (build only, no deploy)
-- Manual trigger via workflow_dispatch
-
-**What it does:**
-1. Builds the MkDocs documentation
-2. Uploads the built site as an artifact
-3. Deploys to GitHub Pages (only on main branch)
-
-**Setup Requirements:**
-
-To enable GitHub Pages deployment:
-
-1. Go to your repository Settings → Pages
-2. Under "Build and deployment", select:
-   - **Source**: GitHub Actions
-3. The workflow will automatically deploy on the next push to main
-
-### `docs-pr.yml` - Documentation PR Check
-
-Validates documentation on pull requests without deploying.
-
-**Triggers:**
-- Pull requests that modify documentation files
-
-**What it does:**
-1. Builds the documentation to check for errors
-2. Checks for broken internal links
-3. Comments on the PR with build status
-
-## Using the Workflows
-
-### Local Testing
-
-Before pushing, test your documentation locally:
-
-```bash
-# Install dependencies
-pip install -r docs/requirements.txt
-
-# Serve documentation locally
-mkdocs serve
-
-# Build documentation (as CI does)
-mkdocs build --strict --verbose
-```
-
-### Viewing Deployed Docs
-
-After the first successful deployment:
-- Your docs will be available at: `https://your-org.github.io/rustnn/`
-- The URL will be shown in the workflow run
-
-### Manual Deployment
-
-You can manually trigger documentation deployment:
-
-1. Go to Actions → Build and Deploy Documentation
-2. Click "Run workflow"
-3. Select the branch and run
-
-## Troubleshooting
-
-### Deployment Fails
-
-If deployment fails with permissions error:
-1. Go to Settings → Actions → General
-2. Under "Workflow permissions", select:
-   - [OK] Read and write permissions
-3. Save and re-run the workflow
-
-### Build Fails
-
-Common issues:
-- **Broken links**: Check that all internal links use correct paths
-- **Missing files**: Ensure all referenced files exist in the docs directory
-- **Markdown errors**: Validate your Markdown syntax
-- **MkDocs config**: Check mkdocs.yml for syntax errors
-
-### Pages Not Updating
-
-If GitHub Pages aren't updating:
-1. Check that the workflow completed successfully
-2. Verify GitHub Pages is configured (Settings → Pages)
-3. Wait a few minutes for cache to clear
-4. Hard refresh your browser (Ctrl+Shift+R / Cmd+Shift+R)
+GitHub Pages is configured with "GitHub Actions" as the source. `docs.yml` deploys on pushes to
+`main`; the nightly workflow redeploys with fresh conformance data. If a deployment fails with a
+permission error, check Settings -> Actions -> General -> Workflow permissions (read and write).

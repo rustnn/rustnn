@@ -1,275 +1,124 @@
 # Architecture
 
-## Core Components
+rustnn has three layers on top of one graph model. The WebNN API records graphs and executes
+them on a backend; converters lower the graph model to a backend format; the legacy pipeline
+loads, validates and converts stored graphs without a context.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ CLI (main.rs) / Library API (lib.rs) / Python API (PyO3)    │
-└──────────────┬──────────────────────────────────────────────┘
-               │
-    ┌──────────┴──────────┬──────────────┬─────────────────┐
-    ▼                     ▼              ▼                 ▼
-┌────────┐     ┌──────────────┐   ┌──────────┐    ┌──────────────┐
-│Loader  │────▶│  Validator   │──▶│ Context  │───▶│  Backend     │
-│(JSON)  │     │(graph.rs)    │   │(selects) │    │  Selection   │
-└────────┘     └──────────────┘   └────┬─────┘    └──────┬───────┘
-                                        │                 │
-                                        ▼                 ▼
-                                  ┌──────────┐    ┌──────────────┐
-                                  │ Builder  │    │  Converter   │
-                                  │(backend- │    │  (Runtime)   │
-                                  │agnostic) │    │              │
-                                  └────┬─────┘    └──────┬───────┘
-                                       │                 │
-                                       ▼                 ▼
-                              ┌─────────────┐   ┌────────────────┐
-                              │  MLGraph    │   │ ONNX / CoreML  │
-                              │(immutable)  │   │   Execution    │
-                              └─────────────┘   └────────────────┘
+                 WebNN API (rustnn::mlcontext, rustnn::mlgraphbuilder)
+   MLContext::create -> MLGraphBuilder -> build() -> MLGraph -> dispatch(MLTensor bindings)
+          |                   |
+          | selects           | records
+          v                   v
+   backend_selection      GraphInfo  <----  loader (.webnn / JSON)  <----  onnx2webnn, webnn-graph
+   (hints -> device)      operands, Operation enum, constants
+          |                   |
+          v                   v
+   backends::{ort, trtx, coreml, litert, cann}   uses   converters::{onnx, coreml_mlprogram, trtx, litert, cann}
+   MLBackendContext / MLBackendBuilder          ----->  GraphConverter
+          |
+          v
+   ONNX Runtime | TensorRT-RTX | CoreML | LiteRT | HiAI
 ```
 
-## Key Principles
+## Data flow
 
-### 1. Backend-Agnostic Graph Representation
-- `builder.build()` creates an immutable, platform-independent `GraphInfo` structure
-- Contains operands, operations, inputs, outputs, and constant data
-- No backend-specific artifacts at this stage
+1. **Context creation.** `MLContext::create` resolves the WebNN hints and the rustnn hints to a
+   `BackendDevice` (`src/backend_selection.rs`) and instantiates the backend context, which owns
+   the device handles and the tensors.
+2. **Recording.** `MLGraphBuilder` appends operands and `Operation` variants to a `GraphInfo`.
+   Every method runs shape inference (`src/shape_inference.rs`) for its outputs, so the graph is
+   fully annotated at all times. Constants are stored as bytes in the graph.
+3. **Build.** `build` marks the outputs and hands the `GraphInfo` to the backend builder, which
+   calls the backend's converter and compiles the result once: an ONNX Runtime session, a
+   TensorRT engine with refittable weights, a compiled CoreML model, a LiteRT interpreter or a
+   HiAI model. The `MLGraph` keeps the compiled artifact and the named I/O descriptors.
+4. **Dispatch.** `dispatch` validates the tensor bindings (unique tensors, names, shapes, data
+   types) with `runtime_checks`, then the backend binds or copies the tensors and runs.
 
-### 2. Runtime Backend Selection (WebNN Spec-Compliant)
+## Modules
 
-Following the [W3C WebNN Device Selection Explainer](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md):
+| Path | Responsibility |
+|---|---|
+| `src/lib.rs` | Crate docs (features, environment variables), module list, re-exports of the legacy API |
+| `src/mlcontext.rs` | `MLContext`, `MLGraph`, `MLTensor`, `MLOperand`, descriptors, the crate-private backend traits |
+| `src/mlcontextoptions.rs` | `MLContextOptions`, `MLPowerPreference`, `RustNNOptions`, `TrtxOptions` |
+| `src/backend_selection.rs` | `Backend`, `BackendDevice`, `DeviceType` and the selection order |
+| `src/mlgraphbuilder.rs` | `MLGraphBuilder`: inputs, constants, all operation methods (mostly macro-generated), build, save |
+| `src/operators.rs` | `Operation` enum with one variant per WebNN operation, `op_type()`, JSON attribute parsing |
+| `src/operator_options.rs` | `ML*Options` structs mirroring the spec dictionaries, `MLDimension` |
+| `src/operator_enums.rs` | `MLOperandDataType` and the other spec enums |
+| `src/shape_inference.rs` | Output shape and data type rules per operation |
+| `src/graph.rs` | `GraphInfo`, `Operand`, `OperandDescriptor`, `Dimension`, `DataType`, 4-bit packing, hashing for caches |
+| `src/validator.rs` | `GraphValidator`: structural checks, I/O descriptor maps, dependency order |
+| `src/runtime_checks.rs` | Shape checks of tensor bindings at dispatch, including dynamic dimensions |
+| `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import through the `webnn-graph` crate, export, `.safetensors` weights |
+| `src/converters/` | `GraphConverter` trait, `ConverterRegistry`, one converter per format (`onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs` with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs`, `litert.rs`, `cann.rs`, `webnn.rs` for the browser) and shared helpers (`pool2d_shared.rs`, `weight_file_builder.rs`) |
+| `src/backends/` | One module per backend implementing the backend traits; `caching.rs` for on-disk caches; `webnn/` with generated browser bindings; `mod.rs` with `DisabledContext` aliases for backends that are compiled out |
+| `src/executors/` | Legacy one-shot execution of converted bytes (ONNX Runtime, TensorRT, CoreML), used by the CLI |
+| `src/protos.rs`, `build.rs`, `protos/` | Protobuf (ONNX, CoreML) and flatbuffer (TFLite) schemas compiled at build time |
+| `src/graphviz.rs`, `src/debug.rs`, `src/tensor.rs` | DOT export, `RUSTNN_DEBUG` helpers, host tensor helpers |
+| `src/main.rs` | The `rustnn` CLI |
+| `tests/run_wpt_conformance.rs`, `tests/wpt_conformance/` | WPT conformance harness, see the [WPT Conformance Guide](../testing/wpt-test-guide.md) |
+| `tests/test_*_execution.rs` | Backend integration tests (TensorRT, LiteRT, CANN on device) |
+| `scripts/` | WPT corpus fetch and report tooling, the operator report generator, git hooks |
 
-- Backend selection happens at **context creation** via `accelerated` and `power_preference` hints
-- `accelerated=False` → ORT/LiteRT CPU
-- `accelerated=True` + `power="high-performance"` → GPU preferred (TRTX, CoreML, LiteRT, ORT)
-- `accelerated=True` + `power="low-power"` → NPU preferred (CoreML Neural Engine, LiteRT NPU)
-- Platform autonomously selects actual device based on availability and runtime conditions
-- Selection logic in `PyMLContext::select_backend()`
+## Backend contract
 
-### 3. MLTensor Management
+A backend implements two crate-private traits from `src/mlcontext.rs`:
 
-Following the [W3C WebNN MLTensor Explainer](https://github.com/webmachinelearning/webnn/blob/main/mltensor-explainer.md):
+- `MLBackendContext`: `create_tensor`, `read_tensor`, `write_tensor`, `dispatch`, tensor
+  capacity and resize, and `create_builder`.
+- `MLBackendBuilder`: `build(GraphInfo) -> MLGraph`.
 
-- Explicit tensor management with descriptor flags (readable, writable, exportableToGPU)
-- `destroy()` method for explicit resource cleanup
-- `dispatch()` for async execution with MLTensor inputs/outputs
-- Permission enforcement on read/write operations
+It also implements `ListDevices::list_devices()` for the selection code. Compiled artifacts are
+stored in the `MLBackendGraph` enum. When a backend's feature is off, `backends/mod.rs` aliases
+its context type to `DisabledContext`, so `MLContext` and the selection code compile under every
+feature combination. The traits are crate-private on purpose: external backends are not
+supported yet.
 
-### 4. Lazy Backend Conversion
-- Backend-specific conversion happens during `compute()`, not `build()`
-- `compute()` routes to appropriate backend method:
-  - `compute_onnx()` for ONNX Runtime
-  - `compute_coreml()` for CoreML
-  - `compute_fallback()` when no backend available
-- Same graph can be executed on different backends via different contexts
+## Graph model
 
-### 5. Rust-First Architecture
-- All core functionality in pure Rust (validation, conversion, execution)
-- Python bindings are thin wrappers exposing Rust functionality
-- Rust library usable independently without Python
-- Design principle: "Rust is the implementation, Python is the interface"
+`GraphInfo` is the single backend-agnostic representation. Operands are addressed by index;
+operations are variants of `Operation` with named fields for their operand indices and an
+`Option<ML*Options>`. This replaced a string-typed `op_type` plus JSON attributes design:
+attribute names are checked at compile time and every converter matches on the enum. The same
+model round-trips through the `webnn-graph` crate's text and JSON formats, which is how
+onnx2webnn hands models to rustnn.
 
-## Shape Inference
+Dynamic dimensions (`Dimension::Dynamic { name, max_size }`) are part of the model but only
+accepted when the `dynamic-inputs` feature is enabled.
 
-**Shape inference** is the process of automatically computing output tensor shapes of neural network operations based on their input shapes and operation parameters, without executing the operation.
+## Legacy pipeline
 
-### Why Shape Inference Matters
+`load_graph_from_path` -> `GraphValidator` -> `ConverterRegistry::convert` -> `executors::*`
+runs a stored graph without an `MLContext`. It predates the WebNN API and reloads the converted
+model on every call. The CLI and two examples still use it; the converters are shared with the
+backends.
 
-Shape inference enables:
+## Design decisions
 
-1. **Early validation** - Catch shape mismatches at build time, not runtime
-2. **Memory allocation** - Backend runtimes know output buffer sizes before execution
-3. **Graph optimization** - Enables static analysis and optimization passes
-4. **Self-describing graphs** - Graphs are fully annotated and backend-agnostic
+| Decision | Reason |
+|---|---|
+| Backend selection at context creation from hints | Follows the WebNN device selection explainer; the same graph code runs on every backend |
+| Strongly typed `Operation` and `ML*Options` | Compile-time checking of operand wiring and attribute names across five converters |
+| `BTreeMap` for `MLNamedOperands` and `MLNamedTensors` | Deterministic iteration order for the spec's record types |
+| `Send + Sync` contexts and errors | Embeddings such as Servo dispatch from several threads; errors compose with `anyhow` |
+| Native lowering for TensorRT, CoreML, LiteRT and CANN instead of going through ONNX | Avoids a second lowering and exposes backend features such as weight refit and caching |
+| Refittable weights and a topology-keyed engine cache for TensorRT | Engine builds are expensive; weights change more often than topology |
+| Feature flags per backend, mock features for TensorRT and CANN | Keeps the default build dependency-free and lets CI type-check every backend |
+| Protobuf and flatbuffer codegen at build time | No checked-in generated code |
+| Live WPT corpus as the conformance oracle, snapshots and expected-failure lists per backend | Upstream tests define the semantics; regressions show up as snapshot diffs |
+| Source-generated operator support report | Documentation that cannot drift from the converters |
 
-### How It Works
+## Platform support
 
-Each WebNN operation has a shape inference function in `src/shape_inference.rs` that computes output shapes. Shape inference happens during **graph building**, before any backend selection or execution.
-
-**Binary Operations (add, mul, div, etc.):**
-- Use NumPy-style broadcasting rules
-- Two dimensions are compatible if equal or one is 1
-- Output dimension is the maximum of the two
-```rust
-// broadcast_shapes([3, 1, 5], [3, 4, 5]) → [3, 4, 5]
-// The dimension 1 broadcasts to 4
-```
-
-**Matrix Multiplication:**
-```rust
-// Simple 2D: [M, K] @ [K, N] → [M, N]
-infer_matmul_shape([2, 3], [3, 4]) → [2, 4]
-
-// Batched: [batch, M, K] @ [batch, K, N] → [batch, M, N]
-infer_matmul_shape([5, 2, 3], [5, 3, 4]) → [5, 2, 4]
-
-// Validates inner dimensions match (K must equal)
-infer_matmul_shape([2, 3], [4, 5]) → Error: 3 != 4
-```
-
-**Convolution (conv2d):**
-- Takes input shape, filter shape, strides, padding, dilations
-- Computes spatial output dimensions:
-  ```
-  output_h = floor((input_h + pad_top + pad_bottom - dilation_h * (kernel_h - 1) - 1) / stride_h + 1)
-  output_w = floor((input_w + pad_left + pad_right - dilation_w * (kernel_w - 1) - 1) / stride_w + 1)
-  ```
-- Validates channel compatibility and group constraints
-- Handles multiple layouts: NCHW, NHWC (inputs) and OIHW, HWIO, OHWI, IHWO (filters)
-
-**Reshape:**
-```rust
-// Validates element count is preserved
-validate_reshape([2, 3, 4], [6, 4]) → OK (24 elements in both)
-validate_reshape([2, 3, 4], [5, 5]) → Error (24 != 25 elements)
-```
-
-**Pooling Operations:**
-- Similar to convolution but without filters
-- Computes output spatial dimensions based on window size, strides, padding
-- Handles both average and max pooling
-- Global pooling reduces spatial dimensions to 1x1
-
-### Integration with Graph Builder
-
-Shape inference is called automatically during graph construction:
-
-```python
-# Python API example
-x = builder.input("x", [2, 3], "float32")    # Shape: [2, 3]
-y = builder.input("y", [3, 4], "float32")    # Shape: [3, 4]
-z = builder.matmul(x, y)                     # Shape: [2, 4] (inferred)
-output = builder.relu(z)                     # Shape: [2, 4] (preserved)
-```
-
-When you call `builder.matmul(x, y)`, the implementation:
-1. Calls `infer_matmul_shape([2, 3], [3, 4])` from `src/shape_inference.rs`
-2. Gets result `[2, 4]`
-3. Creates operand descriptor with inferred shape
-4. Stores operation in graph with validated inputs/outputs
-
-This creates a fully-annotated, backend-agnostic graph that can be:
-- Validated for correctness
-- Visualized with Graphviz
-- Converted to ONNX, CoreML, or other formats
-- Executed on different backends without re-inference
-
-### Implementation Status
-
-All 85 WebNN operations have shape inference implemented (100% coverage). Each operation includes:
-- Shape inference function in `src/shape_inference.rs`
-- Comprehensive validation (dimension compatibility, parameter constraints)
-- Unit tests covering typical cases and edge cases
-- Error messages with context for debugging
-
-## File Organization
-
-```
-src/
-├── lib.rs              # Public Rust API exports
-├── main.rs             # CLI entry point
-├── graph.rs            # Core data structures (backend-agnostic)
-├── error.rs            # Error types
-├── validator.rs        # Graph validation
-├── loader.rs           # JSON loading
-├── graphviz.rs         # DOT export
-├── protos.rs           # Protobuf module setup
-├── converters/
-│   ├── mod.rs          # Registry and trait
-│   ├── onnx.rs         # ONNX converter
-│   ├── coreml_mlprogram.rs  # CoreML converter (MIL)
-│   ├── cann.rs         # CANN converter (HiAI IR, placeholder)
-│   └── litert.rs       # LiteRT converter (TFLite flatbuffer)
-├── backends/
-│   ├── mod.rs          # DisabledContext + module registry
-│   ├── ort.rs          # ONNX Runtime backend
-│   ├── trtx.rs         # TensorRT backend (CUDA)
-│   ├── coreml.rs       # CoreML backend (macOS)
-│   ├── cann.rs         # CANN backend (Ascend NPU, OHOS)
-│   └── litert.rs       # LiteRT backend (TFLite)
-├── executors/
-│   ├── mod.rs          # Conditional compilation
-│   ├── onnx.rs         # ONNX runtime
-│   ├── coreml.rs       # CoreML runtime
-│   └── coreml_shim.mm  # CoreML shim (ObjC++)
-└── python/             # Python bindings (PyO3)
-    ├── mod.rs          # Python module definition
-    ├── context.rs      # ML and MLContext classes (backend selection)
-    ├── graph_builder.rs # MLGraphBuilder class
-    ├── graph.rs        # MLGraph class
-    ├── operand.rs      # MLOperand class
-    └── tensor.rs       # MLTensor class
-
-python/webnn/           # Python package
-├── __init__.py         # Package exports (AsyncMLContext)
-└── __init__.pyi        # Type stubs
-
-tests/
-├── run_wpt_conformance.rs  # WPT conformance (libtest_mimic + MLGraphBuilder)
-├── wpt_conformance/        # WPT harness modules
-├── test_python_api.py      # Python API tests (pywebnn)
-└── test_integration.py     # Integration tests
-
-examples/
-├── python_simple.py          # Basic Python example
-├── python_matmul.py          # Matrix multiplication
-├── mobilenetv2_complete.py   # Complete pretrained MobileNetV2
-├── text_generation_gpt.py    # Transformer with attention
-└── train_text_model.py       # Model training script
-```
-
-## Design Patterns
-
-### Registry Pattern (Converters)
-- `ConverterRegistry` manages converters dynamically
-- Trait objects: `Box<dyn GraphConverter + Send + Sync>`
-- Extensible without modifying core code
-
-### Builder Pattern (Graph Construction)
-- `MLGraphBuilder` provides fluent API for graph construction
-- Incremental construction of complex structures
-- Used in ONNX and CoreML converters
-
-### Validation Pipeline
-- Immutable graph input
-- Stateful validator with progressive checks
-- Comprehensive artifacts returned for downstream use
-
-### Conditional Compilation
-- `#[cfg(target_os = "macos")]` for platform-specific code
-- `#[cfg(feature = "...")]` for optional features
-- Graceful degradation on unsupported platforms
-
-## Technical Decisions
-
-1. **WebNN Spec Compliance**: Follows W3C WebNN Device Selection and MLTensor explainers
-2. **Protobuf for Interop**: Native format for ONNX and CoreML
-3. **Compile-time Codegen**: Protobufs compiled at build time
-4. **Feature Flags**: Optional runtimes to minimize dependencies
-5. **Objective-C FFI**: Direct CoreML access on macOS
-6. **Zero-copy where possible**: `Bytes` type for efficiency
-7. **Registry Pattern**: Pluggable converters without core changes
-
-## Platform Support
-
-- **Validation & Conversion**: Cross-platform (Linux, macOS, Windows)
-- **TRTX Execution**: Linux/Windows with `trtx-runtime` feature (NVIDIA GPU)
-- **LiteRT Execution**: Cross-platform with `litert-runtime` feature (CPU/GPU/NPU)
-- **ONNX Execution**: Cross-platform with `onnx-runtime` feature (CPU/GPU)
-- **CoreML Execution**: macOS only with `coreml-runtime` feature (GPU/Neural Engine)
-- **CANN Execution**: OHOS only with `cann-runtime` feature (Huawei Ascend NPU, Kirin)
-- **Neural Engine**: macOS with Apple Silicon (via CoreML)
-- **Python Bindings**: Cross-platform with `python` feature (Python 3.11+)
-
-## Implementation Status
-
-**85 WebNN operations fully implemented** across all backends:
-
-- Shape Inference: 85/85 (100%)
-- Python API: 85/85 (100%)
-- ONNX Backend: 85/85 (100%)
-- CoreML MLProgram: 85/85 (100%)
-- LiteRT Backend: 56/85
-- TRTX Backend: 85/85 (100%)
-
-See [implementation-status.md](../development/implementation-status.md) for complete details.
+| Capability | Platforms |
+|---|---|
+| Validation, shape inference, conversion to ONNX and CoreML | Linux, macOS, Windows, wasm32 |
+| ONNX Runtime execution | Linux, macOS, Windows |
+| TensorRT-RTX execution | Linux and Windows with NVIDIA RTX GPUs |
+| CoreML execution | macOS |
+| LiteRT execution | Linux, macOS |
+| CANN execution | OpenHarmony (aarch64) |
+| Browser WebNN | wasm32 (bindings only) |

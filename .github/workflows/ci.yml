@@ -20,11 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep the pinned Rust version in sync with rust-toolchain.toml.
+      # Keep the pinned Rust version and components in sync with rust-toolchain.toml. Installing
+      # the components here avoids the implicit rustup sync on the first cargo call, which has
+      # failed with a component file conflict.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.0
         with:
-          components: rustfmt
+          components: rustfmt, clippy, rust-src
           targets: wasm32-unknown-unknown
 
       - name: Install protobuf compiler (Linux)
@@ -96,19 +98,35 @@ jobs:
       - name: Run cargo check (CANN runtime)
         run: cargo check --features cann-runtime
 
-      - name: Run cargo check (CoreML)
+      - name: Build all targets (CoreML without dynamic-inputs)
         if: runner.os == 'macOS'
-        run: cargo check --features coreml-runtime
+        run: make build-coreml COREML_FEATURES=coreml-runtime
+
+      - name: Build all targets (CoreML with dynamic-inputs)
+        if: runner.os == 'macOS'
+        run: make build-coreml
 
       - name: Run cargo test (library only)
         run: cargo test --lib
 
-      - name: Run cargo test (library only, CoreML)
+      - name: Run CoreML unit and integration tests (without dynamic-inputs)
         if: runner.os == 'macOS'
-        run: cargo test --lib --features coreml-runtime
+        run: make test-coreml COREML_FEATURES=coreml-runtime
+
+      - name: Run CoreML unit and integration tests (with dynamic-inputs)
+        if: runner.os == 'macOS'
+        run: make test-coreml
+
+      - name: Test CoreML gather active dimensions
+        if: runner.os == 'macOS'
+        run: make test-coreml-gather
 
       - name: Run cargo test (library only, CANN mock)
         run: cargo test --lib --features cann-runtime-mock
+
+      - name: Build Rust API docs (rustdoc warnings are errors)
+        if: runner.os == 'Linux'
+        run: make docs-api
 
       - name: Check backend operator report is up to date
         if: runner.os == 'Linux'
@@ -136,6 +154,40 @@ jobs:
 
       - name: Build documentation
         run: mkdocs build --strict
+
+  capi-examples:
+    name: C and C++ API Examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Add Homebrew to PATH
+        run: |
+          echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
+          echo "/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
+
+      - name: Install protobuf compiler and cargo-c
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          brew install cargo-c
+          protoc --version
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-capi-examples-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build and run C and C++ API examples
+        run: make capi-examples
 
   # Check that version in pyproject.toml matches git tag (for releases)
   version-check:

@@ -1,3 +1,14 @@
+//! NVIDIA TensorRT-RTX backend (`trtx-runtime` and `trtx-runtime-mock` features).
+//!
+//! Graphs are lowered with [`TrtxConverter`] straight into a TensorRT network, built into an
+//! engine, and executed with device tensors on a CUDA stream. Constants are marked
+//! refittable and set after the build, so engines are cached by topology (not weights) in
+//! the `trtx` cache category; the TensorRT runtime (JIT) cache lives in `trtx-jit`. Cache keys
+//! include a hash of the converter sources so converter edits invalidate stale engines.
+//! Behaviour is tuned with [`TrtxOptions`]; `TRTX_JSON_DUMP_PATH` dumps engine layer JSON.
+//!
+#![doc = include_str!("../../docs/integration/tensorrt.md")]
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -75,18 +86,25 @@ impl<'memory> From<Cow<'memory, [u8]>> for HostMemoryOrVec<'memory> {
     }
 }
 
+/// Errors of the TensorRT-RTX backend.
+///
+/// Variant fields carry the values named in the message; they are not documented separately.
 #[derive(Debug, thiserror::Error)]
+#[allow(missing_docs)]
 pub enum TrtxError {
+    /// A CUDA driver call failed.
     #[error("Cuda driver error: {source}")]
     CudaError {
         #[from]
         source: DriverError,
     },
+    /// A TensorRT call failed.
     #[error("TensorRT error: {source}")]
     TrtxError {
         #[from]
         source: trtx::Error,
     },
+    /// No cached engine and `TrtxOptions::fail_on_cache_miss` forbids building one.
     #[error(
         "Engine cache miss: cache_key={cache_key:?}. Failed engine build because TrtxOptions::fail_on_cache_miss options was enabled"
     )]
@@ -108,6 +126,7 @@ pub enum TrtxError {
         source: trtx::Error,
     },
 }
+/// Result of TensorRT-RTX backend operations.
 pub type TrtxResult<T> = std::result::Result<T, TrtxError>;
 
 // TODO: the mapping to GraphDispatchError/TensorReadError/TensorWriteError
@@ -281,7 +300,7 @@ impl std::fmt::Debug for TrtxContext<'_> {
 }
 
 // TODO: should make logger static or remove from API. It is anyway a global for TRT
-static LOGGER: std::sync::LazyLock<trtx::Logger> =
+pub(crate) static LOGGER: std::sync::LazyLock<trtx::Logger> =
     std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {

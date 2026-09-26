@@ -38,7 +38,7 @@ const SUPPORTED_DTYPES: &[&str] = &[
     "float32", "float16", "int8", "uint8", "int32", "uint32", "int64", "uint64", "int4", "uint4",
 ];
 
-/// Skip WPT cases whose inputs or expected outputs use unsupported tensor dtypes.
+/// Skip WPT cases whose inputs or expected outputs use dtypes no backend accepts.
 pub fn should_skip_test_by_dtype(
     backend_prefix: &str,
     operation: &str,
@@ -53,11 +53,6 @@ pub fn should_skip_test_by_dtype(
             return Some(format!("unsupported dataType: {dt}"));
         }
         if backend_prefix == "litert" {
-            if dt.eq_ignore_ascii_case("float16") || spec.shape().len() >= 5 {
-                return Some(
-                    "float16/5D tensor not implemented for litert backend yet".to_string(),
-                );
-            }
             // TODO: Needs Investigation
             if operation == "transpose" && spec.shape().is_empty() {
                 return Some("transpose 0D not supported by litert backend".to_string());

@@ -2,6 +2,13 @@
 /target
 /reports/
 
+# MkDocs output; built by `make docs-build` and in CI
+/site/
+
+# Agent memory plugins write per-directory CLAUDE.md activity logs; only the root file is tracked.
+**/CLAUDE.md
+!/CLAUDE.md
+
 # Python
 .venv*
 __pycache__/
@@ -53,5 +60,4 @@ env/
 *.swo
 *~
 .DS_Store
-*.snap.new
 *.bak

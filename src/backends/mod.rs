@@ -1,3 +1,20 @@
+//! Execution backends behind [`crate::mlcontext::MLContext`].
+//!
+//! A backend implements the crate-private `MLBackendContext` and `MLBackendBuilder` traits:
+//! it owns device tensors, converts a graph with its converter from [`crate::converters`],
+//! compiles it once into an `MLGraph`, and executes `dispatch` calls against persistent
+//! tensors. Backends that are not compiled in are replaced by `DisabledContext` aliases so the
+//! selection code in [`crate::backend_selection`] type-checks under every feature set.
+//!
+//! | Module | Feature | Notes |
+//! |---|---|---|
+//! | `ort` | `onnx-runtime` | ONNX Runtime sessions; lists CPU/GPU/NPU execution-provider devices |
+//! | `trtx` | `trtx-runtime`, `trtx-runtime-mock` | TensorRT-RTX engines with refittable weights, engine and runtime caches, CUDA graphs |
+//! | `coreml` | `coreml-runtime` | CoreML MLProgram compiled on macOS; failing shims elsewhere |
+//! | `litert` | `litert-runtime` | LiteRT interpreter over a TFLite flatbuffer |
+//! | `cann` | `cann-runtime`, `cann-runtime-mock` | Huawei HiAI/CANN on OpenHarmony |
+//! | `webnn` | `webnn-runtime` | Browser WebNN through generated bindings (`wasm32`) |
+
 use crate::mlcontext::{self, RustNNOptions};
 
 pub mod caching;
@@ -17,7 +34,9 @@ pub mod litert;
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 pub mod cann;
 
+/// Browser WebNN bindings generated from the specification IDL (`wasm32` only).
 #[cfg(feature = "webnn-runtime")]
+#[allow(missing_docs)]
 pub mod webnn;
 
 #[derive(Debug)]
@@ -107,6 +126,7 @@ impl<'context> mlcontext::MLBackendContext<'context> for DisabledContext {
     }
 }
 
+/// Disabled ONNX Runtime backend (built without `onnx-runtime`).
 #[cfg(not(feature = "onnx-runtime"))]
 pub mod ort {
 
@@ -123,6 +143,7 @@ pub mod ort {
     }
 }
 
+/// Disabled TensorRT-RTX backend (built without `trtx-runtime`).
 #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
 pub mod trtx {
     pub(crate) use crate::backends::DisabledContext as TrtxContext;
@@ -138,15 +159,19 @@ pub mod trtx {
     }
 }
 
+/// Disabled CANN backend (built without `cann-runtime`).
 #[cfg(not(any(feature = "cann-runtime", feature = "cann-runtime-mock")))]
 pub mod cann {
     pub(crate) use crate::backends::DisabledContext as CannContext;
 }
 
+/// Disabled CoreML backend (built without `coreml-runtime`).
 #[cfg(not(feature = "coreml-runtime"))]
 pub mod coreml {
     pub(crate) use crate::backends::DisabledContext as CoremlContext;
 }
+
+/// Disabled LiteRT backend (built without `litert-runtime`);
 #[cfg(not(feature = "litert-runtime"))]
 pub mod litert {
     pub(crate) use crate::backends::DisabledContext as LiteRtContext;

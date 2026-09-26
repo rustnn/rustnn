@@ -1,3 +1,9 @@
+//! Loading `.webnn` text and `webnn-graph` JSON files into a [`GraphInfo`].
+//!
+//! Parsing is delegated to the `webnn-graph` crate; this module sanitizes identifiers that
+//! exporters such as onnx2webnn emit, resolves external weight files declared next to the
+//! graph, and runs shape inference on import.
+
 use regex::Regex;
 use std::fs;
 use std::path::Path;
@@ -91,9 +97,8 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
 /// - `.webnn` - Text DSL format (parsed and converted to JSON)
 /// - `.json` - Direct JSON format (webnn-graph-json)
 ///
-/// When the graph contains `@weights` / `ConstInit::Weights` references, external tensors are
-/// resolved by [`webnn_graph::external_weights::resolve_external_weights`] (strict I/O
-/// and validation). See that module for file naming and behavior.
+/// External constants are resolved once through [`webnn_graph::resolve_external_weights`], which
+/// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
 pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
     let path_ref = path.as_ref();
     let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
@@ -133,7 +138,7 @@ pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphEr
     webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
         .map_err(map_weight_resolve_error)?;
 
-    webnn_json::from_graph_json(&graph_json)
+    webnn_json::from_graph_json_owned(graph_json)
 }
 
 #[cfg(test)]
@@ -522,9 +527,15 @@ mod tests {
                 }
             },
             "consts": {},
-            "nodes": [],
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
             "outputs": {
-                "y": "x"
+                "y": "y"
             }
         }"#;
 
@@ -583,9 +594,15 @@ mod tests {
                     "init": { "kind": "weights", "ref": "weight" }
                 }
             },
-            "nodes": [],
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
             "outputs": {
-                "y": "x"
+                "y": "y"
             }
         }"#;
 
@@ -635,8 +652,14 @@ mod tests {
                     "init": { "kind": "weights", "ref": "w" }
                 }
             },
-            "nodes": [],
-            "outputs": { "y": "x" }
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
         }"#;
         fs::write(&graph_path, graph_content).unwrap();
         let result = load_graph_from_path(&graph_path);
@@ -705,8 +728,14 @@ mod tests {
                     "init": { "kind": "weights", "ref": "onnx__weight" }
                 }
             },
-            "nodes": [],
-            "outputs": { "y": "x" }
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
         }"#;
 
         let tensor_bytes: Vec<u8> = vec![0u8; 8];
@@ -737,8 +766,14 @@ mod tests {
                     "init": { "kind": "weights", "ref": "weight" }
                 }
             },
-            "nodes": [],
-            "outputs": { "y": "x" }
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
         }"#;
 
         fs::write(&graph_path, graph_content).unwrap();
@@ -774,8 +809,14 @@ mod tests {
                     "init": { "kind": "weights", "ref": "weight" }
                 }
             },
-            "nodes": [],
-            "outputs": { "y": "x" }
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
+            "outputs": { "y": "y" }
         }"#;
 
         fs::write(&graph_path, graph_content).unwrap();
@@ -814,9 +855,15 @@ mod tests {
                     "init": { "kind": "weights", "ref": "onnx__weight" }
                 }
             },
-            "nodes": [],
+            "nodes": [{
+                "id": "identity_0",
+                "op": "identity",
+                "inputs": ["x"],
+                "options": {},
+                "outputs": ["y"]
+            }],
             "outputs": {
-                "y": "x"
+                "y": "y"
             }
         }"#;
 

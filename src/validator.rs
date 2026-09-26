@@ -1,12 +1,24 @@
+//! Structural validation of a [`GraphInfo`], modelled on Chromium's WebNN graph checks.
+//!
+//! [`GraphValidator`] checks operand counts and tensor byte limits from
+//! [`ContextProperties`], input/output naming, constant data sizes, operand production order
+//! and quantization constraints. It returns [`ValidationArtifacts`] with the named input and
+//! output descriptors that the CLI and the legacy executors use to bind tensors. The
+//! validator inspects positional operands; operands referenced only from options (for
+//! example `gemm.c`) are not checked.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::error::GraphError;
 use crate::graph::{DataType, GraphInfo, OperandDescriptor, OperandKind};
 use crate::operators::Operation;
 
+/// Limits the validator enforces.
 #[derive(Debug, Clone)]
 pub struct ContextProperties {
+    /// Maximum byte size of a single operand (default 256 MiB).
     pub tensor_byte_length_limit: usize,
+    /// Data types allowed for graph inputs and outputs (default: all).
     pub allowed_io_data_types: HashSet<DataType>,
 }
 
@@ -33,14 +45,20 @@ impl Default for ContextProperties {
     }
 }
 
+/// Facts collected while validating, used to bind tensors and to print the graph.
 #[derive(Debug)]
 pub struct ValidationArtifacts {
+    /// Graph inputs by name.
     pub input_names_to_descriptors: HashMap<String, OperandDescriptor>,
+    /// Graph outputs by name.
     pub output_names_to_descriptors: HashMap<String, OperandDescriptor>,
+    /// Operations (by label or type) that consume each operand.
     pub operand_to_dependent_operations: HashMap<u32, Vec<String>>,
+    /// Operation that produces each non-input operand.
     pub operand_to_producing_operation: HashMap<u32, String>,
 }
 
+/// Validates one graph; consumed by [`GraphValidator::validate`].
 pub struct GraphValidator<'a> {
     graph: &'a GraphInfo,
     context: ContextProperties,
@@ -50,6 +68,7 @@ pub struct GraphValidator<'a> {
 }
 
 impl<'a> GraphValidator<'a> {
+    /// Validator for `graph` with the given limits.
     pub fn new(graph: &'a GraphInfo, context: ContextProperties) -> Self {
         Self {
             graph,
@@ -60,6 +79,7 @@ impl<'a> GraphValidator<'a> {
         }
     }
 
+    /// Run all checks; the first failure is returned as a [`GraphError`].
     pub fn validate(mut self) -> Result<ValidationArtifacts, GraphError> {
         if self.graph.operands.is_empty()
             || self.graph.operations.is_empty()
@@ -402,20 +422,6 @@ impl<'a> GraphValidator<'a> {
         let input_shape = input_desc.static_or_max_shape();
         let scale_shape = scale_desc.static_or_max_shape();
 
-        // TODO: not ideal that scalar [] and unknown are represented in the same way
-        // Intermediate operation outputs may still carry unresolved shape metadata ([]).
-        // Treat those as unknown to avoid rejecting valid subgraphs during early validation.
-        let input_shape_known = !(input_shape_dims.is_empty()
-            && matches!(
-                input_operand.kind,
-                OperandKind::Output | OperandKind::Intermediate
-            ));
-        let output_shape_known = !(output_desc.shape.is_empty()
-            && matches!(
-                output_operand.kind,
-                OperandKind::Output | OperandKind::Intermediate
-            ));
-
         if scale_shape_dims.is_empty() {
             if !zero_point_shape_dims.is_empty() {
                 return Err(invalid(format!(
@@ -423,7 +429,7 @@ impl<'a> GraphValidator<'a> {
                     zero_point_shape_dims
                 )));
             }
-        } else if input_shape_known {
+        } else {
             if scale_shape_dims.len() != input_shape_dims.len() {
                 return Err(invalid(format!(
                     "scale rank {} must match input rank {}",
@@ -438,18 +444,11 @@ impl<'a> GraphValidator<'a> {
                 )));
             }
         }
-        if input_shape_known
-            && output_shape_known
-            && output_desc.static_or_max_shape() != *input_shape
-        {
+        if output_desc.static_or_max_shape() != input_shape {
             return Err(invalid(format!(
                 "output shape {:?} must match input shape {:?}",
                 output_desc.shape, input_shape_dims
             )));
-        }
-
-        if !input_shape_known {
-            return Ok(());
         }
 
         let mut non_one_dims = Vec::new();
@@ -727,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn quantize_unknown_intermediate_shape_validates() {
+    fn quantize_scalar_intermediate_is_not_treated_as_unknown() {
         let input_operand = Operand {
             kind: OperandKind::Input,
             descriptor: OperandDescriptor {
@@ -760,7 +759,7 @@ mod tests {
             name: None,
         };
 
-        // Intermediate output with unresolved shape metadata ([]).
+        // Empty shapes are known scalars, even on intermediate and output operands.
         let unresolved_intermediate = Operand {
             kind: OperandKind::Intermediate,
             descriptor: OperandDescriptor {
@@ -815,7 +814,27 @@ mod tests {
         };
 
         let validator = GraphValidator::new(&graph, ContextProperties::default());
-        validator.validate().unwrap();
+        let error = validator.validate().unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("scale rank 4 must match input rank 0")
+        );
+    }
+
+    #[test]
+    fn quantize_scalar_shapes_validate() {
+        let graph = build_quantize_graph(
+            "quantizeLinear",
+            DataType::Float32,
+            DataType::Float32,
+            DataType::Uint8,
+            vec![],
+            vec![],
+        );
+        GraphValidator::new(&graph, ContextProperties::default())
+            .validate()
+            .unwrap();
     }
 
     #[test]

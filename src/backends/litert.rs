@@ -2,6 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2
 
+//! LiteRT (TensorFlow Lite) backend (`litert-runtime` feature).
+//!
+//! Converts the graph to a TFLite flatbuffer with [`LiteRtConverter`] (NCHW operands are
+//! transposed to NHWC first) and runs it with the LiteRT interpreter from `litert-sys`.
+//!
+#![doc = include_str!("../../docs/integration/litert.md")]
+
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
@@ -76,6 +83,8 @@ pub(crate) struct LiteRtGraph {
     filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
     /// Output operand names needing BOOL type (WHERE condition, comparison ops).
     bool_operand_names: std::collections::HashSet<String>,
+    input_order: Vec<String>,
+    output_order: Vec<String>,
 }
 
 unsafe impl Send for LiteRtGraph {}
@@ -88,6 +97,8 @@ impl LiteRtGraph {
         spatial_operand_names: std::collections::HashSet<String>,
         filter_transpose_info: std::collections::HashMap<String, (String, Vec<i32>, bool)>,
         bool_operand_names: std::collections::HashSet<String>,
+        input_order: Vec<String>,
+        output_order: Vec<String>,
     ) -> Result<Self> {
         let owned = model_bytes.into_boxed_slice();
         unsafe {
@@ -128,6 +139,8 @@ impl LiteRtGraph {
                 spatial_operand_names,
                 filter_transpose_info,
                 bool_operand_names,
+                input_order,
+                output_order,
             })
         }
     }
@@ -296,10 +309,15 @@ pub(crate) struct LiteRtContext {
     pub(crate) needs_layout_fix: bool,
 }
 
+/// Whether `op` interprets its input as NCHW and needs the NHWC layout transposes.
 pub fn is_spatial_op(op: &Operation) -> bool {
     matches!(
         op,
-        Operation::Conv2d { .. } | Operation::MaxPool2d { .. } | Operation::AveragePool2d { .. }
+        Operation::Conv2d { .. }
+            | Operation::MaxPool2d { .. }
+            | Operation::AveragePool2d { .. }
+            | Operation::L2Pool2d { .. }
+            | Operation::InstanceNormalization { .. }
     )
 }
 
@@ -317,7 +335,13 @@ fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::Ha
                     .unwrap_or("");
                 layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
             }
-            Operation::MaxPool2d { options, .. } | Operation::AveragePool2d { options, .. } => {
+            Operation::MaxPool2d { options, .. }
+            | Operation::AveragePool2d { options, .. }
+            | Operation::L2Pool2d { options, .. } => {
+                let layout = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
+            }
+            Operation::InstanceNormalization { options, .. } => {
                 let layout = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
                 layout.is_empty() || layout.eq_ignore_ascii_case("nchw")
             }
@@ -491,7 +515,12 @@ fn modify_graph_for_nhwc(
                             l.is_empty() || l.eq_ignore_ascii_case("nchw")
                         }
                         Operation::MaxPool2d { options, .. }
-                        | Operation::AveragePool2d { options, .. } => {
+                        | Operation::AveragePool2d { options, .. }
+                        | Operation::L2Pool2d { options, .. } => {
+                            let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
+                            l.is_empty() || l.eq_ignore_ascii_case("nchw")
+                        }
+                        Operation::InstanceNormalization { options, .. } => {
                             let l = options.as_ref().map(|o| o.layout.as_str()).unwrap_or("");
                             l.is_empty() || l.eq_ignore_ascii_case("nchw")
                         }
@@ -604,7 +633,7 @@ fn transpose_nhwc_to_nchw(data: &[u8], shape: &[u64]) -> Vec<u8> {
     out
 }
 
-/// Transpose weight data from OIHW [O,I,H,W] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from OIHW (`[O, I, H, W]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usize) -> Vec<u8> {
     let esz = data.len() / (o * i * h * w);
     if esz == 0 || esz * o * i * h * w != data.len() {
@@ -626,7 +655,7 @@ pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usiz
     out
 }
 
-/// Transpose weight data from HWIO [H,W,I,O] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from HWIO (`[H, W, I, O]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usize) -> Vec<u8> {
     let esz = data.len() / (h * w * i * o);
     if esz == 0 || esz * h * w * i * o != data.len() {
@@ -648,7 +677,7 @@ pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usiz
     out
 }
 
-/// Transpose weight data from IHWO [I,H,W,O] to OHWI [O,H,W,I] layout.
+/// Transpose weight data from IHWO (`[I, H, W, O]`) to OHWI (`[O, H, W, I]`) layout.
 pub fn transpose_ihwo_to_ohwi(data: &[u8], i: usize, h: usize, w: usize, o: usize) -> Vec<u8> {
     let esz = data.len() / (i * h * w * o);
     if esz == 0 || esz * i * h * w * o != data.len() {
@@ -691,6 +720,26 @@ fn ohwi_shape_from_layout(shape: &[i32], layout: &str) -> Vec<i32> {
         "ohwi" => shape.to_vec(),
         _ => vec![shape[0], shape[2], shape[3], shape[1]], // "oihw" default
     }
+}
+
+/// Orders `names` as the compiled model's signature declares them.
+///
+/// LiteRT binds buffers to signature slots positionally, while `MLNamedTensors` iterates
+/// alphabetically. Undeclared names are appended rather than dropped.
+fn order_by_signature<'a>(
+    order: &'a [String],
+    names: &MLNamedTensors<'a>,
+) -> Vec<(&'a str, &'a MLTensor)> {
+    let mut ordered: Vec<(&'a str, &'a MLTensor)> = order
+        .iter()
+        .filter_map(|name| names.get(name.as_str()).map(|t| (name.as_str(), *t)))
+        .collect();
+    for (name, tensor) in names {
+        if !order.iter().any(|declared| declared == *name) {
+            ordered.push((name, *tensor));
+        }
+    }
+    ordered
 }
 
 fn build_input_handles(
@@ -947,13 +996,8 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
             }
         };
 
-        let mut sorted_inputs: Vec<(&str, &MLTensor)> =
-            inputs.iter().map(|(k, v)| (*k, *v)).collect();
-        sorted_inputs.sort_by_key(|(name, _)| *name);
-
-        let mut sorted_outputs: Vec<(&str, &MLTensor)> =
-            outputs.iter().map(|(k, v)| (*k, *v)).collect();
-        sorted_outputs.sort_by_key(|(name, _)| *name);
+        let sorted_inputs = order_by_signature(&lite_graph.input_order, inputs);
+        let sorted_outputs = order_by_signature(&lite_graph.output_order, outputs);
 
         let (in_raw, _temp_in_tensors) = build_input_handles(
             &sorted_inputs,
@@ -999,6 +1043,15 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
         let (input_descriptors, output_descriptors) = graph_info
             .io_binding_maps()
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        // The model's signature keeps the order the operands were declared in.
+        let operand_order = |ids: &[u32]| -> Vec<String> {
+            ids.iter()
+                .filter_map(|&id| graph_info.operand(id).and_then(|o| o.name.clone()))
+                .collect()
+        };
+        let input_order = operand_order(&graph_info.input_operands);
+        let output_order = operand_order(&graph_info.output_operands);
+
         let (spatial_operand_names, filter_transpose_info) = collect_spatial_info(&graph_info);
         let mut graph_info = graph_info;
         modify_graph_for_nhwc(&mut graph_info, &spatial_operand_names);
@@ -1011,6 +1064,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
             spatial_operand_names,
             filter_transpose_info,
             bool_operand_names,
+            input_order,
+            output_order,
         )
         .map_err(|e| Error::GraphBuildError {
             source: format!("failed to compile model: {e}").into(),

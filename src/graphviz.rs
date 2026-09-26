@@ -1,7 +1,10 @@
+//! Graphviz DOT export of a [`GraphInfo`] (CLI flag `--export-dot`).
+
 use std::fmt::Write;
 
 use crate::graph::{Dimension, GraphInfo, OperandKind};
 
+/// Render the graph as Graphviz DOT: inputs green, outputs blue, constants yellow.
 pub fn graph_to_dot(graph: &GraphInfo) -> String {
     let mut dot = String::from("digraph webnn {\n");
     dot.push_str("  rankdir=LR;\n");

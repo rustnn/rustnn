@@ -5,6 +5,9 @@
 # - .github/workflows/wpt-conformance.yml
 # - .github/workflows/wpt-conformance-nightly.yml
 # - .github/workflows/rustnnpt-gate.yml
+# - .github/workflows/snapshot-sync.yml
+# - .github/workflows/docs.yml
+# - .github/workflows/docs-pr.yml
 # Note: .github/workflows/publish.yml intentionally uses `stable`.
 channel = "1.97.0"
 components = ["rustfmt", "clippy", "rust-src"]

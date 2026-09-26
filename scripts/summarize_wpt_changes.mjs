@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * Generate a markdown PR body summarizing WPT snapshot + expected-failures changes.
+ * Generate a markdown PR body summarizing WPT expected-failures changes.
  *
  * Run in the CI aggregate job AFTER backend patches have been applied to the
  * working tree. Stages the changes so `git diff --cached` also sees newly-added
- * (untracked) snapshots produced by `git apply`.
+ * (untracked) list files produced by `git apply`.
  *
- * Model: PASS snapshots + {backend}_expected_failures.txt. Correlates the two to
- * report "new passes" (fail->pass) and "new failures" (pass->fail).
+ * Model: every backend tracks conformance with {backend}_expected_failures.txt.
+ * A list entry removed by a sync is a trial that now passes; an entry added is a
+ * trial that now fails.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const SNAP_DIR = 'tests/snapshots';
 const CONFORMANCE_DIR = 'tests/wpt_conformance';
 const WPT_REVISION = 'WPT_REVISION';
 
@@ -22,12 +22,6 @@ function git(args) {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
-}
-
-// run_wpt_conformance__{backend}_{sanitized}.snap -> {sanitized}
-function snapName(file) {
-  const m = path.basename(file).match(/^run_wpt_conformance__([a-z0-9]+)_(.+)\.snap$/);
-  return m ? { backend: m[1], name: m[2] } : null;
 }
 
 // {backend}::{operation}::{sanitized} -> {sanitized}
@@ -40,22 +34,23 @@ function txtDiff(file) {
   const diff = git(['diff', '--cached', 'HEAD', '--', file]);
   const added = new Set();
   const removed = new Set();
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('+++') || line.startsWith('---')) continue;
-    if (line.startsWith('+')) {
-      const name = txtName(line.slice(1));
-      if (name) added.add(name);
-    } else if (line.startsWith('-')) {
-      const name = txtName(line.slice(1));
-      if (name) removed.add(name);
-    }
+  for (const raw of diff.split('\n')) {
+    if (raw.startsWith('+++') || raw.startsWith('---')) continue;
+    const isAdded = raw.startsWith('+');
+    if (!isAdded && !raw.startsWith('-')) continue;
+    // Comment and blank lines carry no trial id (the Rust parser skips them too).
+    const text = raw.slice(1).trim();
+    if (!text || text.startsWith('#')) continue;
+    const name = txtName(text);
+    if (!name) continue;
+    (isAdded ? added : removed).add(name);
   }
   return { added, removed };
 }
 
-// Stage snapshot/expected-failure changes so `git diff --cached` also sees
-// newly-added (untracked) snapshots produced by `git apply`.
-git(['add', '-A', '--', SNAP_DIR, CONFORMANCE_DIR]);
+// Stage expected-failure changes so `git diff --cached` also sees newly-added
+// (untracked) list files produced by `git apply`.
+git(['add', '-A', '--', CONFORMANCE_DIR]);
 
 const nameStatus = git([
   'diff',
@@ -63,77 +58,46 @@ const nameStatus = git([
   'HEAD',
   '--name-status',
   '--',
-  SNAP_DIR,
   CONFORMANCE_DIR,
 ]);
 const entries = nameStatus ? nameStatus.split('\n').filter(Boolean) : [];
 
 // Per-backend aggregation keyed by backend name.
-const stats = new Map();
-const txtAdded = new Map();
-const txtRemoved = new Map();
-const newSnaps = new Map();
-const removedSnaps = new Map();
+const newFailures = new Map();
+const newPasses = new Map();
 
-function backendStat(backend) {
-  if (!stats.has(backend)) {
-    stats.set(backend, { added: 0, removed: 0 });
-  }
-  return stats.get(backend);
-}
 function setName(map, backend, name) {
   if (!map.has(backend)) map.set(backend, new Set());
   map.get(backend).add(name);
 }
-function countItems(backendSets) {
-  let total = 0;
-  for (const names of backendSets.values()) total += names.size;
-  return total;
+// Pass totals of the sync runs, as recorded by the jobs in PASS_TOTALS
+// ("<backend>: <n> passed, <n> skipped, <n> failed" per line).
+function passTotals() {
+  const totals = [];
+  const notes = [];
+  for (const line of (process.env.PASS_TOTALS ?? '').split('\n')) {
+    const text = line.trim();
+    if (!text) continue;
+    const m = text.match(/^(\w+): (\d+) passed, (\d+) skipped, (\d+) failed$/);
+    if (m) {
+      totals.push({ backend: m[1], passed: m[2], skipped: m[3], failed: m[4] });
+    } else {
+      notes.push(text);
+    }
+  }
+  totals.sort((a, b) => a.backend.localeCompare(b.backend));
+  return { totals, notes };
 }
 
 for (const line of entries) {
   const parts = line.split('\t');
-  const status = parts[0];
   const file = parts[parts.length - 1];
-  if (!file) continue;
+  if (!file || !file.includes('_expected_failures.txt')) continue;
 
-  if (file.endsWith('.snap')) {
-    const parsed = snapName(file);
-    if (!parsed) continue;
-    const s = backendStat(parsed.backend);
-    if (status === 'A') {
-      s.added += 1;
-      setName(newSnaps, parsed.backend, parsed.name);
-    } else if (status === 'D') {
-      s.removed += 1;
-      setName(removedSnaps, parsed.backend, parsed.name);
-    }
-  } else if (file.includes('_expected_failures.txt')) {
-    const backend = path.basename(file).replace(/_expected_failures\.txt$/, '');
-    const { added, removed } = txtDiff(file);
-    if (added.size > 0) txtAdded.set(backend, added);
-    if (removed.size > 0) txtRemoved.set(backend, removed);
-  }
-}
-
-// New passes: a new PASS snapshot whose test was removed from .txt (fail -> pass).
-const newPasses = new Map();
-for (const [backend, names] of newSnaps) {
-  const removed = txtRemoved.get(backend);
-  if (!removed) continue;
-  for (const name of names) {
-    if (removed.has(name)) setName(newPasses, backend, name);
-  }
-}
-
-// New failures: a removed PASS snapshot whose test was added to .txt (pass -> fail).
-const newFailures = new Map();
-for (const [backend, names] of removedSnaps) {
-  const added = txtAdded.get(backend);
-  if (!added) continue;
-  for (const name of names) {
-    if (added.has(name)) setName(newFailures, backend, name);
-  }
+  const backend = path.basename(file).replace(/_expected_failures\.txt$/, '');
+  const { added, removed } = txtDiff(file);
+  for (const name of added) setName(newFailures, backend, name);
+  for (const name of removed) setName(newPasses, backend, name);
 }
 
 // GitHub runners are UTC; format DD-MM-YYYY.
@@ -162,10 +126,16 @@ function wptRevisionChange() {
 }
 
 const out = [];
-out.push('# WPT snapshot sync');
+out.push('# WPT expected-failures sync');
 out.push('');
 out.push(
-  `Updates WPT PASS snapshots and expected-failure lists to match the pinned WPT corpus (${syncDate()}).`
+  `Updates the per-backend expected-failure lists to match the pinned WPT corpus (${syncDate()}).`
+);
+out.push('');
+out.push(
+  'Lists are rebuilt from a fresh run, so entries removed here are trials that now pass and ' +
+    'entries added are trials that now fail. Trials that pass without being listed leave no ' +
+    'artefact, so a stale entry is only ever visible as a removal in this diff.'
 );
 out.push('');
 
@@ -177,30 +147,40 @@ if (pinChange) {
   out.push('');
 }
 
-const allBackends = new Set([
-  ...stats.keys(),
-  ...txtAdded.keys(),
-  ...txtRemoved.keys(),
-]);
+const allBackends = new Set([...newFailures.keys(), ...newPasses.keys()]);
 
 if (allBackends.size > 0) {
   out.push('## Summary');
   out.push('');
-  out.push('| Backend | Snaps + | Snaps - | `.txt` + | `.txt` - |');
-  out.push('|---------|---------|---------|----------|----------|');
+  out.push('| Backend | New failures | New passes |');
+  out.push('|---------|--------------|------------|');
   for (const backend of [...allBackends].sort()) {
-    const s = stats.get(backend) ?? { added: 0, removed: 0 };
-    const a = txtAdded.get(backend)?.size ?? 0;
-    const r = txtRemoved.get(backend)?.size ?? 0;
-    out.push(`| ${backend} | ${s.added} | ${s.removed} | ${a} | ${r} |`);
+    const f = newFailures.get(backend)?.size ?? 0;
+    const p = newPasses.get(backend)?.size ?? 0;
+    out.push(`| ${backend} | ${f} | ${p} |`);
   }
   out.push('');
 }
 
-out.push('## Stats');
-out.push('');
-out.push(`[${countItems(newPasses)} new passes, ${countItems(newFailures)} new failures]`);
-out.push('');
+// Totals of the runs themselves, not of the diff: the Summary table above
+// already accounts for the entries this sync adds or removes.
+const { totals, notes } = passTotals();
+if (totals.length > 0 || notes.length > 0) {
+  out.push('## Stats');
+  out.push('');
+  if (totals.length > 0) {
+    out.push('| Backend | Passed | Skipped | Failed |');
+    out.push('|---------|--------|---------|--------|');
+    for (const t of totals) {
+      out.push(`| ${t.backend} | ${t.passed} | ${t.skipped} | ${t.failed} |`);
+    }
+    out.push('');
+  }
+  if (notes.length > 0) {
+    out.push(...notes);
+    out.push('');
+  }
+}
 
 function listTransitions(title, backendSets) {
   const items = [];

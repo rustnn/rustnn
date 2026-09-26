@@ -3967,6 +3967,7 @@ fn rewrite_attention_5d(graph: &GraphInfo) -> Option<GraphInfo> {
     Some(g)
 }
 
+/// Converts a graph to a CANN offline model through the `hiai-rs` adapter.
 pub struct CannConverter;
 
 impl GraphConverter for CannConverter {

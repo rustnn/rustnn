@@ -8,28 +8,10 @@ rustnn uses [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) for code
 
 ## Current Coverage Metrics
 
-As of the latest test run, the project has:
-
-- **Total Line Coverage:** 47.25% (9,937 / 21,030 lines)
-- **Total Function Coverage:** 42.26% (661 / 1,564 functions)
-- **Total Region Coverage:** 47.38% (15,767 / 33,278 regions)
-
-### Coverage by Module
-
-High coverage modules (>80%):
-- `weight_file_builder.rs`: 99.13% lines
-- `graph.rs`: 97.14% lines
-- `shape_inference.rs`: 86.84% lines
-- `graphviz.rs`: 92.70% lines
-- `validator.rs`: 72.02% lines
-
-Modules needing attention (<30%):
-- `coreml_mlprogram.rs`: 29.56% lines (converter)
-- `onnx.rs`: 24.57% lines (converter)
-- `webnn_json.rs`: 26.44% lines
-- `coreml.rs`: 0% lines (platform-specific executor)
-- `loader.rs`: 0% lines (needs tests)
-- `error.rs`: 0% lines (error types, display-only)
+Coverage figures are not recorded in this page because they go stale; run `make coverage` for
+the current numbers. Coverage is measured for the library unit tests only (`--lib`), so the
+converters are also exercised by the WPT conformance suites that the coverage run does not
+include.
 
 ## Prerequisites
 
@@ -131,8 +113,8 @@ The text report shows a table with these columns:
 Example:
 ```
 Filename                           Lines  Missed Lines  Cover
-rustnn/src/shape_inference.rs      2090          275   86.84%
-rustnn/src/graph.rs                 175            5   97.14%
+rustnn/src/shape_inference.rs      <n>           <m>   <pct>%
+rustnn/src/graph.rs                <n>           <m>   <pct>%
 ```
 
 ### HTML Report
@@ -211,9 +193,10 @@ For GitHub Actions or other CI systems:
 ## Coverage Goals
 
 **Project Goals:**
-- Overall line coverage: >60% (current: 47.25%)
-- Core modules (graph, shape_inference, validator): >80%
-- New code: >70% coverage required
+- Overall line coverage above 60%; the current figure comes from `make coverage` or the
+  Codecov dashboard, not from this page.
+- Core modules (graph, shape_inference, validator) above 80%.
+- New code above 70%.
 
 **Current Focus Areas:**
 1. Converters (ONNX, CoreML) - Low coverage due to integration testing needs

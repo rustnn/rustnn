@@ -3,180 +3,174 @@
 
   # rustnn
 
-  A Rust implementation of the W3C WebNN specification for neural network graph validation and backend conversion.
+  A Rust implementation of the W3C WebNN API with pluggable execution backends.
 </div>
 
 ---
 
 ## [WARNING] EXPERIMENTAL - DO NOT USE IN PRODUCTION
 
-This is an early-stage experimental implementation for research and exploration. Many features are incomplete, untested, or may change significantly.
+rustnn is a development release (`0.5.x`). APIs change without notice.
 
 ---
 
 ## What is rustnn?
 
-rustnn is a Rust library that provides:
+- **The WebNN API in Rust.** `MLContext`, `MLGraphBuilder`, `MLGraph`, `MLTensor` and
+  `dispatch` mirror the [W3C WebNN](https://www.w3.org/TR/webnn/) JavaScript API. Every
+  operation of the specification is available on the builder; rustnn-specific additions carry
+  a `rustnn_` prefix.
+- **Backends selected at context creation.** ONNX Runtime, NVIDIA TensorRT-RTX, Apple CoreML,
+  LiteRT and Huawei CANN, chosen from the WebNN `accelerated` and power-preference hints or
+  forced with a backend hint.
+- **Graph interchange.** Loads `.webnn` text and JSON graphs from
+  [webnn-graph](https://github.com/rustnn/webnn-graph) and
+  [onnx2webnn](https://github.com/rustnn/onnx2webnn), saves graphs with `.safetensors` weights,
+  exports ONNX and CoreML models and, with their features, TensorRT engines, TFLite and CANN
+  models.
+- **Conformance.** The upstream WebNN Web Platform Tests run in-repo against the backends on
+  every pull request; the nightly [dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
+  shows per-operation results.
 
-- **WebNN Graph Validation**: Validates WebNN graph structures against the W3C specification
-- **Backend Conversion**: Converts WebNN graphs to ONNX and CoreML formats
-- **Runtime Backends**: Executes graphs on CPU, GPU, or Neural Engine
-- **Shape Inference**: Automatic tensor shape computation
-- **Operation Support**: 88 WebNN operations (84% spec coverage)
+Python users: the [pywebnn](https://github.com/rustnn/pywebnn) package wraps rustnn. This
+repository contains no Python API; the scripts under `examples/experimental/` only run exported
+ONNX models for parity checks.
 
-## Python Bindings
+## Quick start
 
-Python users should use **[pywebnn](https://github.com/rustnn/pywebnn)** - a separate package that provides full W3C WebNN API Python bindings using rustnn as the core library.
-
-**Install Python package:**
-```bash
-pip install pywebnn
-```
-
-See the [pywebnn repository](https://github.com/rustnn/pywebnn) for Python documentation and examples.
-
-## Rust Library Installation
-
-Add rustnn to your `Cargo.toml`:
+The WebNN API below lives on `main` and is not yet published; the `rustnn` crate on crates.io
+(0.5.x) is the earlier converter and loader crate without `MLContext`. Use the git dependency:
 
 ```toml
 [dependencies]
-rustnn = { git = "https://github.com/rustnn/rustnn" }
-
-# Optional: Enable runtime backends
 rustnn = { git = "https://github.com/rustnn/rustnn", features = ["onnx-runtime"] }
 ```
 
-**Features:**
-- `onnx-runtime` - ONNX Runtime execution (CPU/GPU)
-- `coreml-runtime` - CoreML execution (macOS only)
-- `trtx-runtime-mock` - TensorRT mock (no GPU needed)
-- `trtx-runtime` - TensorRT execution (Linux/Windows with NVIDIA GPU)
-
-## Quick Start (Rust)
-
 ```rust
-use rustnn::graph::GraphInfo;
-use rustnn::converters::{GraphConverter, OnnxConverter};
-use rustnn::validator::GraphValidator;
+use rustnn::mlcontext::{
+    MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+    MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+};
+use rustnn::operator_enums::MLOperandDataType;
 
-// Load a WebNN graph from JSON
-let graph: GraphInfo = serde_json::from_str(&json_string)?;
+fn main() -> rustnn::error::Result<()> {
+    let options = MLContextOptions::new(MLPowerPreference::Default, false);
+    let mut context = MLContext::create(&options)?;
 
-// Validate the graph
-let validator = GraphValidator::new();
-let artifacts = validator.validate(&graph)?;
+    // y = relu(x + 1)
+    let mut builder = MLGraphBuilder::new(&mut context)?;
+    let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x = builder.input("x", &descriptor)?;
+    let one = builder.constant_from_slice(&descriptor, &[1.0f32; 4])?;
+    let sum = builder.add(x, one)?;
+    let y = builder.relu(sum)?;
+    let mut outputs = MLNamedOperands::new();
+    outputs.insert("y", y);
+    let mut graph = builder.build(&outputs)?;
 
-// Convert to ONNX
-let converter = OnnxConverter;
-let onnx_model = converter.convert(&graph)?;
+    let tensor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
+    let x_tensor = context.create_tensor(&tensor.to_writable())?;
+    let y_tensor = context.create_tensor(&tensor.to_readable())?;
+    context.write_tensor(&x_tensor, &[-2.0f32, -1.0, 0.0, 1.0])?;
 
-// Save ONNX model
-std::fs::write("model.onnx", onnx_model.data)?;
+    let mut inputs = MLNamedTensors::new();
+    inputs.insert("x", &x_tensor);
+    let mut output_tensors = MLNamedTensors::new();
+    output_tensors.insert("y", &y_tensor);
+    context.dispatch(&mut graph, &inputs, &output_tensors)?;
+
+    let mut result = [0.0f32; 4];
+    context.read_tensor(&y_tensor, &mut result)?;
+    assert_eq!(result, [0.0, 0.0, 1.0, 2.0]);
+    Ok(())
+}
 ```
+
+The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DYLIB_PATH`;
+from the repository root, `make onnxruntime-download` fetches a matching release into
+`target/onnxruntime/`.
+Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
+`$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
+system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).
 
 **For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
 
-## Backend Selection
+## C and C++ APIs
 
-Following the [W3C WebNN Device Selection spec](https://github.com/webmachinelearning/webnn/blob/main/device-selection-explainer.md), backends are selected via hints:
+> [!WARNING]
+> The C ABI and C++ wrapper are experimental and are not stable. Like rustnn's
+> Rust APIs, they may change without backward compatibility. This especially
+> applies to future APIs for host pointers and buffer ownership, GPU-to-host
+> synchronization, and asynchronous execution. Pin a rustnn version or commit
+> and expect to rebuild consumers when updating it.
 
-```python
-# CPU-only execution
-context = ml.create_context(accelerated=False)
+The `capi` feature provides:
 
-# Request GPU/NPU (platform selects best available)
-context = ml.create_context(accelerated=True)
+- A generated C11 header at `<rustnn/rustnn.h>` with opaque handles, status
+  codes, logger initialization, concrete graph operations, and `_with_options`
+  variants.
+- A header-only C++17 RAII wrapper at `<rustnn/rustnn.hpp>`. The wrapper uses
+  only the generated C API and does not depend on Rust implementation details.
+- `pkg-config` and CMake package metadata generated and installed by
+  [cargo-c](https://github.com/lu-zero/cargo-c).
 
-# Request high-performance (prefers GPU)
-context = ml.create_context(accelerated=True, power_preference="high-performance")
-
-# Request low-power (prefers NPU/Neural Engine)
-context = ml.create_context(accelerated=True, power_preference="low-power")
-```
-
-**Platform-Specific Backends:**
-- NPU: CoreML Neural Engine (Apple Silicon macOS only)
-- GPU: ONNX Runtime GPU (cross-platform) or CoreML GPU (macOS)
-- CPU: ONNX Runtime CPU (cross-platform)
-
-## Examples
-
-### Complete MobileNetV2 Image Classification
+Install a local development package with cargo-c:
 
 ```bash
-# Download pretrained weights (first time only)
-bash scripts/download_mobilenet_weights.sh
-
-# Run on different backends
-python examples/mobilenetv2_complete.py examples/images/test.jpg --backend cpu
-python examples/mobilenetv2_complete.py examples/images/test.jpg --backend gpu
-python examples/mobilenetv2_complete.py examples/images/test.jpg --backend coreml
+cargo install cargo-c
+cargo cinstall \
+  --features capi,onnx-runtime \
+  --prefix="$PWD/target/rustnn-capi-install"
 ```
 
-**Output:**
-```
-Top 5 Predictions (Real ImageNet Labels):
-  1. lesser panda                                        99.60%
-  2. polecat                                              0.20%
-  3. weasel                                               0.09%
+A consuming CMake project can then use:
 
-Performance: 74.41ms (CPU) / 77.14ms (GPU) / 51.93ms (CoreML)
+```cmake
+find_package(rustnn CONFIG REQUIRED)
+target_link_libraries(my_application PRIVATE rustnn::rustnn)
 ```
 
-### Text Generation with Transformer Attention
+The repository includes equivalent C and C++ examples that construct, compile,
+and dispatch a small arithmetic graph. At least one runtime backend feature is
+required to run them.
+See the **[C/C++ examples guide](examples/capi/README.md)** for API usage,
+ownership rules, package layout, and exact build and run commands.
+
+**For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
+
+## Features
+
+| Feature | Backend |
+|---|---|
+| `onnx-runtime` | ONNX Runtime (CPU, GPU, NPU execution providers), all platforms |
+| `trtx-runtime` | NVIDIA TensorRT-RTX (Linux, Windows); `trtx-runtime-mock` builds without a GPU |
+| `coreml-runtime` | Apple CoreML (macOS) |
+| `litert-runtime` | LiteRT / TensorFlow Lite; needs `flatc` at build time |
+| `cann-runtime` | Huawei CANN on OpenHarmony; `cann-runtime-mock` for validation |
+| `dynamic-inputs` | Dynamic dimensions bounded by a maximum size |
+| `webnn-runtime` | Browser WebNN bindings for `wasm32-unknown-unknown` (in progress) |
+| `trtx-enterprise` | The TensorRT backend linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features such as CUDA graphs are compiled out. Used for validation, not a supported deployment target |
+| `native-examples` | Compiles the large example programs |
+
+Full list and environment variables: crate docs (`make docs-api`) or
+[Backends](docs/user-guide/backends.md).
+
+## Command line
 
 ```bash
-# Run generation with attention
-make text-gen-demo
-
-# Train on custom text
-make text-gen-train
-
-# Generate with trained weights
-make text-gen-trained
+cargo run --features onnx-runtime -- examples/sample_graph.webnn                         # validate
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --export-dot graph.dot  # Graphviz
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
+cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --run-onnx
 ```
-
-See [examples/](examples/) for more samples.
 
 ## Documentation
 
-- **[Getting Started](docs/user-guide/getting-started.md)** - Installation and first steps
-- **[API Reference](docs/user-guide/api-reference.md)** - Complete Python API documentation
-- **[Examples](docs/user-guide/examples.md)** - Code examples and tutorials
-- **[Architecture](docs/architecture/overview.md)** - Design principles and structure
-- **[Development Guide](docs/development/setup.md)** - Building and contributing
-- **[Changelog](CHANGELOG.md)** - Consolidated release history
-
-## Implementation Status
-
-- 85 of ~95 WebNN operations (89% spec coverage)
-- Shape inference: 85/85 (100%)
-- Python API: 85/85 (100%)
-- ONNX Backend: 85/85 (100%)
-- CoreML MLProgram: 85/85 (100%)
-- 1350+ WPT conformance tests passing
-
-See [docs/development/implementation-status.md](docs/development/implementation-status.md) for complete details.
-
-## Rust CLI Usage
-
-```bash
-# Validate a graph
-cargo run -- examples/sample_graph.json
-
-# Visualize a graph (requires graphviz)
-cargo run -- examples/sample_graph.json --export-dot graph.dot
-dot -Tpng graph.dot -o graph.png
-
-# Convert to ONNX
-cargo run -- examples/sample_graph.json --convert onnx --convert-output model.onnx
-
-# Execute with ONNX Runtime
-cargo run --features onnx-runtime -- examples/sample_graph.json --convert onnx --run-onnx
-```
-
-See `make help` for all available targets.
+- [Documentation site](https://rustnn.github.io/rustnn/) with the user guide, architecture and development pages
+- Rust API reference: `make docs-api` writes it to `target/doc/rustnn/index.html`; the site publishes it under [`/api/`](https://rustnn.github.io/rustnn/api/rustnn/) (docs.rs still shows the 0.5.x crate)
+- [Backend Operator Support](docs/development/backend-operator-support.md), generated from the converters
+- [WPT conformance dashboard](https://rustnn.github.io/rustnn/wpt-conformance/)
+- [Changelog](CHANGELOG.md)
 
 ## Contributing
 
@@ -191,17 +185,14 @@ Contributions welcome! Please see:
 1. Fork and create feature branch: `git checkout -b feature/my-feature`
 2. Install hooks (optional): `./scripts/install-git-hooks.sh`
 3. Make changes and test: `make test && make python-test`
-4. If WPT snapshots or expected-failure lists need to be updated (indicated by
-   test failures), use one of:
+4. If a WPT expected-failure list needs to be updated (indicated by test failures),
+   use the per-backend sync target, which regenerates `{backend}_expected_failures.txt`
+   from a fresh run:
 
-   - Per-backend sync targets (regenerate PASS snapshots + `*_expected_failures.txt`):
-     - `make wpt-sync-onnx`
-     - `make wpt-sync-litert`
-     - `make wpt-sync-coreml` (macOS only)
-     - `make wpt-sync-trtx` (requires an NVIDIA GPU)
-   - Or update PASS snapshots manually via insta:
-     - `cargo insta review` (interactive; https://insta.rs/docs/cli/)
-     - `INSTA_UPDATE=always make test-wpt` (automatic)
+   - `make wpt-sync-onnx`
+   - `make wpt-sync-litert`
+   - `make wpt-sync-coreml` (macOS only)
+   - `make wpt-sync-trtx` (requires an NVIDIA GPU)
 
    Review the diff before committing!
 5. Format code: `make fmt`
@@ -209,22 +200,17 @@ Contributions welcome! Please see:
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
+Apache License, Version 2.0. See [LICENSE](LICENSE).
 
 ## Links
 
-- **GitHub**: [https://github.com/rustnn/rustnn](https://github.com/rustnn/rustnn)
-- **PyPI**: [https://pypi.org/project/pywebnn/](https://pypi.org/project/pywebnn/)
-- **Documentation**: [https://rustnn.github.io/rustnn/](https://rustnn.github.io/rustnn/)
-- **Changelog**: [CHANGELOG.md](CHANGELOG.md)
-- **W3C WebNN Spec**: [https://www.w3.org/TR/webnn/](https://www.w3.org/TR/webnn/)
+- GitHub: https://github.com/rustnn/rustnn
+- crates.io: https://crates.io/crates/rustnn
+- Python bindings: https://github.com/rustnn/pywebnn
+- W3C WebNN specification: https://www.w3.org/TR/webnn/
 
 ## Acknowledgments
 
-- W3C WebNN Community Group for the specification
-- Chromium WebNN implementation for reference
-- PyO3 and Maturin projects for excellent Python-Rust integration
-
----
-
-**Made with Rust by [Tarek Ziade](https://github.com/tarekziade)**
+- The W3C WebML Working Group for the specification
+- The Chromium WebNN implementation, used as the reference for operator lowering
+- Created by [Tarek Ziade](https://github.com/tarekziade)

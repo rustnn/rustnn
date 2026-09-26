@@ -15,20 +15,14 @@ jobs:
         backend:
           - id: onnx
             label: ONNX
-            report_file: reports/wpt-conformance-onnx.json
-            html_file: reports/wpt-conformance-onnx.html
             continue_on_error: false
             os: ubuntu-latest
           - id: litert
             label: LiteRT
-            report_file: reports/wpt-conformance-litert.json
-            html_file: reports/wpt-conformance-litert.html
             continue_on_error: true
             os: ubuntu-latest
           - id: coreml
             label: CoreML
-            report_file: reports/wpt-conformance-litert.json
-            html_file: reports/wpt-conformance-litert.html
             continue_on_error: false
             os: macos-latest
     runs-on: ${{ matrix.backend.os }}
@@ -101,13 +95,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.backend.id }}-wpt-conformance-report
-          path: ${{ matrix.backend.report_file }}
+          path: reports/wpt-conformance.json
 
       - name: Upload WPT conformance HTML report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.backend.id }}-wpt-conformance-html-report
-          path: ${{ matrix.backend.html_file }}
+          path: reports/wpt-conformance.html
 
 
