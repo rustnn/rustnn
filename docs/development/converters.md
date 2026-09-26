@@ -97,6 +97,8 @@ Rules that hold for every converter:
   edits invalidate cached engines; changes to builder flags do not. Delete the cache directories
   when in doubt.
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+- `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
+  a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
 ### CoreML
 
@@ -105,8 +107,16 @@ Rules that hold for every converter:
   float32.
 - Comparison results are `uint8`; `reduceLogSumExp` uses the max-shifted form; reductions with
   empty `axes` and `resample2d` on arbitrary axes are lowered explicitly.
+- Gather-family index normalization uses active indexed dimensions, not their declared maxima.
+  Scalar `gather` indices stay as one-element vectors through normalization and gathering;
+  an axis-specific squeeze removes only the indexed dimension afterward. This avoids native
+  scalar-index gather failures while retaining dynamic extents and unrelated singleton axes.
+  A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
+  inside CoreML and widening the public int64 result at readback. Imported shape tensors
+  retain their type and rank through the shared `unsqueeze` inference path.
 
 ### LiteRT
 

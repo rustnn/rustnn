@@ -10,7 +10,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | Backend | Converter source | Detection rule | Supported |
 |---|---|---|---|
 | ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 100 of 100 |
-| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 99 of 100 |
+| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 100 of 100 |
 | TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 99 of 100 |
 | LiteRT | `src/converters/litert.rs` | `Operation` variants referenced by the converter | 92 of 100 |
 
@@ -99,7 +99,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `roundEven` | yes | yes | yes | yes |
 | `scatterElements` | yes | yes | yes | yes |
 | `scatterND` | yes | yes | yes | yes |
-| `shape` | yes | - | - | - |
+| `shape` | yes | yes | - | - |
 | `sigmoid` | yes | yes | yes | yes |
 | `sign` | yes | yes | yes | yes |
 | `sin` | yes | yes | yes | yes |
@@ -122,7 +122,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 ## Unsupported operations per backend
 
 - ONNX Runtime: none
-- CoreML: `shape`
+- CoreML: none
 - TensorRT: `shape`
 - LiteRT: `globalAveragePool`, `globalMaxPool`, `gru`, `gruCell`, `lstm`, `lstmCell`, `shape`, `unsqueeze`
 

@@ -192,6 +192,7 @@ mod mil_ops {
 
     // Shape operations
     pub const RESHAPE: &str = "reshape";
+    pub const SHAPE: &str = "shape";
 
     // Tensor manipulation operations
     pub const TRANSPOSE: &str = "transpose";
@@ -1440,6 +1441,7 @@ impl CoremlMlProgramConverter {
 
             // Shape operations
             "reshape" => mil_ops::RESHAPE,
+            "shape" => mil_ops::SHAPE,
 
             // Tensor manipulation
             "transpose" => mil_ops::TRANSPOSE,
@@ -1831,31 +1833,111 @@ impl CoremlMlProgramConverter {
         out_name
     }
 
+    /// Bounds for the indexed data axes, not the maximum allocation shape. Static
+    /// axes stay constants; dynamic axes must be read on every prediction.
+    fn emit_gather_bounds(
+        block: &mut Block,
+        data_name: &str,
+        descriptor: &crate::graph::OperandDescriptor,
+        axes: std::ops::Range<usize>,
+        prefix: &str,
+    ) -> Result<(String, String), GraphError> {
+        let invalid = |reason: &str| GraphError::ConversionFailed {
+            format: "coreml_mlprogram".to_string(),
+            reason: format!("gather index bounds: {reason}"),
+        };
+        let dimensions = descriptor
+            .shape
+            .get(axes.clone())
+            .filter(|dims| !dims.is_empty())
+            .ok_or_else(|| invalid("indexed axes must be within the data rank"))?;
+        let sizes: Vec<i32> = dimensions
+            .iter()
+            .map(|dim| {
+                i32::try_from(dim.get_static_or_max_size())
+                    .ok()
+                    .filter(|&size| size > 0)
+                    .ok_or_else(|| invalid("indexed extents must be in 1..=i32::MAX"))
+            })
+            .collect::<Result<_, _>>()?;
+        let int32 = crate::protos::coreml::mil_spec::DataType::Int32 as i32;
+        let size_name = format!("{prefix}_gsz");
+        let last_name = format!("{prefix}_gszm1");
+        if dimensions
+            .iter()
+            .all(|dim| matches!(dim, GraphDimension::Static(_)))
+        {
+            let shape = if sizes.len() == 1 {
+                vec![]
+            } else {
+                vec![sizes.len() as u32]
+            };
+            let last: Vec<i32> = sizes.iter().map(|size| size - 1).collect();
+            Self::emit_int32_const(block, &sizes, &shape, size_name.clone());
+            Self::emit_int32_const(block, &last, &shape, last_name.clone());
+        } else {
+            // The older MIL shape schema does not accept int8/uint8. Promote
+            // only this shape-reading branch; gather still consumes the original.
+            let shape_input = if matches!(descriptor.data_type, DataType::Int8 | DataType::Uint8) {
+                Self::cast_with_graph_shape(
+                    block,
+                    data_name,
+                    format!("{prefix}_shape_input"),
+                    int32,
+                    &descriptor.shape,
+                )
+            } else {
+                data_name.to_string()
+            };
+            let shape_name = format!("{prefix}_data_shape");
+            let shape_type = Self::value_type_for_static_shape(
+                shape_name.clone(),
+                int32,
+                &[descriptor.shape.len() as u32],
+            );
+            block.operations.push(Self::create_mil_operation(
+                "shape",
+                HashMap::from([("x".to_string(), Self::create_name_argument(shape_input))]),
+                vec![shape_type],
+            ));
+            let bound_shape = [dimensions.len() as u32];
+            Self::rnn_slice(
+                block,
+                &shape_name,
+                &[axes.start as u32],
+                &bound_shape,
+                size_name.clone(),
+                int32,
+            );
+            let one = Self::emit_int32_const(block, &[1], &[], format!("{prefix}_gone"));
+            Self::binary_with_graph_shape(
+                block,
+                mil_ops::SUB,
+                &size_name,
+                &one,
+                last_name.clone(),
+                int32,
+                &[GraphDimension::Static(bound_shape[0])],
+            );
+        }
+        Ok((size_name, last_name))
+    }
+
     /// Normalize gather-style indices to WebNN semantics: wrap negatives (`idx + size`)
-    /// then clamp out-of-bounds to `[0, size-1]`. `sizes` is the axis size per index
-    /// component (length 1 for gather/gatherElements, or `K` for gatherND's last axis),
-    /// broadcast against `idx_shape`. `idx_name` must already be int32.
+    /// then clamp out-of-bounds to `[0, size-1]`. Bounds broadcast over `idx_shape`;
+    /// gatherND uses a per-component vector along the last index axis.
+    /// `idx_name` must already be int32 (scalar indices are promoted to [1]).
     fn emit_gather_index_norm(
         block: &mut Block,
         idx_name: &str,
         idx_shape: &[GraphDimension],
-        sizes: &[u32],
+        bounds: &(String, String),
         prefix: &str,
     ) -> String {
         let int32 = crate::protos::coreml::mil_spec::DataType::Int32 as i32;
         let bool_t = crate::protos::coreml::mil_spec::DataType::Bool as i32;
         let p = |s: &str| format!("{prefix}_{s}");
-        let sizes_i32: Vec<i32> = sizes.iter().map(|&s| s as i32).collect();
-        let sizes_m1: Vec<i32> = sizes.iter().map(|&s| s as i32 - 1).collect();
-        // Single-axis sizes are scalars (broadcast against any index shape); gatherND's
-        // per-component sizes are a rank-1 [K] vector broadcast over the last index axis.
-        let cshape: &[u32] = if sizes.len() == 1 {
-            &[]
-        } else {
-            &[sizes.len() as u32]
-        };
-        let size_c = Self::emit_int32_const(block, &sizes_i32, cshape, p("gsz"));
-        let sizem1_c = Self::emit_int32_const(block, &sizes_m1, cshape, p("gszm1"));
+        let (size_c, sizem1_c) = bounds;
         let zero_c = Self::emit_int32_const(block, &[0], &[], p("gz"));
         let is_neg = Self::binary_with_graph_shape(
             block,
@@ -1871,7 +1953,7 @@ impl CoremlMlProgramConverter {
             block,
             mil_ops::MUL,
             &is_neg_i,
-            &size_c,
+            size_c,
             p("goff"),
             int32,
             idx_shape,
@@ -1898,7 +1980,7 @@ impl CoremlMlProgramConverter {
             block,
             mil_ops::MINIMUM,
             &mx,
-            &sizem1_c,
+            sizem1_c,
             p("gcl"),
             int32,
             idx_shape,
@@ -4148,6 +4230,7 @@ impl CoremlMlProgramConverter {
             | Operation::LogicalNot { .. }
             | Operation::Softplus { .. }
             | Operation::Softsign { .. }
+            | Operation::Shape { .. }
                 if !input_names.is_empty() => {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
@@ -8261,40 +8344,37 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 && let Operation::Where { condition, .. } = op
             {
                 let cond_id = *condition;
-                let cond_operand =
-                    graph_info
-                        .operand(cond_id)
-                        .ok_or_else(|| GraphError::ConversionFailed {
-                            format: "coreml_mlprogram".to_string(),
-                            reason: format!("where condition operand {cond_id} not found"),
-                        })?;
-                if cond_operand.descriptor.data_type == DataType::Uint8 {
-                    let cond_name =
-                        Self::output_name_for_operand(graph_info, cond_id, &operand_name_overrides);
-                    // Suffix with this op's output id: a bare `{cond}_bool`
-                    // collides with the producing comparison's own
-                    // `{output}_bool` raw result ("Block redefines I/O name").
-                    let where_out = op.output_operand().unwrap_or(cond_id);
-                    let bool_cond_name = format!("{cond_name}_bool_{where_out}");
-                    let bool_cond_type = Self::create_value_with_mil_type(
-                        graph_info,
-                        cond_id,
-                        bool_cond_name.clone(),
-                        crate::protos::coreml::mil_spec::DataType::Bool as i32,
-                    )?;
-                    main_block.operations.push(Self::create_cast_operation(
-                        cond_name,
-                        bool_cond_type,
-                        "bool",
-                    ));
+                graph_info
+                    .operand(cond_id)
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".to_string(),
+                        reason: format!("where condition operand {cond_id} not found"),
+                    })?;
+                let cond_name =
+                    Self::output_name_for_operand(graph_info, cond_id, &operand_name_overrides);
+                // WebNN exposes logical tensors as uint8, while imported interchange
+                // graphs may also carry integer masks. MIL select requires bool for both.
+                // Suffix with this op's output id so this cast cannot redefine a
+                // comparison's raw `{output}_bool` value.
+                let where_out = op.output_operand().unwrap_or(cond_id);
+                let bool_cond_name = format!("{cond_name}_bool_{where_out}");
+                let bool_cond_type = Self::create_value_with_mil_type(
+                    graph_info,
+                    cond_id,
+                    bool_cond_name.clone(),
+                    crate::protos::coreml::mil_spec::DataType::Bool as i32,
+                )?;
+                main_block.operations.push(Self::create_cast_operation(
+                    cond_name,
+                    bool_cond_type,
+                    "bool",
+                ));
 
-                    let mut overrides = operand_name_overrides.clone();
-                    overrides.insert(cond_id, bool_cond_name);
-                    let mil_op =
-                        self.convert_operation_with_overrides(graph_info, op, &overrides)?;
-                    main_block.operations.push(mil_op);
-                    continue;
-                }
+                let mut overrides = operand_name_overrides.clone();
+                overrides.insert(cond_id, bool_cond_name);
+                let mil_op = self.convert_operation_with_overrides(graph_info, op, &overrides)?;
+                main_block.operations.push(mil_op);
+                continue;
             }
 
             // Special handling for resample2d: lower to CoreML upsample ops.
@@ -9079,15 +9159,17 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         }
                         _ => 0,
                     };
-                    let data_shape = graph_info
+                    let data_descriptor = &graph_info
                         .operand(data_id)
-                        .map(|o| o.descriptor.static_or_max_shape())
-                        .unwrap_or_default();
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("gather data operand {data_id} not found"),
+                        })?
+                        .descriptor;
                     let idx_shape = graph_info
                         .operand(idx_id)
                         .map(|o| o.descriptor.shape.clone())
                         .unwrap_or_default();
-                    let axis_size = data_shape.get(axis as usize).copied().unwrap_or(1);
 
                     let (output_name, output_type) =
                         Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
@@ -9134,45 +9216,46 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         cast_idx_type,
                         "int32",
                     ));
-                    // Graph scalars are represented as [1] at the CoreML input
-                    // boundary. Normalize in that representation, then restore
-                    // the scalar index so gather still removes the selected axis.
+                    // Keep scalar indices as [1] through normalization and gather.
+                    // Native scalar-index gather can return an empty feature
+                    // provider for dynamic outputs on older CoreML runtimes.
                     let norm_shape = if idx_shape.is_empty() {
                         vec![GraphDimension::Static(1)]
                     } else {
                         idx_shape.clone()
                     };
+                    let bounds = Self::emit_gather_bounds(
+                        &mut main_block,
+                        &data_name,
+                        data_descriptor,
+                        axis as usize..(axis as usize).saturating_add(1),
+                        &output_name,
+                    )?;
                     let norm_idx = Self::emit_gather_index_norm(
                         &mut main_block,
                         &cast_idx,
                         &norm_shape,
-                        &[axis_size],
+                        &bounds,
                         &output_name,
                     );
-                    let norm_idx = if idx_shape.is_empty() {
-                        Self::rnn_unary(
-                            &mut main_block,
-                            mil_ops::SQUEEZE,
-                            &norm_idx,
-                            format!("{output_name}_scalar_index"),
-                            MilDataType::Int32 as i32,
-                            &[],
-                        )
-                    } else {
-                        norm_idx
-                    };
-
-                    let scalar_output = graph_info
-                        .operand(output_id)
-                        .filter(|operand| operand.descriptor.shape.is_empty());
-                    let gather_output_type = if let Some(operand) = scalar_output {
+                    let squeeze_gather_axis = op_type_lower == "gather"
+                        && idx_shape.is_empty()
+                        && data_descriptor.shape.len() > 1;
+                    let gather_output_type = if squeeze_gather_axis {
+                        // The vector index retains one element on the indexed
+                        // axis. Preserve every other dimension, including unknown
+                        // extents; reshaping to their maxima would freeze them.
+                        let mut shape = data_descriptor.shape.clone();
+                        shape[axis as usize] = GraphDimension::Static(1);
                         Self::create_named_value_type(
-                            format!("{output_name}_scalar_gather"),
-                            Self::graph_value_mil_type(&operand.descriptor.data_type)?,
-                            &[],
+                            format!("{output_name}_gather_vector"),
+                            Self::graph_value_mil_type(&data_descriptor.data_type)?,
+                            &shape,
                             false,
                         )
                     } else {
+                        // A rank-one input and scalar index already produce [1],
+                        // which is also the CoreML representation of a WebNN scalar.
                         output_type.clone()
                     };
 
@@ -9195,14 +9278,23 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         gather_inputs,
                         vec![gather_output_type.clone()],
                     ));
-                    if let Some(operand) = scalar_output {
-                        Self::rnn_reshape(
-                            &mut main_block,
-                            &gather_output_type.name,
-                            &[1],
-                            output_name,
-                            Self::graph_value_mil_type(&operand.descriptor.data_type)?,
+                    if squeeze_gather_axis {
+                        let mut squeeze_inputs = HashMap::new();
+                        squeeze_inputs.insert(
+                            "x".to_string(),
+                            Self::create_name_argument(gather_output_type.name),
                         );
+                        // Do not squeeze all unit dimensions: unrelated static
+                        // ones and dynamic axes currently of size one must remain.
+                        squeeze_inputs.insert(
+                            "axes".to_string(),
+                            Self::create_immediate_int_array(&[axis]),
+                        );
+                        main_block.operations.push(Self::create_mil_operation(
+                            mil_ops::SQUEEZE,
+                            squeeze_inputs,
+                            vec![output_type],
+                        ));
                     }
                     continue;
                 }
@@ -9217,22 +9309,32 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 if let (Some(data_id), Some(idx_id), Some(output_id)) =
                     (data_id, idx_id, op.output_operand())
                 {
-                    let data_shape = graph_info
+                    let data_descriptor = &graph_info
                         .operand(data_id)
-                        .map(|o| o.descriptor.static_or_max_shape())
-                        .unwrap_or_default();
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".to_string(),
+                            reason: format!("gatherND data operand {data_id} not found"),
+                        })?
+                        .descriptor;
                     let idx_shape = graph_info
                         .operand(idx_id)
                         .map(|o| o.descriptor.shape.clone())
                         .unwrap_or_default();
                     // CoreML gather_nd crashes on rank-5+ data; leave those to the
                     // (guarded) generic path which reports the limitation.
-                    let k = idx_shape
-                        .last()
-                        .map(crate::graph::get_static_or_max_size)
-                        .unwrap_or(0) as usize;
-                    if data_shape.len() <= 4 && k >= 1 && k <= data_shape.len() {
-                        let sizes: Vec<u32> = data_shape[..k].to_vec();
+                    let k = match idx_shape.last() {
+                        Some(GraphDimension::Static(k)) => *k as usize,
+                        _ => {
+                            return Err(GraphError::ConversionFailed {
+                                format: "coreml_mlprogram".to_string(),
+                                reason: "gatherND requires a static index tuple width".to_string(),
+                            });
+                        }
+                    };
+                    if data_descriptor.shape.len() <= 4
+                        && k >= 1
+                        && k <= data_descriptor.shape.len()
+                    {
                         let (output_name, output_type) = Self::create_output_value(
                             graph_info,
                             output_id,
@@ -9260,11 +9362,18 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             cast_idx_type,
                             "int32",
                         ));
+                        let bounds = Self::emit_gather_bounds(
+                            &mut main_block,
+                            &data_name,
+                            data_descriptor,
+                            0..k,
+                            &output_name,
+                        )?;
                         let norm_idx = Self::emit_gather_index_norm(
                             &mut main_block,
                             &cast_idx,
                             &idx_shape,
-                            &sizes,
+                            &bounds,
                             &output_name,
                         );
                         let mut gnd_inputs: HashMap<String, Argument> = HashMap::new();
@@ -10687,6 +10796,149 @@ mod tests {
             .collect()
     }
 
+    fn shape_graph(input_shape: Vec<crate::graph::Dimension>, data_type: DataType) -> GraphInfo {
+        let rank = input_shape.len() as u32;
+        GraphInfo {
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operands: vec![
+                Operand {
+                    name: Some("input".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: input_shape,
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("shape".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type,
+                        shape: s(&[rank]),
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![op_from_operator_options(
+                "shape",
+                vec![0],
+                Some(1),
+                vec![],
+                OperatorOptions::default(),
+            )],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        }
+    }
+
+    #[test]
+    fn test_shape_lowers_to_mil_shape() {
+        // Imported ONNX shape tensors use int64; the dynamic-shape proposal
+        // uses uint32. Both must retain MIL shape's native int32 result type.
+        // This does not change the existing public builder's int64 contract.
+        for data_type in [DataType::Int64, DataType::Uint32] {
+            let graph = shape_graph(s(&[2, 3, 4]), data_type);
+            let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
+            let block = decode_main_block(&converted.data);
+            let shape = block
+                .operations
+                .iter()
+                .find(|op| op.r#type == mil_ops::SHAPE)
+                .expect("MIL shape operation");
+            let Some(crate::protos::coreml::mil_spec::value_type::Type::TensorType(output)) = shape
+                .outputs[0]
+                .r#type
+                .as_ref()
+                .and_then(|ty| ty.r#type.as_ref())
+            else {
+                panic!("shape output must be a tensor");
+            };
+            assert_eq!(
+                output.data_type,
+                crate::protos::coreml::mil_spec::DataType::Int32 as i32
+            );
+            assert_eq!(output.rank, 1);
+            assert_eq!(graph.operands[1].descriptor.data_type, data_type);
+        }
+    }
+
+    #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+    #[test]
+    fn test_shape_unsqueeze_returns_exact_integer_values() {
+        use crate::mlcontext::{
+            Backend, MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors,
+            MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+        };
+        use crate::operator_enums::MLOperandDataType;
+
+        for data_type in [MLOperandDataType::Int64, MLOperandDataType::Uint32] {
+            let mut context = MLContext::create(
+                &MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::Coreml),
+            )
+            .expect("CPU CoreML context");
+            let input_desc = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![2, 3, 4]);
+            let output_desc = MLOperandDescriptor::new(data_type, vec![1, 3]);
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let input = builder.input("input", &input_desc).unwrap();
+            let shape = builder.shape(input).unwrap();
+            let shape = if data_type == MLOperandDataType::Uint32 {
+                builder.cast(shape, data_type).unwrap()
+            } else {
+                shape
+            };
+            let output = builder
+                .unsqueeze_with_options(
+                    shape,
+                    crate::operator_options::MLUnsqueezeOptions {
+                        axes: vec![0],
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let mut graph = builder
+                .build(&MLNamedOperands::from([("expanded_shape", output)]))
+                .expect("compile shape model locally");
+
+            let mut input_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&input_desc);
+            input_tensor_desc.set_writable(true);
+            let input_tensor = context.create_tensor(&input_tensor_desc).unwrap();
+            let mut output_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&output_desc);
+            output_tensor_desc.set_readable(true);
+            let output_tensor = context.create_tensor(&output_tensor_desc).unwrap();
+
+            // Reuse the compiled model while changing data, not dimensions.
+            // Exercise dispatch/readback too: the int64 API result needs widening
+            // from CoreML's int32 proxy, whereas uint32 keeps the 4-byte layout.
+            for value in [-7.0f32, 0.0, 9.0] {
+                context.write_tensor(&input_tensor, &[value; 24]).unwrap();
+                context
+                    .dispatch(
+                        &mut graph,
+                        &MLNamedTensors::from([("input", &input_tensor)]),
+                        &MLNamedTensors::from([("expanded_shape", &output_tensor)]),
+                    )
+                    .unwrap();
+                match data_type {
+                    MLOperandDataType::Int64 => {
+                        let mut actual = [0i64; 3];
+                        context.read_tensor(&output_tensor, &mut actual).unwrap();
+                        assert_eq!(actual, [2, 3, 4]);
+                    }
+                    MLOperandDataType::Uint32 => {
+                        let mut actual = [0u32; 3];
+                        context.read_tensor(&output_tensor, &mut actual).unwrap();
+                        assert_eq!(actual, [2, 3, 4]);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
     fn immediate_int_values(argument: &Argument) -> Vec<i32> {
         let binding = argument.arguments.first().expect("argument binding");
         let value = match binding.binding.as_ref().expect("binding value") {
@@ -11585,6 +11837,138 @@ mod tests {
             .clone()
     }
 
+    #[test]
+    fn test_where_integer_condition_uses_unique_bool_value() {
+        let graph = GraphInfo {
+            input_operands: vec![1, 2],
+            output_operands: vec![3],
+            operands: vec![
+                Operand {
+                    name: Some("condition".to_string()),
+                    kind: OperandKind::Constant,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Int64,
+                        shape: s(&[2]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("when_true".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[2]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("when_false".to_string()),
+                    kind: OperandKind::Input,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[2]),
+                        pending_permutation: vec![],
+                    },
+                },
+                Operand {
+                    name: Some("result".to_string()),
+                    kind: OperandKind::Output,
+                    descriptor: OperandDescriptor {
+                        data_type: DataType::Float32,
+                        shape: s(&[2]),
+                        pending_permutation: vec![],
+                    },
+                },
+            ],
+            operations: vec![op_from_operator_options(
+                "where",
+                vec![0, 1, 2],
+                Some(3),
+                vec![],
+                OperatorOptions::default(),
+            )],
+            constant_operand_ids_to_handles: HashMap::from([(
+                0,
+                ConstantData {
+                    data: [0_i64, -2_i64]
+                        .into_iter()
+                        .flat_map(i64::to_le_bytes)
+                        .collect(),
+                    label: None,
+                },
+            )]),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let converted = CoremlMlProgramConverter
+            .convert(&graph)
+            .expect("CoreML where conversion should succeed");
+        let block = decode_main_block(&converted.data);
+        let mut output_names = std::collections::HashSet::new();
+        for output in block.operations.iter().flat_map(|op| &op.outputs) {
+            assert!(
+                output_names.insert(output.name.clone()),
+                "MIL output name redefined: {}",
+                output.name
+            );
+        }
+
+        let select = block
+            .operations
+            .iter()
+            .find(|op| op.r#type == mil_ops::WHERE)
+            .expect("select operation");
+        let Some(Binding::Name(condition_name)) = select
+            .inputs
+            .get("cond")
+            .and_then(|arg| arg.arguments.first())
+            .and_then(|binding| binding.binding.as_ref())
+        else {
+            panic!("select condition should be a named bool value");
+        };
+        assert_eq!(condition_name, "condition_bool_3");
+
+        #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]
+        {
+            use crate::backend_selection::DeviceType;
+            use crate::executors::coreml::{CoremlByteInput, compile_model, run_coreml_bytes};
+
+            let model = compile_model(
+                converted.data,
+                converted.weights_data,
+                DeviceType::Cpu,
+                false,
+            )
+            .expect("compile integer-mask select locally");
+            let when_true = [10.0f32, 20.0];
+            let when_false = [30.0f32, 40.0];
+            let inputs = HashMap::from([
+                (
+                    "when_true".to_string(),
+                    CoremlByteInput {
+                        descriptor: &graph.operands[1].descriptor,
+                        data: bytemuck::cast_slice(&when_true),
+                    },
+                ),
+                (
+                    "when_false".to_string(),
+                    CoremlByteInput {
+                        descriptor: &graph.operands[2].descriptor,
+                        data: bytemuck::cast_slice(&when_false),
+                    },
+                ),
+            ]);
+            let outputs =
+                HashMap::from([("result".to_string(), graph.operands[3].descriptor.clone())]);
+            let actual = run_coreml_bytes(&model, &inputs, &outputs).unwrap();
+            assert_eq!(
+                actual["result"],
+                bytemuck::cast_slice::<f32, u8>(&[30.0f32, 20.0])
+            );
+        }
+    }
+
     /// Unpack a scalar immediate int argument (e.g. the `axis` input of a
     /// native `dequantize` op) from a decoded MIL operation.
     fn immediate_int_argument(arg: &Argument) -> i32 {
@@ -11681,8 +12065,8 @@ mod tests {
                 };
                 let graph = GraphInfo {
                     operands: vec![
-                        operand("lhs", OperandKind::Input, data_type.clone()),
-                        operand("rhs", OperandKind::Input, data_type.clone()),
+                        operand("lhs", OperandKind::Input, data_type),
+                        operand("rhs", OperandKind::Input, data_type),
                         operand("result", OperandKind::Output, DataType::Uint8),
                     ],
                     input_operands: vec![0, 1],
@@ -11872,20 +12256,30 @@ mod tests {
                 );
                 let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
                 let block = decode_main_block(&converted.data);
-                let scalar_index = block
-                    .operations
-                    .iter()
-                    .flat_map(|operation| &operation.outputs)
-                    .find(|output| output.name == "result_scalar_index")
-                    .expect("normalized index must be restored to a scalar");
-                assert!(mil_tensor_type(scalar_index).dimensions.is_empty());
                 let gather = block
                     .operations
                     .iter()
                     .find(|operation| operation.r#type == mil_ops::GATHER)
                     .expect("gather operation");
+                let Some(Binding::Name(index_name)) =
+                    gather.inputs["indices"].arguments[0].binding.as_ref()
+                else {
+                    panic!("expected named gather indices");
+                };
+                let indices = block
+                    .operations
+                    .iter()
+                    .flat_map(|op| &op.outputs)
+                    .find(|output| &output.name == index_name)
+                    .expect("normalized gather indices");
+                let dimensions = &mil_tensor_type(indices).dimensions;
+                assert_eq!(dimensions.len(), 1);
+                assert!(matches!(
+                    dimensions[0].dimension.as_ref(),
+                    Some(dimension::Dimension::Constant(size)) if size.size == 1
+                ));
                 let tensor = mil_tensor_type(&gather.outputs[0]);
-                assert_eq!(tensor.dimensions.len(), output_shape.len());
+                assert_eq!(tensor.dimensions.len(), data_shape.len());
                 let expected_dtype = if data_type == DataType::Float32 {
                     MilDataType::Float32
                 } else {
@@ -11893,6 +12287,16 @@ mod tests {
                 };
                 assert_eq!(tensor.data_type, expected_dtype as i32);
                 assert_eq!(immediate_int_argument(&gather.inputs["axis"]), axis);
+                let output = block.operations.last().unwrap();
+                assert_eq!(output.outputs[0].name, "result");
+                assert_eq!(
+                    mil_tensor_type(&output.outputs[0]).dimensions.len(),
+                    output_shape.len().max(1)
+                );
+                if !output_shape.is_empty() {
+                    assert_eq!(output.r#type, mil_ops::SQUEEZE);
+                    assert_eq!(immediate_int_argument(&output.inputs["axes"]), axis);
+                }
             }
         }
     }

@@ -14810,8 +14810,7 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add triangular operation (extract triangular part of matrix) - PLACEHOLDER
-    /// Add triangular operation (extract upper/lower triangular part with masking)
+    /// Keep the requested triangle with Select so masked non-finite values become zero.
     fn add_triangular_op<'a>(
         graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
@@ -14848,8 +14847,7 @@ impl TrtxConverter {
         let rows = get_static_or_max_size(&shape[shape.len() - 2]) as usize;
         let cols = get_static_or_max_size(&shape[shape.len() - 1]) as usize;
 
-        // Generate triangular mask (1.0 for keep, 0.0 for zero)
-        // The mask is computed at build time based on the known shape
+        // Generate a Boolean keep mask from the known shape at build time.
         let total_elements: usize = shape
             .iter()
             .map(|s| get_static_or_max_size(s) as usize)
@@ -14857,7 +14855,7 @@ impl TrtxConverter {
         let matrix_elements = rows * cols;
         let num_matrices = total_elements / matrix_elements;
 
-        let mut mask_data: Vec<f32> = Vec::with_capacity(total_elements);
+        let mut mask_data: Vec<u8> = Vec::with_capacity(total_elements);
 
         for _ in 0..num_matrices {
             for i in 0..rows {
@@ -14869,41 +14867,16 @@ impl TrtxConverter {
                         // Lower triangular: keep if j <= i + diagonal
                         (j as i32) <= (i as i32) + diagonal
                     };
-                    mask_data.push(if keep { 1.0 } else { 0.0 });
+                    mask_data.push(u8::from(keep));
                 }
             }
         }
 
-        let input_dtype = input_operand.descriptor.data_type;
-        // Elementwise PROD requires matching input types; the mask must match the input dtype
-        // (e.g. kHALF for float16, kINT32 for int32/uint32, kINT64 for int64/uint64).
-        let (mask_bytes, mask_trt_ty) = match input_dtype {
-            DataType::Float16 => {
-                let mut bytes = Vec::with_capacity(total_elements * 2);
-                for &f in &mask_data {
-                    let v = if f == 1.0 { 1.0f32 } else { 0.0f32 };
-                    bytes.extend_from_slice(&f16::from_f32(v).to_bits().to_le_bytes());
-                }
-                (bytes, TrtDataType::kHALF)
-            }
-            DataType::Int32 | DataType::Uint32 => {
-                let bytes: Vec<u8> = mask_data
-                    .iter()
-                    .flat_map(|&f| (if f == 1.0 { 1i32 } else { 0i32 }).to_le_bytes())
-                    .collect();
-                (bytes, TrtDataType::kINT32)
-            }
-            DataType::Int64 | DataType::Uint64 => {
-                let bytes: Vec<u8> = mask_data
-                    .iter()
-                    .flat_map(|&f| (if f == 1.0 { 1i64 } else { 0i64 }).to_le_bytes())
-                    .collect();
-                (bytes, TrtDataType::kINT64)
-            }
-            _ => {
-                let mask_bytes: Vec<u8> = mask_data.iter().flat_map(|&f| f.to_le_bytes()).collect();
-                (mask_bytes, TrtDataType::kFLOAT)
-            }
+        let (zero_width, zero_type) = match input_operand.descriptor.data_type {
+            DataType::Float16 => (2, TrtDataType::kHALF),
+            DataType::Int32 | DataType::Uint32 => (4, TrtDataType::kINT32),
+            DataType::Int64 | DataType::Uint64 => (8, TrtDataType::kINT64),
+            _ => (4, TrtDataType::kFLOAT),
         };
 
         // Create constant layer with the mask
@@ -14912,7 +14885,7 @@ impl TrtxConverter {
             .map(|s| get_static_or_max_size(s) as i64)
             .collect();
         let mask_layer = network
-            .add_constant_owned(&dims, mask_bytes, mask_trt_ty, None)
+            .add_constant_owned(&dims, mask_data, TrtDataType::kBOOL, None)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to add constant mask for triangular: {}", e),
@@ -14926,16 +14899,29 @@ impl TrtxConverter {
                     reason: format!("Failed to get mask tensor: {}", e),
                 })?;
 
-        // Multiply input by mask (elementwise)
-        let multiply_layer = network
-            .add_elementwise(input_tensor, &mask_tensor, ElementWiseOperation::kPROD)
+        let zero_layer = network
+            .add_constant_owned(&dims, vec![0; total_elements * zero_width], zero_type, None)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Failed to add elementwise multiply for triangular: {}", e),
+                reason: format!("Failed to add zero constant for triangular: {}", e),
+            })?;
+        let zero_tensor =
+            zero_layer
+                .output(&*network, 0)
+                .map_err(|e| GraphError::ConversionFailed {
+                    format: "trtx".to_string(),
+                    reason: format!("Failed to get triangular zero tensor: {}", e),
+                })?;
+
+        let select_layer = network
+            .add_select(&mask_tensor, input_tensor, &zero_tensor)
+            .map_err(|e| GraphError::ConversionFailed {
+                format: "trtx".to_string(),
+                reason: format!("Failed to add select for triangular: {}", e),
             })?;
 
         let output =
-            multiply_layer
+            select_layer
                 .output(&*network, 0)
                 .map_err(|e| GraphError::ConversionFailed {
                     format: "trtx".to_string(),
