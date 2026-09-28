@@ -897,10 +897,10 @@ impl<'a> TfliteContext<'a> {
         false
     }
 
-    /// TFLite's INT8/UINT8 `SUB` kernel aborts the process (its quantized kernel
-    /// requires quantization params that plain WebNN int8/uint8 tensors lack).
-    /// Emulate via INT32: cast operands up, `SUB`, cast the result back down.
-    fn build_int8_sub_op(
+    /// TFLite's `SUB` covers neither the signed 8-bit types (its quantized kernel wants
+    /// quantization params that plain WebNN tensors lack) nor uint32, so the operands are
+    /// widened, subtracted, and the result cast back down.
+    fn build_widened_sub_op(
         &mut self,
         op: &Operation,
         graph: &GraphInfo,
@@ -908,12 +908,12 @@ impl<'a> TfliteContext<'a> {
         operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
         in_type: tflite::TensorType,
     ) -> bool {
-        if !matches!(
-            in_type,
-            tflite::TensorType::INT8 | tflite::TensorType::UINT8
-        ) {
-            return false;
-        }
+        // uint32 values do not fit int32, so they widen to int64 instead.
+        let widened_type = match in_type {
+            tflite::TensorType::INT8 | tflite::TensorType::UINT8 => tflite::TensorType::INT32,
+            tflite::TensorType::UINT32 => tflite::TensorType::INT64,
+            _ => return false,
+        };
         let Operation::Sub { a, b, .. } = op else {
             return false;
         };
@@ -940,39 +940,21 @@ impl<'a> TfliteContext<'a> {
         let b_shape = shape_of(*b);
         let out_shape = shape_of(out_id);
 
-        let a32 = self.add_tensor("sub_int8_a32", &a_shape, tflite::TensorType::INT32, 0) as i32;
-        let b32 = self.add_tensor("sub_int8_b32", &b_shape, tflite::TensorType::INT32, 0) as i32;
-        self.emit_cast_op(
-            operator_offsets,
-            a_t,
-            in_type,
-            a32,
-            tflite::TensorType::INT32,
-        );
-        self.emit_cast_op(
-            operator_offsets,
-            b_t,
-            in_type,
-            b32,
-            tflite::TensorType::INT32,
-        );
+        let a32 = self.add_tensor("sub_wide_a", &a_shape, widened_type, 0) as i32;
+        let b32 = self.add_tensor("sub_wide_b", &b_shape, widened_type, 0) as i32;
+        self.emit_cast_op(operator_offsets, a_t, in_type, a32, widened_type);
+        self.emit_cast_op(operator_offsets, b_t, in_type, b32, widened_type);
         let res32 = emit_op!(
             self,
             operator_offsets,
             std_op::SUB,
             [a32, b32],
-            "sub_int8_res32",
+            "sub_wide_result",
             &out_shape,
-            tflite::TensorType::INT32
+            widened_type
         );
-        let out = self.add_tensor("sub_int8_out", &out_shape, in_type, 0) as i32;
-        self.emit_cast_op(
-            operator_offsets,
-            res32,
-            tflite::TensorType::INT32,
-            out,
-            in_type,
-        );
+        let out = self.add_tensor("sub_out", &out_shape, in_type, 0) as i32;
+        self.emit_cast_op(operator_offsets, res32, widened_type, out, in_type);
         tensor_map.insert(out_id, out as u32);
         true
     }
@@ -986,6 +968,77 @@ impl<'a> TfliteContext<'a> {
         in_shape: &[i32],
         in_type: tflite::TensorType,
     ) -> bool {
+        // TFLite's PRELU is float only; over integers it is max(x, 0) + slope * min(x, 0).
+        if let Operation::Prelu { slope, .. } = op
+            && !matches!(
+                in_type,
+                tflite::TensorType::FLOAT32 | tflite::TensorType::FLOAT16
+            )
+        {
+            let slope_t = *tensor_map.get(slope).unwrap_or(slope) as i32;
+            let zero = self.add_constant("prelu_zero", &[1], in_type, &0i64.to_le_bytes()) as i32;
+            let positive = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MAXIMUM,
+                [in_tensor, zero],
+                "prelu_positive",
+                in_shape,
+                in_type
+            );
+            let negative = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MINIMUM,
+                [in_tensor, zero],
+                "prelu_negative",
+                in_shape,
+                in_type
+            );
+            let scaled = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MUL,
+                [negative, slope_t],
+                "prelu_scaled",
+                in_shape,
+                in_type
+            );
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::ADD,
+                [positive, scaled],
+                "prelu_out",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // TFLite's RELU covers the float and quantized 8-bit types; for the other integer
+        // types max(x, 0) is the same operation.
+        if let Operation::Relu { .. } = op
+            && !matches!(
+                in_type,
+                tflite::TensorType::FLOAT32 | tflite::TensorType::FLOAT16
+            )
+        {
+            let zero = scalar_const!(self, "relu_zero", 0.0, in_type);
+            let out = emit_op!(
+                self,
+                operator_offsets,
+                std_op::MAXIMUM,
+                [in_tensor, zero],
+                "relu_max",
+                in_shape,
+                in_type
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
         // Elu: for default alpha=1.0, falls through to TFLite ELU opcode.
         // For custom alpha: decompose as RELU(x) + alpha * (EXP(MINIMUM(x, 0)) - 1)
         if let Operation::Elu { options, .. } = op {
@@ -1316,6 +1369,90 @@ impl<'a> TfliteContext<'a> {
         broadcast
     }
 
+    /// Absolute value, in the form its type needs: TFLite's ABS covers the float types
+    /// and int32, int8 widens to int32 for it, and int64 is negated where negative.
+    fn emit_abs(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        shape: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        match ty {
+            tflite::TensorType::INT8 => {
+                let widened =
+                    self.add_tensor(&format!("{name}_i32"), shape, tflite::TensorType::INT32, 0)
+                        as i32;
+                self.emit_cast_op(
+                    operator_offsets,
+                    tensor,
+                    ty,
+                    widened,
+                    tflite::TensorType::INT32,
+                );
+                let magnitude = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::ABS,
+                    [widened],
+                    &format!("{name}_value"),
+                    shape,
+                    tflite::TensorType::INT32
+                );
+                let out = self.add_tensor(name, shape, ty, 0) as i32;
+                self.emit_cast_op(
+                    operator_offsets,
+                    magnitude,
+                    tflite::TensorType::INT32,
+                    out,
+                    ty,
+                );
+                out
+            }
+            tflite::TensorType::INT64 => {
+                let zero = self.add_constant(&format!("{name}_zero"), &[1], ty, &0i64.to_le_bytes())
+                    as i32;
+                let negative = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::LESS,
+                    [tensor, zero],
+                    &format!("{name}_negative"),
+                    shape,
+                    tflite::TensorType::BOOL
+                );
+                let negated = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUB,
+                    [zero, tensor],
+                    &format!("{name}_negated"),
+                    shape,
+                    ty
+                );
+                emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SELECT_V2,
+                    [negative, negated, tensor],
+                    name,
+                    shape,
+                    ty
+                )
+            }
+            _ => emit_op!(
+                self,
+                operator_offsets,
+                std_op::ABS,
+                [tensor],
+                name,
+                shape,
+                ty
+            ),
+        }
+    }
+
     /// Emit a TFLite CAST operator.
     fn emit_cast_op(
         &mut self,
@@ -1548,6 +1685,100 @@ impl<'a> TfliteContext<'a> {
         in_shape: &[i32],
         in_type: tflite::TensorType,
     ) -> bool {
+        // TFLite's SIGN covers float32/float16/int32. For the types it lacks the sign is
+        // taken in one that has them — int8 widens to int32 — and cast back.
+        if let Operation::Sign { .. } = op
+            && !matches!(
+                in_type,
+                tflite::TensorType::FLOAT32
+                    | tflite::TensorType::FLOAT16
+                    | tflite::TensorType::INT32
+            )
+        {
+            let (value, work_type) = if in_type == tflite::TensorType::INT8 {
+                let widened =
+                    self.add_tensor("sign_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
+                self.emit_cast_op(
+                    operator_offsets,
+                    in_tensor,
+                    in_type,
+                    widened,
+                    tflite::TensorType::INT32,
+                );
+                (widened, tflite::TensorType::INT32)
+            } else {
+                (in_tensor, in_type)
+            };
+            let zero = scalar_const!(self, "sign_zero", 0.0, work_type);
+            let positive = emit_op!(
+                self,
+                operator_offsets,
+                std_op::GREATER,
+                [value, zero],
+                "sign_positive",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let negative = emit_op!(
+                self,
+                operator_offsets,
+                std_op::LESS,
+                [value, zero],
+                "sign_negative",
+                in_shape,
+                tflite::TensorType::BOOL
+            );
+            let positive_i32 =
+                self.add_tensor("sign_positive_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
+            self.emit_cast_op(
+                operator_offsets,
+                positive,
+                tflite::TensorType::BOOL,
+                positive_i32,
+                tflite::TensorType::INT32,
+            );
+            let negative_i32 =
+                self.add_tensor("sign_negative_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
+            self.emit_cast_op(
+                operator_offsets,
+                negative,
+                tflite::TensorType::BOOL,
+                negative_i32,
+                tflite::TensorType::INT32,
+            );
+            let difference = emit_op!(
+                self,
+                operator_offsets,
+                std_op::SUB,
+                [positive_i32, negative_i32],
+                "sign_difference",
+                in_shape,
+                tflite::TensorType::INT32
+            );
+            let out = self.add_tensor("sign_out", in_shape, in_type, 0) as i32;
+            self.emit_cast_op(
+                operator_offsets,
+                difference,
+                tflite::TensorType::INT32,
+                out,
+                in_type,
+            );
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
+        // ABS covers float32/float16/int32; the other integer types take another form.
+        if let Operation::Abs { .. } = op
+            && matches!(
+                in_type,
+                tflite::TensorType::INT8 | tflite::TensorType::INT64
+            )
+        {
+            let out = self.emit_abs(operator_offsets, in_tensor, in_shape, in_type, "abs_out");
+            tensor_map.insert(op.outputs()[0], out as u32);
+            return true;
+        }
+
         // Reciprocal: DIV(1.0, x)
         if let Operation::Reciprocal { .. } = op {
             let one = scalar_const!(self, "recip_one", 1.0, in_type);
@@ -1570,6 +1801,22 @@ impl<'a> TfliteContext<'a> {
             let has_min = opts.min_value.is_some();
             let has_max = opts.max_value.is_some();
             let out_id = op.outputs()[0];
+            // MINIMUM/MAXIMUM have no uint32 kernel, so that type clamps in int64 and the
+            // result is cast back.
+            let (input, work_type) = if in_type == tflite::TensorType::UINT32 {
+                let widened =
+                    self.add_tensor("clamp_i64", in_shape, tflite::TensorType::INT64, 0) as i32;
+                self.emit_cast_op(
+                    operator_offsets,
+                    in_tensor,
+                    in_type,
+                    widened,
+                    tflite::TensorType::INT64,
+                );
+                (widened, tflite::TensorType::INT64)
+            } else {
+                (in_tensor, in_type)
+            };
             if has_min && has_max {
                 let min_val = opts
                     .min_value
@@ -1581,16 +1828,16 @@ impl<'a> TfliteContext<'a> {
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
                     .unwrap_or(f64::MAX);
-                let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
-                let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
+                let min_t = scalar_const!(self, "clamp_min", min_val, work_type);
+                let max_t = scalar_const!(self, "clamp_max", max_val, work_type);
                 let mid = emit_op!(
                     self,
                     operator_offsets,
                     std_op::MAXIMUM,
-                    [in_tensor, min_t],
+                    [input, min_t],
                     "clamp_mid",
                     in_shape,
-                    in_type
+                    work_type
                 );
                 let out = emit_op!(
                     self,
@@ -1599,7 +1846,7 @@ impl<'a> TfliteContext<'a> {
                     [mid, max_t],
                     "clamp_out",
                     in_shape,
-                    in_type
+                    work_type
                 );
                 tensor_map.insert(out_id, out as u32);
             } else if has_min {
@@ -1608,15 +1855,15 @@ impl<'a> TfliteContext<'a> {
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
                     .unwrap_or(f64::MIN);
-                let min_t = scalar_const!(self, "clamp_min", min_val, in_type);
+                let min_t = scalar_const!(self, "clamp_min", min_val, work_type);
                 let out = emit_op!(
                     self,
                     operator_offsets,
                     std_op::MAXIMUM,
-                    [in_tensor, min_t],
+                    [input, min_t],
                     "clamp_out",
                     in_shape,
-                    in_type
+                    work_type
                 );
                 tensor_map.insert(out_id, out as u32);
             } else if has_max {
@@ -1625,19 +1872,19 @@ impl<'a> TfliteContext<'a> {
                     .as_ref()
                     .and_then(|v| parse_mlnumber(Some(v)))
                     .unwrap_or(f64::MAX);
-                let max_t = scalar_const!(self, "clamp_max", max_val, in_type);
+                let max_t = scalar_const!(self, "clamp_max", max_val, work_type);
                 let out = emit_op!(
                     self,
                     operator_offsets,
                     std_op::MINIMUM,
-                    [in_tensor, max_t],
+                    [input, max_t],
                     "clamp_out",
                     in_shape,
-                    in_type
+                    work_type
                 );
                 tensor_map.insert(out_id, out as u32);
             } else {
-                let out_tensor = self.add_tensor("clamp_out", in_shape, in_type, 0);
+                let out_tensor = self.add_tensor("clamp_out", in_shape, work_type, 0);
                 let shape_bytes: Vec<u8> = in_shape.iter().flat_map(|&v| v.to_le_bytes()).collect();
                 let shape_tensor = self.add_constant(
                     "clamp_shape",
@@ -1646,7 +1893,7 @@ impl<'a> TfliteContext<'a> {
                     &shape_bytes,
                 );
                 let oc_idx = self.add_opcode(std_op::RESHAPE, 1);
-                let iv = self.fbb.create_vector(&[in_tensor, shape_tensor as i32]);
+                let iv = self.fbb.create_vector(&[input, shape_tensor as i32]);
                 let ov = self.fbb.create_vector(&[out_tensor as i32]);
                 let shape_vec = self.fbb.create_vector(in_shape);
                 let ro = tflite::ReshapeOptions::create(
@@ -1668,6 +1915,13 @@ impl<'a> TfliteContext<'a> {
                 );
                 operator_offsets.push(tfl_op);
                 tensor_map.insert(out_id, out_tensor as u32);
+            }
+
+            if work_type != in_type {
+                let produced = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+                let back = self.add_tensor("clamp_u32", in_shape, in_type, 0) as i32;
+                self.emit_cast_op(operator_offsets, produced, work_type, back, in_type);
+                tensor_map.insert(out_id, back as u32);
             }
             return true;
         }
@@ -2246,24 +2500,44 @@ impl<'a> TfliteContext<'a> {
 
         let cur = match op {
             Operation::ReduceL1 { .. } => {
-                let abs_val = emit_op!(
-                    self,
+                let (value, value_type) = if in_type == tflite::TensorType::UINT32 {
+                    let widened =
+                        self.add_tensor("rl1_i64", in_shape, tflite::TensorType::INT64, 0) as i32;
+                    self.emit_cast_op(
+                        operator_offsets,
+                        in_tensor,
+                        in_type,
+                        widened,
+                        tflite::TensorType::INT64,
+                    );
+                    (widened, tflite::TensorType::INT64)
+                } else {
+                    (in_tensor, in_type)
+                };
+                let abs_val = self.emit_abs(
                     operator_offsets,
-                    std_op::ABS,
-                    [in_tensor],
-                    &format!("{prefix}_abs"),
+                    value,
                     in_shape,
-                    in_type
+                    value_type,
+                    &format!("{prefix}_abs"),
                 );
-                emit_op!(
+                let sum = emit_op!(
                     self,
                     operator_offsets,
                     std_op::SUM,
                     [abs_val, axes_tensor as i32],
                     &format!("{prefix}_sum"),
                     &reduced_shape,
-                    in_type
-                )
+                    value_type
+                );
+                if value_type == in_type {
+                    sum
+                } else {
+                    let out = self.add_tensor(&format!("{prefix}_u32"), &reduced_shape, in_type, 0)
+                        as i32;
+                    self.emit_cast_op(operator_offsets, sum, value_type, out, in_type);
+                    out
+                }
             }
             Operation::ReduceL2 { .. } => {
                 // rsqrt(x*x) or just one path: mul→sum→sqrt
@@ -5928,8 +6202,8 @@ fn build_native_operators<'a>(
             continue;
         }
 
-        // sub int8/uint8: TFLite's kernel aborts, emulate via INT32.
-        if ctx.build_int8_sub_op(op, graph, &mut tensor_map, &mut operator_offsets, in_type) {
+        // sub over the types TFLite's kernel lacks: widen, subtract, cast back.
+        if ctx.build_widened_sub_op(op, graph, &mut tensor_map, &mut operator_offsets, in_type) {
             continue;
         }
 
