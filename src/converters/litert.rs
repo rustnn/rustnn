@@ -17,7 +17,7 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind};
 use crate::mlcontext::Backend;
-use crate::operator_options::{MLPool2dOptions, MLResample2dOptions};
+use crate::operator_options::{MLPadOptions, MLPool2dOptions, MLResample2dOptions};
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -4462,47 +4462,52 @@ impl<'a> TfliteContext<'a> {
                 &shape_bytes,
             );
 
-            // Add zero bias. TFLite requires one element per output channel, which
-            // TRANSPOSE_CONV takes from the first dimension of the OHWI filter.
-            let filter_id = input_ids[1];
+            // TFLite requires a bias and takes it as the fourth input; WebNN's is
+            // optional. Without one, a zero bias of the output channel count is added —
+            // TRANSPOSE_CONV reads that count from the OHWI filter.
             let opts = match op {
                 Operation::ConvTranspose2d { options, .. } => {
                     options.as_ref().cloned().unwrap_or_default()
                 }
                 _ => Default::default(),
             };
-            let layout = if opts.filter_layout.is_empty() {
-                "iohw"
-            } else {
-                opts.filter_layout.as_str()
+            let bias = match opts.bias {
+                Some(id) => *tensor_map.get(&(id as u32)).unwrap_or(&(id as u32)) as i32,
+                None => {
+                    let layout = if opts.filter_layout.is_empty() {
+                        "iohw"
+                    } else {
+                        opts.filter_layout.as_str()
+                    };
+                    let oc = graph
+                        .operand(input_ids[1])
+                        .map(|o| filter_output_channels(&o.descriptor.shape, layout))
+                        .unwrap_or(1);
+                    let in_type = graph
+                        .operand(input_ids[0])
+                        .map(|o| {
+                            datatype_to_tflite(o.descriptor.data_type)
+                                .unwrap_or(tflite::TensorType::FLOAT32)
+                        })
+                        .unwrap_or(tflite::TensorType::FLOAT32);
+                    self.add_constant(
+                        "conv_transpose_bias",
+                        &[oc],
+                        in_type,
+                        &vec![0u8; oc as usize * 4],
+                    ) as i32
+                }
             };
-            let oc = graph
-                .operand(filter_id)
-                .map(|o| filter_output_channels(&o.descriptor.shape, layout))
-                .unwrap_or(1);
-            let in_type = graph
-                .operand(input_ids[0])
-                .map(|o| {
-                    datatype_to_tflite(o.descriptor.data_type)
-                        .unwrap_or(tflite::TensorType::FLOAT32)
-                })
-                .unwrap_or(tflite::TensorType::FLOAT32);
-            let esz = 4;
-            let bias = self.add_constant(
-                "conv_transpose_bias",
-                &[oc],
-                in_type,
-                &vec![0u8; oc as usize * esz],
-            );
 
             // Reorder: [output_shape, filter, input, bias]
+            let filter_id = input_ids[1];
             let filter_tensor = *tensor_map.get(&filter_id).unwrap_or(&filter_id) as i32;
             let input_tensor = *tensor_map.get(&input_ids[0]).unwrap_or(&input_ids[0]) as i32;
             *inputs = vec![
                 output_shape_tensor as i32,
                 filter_tensor,
                 input_tensor,
-                bias as i32,
+                bias,
             ];
             return true;
         }
@@ -4788,6 +4793,18 @@ impl<'a> TfliteContext<'a> {
                 (
                     Some(co.as_union_value()),
                     tflite::BuiltinOptions::CumsumOptions,
+                )
+            }
+            Operation::Pad { options, .. } if is_reflect_pad(options.as_ref()) => {
+                let mo = tflite::MirrorPadOptions::create(
+                    &mut self.fbb,
+                    &tflite::MirrorPadOptionsArgs {
+                        mode: tflite::MirrorPadMode::REFLECT,
+                    },
+                );
+                (
+                    Some(mo.as_union_value()),
+                    tflite::BuiltinOptions::MirrorPadOptions,
                 )
             }
             Operation::Resample2d { options, .. } => {
@@ -5276,6 +5293,45 @@ fn build_extra_inputs<'a>(
     } = op
     {
         let rank = beginning_padding.len();
+        let out_id = op.outputs()[0];
+        // Empty paddings on a rank-0 operand: MIRROR_PAD and PAD both reject rank 0, so
+        // the op reduces to a RESHAPE into the declared output.
+        if rank == 0 {
+            let out_shape: Vec<i32> = graph
+                .operand(out_id)
+                .map(|o| dimensions_to_i32(&o.descriptor.shape))
+                .unwrap_or_default();
+            let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+            let shape_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let shape_const = ctx.add_constant(
+                "pad_none_shape",
+                &[out_shape.len() as i32],
+                tflite::TensorType::INT32,
+                &shape_bytes,
+            );
+            let shape_vec = ctx.fbb.create_vector(&out_shape);
+            let ro = tflite::ReshapeOptions::create(
+                &mut ctx.fbb,
+                &tflite::ReshapeOptionsArgs {
+                    new_shape: Some(shape_vec),
+                },
+            );
+            let oc = ctx.add_opcode(std_op::RESHAPE, 1);
+            let iv = ctx.fbb.create_vector(&[in_tensor, shape_const as i32]);
+            let ov = ctx.fbb.create_vector(&[out_tensor]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut ctx.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: Some(ro.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                    ..Default::default()
+                },
+            ));
+            return Ok(true);
+        }
         let mut pad_data = Vec::with_capacity(rank * 2 * 4);
         for i in 0..rank {
             pad_data.extend_from_slice(&(beginning_padding[i] as i32).to_le_bytes());
@@ -5289,27 +5345,36 @@ fn build_extra_inputs<'a>(
         );
         inputs.push(pad_tensor as i32);
 
-        // TFLite PAD v2 input[2]: scalar constant value (WebNN options.value).
-        let value = options.as_ref().and_then(|o| o.value.clone());
-        let f = match value {
-            Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0),
-            Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("Infinity") => {
-                f64::INFINITY
-            }
-            Some(serde_json::Value::String(s)) if s == "-Infinity" => f64::NEG_INFINITY,
-            Some(serde_json::Value::String(s)) if s.eq_ignore_ascii_case("NaN") => f64::NAN,
-            _ => 0.0,
-        };
-        let value_bytes: Vec<u8> = match in_type {
-            tflite::TensorType::FLOAT32 => (f as f32).to_le_bytes().to_vec(),
-            tflite::TensorType::INT32 => (f as i32).to_le_bytes().to_vec(),
-            tflite::TensorType::INT64 => (f as i64).to_le_bytes().to_vec(),
-            tflite::TensorType::INT8 => vec![(f as i8) as u8],
-            tflite::TensorType::UINT8 => vec![(f as u8)],
-            _ => (f as f32).to_le_bytes().to_vec(),
-        };
-        let value_tensor = ctx.add_constant("pad_value", &[1], in_type, &value_bytes);
-        inputs.push(value_tensor as i32);
+        // MIRROR_PAD takes only the paddings; PAD also takes the scalar value, which
+        // WebNN carries as a number, a string, or a bigint that arrives as a string.
+        if !is_reflect_pad(options.as_ref()) {
+            let value = options.as_ref().and_then(|o| o.value.clone());
+            let integer = value.as_ref().and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_i64().or_else(|| n.as_u64().map(|u| u as i64)),
+                serde_json::Value::String(s) => s.trim().parse::<i64>().ok(),
+                _ => None,
+            });
+            let real = value.as_ref().and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_f64(),
+                serde_json::Value::String(s) if s.eq_ignore_ascii_case("Infinity") => {
+                    Some(f64::INFINITY)
+                }
+                serde_json::Value::String(s) if s == "-Infinity" => Some(f64::NEG_INFINITY),
+                serde_json::Value::String(s) if s.eq_ignore_ascii_case("NaN") => Some(f64::NAN),
+                serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+                _ => None,
+            });
+            let value_bytes: Vec<u8> = match in_type {
+                tflite::TensorType::FLOAT32 => (real.unwrap_or(0.0) as f32).to_le_bytes().to_vec(),
+                tflite::TensorType::INT32 => (integer.unwrap_or(0) as i32).to_le_bytes().to_vec(),
+                tflite::TensorType::INT64 => integer.unwrap_or(0).to_le_bytes().to_vec(),
+                tflite::TensorType::INT8 => vec![integer.unwrap_or(0) as i8 as u8],
+                tflite::TensorType::UINT8 => vec![integer.unwrap_or(0) as u8],
+                _ => (real.unwrap_or(0.0) as f32).to_le_bytes().to_vec(),
+            };
+            let value_tensor = ctx.add_constant("pad_value", &[1], in_type, &value_bytes);
+            inputs.push(value_tensor as i32);
+        }
         return Ok(false);
     }
 
@@ -5443,6 +5508,14 @@ fn opcode_version(code: i32) -> i32 {
     }
 }
 
+/// WebNN's reflection padding mirrors without repeating the edge, which is TFLite's
+/// REFLECT mode. The other modes have their own kernels.
+fn is_reflect_pad(options: Option<&MLPadOptions>) -> bool {
+    options
+        .map(|o| o.mode.eq_ignore_ascii_case("reflection"))
+        .unwrap_or(false)
+}
+
 /// WebNN's default interpolation mode is nearest neighbour; only `"linear"` selects the
 /// bilinear kernel.
 fn is_nearest_resample(options: Option<&MLResample2dOptions>) -> bool {
@@ -5546,6 +5619,7 @@ mod std_op {
     pub const GATHER_ND: i32 = 107;
     pub const TRANSPOSE_CONV: i32 = 67;
     pub const PAD: i32 = 34;
+    pub const MIRROR_PAD: i32 = 100;
     pub const BROADCAST_TO: i32 = 130;
 }
 
@@ -5643,7 +5717,11 @@ fn tflite_opcode(op: &Operation) -> Option<i32> {
         Operation::Cast { .. } => Some(53),
         Operation::ArgMax { .. } => Some(std_op::ARG_MAX),
         Operation::ArgMin { .. } => Some(std_op::ARG_MIN),
-        Operation::Pad { .. } => Some(34),
+        Operation::Pad { options, .. } => Some(if is_reflect_pad(options.as_ref()) {
+            std_op::MIRROR_PAD
+        } else {
+            34
+        }),
         Operation::Slice { .. } => Some(65),
         Operation::LogicalNot { .. } => Some(std_op::LOGICAL_NOT),
         Operation::LogicalAnd { .. } => Some(std_op::LOGICAL_AND),
