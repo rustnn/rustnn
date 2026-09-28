@@ -1414,7 +1414,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary_with_options(
                     .0
                     .gemm_with_options(lhs, rhs, options_with_label!(MLGemmOptions, options))
             }
-            RustnnBinaryOperation::Conv2d => builder.0.conv2_with_options(
+            RustnnBinaryOperation::Conv2d => builder.0.conv2d_with_options(
                 lhs,
                 rhs,
                 options_with_label!(MLConv2dOptions, options),
