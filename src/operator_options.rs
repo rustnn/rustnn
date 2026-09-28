@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::operator_enums::{
     MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
-    MLOperandDataType,
+    MLOperandDataType, MLPaddingMode,
 };
 
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
@@ -907,10 +907,9 @@ pub struct MLPadOptions {
     /// Operation label.
     #[serde(default)]
     pub label: String,
-    // TODO MTAX mode is an enum of type MLPaddingMode
-    /// `"constant"` (default when empty), `"edge"` or `"reflection"`.
+    /// Padding mode: `constant` (default), `edge`, or `reflection`.
     #[serde(default)]
-    pub mode: String, // "constant" | "edge" | "reflection"
+    pub mode: MLPaddingMode,
     /// Fill value for `"constant"` mode as a JSON number (default `0`).
     pub value: Option<serde_json::Value>, // MLNumber
 }

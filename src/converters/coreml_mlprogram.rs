@@ -28,7 +28,7 @@
 use crate::converters::operand_name;
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo, OperandKind};
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{MLOperandDataType, MLPaddingMode};
 use crate::operator_options::MLDimension;
 use crate::operators::Operation;
 use crate::protos::coreml::mil_spec::{
@@ -5088,17 +5088,11 @@ impl CoremlMlProgramConverter {
                     .collect();
                 inputs.insert("pad".to_string(), Self::create_immediate_int_array(&pad));
 
-                // Mode: WebNN → CoreML mapping
-                // WebNN: "constant", "edge", "reflection", "symmetric"
-                // CoreML: "constant", "replicate", "reflect"
-                let webnn_mode = options
-                    .as_ref()
-                    .map(|o| o.mode.as_str())
-                    .unwrap_or("constant");
-                let coreml_mode = match webnn_mode {
-                    "edge" => "replicate",
-                    "reflection" | "symmetric" => "reflect",
-                    _ => "constant",
+                // CoreML calls edge padding "replicate" and reflection "reflect".
+                let coreml_mode = match options.as_ref().map(|o| o.mode).unwrap_or_default() {
+                    MLPaddingMode::Edge => "replicate",
+                    MLPaddingMode::Reflection => "reflect",
+                    MLPaddingMode::Constant => "constant",
                 };
                 inputs.insert(
                     "mode".to_string(),
@@ -7035,11 +7029,10 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         .zip(ending_padding.iter())
                         .flat_map(|(a, b)| [*a, *b])
                         .collect();
-                    let webnn_mode = options.map(|o| o.mode.as_str()).unwrap_or("constant");
-                    let coreml_mode = match webnn_mode {
-                        "edge" => "replicate",
-                        "reflection" | "symmetric" => "reflect",
-                        _ => "constant",
+                    let coreml_mode = match options.map(|o| o.mode).unwrap_or_default() {
+                        MLPaddingMode::Edge => "replicate",
+                        MLPaddingMode::Reflection => "reflect",
+                        MLPaddingMode::Constant => "constant",
                     };
                     let constant_val = options
                         .and_then(|o| Self::parse_mlnumber_f64(o.value.as_ref()))

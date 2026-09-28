@@ -200,7 +200,7 @@ pub enum MLInputOperandLayout {
 }
 
 /// Padding mode of `pad`. <https://www.w3.org/TR/webnn/#enumdef-mlpaddingmode>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLPaddingMode {
     #[default]
