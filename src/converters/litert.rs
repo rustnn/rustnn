@@ -1453,6 +1453,21 @@ impl<'a> TfliteContext<'a> {
         }
     }
 
+    /// Allocate `name` as `to_type` and cast `tensor` into it.
+    fn cast_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        from_type: tflite::TensorType,
+        shape: &[i32],
+        to_type: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let out = self.add_tensor(name, shape, to_type, 0) as i32;
+        self.emit_cast_op(operator_offsets, tensor, from_type, out, to_type);
+        out
+    }
+
     /// Emit a TFLite CAST operator.
     fn emit_cast_op(
         &mut self,
@@ -1696,14 +1711,13 @@ impl<'a> TfliteContext<'a> {
             )
         {
             let (value, work_type) = if in_type == tflite::TensorType::INT8 {
-                let widened =
-                    self.add_tensor("sign_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
-                self.emit_cast_op(
+                let widened = self.cast_into(
                     operator_offsets,
                     in_tensor,
                     in_type,
-                    widened,
+                    in_shape,
                     tflite::TensorType::INT32,
+                    "sign_i32",
                 );
                 (widened, tflite::TensorType::INT32)
             } else {
@@ -1728,23 +1742,21 @@ impl<'a> TfliteContext<'a> {
                 in_shape,
                 tflite::TensorType::BOOL
             );
-            let positive_i32 =
-                self.add_tensor("sign_positive_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
-            self.emit_cast_op(
+            let positive_i32 = self.cast_into(
                 operator_offsets,
                 positive,
                 tflite::TensorType::BOOL,
-                positive_i32,
+                in_shape,
                 tflite::TensorType::INT32,
+                "sign_positive_i32",
             );
-            let negative_i32 =
-                self.add_tensor("sign_negative_i32", in_shape, tflite::TensorType::INT32, 0) as i32;
-            self.emit_cast_op(
+            let negative_i32 = self.cast_into(
                 operator_offsets,
                 negative,
                 tflite::TensorType::BOOL,
-                negative_i32,
+                in_shape,
                 tflite::TensorType::INT32,
+                "sign_negative_i32",
             );
             let difference = emit_op!(
                 self,
@@ -1755,13 +1767,13 @@ impl<'a> TfliteContext<'a> {
                 in_shape,
                 tflite::TensorType::INT32
             );
-            let out = self.add_tensor("sign_out", in_shape, in_type, 0) as i32;
-            self.emit_cast_op(
+            let out = self.cast_into(
                 operator_offsets,
                 difference,
                 tflite::TensorType::INT32,
-                out,
+                in_shape,
                 in_type,
+                "sign_out",
             );
             tensor_map.insert(op.outputs()[0], out as u32);
             return true;
