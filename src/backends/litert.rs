@@ -24,7 +24,7 @@ use crate::mlcontext::{
     MLTensorDescriptor, RustNNOptions,
 };
 
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{MLConv2dFilterOperandLayout as ConvLayout, MLOperandDataType};
 use crate::operators::Operation;
 use crate::{GraphError, GraphInfo};
 
@@ -80,7 +80,7 @@ pub(crate) struct LiteRtGraph {
     spatial_operand_ids: std::collections::HashSet<u32>,
     /// Filter operand ids whose runtime data needs layout→OHWI transpose.
     /// Maps filter id → (WebNN filter_layout, target shape, is_depthwise [unused]).
-    filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+    filter_transpose_info: std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)>,
     /// Operand ids needing BOOL type (WHERE condition, comparison ops).
     bool_operand_ids: std::collections::HashSet<u32>,
     /// Graph input names in signature order. See [`order_by_signature`].
@@ -99,7 +99,7 @@ impl LiteRtGraph {
         model_bytes: Vec<u8>,
         accelerator_bits: sys::LiteRtHwAcceleratorSet,
         spatial_operand_ids: std::collections::HashSet<u32>,
-        filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+        filter_transpose_info: std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)>,
         bool_operand_ids: std::collections::HashSet<u32>,
         input_order: Vec<(String, u32)>,
         output_order: Vec<(String, u32)>,
@@ -430,8 +430,8 @@ fn collect_spatial_operand_names(graph_info: &GraphInfo) -> std::collections::Ha
 fn collect_filter_transpose_info(
     graph_info: &GraphInfo,
     spatial_operand_names: &mut std::collections::HashSet<u32>,
-) -> std::collections::HashMap<u32, (String, Vec<i32>, bool)> {
-    let mut filter_transpose_info: std::collections::HashMap<u32, (String, Vec<i32>, bool)> =
+) -> std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)> {
+    let mut filter_transpose_info: std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)> =
         std::collections::HashMap::new();
     for op in &graph_info.operations {
         let Operation::Conv2d { options, .. } = op else {
@@ -439,11 +439,8 @@ fn collect_filter_transpose_info(
         };
         let opts = options.as_ref().cloned().unwrap_or_default();
         let _input_layout = opts.input_layout.as_str();
-        let mut filter_layout = opts.filter_layout.as_str();
-        if filter_layout.is_empty() {
-            filter_layout = "oihw";
-        }
-        if filter_layout != "ohwi" {
+        let filter_layout = opts.filter_layout;
+        if filter_layout != ConvLayout::Ohwi {
             if let Some(&fid) = op.inputs().get(1) {
                 if let Some(fop) = graph_info.operand(fid) {
                     if fop.descriptor.shape.len() == 4 {
@@ -461,8 +458,7 @@ fn collect_filter_transpose_info(
                                 .collect::<Vec<_>>();
                             let target_shape = ohwi_shape_from_layout(&orig_shape, filter_layout);
                             spatial_operand_names.insert(fid);
-                            filter_transpose_info
-                                .insert(fid, (filter_layout.to_string(), target_shape, false));
+                            filter_transpose_info.insert(fid, (filter_layout, target_shape, false));
                         }
                     }
                 }
@@ -478,7 +474,7 @@ fn collect_spatial_info(
     graph_info: &GraphInfo,
 ) -> (
     std::collections::HashSet<u32>,
-    std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+    std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)>,
 ) {
     let mut spatial_operand_names = collect_spatial_operand_names(graph_info);
     let filter_transpose_info =
@@ -963,29 +959,26 @@ pub fn transpose_ihwo_to_ohwi(data: &[u8], i: usize, h: usize, w: usize, o: usiz
 }
 
 /// Transpose filter data from any WebNN layout (OIHW/HWIO/IHWO) to TFLite-native OHWI.
-fn transpose_filter_to_ohwi(data: &[u8], shape: &[u64], layout: &str) -> Vec<u8> {
+fn transpose_filter_to_ohwi(data: &[u8], shape: &[u64], layout: ConvLayout) -> Vec<u8> {
     let s = |i: usize| shape[i] as usize;
     match layout {
-        "hwio" => transpose_hwio_to_ohwi(data, s(0), s(1), s(2), s(3)),
-        "ihwo" => transpose_ihwo_to_ohwi(data, s(0), s(1), s(2), s(3)),
-        "iohw" => transpose_iohw_to_ohwi(data, s(0), s(1), s(2), s(3)),
-        "hwoi" => transpose_hwoi_to_ohwi(data, s(0), s(1), s(2), s(3)),
-        _ => transpose_oihw_to_ohwi(data, s(0), s(1), s(2), s(3)), // "oihw" default
+        ConvLayout::Hwio => transpose_hwio_to_ohwi(data, s(0), s(1), s(2), s(3)),
+        ConvLayout::Ihwo => transpose_ihwo_to_ohwi(data, s(0), s(1), s(2), s(3)),
+        ConvLayout::Oihw => transpose_oihw_to_ohwi(data, s(0), s(1), s(2), s(3)),
+        ConvLayout::Ohwi => data.to_vec(),
     }
 }
 
 /// Compute OHWI shape [O,H,W,I] from original shape [d0,d1,d2,d3] and filter layout.
-fn ohwi_shape_from_layout(shape: &[i32], layout: &str) -> Vec<i32> {
+fn ohwi_shape_from_layout(shape: &[i32], layout: ConvLayout) -> Vec<i32> {
     if shape.len() != 4 {
         return shape.to_vec();
     }
     match layout {
-        "hwio" => vec![shape[3], shape[0], shape[1], shape[2]],
-        "ihwo" => vec![shape[3], shape[1], shape[2], shape[0]],
-        "iohw" => vec![shape[1], shape[2], shape[3], shape[0]],
-        "hwoi" => vec![shape[2], shape[0], shape[1], shape[3]],
-        "ohwi" => shape.to_vec(),
-        _ => vec![shape[0], shape[2], shape[3], shape[1]], // "oihw" default
+        ConvLayout::Hwio => vec![shape[3], shape[0], shape[1], shape[2]],
+        ConvLayout::Ihwo => vec![shape[3], shape[1], shape[2], shape[0]],
+        ConvLayout::Ohwi => shape.to_vec(),
+        ConvLayout::Oihw => vec![shape[0], shape[2], shape[3], shape[1]],
     }
 }
 
@@ -1136,7 +1129,7 @@ fn build_input_handles(
     sorted_inputs: &[(&str, u32, &MLTensor)],
     tensors: &mut [LiteRtTensor],
     spatial_ids: &std::collections::HashSet<u32>,
-    filter_info: &std::collections::HashMap<u32, (String, Vec<i32>, bool)>,
+    filter_info: &std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)>,
     float16_emulated: bool,
 ) -> Result<(Vec<sys::LiteRtTensorBuffer>, Vec<LiteRtTensor>)> {
     let mut in_raw = Vec::with_capacity(sorted_inputs.len());
@@ -1157,7 +1150,7 @@ fn build_input_handles(
                 let temp =
                     LiteRtTensor::create_litert_tensor(target_shape, model_element_type(t)?, true)?;
                 let transposed =
-                    transpose_filter_to_ohwi(&model_data(tensors), shape, filter_layout);
+                    transpose_filter_to_ohwi(&model_data(tensors), shape, *filter_layout);
                 temp.write(&transposed).ok();
                 temp_in_tensors.push(temp);
                 in_raw.push(temp_in_tensors.last().unwrap().handle);

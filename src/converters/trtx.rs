@@ -32,6 +32,10 @@ use crate::error::GraphError;
 use crate::graph::{
     DataType, GraphInfo, Operand, OperandKind, get_static_or_max_size, unpack_int4, unpack_uint4,
 };
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout as ConvLayout,
+    MLConvTranspose2dFilterOperandLayout as TransposeLayout,
+};
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
 use crate::shape_inference::{
@@ -331,46 +335,22 @@ impl TrtxConverter {
 
     /// `IShuffleLayer::setFirstTranspose`: output axis `i` reads input axis `order[i]`.
     /// WebNN conv2d filter rank-4 layout to TensorRT kernel **OIHW**.
-    fn conv_dynamic_filter_first_transpose(filter_layout: &str) -> Result<[i32; 4], GraphError> {
-        let order = match filter_layout {
-            "oihw" => [0, 1, 2, 3],
-            "hwio" => [3, 2, 0, 1],
-            "ohwi" => [0, 3, 1, 2],
-            "ihwo" => [3, 0, 1, 2],
-            "hwoi" => [2, 3, 0, 1],
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!(
-                        "Unsupported filter_layout for dynamic conv2d kernel: {}",
-                        filter_layout
-                    ),
-                });
-            }
-        };
-        Ok(order)
+    fn conv_dynamic_filter_first_transpose(filter_layout: ConvLayout) -> [i32; 4] {
+        match filter_layout {
+            ConvLayout::Oihw => [0, 1, 2, 3],
+            ConvLayout::Hwio => [3, 2, 0, 1],
+            ConvLayout::Ohwi => [0, 3, 1, 2],
+            ConvLayout::Ihwo => [3, 0, 1, 2],
+        }
     }
 
     /// WebNN convTranspose2d filter to TensorRT deconv kernel **IOHW**.
-    fn deconv_dynamic_filter_first_transpose(filter_layout: &str) -> Result<[i32; 4], GraphError> {
-        let order = match filter_layout {
-            "iohw" => [0, 1, 2, 3],
-            "oihw" => [1, 0, 2, 3],
-            "hwio" => [2, 3, 0, 1],
-            "ohwi" => [3, 0, 1, 2],
-            "ihwo" => [0, 3, 1, 2],
-            "hwoi" => [3, 2, 0, 1],
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!(
-                        "Unsupported filter_layout for dynamic convTranspose2d kernel: {}",
-                        filter_layout
-                    ),
-                });
-            }
-        };
-        Ok(order)
+    fn deconv_dynamic_filter_first_transpose(filter_layout: TransposeLayout) -> [i32; 4] {
+        match filter_layout {
+            TransposeLayout::Iohw => [0, 1, 2, 3],
+            TransposeLayout::Hwoi => [3, 2, 0, 1],
+            TransposeLayout::Ohwi => [3, 0, 1, 2],
+        }
     }
 
     /// Build a BOOL tensor from a UInt8/Int8 **graph constant** (0 → false, non-zero → true).
@@ -11507,22 +11487,12 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let filter_layout = conv_opts
-            .map(|o| o.filter_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("oihw");
+        let filter_layout = conv_opts.map(|o| o.filter_layout).unwrap_or_default();
         let (o, _in_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
-            "oihw" => (fs[0], fs[1], fs[2], fs[3]),
-            "hwio" => (fs[3], fs[2], fs[0], fs[1]),
-            "ohwi" => (fs[0], fs[3], fs[1], fs[2]),
-            "ihwo" => (fs[3], fs[0], fs[1], fs[2]),
-            "hwoi" => (fs[2], fs[3], fs[0], fs[1]),
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Unsupported filter_layout: {}", filter_layout),
-                });
-            }
+            ConvLayout::Oihw => (fs[0], fs[1], fs[2], fs[3]),
+            ConvLayout::Hwio => (fs[3], fs[2], fs[0], fs[1]),
+            ConvLayout::Ohwi => (fs[0], fs[3], fs[1], fs[2]),
+            ConvLayout::Ihwo => (fs[3], fs[0], fs[1], fs[2]),
         };
         let num_output_maps = o as i32;
         let kernel_size: [i32; 2] = [h as i32, w as i32];
@@ -11751,31 +11721,32 @@ impl TrtxConverter {
             };
         let bias_tensor_to_use = bias_tensor_for_conv.as_ref().or(bias_tensor_raw);
 
-        let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> = if filter_layout != "oihw" {
-            let perm = Self::conv_dynamic_filter_first_transpose(filter_layout)?;
-            let mut shuffle = network.add_shuffle(filter_tensor_to_use).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Conv2d filter layout shuffle: {}", e),
-                }
-            })?;
-            shuffle.set_first_transpose(network, &perm).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Conv2d filter set_first_transpose: {}", e),
-                }
-            })?;
-            Some(
-                shuffle
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
+        let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> =
+            if filter_layout != ConvLayout::Oihw {
+                let perm = Self::conv_dynamic_filter_first_transpose(filter_layout);
+                let mut shuffle = network.add_shuffle(filter_tensor_to_use).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("Conv2d filter shuffle output: {}", e),
-                    })?,
-            )
-        } else {
-            None
-        };
+                        reason: format!("Conv2d filter layout shuffle: {}", e),
+                    }
+                })?;
+                shuffle.set_first_transpose(network, &perm).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("Conv2d filter set_first_transpose: {}", e),
+                    }
+                })?;
+                Some(
+                    shuffle
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("Conv2d filter shuffle output: {}", e),
+                        })?,
+                )
+            } else {
+                None
+            };
         let filter_for_set_input = filter_layout_shuffle_out
             .as_ref()
             .unwrap_or(filter_tensor_to_use);
@@ -11913,23 +11884,11 @@ impl TrtxConverter {
             });
         }
         let fs = filter_operand.descriptor.static_or_max_shape();
-        let filter_layout = deconv_opts
-            .map(|o| o.filter_layout.as_str())
-            .filter(|s| !s.is_empty())
-            .unwrap_or("iohw");
+        let filter_layout = deconv_opts.map(|o| o.filter_layout).unwrap_or_default();
         let (_in_ch, out_ch, h, w): (u32, u32, u32, u32) = match filter_layout {
-            "iohw" => (fs[0], fs[1], fs[2], fs[3]),
-            "oihw" => (fs[1], fs[0], fs[2], fs[3]),
-            "hwio" => (fs[2], fs[3], fs[0], fs[1]),
-            "ohwi" => (fs[3], fs[0], fs[1], fs[2]),
-            "ihwo" => (fs[0], fs[3], fs[1], fs[2]),
-            "hwoi" => (fs[3], fs[2], fs[0], fs[1]),
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Unsupported filter_layout: {}", filter_layout),
-                });
-            }
+            TransposeLayout::Iohw => (fs[0], fs[1], fs[2], fs[3]),
+            TransposeLayout::Hwoi => (fs[3], fs[2], fs[0], fs[1]),
+            TransposeLayout::Ohwi => (fs[3], fs[0], fs[1], fs[2]),
         };
         let groups = deconv_opts.map(|o| o.groups as i32).unwrap_or(1);
         // WebNN filter shape is [inputChannels, outputChannels/groups, H, W]; TensorRT expects total output maps.
@@ -12132,31 +12091,32 @@ impl TrtxConverter {
             };
         let bias_tensor_to_use = bias_tensor_for_conv.as_ref().or(bias_tensor_raw);
 
-        let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> = if filter_layout != "iohw" {
-            let perm = Self::deconv_dynamic_filter_first_transpose(filter_layout)?;
-            let mut shuffle = network.add_shuffle(filter_tensor_to_use).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("convTranspose2d filter layout shuffle: {}", e),
-                }
-            })?;
-            shuffle.set_first_transpose(network, &perm).map_err(|e| {
-                GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("convTranspose2d filter set_first_transpose: {}", e),
-                }
-            })?;
-            Some(
-                shuffle
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
+        let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> =
+            if filter_layout != TransposeLayout::Iohw {
+                let perm = Self::deconv_dynamic_filter_first_transpose(filter_layout);
+                let mut shuffle = network.add_shuffle(filter_tensor_to_use).map_err(|e| {
+                    GraphError::ConversionFailed {
                         format: "trtx".to_string(),
-                        reason: format!("convTranspose2d filter shuffle output: {}", e),
-                    })?,
-            )
-        } else {
-            None
-        };
+                        reason: format!("convTranspose2d filter layout shuffle: {}", e),
+                    }
+                })?;
+                shuffle.set_first_transpose(network, &perm).map_err(|e| {
+                    GraphError::ConversionFailed {
+                        format: "trtx".to_string(),
+                        reason: format!("convTranspose2d filter set_first_transpose: {}", e),
+                    }
+                })?;
+                Some(
+                    shuffle
+                        .output(&*network, 0)
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".to_string(),
+                            reason: format!("convTranspose2d filter shuffle output: {}", e),
+                        })?,
+                )
+            } else {
+                None
+            };
         let filter_for_set_input = filter_layout_shuffle_out
             .as_ref()
             .unwrap_or(filter_tensor_to_use);
@@ -15203,17 +15163,17 @@ mod tests {
     fn test_conv_dynamic_filter_first_transpose_hwio() {
         // HWIO -> OIHW: output[o,i,h,w] reads input[h,w,i,o].
         assert_eq!(
-            TrtxConverter::conv_dynamic_filter_first_transpose("hwio").unwrap(),
+            TrtxConverter::conv_dynamic_filter_first_transpose(ConvLayout::Hwio),
             [3, 2, 0, 1]
         );
     }
 
     #[test]
-    fn test_deconv_dynamic_filter_first_transpose_oihw() {
-        // OIHW -> IOHW: output[i,o,h,w] reads input[o,i,h,w].
+    fn test_deconv_dynamic_filter_first_transpose_hwoi() {
+        // HWOI -> IOHW: output[i,o,h,w] reads input[h,w,o,i].
         assert_eq!(
-            TrtxConverter::deconv_dynamic_filter_first_transpose("oihw").unwrap(),
-            [1, 0, 2, 3]
+            TrtxConverter::deconv_dynamic_filter_first_transpose(TransposeLayout::Hwoi),
+            [3, 2, 0, 1]
         );
     }
 }

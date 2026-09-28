@@ -8883,15 +8883,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_layout = match &op {
                     Operation::Conv2d { options, .. } => options
                         .as_ref()
-                        .map(|o| o.input_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "nchw".to_string()),
+                        .map(|o| o.input_layout.as_str())
+                        .unwrap_or("nchw"),
                     Operation::ConvTranspose2d { options, .. } => options
                         .as_ref()
-                        .map(|o| o.input_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "nchw".to_string()),
-                    _ => "nchw".to_string(),
+                        .map(|o| o.input_layout.as_str())
+                        .unwrap_or("nchw"),
+                    _ => "nchw",
                 };
 
                 let input_name = operand_name(graph, op.input_operands()[0]);
@@ -8917,56 +8915,35 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
                 conv_inputs.push(transposed_input);
 
-                let filter_layout = match &op {
-                    Operation::Conv2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "oihw".to_string()),
-                    Operation::ConvTranspose2d { options, .. } => options
-                        .as_ref()
-                        .map(|o| o.filter_layout.clone())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or_else(|| "iohw".to_string()),
-                    _ => {
-                        if matches!(&op, Operation::ConvTranspose2d { .. }) {
-                            "iohw".to_string()
-                        } else {
-                            "oihw".to_string()
-                        }
-                    }
+                use crate::operator_enums::{
+                    MLConv2dFilterOperandLayout as ConvLayout,
+                    MLConvTranspose2dFilterOperandLayout as TransposeLayout,
                 };
-
+                let filter_perm = match &op {
+                    Operation::Conv2d { options, .. } => match options
+                        .as_ref()
+                        .map(|o| o.filter_layout)
+                        .unwrap_or_default()
+                    {
+                        ConvLayout::Oihw => None,
+                        ConvLayout::Hwio => Some(vec![3, 2, 0, 1]),
+                        ConvLayout::Ohwi => Some(vec![0, 3, 1, 2]),
+                        ConvLayout::Ihwo => Some(vec![3, 0, 1, 2]),
+                    },
+                    Operation::ConvTranspose2d { options, .. } => match options
+                        .as_ref()
+                        .map(|o| o.filter_layout)
+                        .unwrap_or_default()
+                    {
+                        TransposeLayout::Iohw => None,
+                        TransposeLayout::Hwoi => Some(vec![3, 2, 0, 1]),
+                        TransposeLayout::Ohwi => Some(vec![3, 0, 1, 2]),
+                    },
+                    _ => None,
+                };
                 let filter_name = operand_name(graph, op.input_operands()[1]);
 
-                let is_transpose = matches!(&op, Operation::ConvTranspose2d { .. });
-                let needs_transpose = if is_transpose {
-                    // ConvTranspose: ONNX expects IOHW (Input, Output, H, W)
-                    filter_layout != "iohw"
-                } else {
-                    // Conv: ONNX expects OIHW (Output, Input, H, W)
-                    filter_layout != "oihw"
-                };
-
-                let transposed_filter = if needs_transpose {
-                    let perm = if is_transpose {
-                        // ConvTranspose filter layout conversions → IOHW
-                        match filter_layout.as_str() {
-                            "hwoi" => vec![3, 2, 0, 1], // HWOI (H,W,O,I) → IOHW (I,O,H,W)
-                            "ohwi" => vec![3, 0, 1, 2], // OHWI (O,H,W,I) → IOHW (I,O,H,W)
-                            "oihw" => vec![1, 0, 2, 3], // OIHW (O,I,H,W) → IOHW (I,O,H,W)
-                            _ => vec![0, 1, 2, 3],      // Default: no transpose
-                        }
-                    } else {
-                        // Conv2d filter layout conversions → OIHW
-                        match filter_layout.as_str() {
-                            "hwio" => vec![3, 2, 0, 1], // HWIO (H,W,I,O) → OIHW (O,I,H,W)
-                            "ohwi" => vec![0, 3, 1, 2], // OHWI (O,H,W,I) → OIHW (O,I,H,W)
-                            "ihwo" => vec![3, 0, 1, 2], // IHWO (I,H,W,O) → OIHW (O,I,H,W)
-                            _ => vec![0, 1, 2, 3],      // Default: no transpose
-                        }
-                    };
-
+                let transposed_filter = if let Some(perm) = filter_perm {
                     let transpose_output = format!("{}_filter_transposed", op_name);
                     nodes.push(NodeProto {
                         input: vec![filter_name],

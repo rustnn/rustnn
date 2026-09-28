@@ -23,7 +23,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+    MLOperandDataType,
+};
 
 /// Operand reference (graph operand index). Used in option structs for MLOperand fields.
 pub type OperandIndex = u32;
@@ -374,12 +377,12 @@ pub struct MLConv2dOptions {
     /// Number of groups the input channels are split into (default `1`; equal to the channel count for depthwise).
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
-    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
+    /// Input layout; defaults to `nchw`.
     #[serde(default)]
-    pub input_layout: String, // "nchw" | "nhwc"
-    /// Filter layout, `"oihw"` (default when empty), `"hwio"`, `"ohwi"` or `"ihwo"`.
+    pub input_layout: MLInputOperandLayout,
+    /// Filter layout; defaults to `oihw`.
     #[serde(default)]
-    pub filter_layout: String, // "oihw" | "hwio" | "ohwi" | "ihwo"
+    pub filter_layout: MLConv2dFilterOperandLayout,
     /// 1-D bias operand with one value per output channel (see `MLOperand::rustnn_index`).
     pub bias: Option<OperandIndex>,
 }
@@ -392,8 +395,8 @@ impl Default for MLConv2dOptions {
             strides: Vec::new(),
             dilations: Vec::new(),
             groups: default_conv_groups(),
-            input_layout: String::new(),
-            filter_layout: String::new(),
+            input_layout: MLInputOperandLayout::default(),
+            filter_layout: MLConv2dFilterOperandLayout::default(),
             bias: None,
         }
     }
@@ -423,12 +426,12 @@ pub struct MLConvTranspose2dOptions {
     /// Number of groups (default `1`).
     #[serde(default = "default_conv_groups")]
     pub groups: u32,
-    /// Input layout, `"nchw"` (default when empty) or `"nhwc"`.
+    /// Input layout; defaults to `nchw`.
     #[serde(default)]
-    pub input_layout: String,
-    /// Filter layout, `"iohw"` (default when empty), `"hwoi"` or `"ohwi"`.
+    pub input_layout: MLInputOperandLayout,
+    /// Filter layout; defaults to `iohw`.
     #[serde(default)]
-    pub filter_layout: String, // "iohw" | "hwoi" | "ohwi"
+    pub filter_layout: MLConvTranspose2dFilterOperandLayout,
     /// 1-D bias operand with one value per output channel.
     pub bias: Option<OperandIndex>,
 }
@@ -443,8 +446,8 @@ impl Default for MLConvTranspose2dOptions {
             output_padding: Vec::new(),
             output_sizes: None,
             groups: default_conv_groups(),
-            input_layout: String::new(),
-            filter_layout: String::new(),
+            input_layout: MLInputOperandLayout::default(),
+            filter_layout: MLConvTranspose2dFilterOperandLayout::default(),
             bias: None,
         }
     }

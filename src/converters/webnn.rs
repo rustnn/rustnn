@@ -1220,12 +1220,8 @@ fn to_conv2d_options(
         if let Some(bias) = options.bias {
             opts.set_bias(get_operand(operands, bias))
         }
-        if !options.input_layout.is_empty() {
-            opts.set_input_layout(to_input_layout(&options.input_layout)?);
-        }
-        if !options.filter_layout.is_empty() {
-            opts.set_filter_layout(to_filter_operand_layout(&options.filter_layout)?);
-        }
+        opts.set_input_layout(to_input_layout(options.input_layout.as_str())?);
+        opts.set_filter_layout(to_filter_operand_layout(options.filter_layout));
     }
 
     Ok(opts)
@@ -1250,18 +1246,14 @@ fn to_conv_transpose2d_options(
         if let Some(bias) = options.bias {
             opts.set_bias(get_operand(operands, bias))
         }
-        if !options.input_layout.is_empty() {
-            opts.set_input_layout(to_input_layout(&options.input_layout)?);
-        }
+        opts.set_input_layout(to_input_layout(options.input_layout.as_str())?);
         if !options.output_padding.is_empty() {
             opts.set_output_padding(&u32_slice_to_js(&options.output_padding));
         }
         if let Some(output_sizes) = &options.output_sizes {
             opts.set_output_sizes(&u32_slice_to_js(output_sizes));
         }
-        if !options.filter_layout.is_empty() {
-            opts.set_filter_layout(to_filter_transpose_operand_layout(&options.filter_layout)?);
-        }
+        opts.set_filter_layout(to_filter_transpose_operand_layout(options.filter_layout));
     }
 
     Ok(opts)
@@ -1787,41 +1779,27 @@ fn to_lstm_weight_layout(layout: &str) -> Result<MlLstmWeightLayout> {
     })
 }
 
-fn to_filter_operand_layout(filter_operand_layout: &str) -> Result<MlConv2dFilterOperandLayout> {
-    Ok(match filter_operand_layout {
-        "oihw" => MlConv2dFilterOperandLayout::Oihw,
-        "hwio" => MlConv2dFilterOperandLayout::Hwio,
-        "ohwi" => MlConv2dFilterOperandLayout::Ohwi,
-        "ihwo" => MlConv2dFilterOperandLayout::Ihwo,
-        _ => {
-            return Err(GraphError::ConversionFailed {
-                format: "webnn".to_string(),
-                reason: format!(
-                    "Unsupported filter operand layout: {:?}",
-                    filter_operand_layout
-                ),
-            });
-        }
-    })
+fn to_filter_operand_layout(
+    layout: crate::operator_enums::MLConv2dFilterOperandLayout,
+) -> MlConv2dFilterOperandLayout {
+    use crate::operator_enums::MLConv2dFilterOperandLayout as Layout;
+    match layout {
+        Layout::Oihw => MlConv2dFilterOperandLayout::Oihw,
+        Layout::Hwio => MlConv2dFilterOperandLayout::Hwio,
+        Layout::Ohwi => MlConv2dFilterOperandLayout::Ohwi,
+        Layout::Ihwo => MlConv2dFilterOperandLayout::Ihwo,
+    }
 }
 
 fn to_filter_transpose_operand_layout(
-    filter_operand_layout: &str,
-) -> Result<MlConvTranspose2dFilterOperandLayout> {
-    Ok(match filter_operand_layout {
-        "iohw" => MlConvTranspose2dFilterOperandLayout::Iohw,
-        "hwoi" => MlConvTranspose2dFilterOperandLayout::Hwoi,
-        "ohwi" => MlConvTranspose2dFilterOperandLayout::Ohwi,
-        _ => {
-            return Err(GraphError::ConversionFailed {
-                format: "webnn".to_string(),
-                reason: format!(
-                    "Unsupported filter operand layout: {:?}",
-                    filter_operand_layout
-                ),
-            });
-        }
-    })
+    layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout,
+) -> MlConvTranspose2dFilterOperandLayout {
+    use crate::operator_enums::MLConvTranspose2dFilterOperandLayout as Layout;
+    match layout {
+        Layout::Iohw => MlConvTranspose2dFilterOperandLayout::Iohw,
+        Layout::Hwoi => MlConvTranspose2dFilterOperandLayout::Hwoi,
+        Layout::Ohwi => MlConvTranspose2dFilterOperandLayout::Ohwi,
+    }
 }
 
 fn to_padding_mode(mode: &str) -> Result<MlPaddingMode> {

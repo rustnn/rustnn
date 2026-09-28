@@ -66,12 +66,13 @@ nesting calls.
 
 ```rust
 use rustnn::operator_options::{MLConv2dOptions, MLReduceOptions};
+use rustnn::operator_enums::{MLConv2dFilterOperandLayout, MLInputOperandLayout};
 
 let conv = MLConv2dOptions {
     strides: vec![2, 2],
     padding: vec![1, 1, 1, 1],           // top, bottom, left, right
-    input_layout: "nchw".to_string(),
-    filter_layout: "oihw".to_string(),
+    input_layout: MLInputOperandLayout::Nchw,
+    filter_layout: MLConv2dFilterOperandLayout::Oihw,
     bias: Some(bias.rustnn_index()),      // operand fields hold operand indices
     ..Default::default()
 };
@@ -86,7 +87,7 @@ let mean = builder.reduce_mean_with_options(y, reduce)?;
 ```
 
 Option structs mirror the specification dictionaries; unset fields keep the spec defaults, and
-layouts are the spec strings (`"nchw"`, `"oihw"`). The field lists are in the
+convolution layouts use variants from `rustnn::operator_enums`. The field lists are in the
 [rustdoc of `operator_options`](https://rustnn.github.io/rustnn/api/rustnn/operator_options/).
 
 Operand fields of option structs (`MLConv2dOptions::bias`, `MLGemmOptions::c`, the quantization

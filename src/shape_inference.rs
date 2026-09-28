@@ -8,6 +8,9 @@
 
 use crate::error::GraphError;
 use crate::graph::{Dimension, DynamicDimension, get_static_or_max_size, to_dimension_vector};
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
+};
 use crate::operator_options::{MLConv2dOptions, MLConvTranspose2dOptions, MLPool2dOptions};
 
 /// Compute the broadcasted shape for two operands following NumPy broadcasting rules
@@ -250,32 +253,26 @@ pub enum Conv2dFilterLayout {
     Ihwo,
 }
 
-fn conv2d_input_layout_from_options(layout: &str) -> InputLayout {
-    if layout.eq_ignore_ascii_case("nhwc") {
-        InputLayout::Nhwc
-    } else {
-        InputLayout::Nchw
+fn conv2d_input_layout_from_options(layout: MLInputOperandLayout) -> InputLayout {
+    match layout {
+        MLInputOperandLayout::Nchw => InputLayout::Nchw,
+        MLInputOperandLayout::Nhwc => InputLayout::Nhwc,
     }
 }
 
-fn conv2d_filter_layout_from_options(layout: &str) -> Conv2dFilterLayout {
-    if layout.eq_ignore_ascii_case("hwio") {
-        Conv2dFilterLayout::Hwio
-    } else if layout.eq_ignore_ascii_case("ohwi") {
-        Conv2dFilterLayout::Ohwi
-    } else if layout.eq_ignore_ascii_case("ihwo") {
-        Conv2dFilterLayout::Ihwo
-    } else {
-        Conv2dFilterLayout::Oihw
+fn conv2d_filter_layout_from_options(layout: MLConv2dFilterOperandLayout) -> Conv2dFilterLayout {
+    match layout {
+        MLConv2dFilterOperandLayout::Oihw => Conv2dFilterLayout::Oihw,
+        MLConv2dFilterOperandLayout::Hwio => Conv2dFilterLayout::Hwio,
+        MLConv2dFilterOperandLayout::Ohwi => Conv2dFilterLayout::Ohwi,
+        MLConv2dFilterOperandLayout::Ihwo => Conv2dFilterLayout::Ihwo,
     }
 }
 
 /// `(filter_in_channels, out_channels_per_group, kernel_h, kernel_w)` for convTranspose2d.
 ///
-/// WebNN `filterLayout`: `"iohw"` (default), `"ohwi"`, `"hwoi"`. Also accepts `"oihw"` / `"hwio"`
-/// for the same mapping as the historical `Conv2dFilterLayout` transpose paths.
 fn conv_transpose_filter_dims_from_layout(
-    layout: &str,
+    layout: MLConvTranspose2dFilterOperandLayout,
     filter_shape: &[u32],
 ) -> Result<(u32, u32, u32, u32), GraphError> {
     if filter_shape.len() != 4 {
@@ -287,23 +284,10 @@ fn conv_transpose_filter_dims_from_layout(
         });
     }
     let f = filter_shape;
-    if layout.eq_ignore_ascii_case("iohw") || layout.is_empty() {
-        return Ok((f[0], f[1], f[2], f[3]));
-    }
-    if layout.eq_ignore_ascii_case("ohwi") {
-        return Ok((f[3], f[0], f[1], f[2]));
-    }
-    if layout.eq_ignore_ascii_case("hwoi") {
-        return Ok((f[3], f[2], f[0], f[1]));
-    }
-    if layout.eq_ignore_ascii_case("oihw") || layout.eq_ignore_ascii_case("hwio") {
-        return Ok((f[1], f[0], f[2], f[3]));
-    }
-    Err(GraphError::ShapeInferenceFailed {
-        reason: format!(
-            "ConvTranspose2d unknown filter_layout {:?} (expected iohw, ohwi, hwoi)",
-            layout
-        ),
+    Ok(match layout {
+        MLConvTranspose2dFilterOperandLayout::Iohw => (f[0], f[1], f[2], f[3]),
+        MLConvTranspose2dFilterOperandLayout::Ohwi => (f[3], f[0], f[1], f[2]),
+        MLConvTranspose2dFilterOperandLayout::Hwoi => (f[3], f[2], f[0], f[1]),
     })
 }
 
@@ -334,8 +318,8 @@ pub fn infer_conv2d_shape(
         });
     }
 
-    let input_layout = conv2d_input_layout_from_options(&options.input_layout);
-    let filter_layout = conv2d_filter_layout_from_options(&options.filter_layout);
+    let input_layout = conv2d_input_layout_from_options(options.input_layout);
+    let filter_layout = conv2d_filter_layout_from_options(options.filter_layout);
 
     // Extract dimensions based on layout
     let (batch, in_channels, input_h, input_w) = match input_layout {
@@ -524,7 +508,7 @@ pub fn infer_conv_transpose2d_shape(
         });
     }
 
-    let input_layout = conv2d_input_layout_from_options(&options.input_layout);
+    let input_layout = conv2d_input_layout_from_options(options.input_layout);
 
     // Extract dimensions based on layout
     let (batch, in_channels, input_h, input_w) = match input_layout {
@@ -543,7 +527,7 @@ pub fn infer_conv_transpose2d_shape(
     };
 
     let (filter_in_channels, out_channels_per_group, kernel_h, kernel_w) =
-        conv_transpose_filter_dims_from_layout(&options.filter_layout, filter_shape)?;
+        conv_transpose_filter_dims_from_layout(options.filter_layout, filter_shape)?;
 
     // Validate groups
     if options.groups == 0 {
@@ -2658,8 +2642,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![1, 1, 1, 1],
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
@@ -2676,8 +2660,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![1, 1, 1, 1],
             groups: 1,
-            input_layout: "nhwc".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nhwc,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 32, 32, 3], &[64, 3, 3, 3], &options).unwrap();
@@ -2694,8 +2678,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![0, 0, 0, 0],
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 28, 28], &[32, 3, 5, 5], &options).unwrap();
@@ -2712,8 +2696,8 @@ mod tests {
             dilations: vec![2, 2],
             padding: vec![2, 2, 2, 2],
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 3, 32, 32], &[64, 3, 3, 3], &options).unwrap();
@@ -2730,8 +2714,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![1, 1, 1, 1],
             groups: 32,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         let output = infer_conv2d_shape(&[1, 32, 28, 28], &[32, 1, 3, 3], &options).unwrap();
@@ -2745,8 +2729,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![0, 0, 0, 0],
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         // Input must be 4D
@@ -2760,8 +2744,8 @@ mod tests {
             dilations: vec![1, 1],
             padding: vec![0, 0, 0, 0],
             groups: 2,
-            input_layout: "nchw".to_string(),
-            filter_layout: "oihw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
             ..Default::default()
         };
         // Groups must divide input channels evenly
@@ -2778,8 +2762,8 @@ mod tests {
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
@@ -2798,8 +2782,8 @@ mod tests {
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
@@ -2818,8 +2802,8 @@ mod tests {
             output_padding: vec![1, 1],
             output_sizes: None,
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // Input: [1, 64, 14, 14], Filter: [64, 32, 3, 3]
@@ -2838,8 +2822,8 @@ mod tests {
             output_padding: vec![0, 0],
             output_sizes: Some(vec![28, 28]),
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // When output_sizes is specified, use it directly
@@ -2857,8 +2841,8 @@ mod tests {
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: "nhwc".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nhwc,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // Input: [1, 14, 14, 64] (NHWC), Filter: [64, 32, 3, 3]
@@ -2877,8 +2861,8 @@ mod tests {
             output_padding: vec![0, 0],
             output_sizes: None,
             groups: 1,
-            input_layout: "nchw".to_string(),
-            filter_layout: "iohw".to_string(),
+            input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
+            filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
             ..Default::default()
         };
         // Input must be 4D

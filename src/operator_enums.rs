@@ -137,7 +137,7 @@ pub enum MLRecurrentNetworkDirection {
 }
 
 /// Filter layout of `conv2d`. <https://www.w3.org/TR/webnn/#enumdef-mlconv2dfilteroperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLConv2dFilterOperandLayout {
     #[default]
@@ -152,7 +152,7 @@ pub enum MLConv2dFilterOperandLayout {
 }
 
 /// Filter layout of `convTranspose2d`. <https://www.w3.org/TR/webnn/#enumdef-mlconvtranspose2dfilteroperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLConvTranspose2dFilterOperandLayout {
     #[default]
@@ -189,7 +189,7 @@ pub enum MLGruWeightLayout {
 }
 
 /// Input layout of convolution, pooling and normalization. <https://www.w3.org/TR/webnn/#enumdef-mlinputoperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MLInputOperandLayout {
     #[default]

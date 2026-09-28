@@ -17,6 +17,10 @@ use flatbuffers::{FlatBufferBuilder, WIPOffset};
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension, GraphInfo, OperandKind};
 use crate::mlcontext::Backend;
+use crate::operator_enums::{
+    MLConv2dFilterOperandLayout as ConvLayout,
+    MLConvTranspose2dFilterOperandLayout as TransposeLayout,
+};
 use crate::operator_options::{MLPadOptions, MLPool2dOptions, MLResample2dOptions};
 use crate::operators::Operation;
 
@@ -5592,15 +5596,20 @@ impl<'a> TfliteContext<'a> {
         if let Some(id) = opts.bias {
             return *tensor_map.get(&(id as u32)).unwrap_or(&(id as u32)) as i32;
         }
-        let layout = if opts.filter_layout.is_empty() {
-            "iohw"
-        } else {
-            opts.filter_layout.as_str()
-        };
+        let layout = opts.filter_layout;
         let oc = input_ids
             .get(1)
             .and_then(|id| graph.operand(*id))
-            .map(|o| filter_output_channels(&o.descriptor.shape, layout))
+            .map(|o| {
+                filter_output_channels(
+                    &o.descriptor.shape,
+                    match layout {
+                        TransposeLayout::Iohw => 1,
+                        TransposeLayout::Hwoi => 2,
+                        TransposeLayout::Ohwi => 0,
+                    },
+                )
+            })
             .unwrap_or(1);
         let in_type = input_ids
             .first()
@@ -6207,12 +6216,16 @@ fn build_spatial_inputs<'a>(
         if options.as_ref().and_then(|o| o.bias).is_none() && input_ids.len() >= 2 {
             if let Some(fop) = graph.operand(input_ids[1]) {
                 let opts = options.as_ref().cloned().unwrap_or_default();
-                let layout = if opts.filter_layout.is_empty() {
-                    "oihw"
-                } else {
-                    opts.filter_layout.as_str()
-                };
-                let oc = filter_output_channels(&fop.descriptor.shape, layout);
+                let layout = opts.filter_layout;
+                // The zero bias needs one value per output channel; its count is
+                // filter axis 0 for OIHW/OHWI and axis 3 for HWIO/IHWO.
+                let oc = filter_output_channels(
+                    &fop.descriptor.shape,
+                    match layout {
+                        ConvLayout::Oihw | ConvLayout::Ohwi => 0,
+                        ConvLayout::Hwio | ConvLayout::Ihwo => 3,
+                    },
+                );
                 let tt = datatype_to_tflite(fop.descriptor.data_type)?;
                 let esz = 4;
                 inputs.push(
@@ -6811,16 +6824,8 @@ fn is_depthwise_conv2d(op: &Operation, graph: &GraphInfo) -> bool {
     false
 }
 
-/// Output-channel count of a conv filter. The axis follows the layout, across both
-/// vocabularies: conv2d's `oihw`/`hwio`/`ohwi`/`ihwo` and convTranspose2d's
-/// `iohw`/`hwoi`/`ohwi`. `ohwi` is spelled the same in both.
-fn filter_output_channels(shape: &[Dimension], layout: &str) -> i32 {
-    let axis = match layout {
-        "oihw" | "ohwi" => 0,
-        "iohw" => 1,
-        "hwoi" => 2,
-        _ => 3,
-    };
+/// Output-channel count of a conv filter at the layout's output axis.
+fn filter_output_channels(shape: &[Dimension], axis: usize) -> i32 {
     shape
         .get(axis)
         .and_then(|d| match d {
@@ -6993,12 +6998,8 @@ fn pre_scan_native(
         // transposes back to HWOI — while WebNN defaults to IOHW here.
         if let Operation::ConvTranspose2d { options, .. } = op {
             let opts = options.as_ref().cloned().unwrap_or_default();
-            let filter_layout = if opts.filter_layout.is_empty() {
-                "iohw"
-            } else {
-                opts.filter_layout.as_str()
-            };
-            if filter_layout != "ohwi"
+            let filter_layout = opts.filter_layout;
+            if filter_layout != TransposeLayout::Ohwi
                 && let Some(fid) = op.inputs().get(1).copied()
                 && let (Some(cd), Some(fop)) = (
                     graph.constant_operand_ids_to_handles.get(&fid),
@@ -7019,7 +7020,7 @@ fn pre_scan_native(
                     let esz = cd.data.len() / (d0 * d1 * d2 * d3);
                     if esz > 0 && esz * d0 * d1 * d2 * d3 == cd.data.len() {
                         let (data, shape) = match filter_layout {
-                            "hwoi" => (
+                            TransposeLayout::Hwoi => (
                                 transpose_hwoi_to_ohwi(&cd.data, d0, d1, d2, d3),
                                 vec![d2 as i32, d0 as i32, d1 as i32, d3 as i32],
                             ),
@@ -7038,10 +7039,7 @@ fn pre_scan_native(
         // Conv2d: transpose filter to OHWI (TFLite native format)
         if let Operation::Conv2d { options, .. } = op {
             let opts = options.as_ref().cloned().unwrap_or_default();
-            let mut filter_layout = opts.filter_layout.as_str();
-            if filter_layout.is_empty() {
-                filter_layout = "oihw";
-            }
+            let filter_layout = opts.filter_layout;
             let filter_id = op.inputs().get(1).copied();
             if let Some(fid) = filter_id {
                 if let (Some(cd), Some(fop)) = (
@@ -7062,7 +7060,7 @@ fn pre_scan_native(
                         if esz > 0 && esz * dims[0] * dims[1] * dims[2] * dims[3] == cd.data.len() {
                             let depthwise = is_depthwise_conv2d(op, graph);
                             match (depthwise, filter_layout) {
-                                (true, "ohwi") => {
+                                (true, ConvLayout::Ohwi) => {
                                     let (o_val, h_val, w_val, i_val) =
                                         (dims[0], dims[1], dims[2], dims[3]);
                                     weight_transpose.insert(
@@ -7081,15 +7079,15 @@ fn pre_scan_native(
                                         ],
                                     );
                                 }
-                                (true, "hwio") => {}
-                                (false, "hwio") => {
+                                (true, ConvLayout::Hwio) => {}
+                                (false, ConvLayout::Hwio) => {
                                     let (h, w, i, o) = (dims[0], dims[1], dims[2], dims[3]);
                                     weight_transpose
                                         .insert(fid, transpose_hwio_to_ohwi(&cd.data, h, w, i, o));
                                     filter_shape_swap
                                         .insert(fid, vec![o as i32, h as i32, w as i32, i as i32]);
                                 }
-                                (true, "ihwo") => {
+                                (true, ConvLayout::Ihwo) => {
                                     let (i_val, h_val, w_val, o_val) =
                                         (dims[0], dims[1], dims[2], dims[3]);
                                     weight_transpose.insert(
@@ -7127,7 +7125,7 @@ fn pre_scan_native(
                                         ],
                                     );
                                 }
-                                (_, "ihwo") => {
+                                (_, ConvLayout::Ihwo) => {
                                     let (i_val, h_val, w_val, o_val) =
                                         (dims[0], dims[1], dims[2], dims[3]);
                                     weight_transpose.insert(
@@ -7146,7 +7144,7 @@ fn pre_scan_native(
                                         ],
                                     );
                                 }
-                                (_, "ohwi") => {}
+                                (_, ConvLayout::Ohwi) => {}
                                 _ => {
                                     let (o_dim, i_dim, h_dim, w_dim) =
                                         (dims[0], dims[1], dims[2], dims[3]);
@@ -7173,14 +7171,16 @@ fn pre_scan_native(
                 if !graph.constant_operand_ids_to_handles.contains_key(&fid) {
                     if let Some(fop) = graph.operand(fid) {
                         let dims: Vec<i32> = dimensions_to_i32(&fop.descriptor.shape);
-                        if dims.len() == 4 && dims.iter().all(|&d| d > 0) && filter_layout != "ohwi"
+                        if dims.len() == 4
+                            && dims.iter().all(|&d| d > 0)
+                            && filter_layout != ConvLayout::Ohwi
                         {
                             let ohwi_shape = match filter_layout {
-                                "hwio" => {
+                                ConvLayout::Hwio => {
                                     let (h, w, i, o) = (dims[0], dims[1], dims[2], dims[3]);
                                     vec![o, h, w, i]
                                 }
-                                "ihwo" => {
+                                ConvLayout::Ihwo => {
                                     let (i, h, w, o) = (dims[0], dims[1], dims[2], dims[3]);
                                     vec![o, h, w, i]
                                 }
@@ -7245,11 +7245,11 @@ fn register_native_tensors(
 
 /// Filter permutation from a WebNN convTranspose2d filter layout to TFLite's OHWI; `None`
 /// when the filter is already in that layout.
-fn conv_transpose_filter_perm(layout: &str) -> Option<[i32; 4]> {
+fn conv_transpose_filter_perm(layout: TransposeLayout) -> Option<[i32; 4]> {
     match layout {
-        "iohw" => Some([1, 2, 3, 0]),
-        "hwoi" => Some([2, 0, 1, 3]),
-        _ => None,
+        TransposeLayout::Iohw => Some([1, 2, 3, 0]),
+        TransposeLayout::Hwoi => Some([2, 0, 1, 3]),
+        TransposeLayout::Ohwi => None,
     }
 }
 
@@ -7276,11 +7276,7 @@ fn build_conv_transpose_filter_layout<'a>(
         return;
     }
     let opts = options.as_ref().cloned().unwrap_or_default();
-    let layout = if opts.filter_layout.is_empty() {
-        "iohw"
-    } else {
-        opts.filter_layout.as_str()
-    };
+    let layout = opts.filter_layout;
     let Some(perm) = conv_transpose_filter_perm(layout) else {
         return;
     };

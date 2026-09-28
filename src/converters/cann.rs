@@ -328,7 +328,16 @@ fn transpose_filter_f32(
 mod adapter {
     use super::*;
     use crate::graph::{DataType, OperandDescriptor};
+    use crate::operator_enums::{
+        MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout,
+    };
     use hiai_rs::sys::*;
+
+    #[derive(Clone, Copy, Debug)]
+    enum FilterLayout {
+        Conv2d(MLConv2dFilterOperandLayout),
+        ConvTranspose2d(MLConvTranspose2dFilterOperandLayout),
+    }
 
     /// RAII owner for the DDK graph, operators, IR builder, and model. `Drop`
     /// releases everything on early return, so a failed encode does not leak.
@@ -870,34 +879,28 @@ mod adapter {
     }
 
     // Reorder a conv/conv-transpose filter to OIHW (dequantize + host
-    // transpose). `None` if already OIHW, unset, or not a 4-D const.
+    // transpose). `None` if already OIHW or not a 4-D const.
     fn filter_to_oihw(
         graph: &GraphInfo,
         filter_id: u32,
-        filter_layout: &str,
+        layout: FilterLayout,
         extra_ops: &mut Vec<ddk_CannOperatorHandle>,
         name: &str,
     ) -> Result<Option<ddk_CannOperatorHandle>, GraphError> {
-        // `perm[target_axis] = source_axis` to reach OIHW: the source positions
-        // of the O/I/H/W dims for each WebNN conv filter layout.
-        let layout = filter_layout.to_ascii_lowercase();
-        let perm: [usize; 4] = match layout.as_str() {
-            // Already OIHW, or unset (conv2d spec default) — nothing to reorder.
-            "" | "oihw" => return Ok(None),
-            "ohwi" => [0, 3, 1, 2],
-            "ihwo" => [3, 0, 1, 2],
-            "hwio" => [3, 2, 0, 1],
-            // convTranspose2d-only layouts.
-            "iohw" => [1, 0, 2, 3],
-            "hwoi" => [2, 3, 0, 1],
-            other => {
-                return Err(GraphError::ConversionFailed {
-                    format: "cann".into(),
-                    reason: format!(
-                        "unsupported filter_layout '{other}' for {name} \
-                         (expected oihw/ohwi/ihwo/hwio/iohw/hwoi)"
-                    ),
-                });
+        // `perm[target_axis] = source_axis` to reach OIHW.
+        let perm: [usize; 4] = match layout {
+            FilterLayout::Conv2d(MLConv2dFilterOperandLayout::Oihw) => return Ok(None),
+            FilterLayout::Conv2d(MLConv2dFilterOperandLayout::Hwio) => [3, 2, 0, 1],
+            FilterLayout::Conv2d(MLConv2dFilterOperandLayout::Ohwi) => [0, 3, 1, 2],
+            FilterLayout::Conv2d(MLConv2dFilterOperandLayout::Ihwo) => [3, 0, 1, 2],
+            FilterLayout::ConvTranspose2d(MLConvTranspose2dFilterOperandLayout::Iohw) => {
+                [1, 0, 2, 3]
+            }
+            FilterLayout::ConvTranspose2d(MLConvTranspose2dFilterOperandLayout::Hwoi) => {
+                [2, 3, 0, 1]
+            }
+            FilterLayout::ConvTranspose2d(MLConvTranspose2dFilterOperandLayout::Ohwi) => {
+                [0, 3, 1, 2]
             }
         };
         let (f32_data, dims) = match resolve_dequantized_f32(graph, filter_id) {
@@ -924,7 +927,7 @@ mod adapter {
             });
         }
         log::debug!(
-            "[cann-debug] filter_to_oihw {name} layout={filter_layout} dims={dims:?} perm={perm:?}"
+            "[cann-debug] filter_to_oihw {name} layout={layout:?} dims={dims:?} perm={perm:?}"
         );
         let (transposed, shape) = transpose_filter_f32(&f32_data, src_dims, perm);
         let const_op = make_const(
@@ -2482,10 +2485,12 @@ mod adapter {
                 } else {
                     handles[*input as usize]
                 };
-                let filter_layout = options
-                    .as_ref()
-                    .map(|o| o.filter_layout.as_str())
-                    .unwrap_or("");
+                let filter_layout = FilterLayout::Conv2d(
+                    options
+                        .as_ref()
+                        .map(|o| o.filter_layout)
+                        .unwrap_or_default(),
+                );
                 let filter_handle = match filter_to_oihw(
                     graph,
                     *filter,
@@ -2764,10 +2769,12 @@ mod adapter {
                 } else {
                     handles[*input as usize]
                 };
-                let filter_layout = options
-                    .as_ref()
-                    .map(|o| o.filter_layout.as_str())
-                    .unwrap_or("");
+                let filter_layout = FilterLayout::ConvTranspose2d(
+                    options
+                        .as_ref()
+                        .map(|o| o.filter_layout)
+                        .unwrap_or_default(),
+                );
                 let filter_handle = match filter_to_oihw(
                     graph,
                     *filter,
