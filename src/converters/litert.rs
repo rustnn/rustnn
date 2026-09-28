@@ -4425,6 +4425,183 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// ConvTranspose2d: reorder inputs to TFLite format [output_shape, filter, input, bias].
+    /// convTranspose2d with an explicit padding. TRANSPOSE_CONV knows only SAME and
+    /// VALID, so the convolution runs at the un-cropped output size and the declared
+    /// window is sliced out of it.
+    fn build_conv_transpose_padded_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Operation::ConvTranspose2d { input, options, .. } = op else {
+            return false;
+        };
+        let opts = options.as_ref().cloned().unwrap_or_default();
+        if opts.padding.len() < 4 || opts.padding.iter().all(|&p| p == 0) {
+            return false;
+        }
+        let input_ids = op.inputs();
+        if input_ids.len() < 2 {
+            return false;
+        }
+        let out_id = op.outputs()[0];
+        let (Some(in_operand), Some(out_operand)) = (graph.operand(*input), graph.operand(out_id))
+        else {
+            return false;
+        };
+        let in_shape = dimensions_to_i32(&in_operand.descriptor.shape);
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        if in_shape.len() != 4 || out_shape.len() != 4 {
+            return false;
+        }
+        let Ok(in_type) = datatype_to_tflite(in_operand.descriptor.data_type) else {
+            return false;
+        };
+        let (begin_h, end_h, begin_w, end_w) = (
+            opts.padding[0] as i32,
+            opts.padding[1] as i32,
+            opts.padding[2] as i32,
+            opts.padding[3] as i32,
+        );
+        // WebNN crops the full transposed convolution by the padding, so the un-cropped
+        // size is the declared one plus both sides.
+        let full_shape = vec![
+            out_shape[0],
+            out_shape[1] + begin_h + end_h,
+            out_shape[2] + begin_w + end_w,
+            out_shape[3],
+        ];
+        let shape_bytes: Vec<u8> = full_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let shape_tensor = self.add_constant(
+            "conv_transpose_full_shape",
+            &[full_shape.len() as i32],
+            tflite::TensorType::INT32,
+            &shape_bytes,
+        );
+
+        let mut filter_inputs = vec![
+            0,
+            *tensor_map.get(&input_ids[1]).unwrap_or(&input_ids[1]) as i32,
+        ];
+        build_conv_transpose_filter_layout(self, op, graph, &mut filter_inputs, operator_offsets);
+        let filter_tensor = filter_inputs[1];
+        let input_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+        let bias = self.conv_transpose_bias(op, graph, tensor_map, &input_ids);
+
+        let (stride_w, stride_h) = if opts.strides.len() >= 2 {
+            (opts.strides[1] as i32, opts.strides[0] as i32)
+        } else {
+            (1, 1)
+        };
+        let to = tflite::TransposeConvOptions::create(
+            &mut self.fbb,
+            &tflite::TransposeConvOptionsArgs {
+                padding: tflite::Padding::VALID,
+                stride_w,
+                stride_h,
+                fused_activation_function: tflite::ActivationFunctionType::NONE,
+                ..Default::default()
+            },
+        );
+        let full_tensor = self.add_tensor("conv_transpose_full", &full_shape, in_type, 0) as i32;
+        let oc = self.add_opcode(std_op::TRANSPOSE_CONV, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[shape_tensor as i32, filter_tensor, input_tensor, bias]);
+        let ov = self.fbb.create_vector(&[full_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(to.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::TransposeConvOptions,
+                ..Default::default()
+            },
+        ));
+
+        // Crop the declared window out of the un-cropped result.
+        let begin = [0i32, begin_h, begin_w, 0];
+        let begin_bytes: Vec<u8> = begin.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let begin_tensor = self.add_constant(
+            "conv_transpose_crop_begin",
+            &[4],
+            tflite::TensorType::INT32,
+            &begin_bytes,
+        );
+        let size_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let size_tensor = self.add_constant(
+            "conv_transpose_crop_size",
+            &[4],
+            tflite::TensorType::INT32,
+            &size_bytes,
+        );
+        let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+        let slice = self.add_opcode(65, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[full_tensor, begin_tensor as i32, size_tensor as i32]);
+        let ov = self.fbb.create_vector(&[out_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: slice,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        true
+    }
+
+    /// The bias input TFLite's TRANSPOSE_CONV requires: WebNN's, or a zero one sized by
+    /// the output channels, which the kernel reads from the first OHWI filter dimension.
+    fn conv_transpose_bias(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &HashMap<u32, u32>,
+        input_ids: &[u32],
+    ) -> i32 {
+        let opts = match op {
+            Operation::ConvTranspose2d { options, .. } => {
+                options.as_ref().cloned().unwrap_or_default()
+            }
+            _ => Default::default(),
+        };
+        if let Some(id) = opts.bias {
+            return *tensor_map.get(&(id as u32)).unwrap_or(&(id as u32)) as i32;
+        }
+        let layout = if opts.filter_layout.is_empty() {
+            "iohw"
+        } else {
+            opts.filter_layout.as_str()
+        };
+        let oc = input_ids
+            .get(1)
+            .and_then(|id| graph.operand(*id))
+            .map(|o| filter_output_channels(&o.descriptor.shape, layout))
+            .unwrap_or(1);
+        let in_type = input_ids
+            .first()
+            .and_then(|id| graph.operand(*id))
+            .map(|o| {
+                datatype_to_tflite(o.descriptor.data_type).unwrap_or(tflite::TensorType::FLOAT32)
+            })
+            .unwrap_or(tflite::TensorType::FLOAT32);
+        self.add_constant(
+            "conv_transpose_bias",
+            &[oc],
+            in_type,
+            &vec![0u8; oc as usize * 4],
+        ) as i32
+    }
+
     fn build_conv_transpose_op(
         &mut self,
         op: &Operation,
@@ -4462,42 +4639,7 @@ impl<'a> TfliteContext<'a> {
                 &shape_bytes,
             );
 
-            // TFLite requires a bias and takes it as the fourth input; WebNN's is
-            // optional. Without one, a zero bias of the output channel count is added —
-            // TRANSPOSE_CONV reads that count from the OHWI filter.
-            let opts = match op {
-                Operation::ConvTranspose2d { options, .. } => {
-                    options.as_ref().cloned().unwrap_or_default()
-                }
-                _ => Default::default(),
-            };
-            let bias = match opts.bias {
-                Some(id) => *tensor_map.get(&(id as u32)).unwrap_or(&(id as u32)) as i32,
-                None => {
-                    let layout = if opts.filter_layout.is_empty() {
-                        "iohw"
-                    } else {
-                        opts.filter_layout.as_str()
-                    };
-                    let oc = graph
-                        .operand(input_ids[1])
-                        .map(|o| filter_output_channels(&o.descriptor.shape, layout))
-                        .unwrap_or(1);
-                    let in_type = graph
-                        .operand(input_ids[0])
-                        .map(|o| {
-                            datatype_to_tflite(o.descriptor.data_type)
-                                .unwrap_or(tflite::TensorType::FLOAT32)
-                        })
-                        .unwrap_or(tflite::TensorType::FLOAT32);
-                    self.add_constant(
-                        "conv_transpose_bias",
-                        &[oc],
-                        in_type,
-                        &vec![0u8; oc as usize * 4],
-                    ) as i32
-                }
-            };
+            let bias = self.conv_transpose_bias(op, graph, tensor_map, &input_ids);
 
             // Reorder: [output_shape, filter, input, bias]
             let filter_id = input_ids[1];
@@ -6390,6 +6532,11 @@ fn build_native_operators<'a>(
         }
 
         // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
+        // Padding is handled by running the convolution un-cropped and slicing it;
+        // groups by one convolution per group.
+        if ctx.build_conv_transpose_padded_op(op, graph, &mut tensor_map, &mut operator_offsets) {
+            continue;
+        }
         ctx.build_conv_transpose_op(op, graph, &tensor_map, &mut inputs);
         build_conv_transpose_filter_layout(ctx, op, graph, &mut inputs, &mut operator_offsets);
 
