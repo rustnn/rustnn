@@ -265,6 +265,22 @@ impl MLRecurrentNetworkDirection {
     }
 }
 
+impl TryFrom<&str> for MLConv2dFilterOperandLayout {
+    type Error = crate::error::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "oihw" => Ok(Self::Oihw),
+            "hwio" => Ok(Self::Hwio),
+            "ohwi" => Ok(Self::Ohwi),
+            "ihwo" => Ok(Self::Ihwo),
+            _ => Err(crate::error::Error::InvalidConv2dFilterOperandLayout {
+                value: value.to_string(),
+            }),
+        }
+    }
+}
+
 impl MLConv2dFilterOperandLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
@@ -273,6 +289,23 @@ impl MLConv2dFilterOperandLayout {
             Self::Hwio => "hwio",
             Self::Ohwi => "ohwi",
             Self::Ihwo => "ihwo",
+        }
+    }
+}
+
+impl TryFrom<&str> for MLConvTranspose2dFilterOperandLayout {
+    type Error = crate::error::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "iohw" => Ok(Self::Iohw),
+            "hwoi" => Ok(Self::Hwoi),
+            "ohwi" => Ok(Self::Ohwi),
+            _ => Err(
+                crate::error::Error::InvalidConvTranspose2dFilterOperandLayout {
+                    value: value.to_string(),
+                },
+            ),
         }
     }
 }
@@ -309,12 +342,41 @@ impl MLGruWeightLayout {
     }
 }
 
+impl TryFrom<&str> for MLInputOperandLayout {
+    type Error = crate::error::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "nchw" => Ok(Self::Nchw),
+            "nhwc" => Ok(Self::Nhwc),
+            _ => Err(crate::error::Error::InvalidInputOperandLayout {
+                value: value.to_string(),
+            }),
+        }
+    }
+}
+
 impl MLInputOperandLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Nchw => "nchw",
             Self::Nhwc => "nhwc",
+        }
+    }
+}
+
+impl TryFrom<&str> for MLPaddingMode {
+    type Error = crate::error::Error;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value {
+            "constant" => Ok(Self::Constant),
+            "edge" => Ok(Self::Edge),
+            "reflection" => Ok(Self::Reflection),
+            _ => Err(crate::error::Error::InvalidPaddingMode {
+                value: value.to_string(),
+            }),
         }
     }
 }
@@ -327,5 +389,36 @@ impl MLPaddingMode {
             Self::Edge => "edge",
             Self::Reflection => "reflection",
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::operator_enums::{MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout};
+
+    #[test]
+    fn test_conversion() {
+        let layout: MLInputOperandLayout = "nhwc".try_into().unwrap();
+        assert_eq!(layout, MLInputOperandLayout::Nhwc);
+        let layout: crate::error::Result<MLInputOperandLayout> = "invalid".try_into();
+        std::assert_matches!(
+            layout.unwrap_err(),
+            crate::error::Error::InvalidInputOperandLayout { .. }
+        );
+    }
+
+    #[test]
+    fn conv_transpose2d_filter_layout_roundtrip() {
+        for layout in [
+            MLConvTranspose2dFilterOperandLayout::Iohw,
+            MLConvTranspose2dFilterOperandLayout::Hwoi,
+            MLConvTranspose2dFilterOperandLayout::Ohwi,
+        ] {
+            assert_eq!(
+                MLConvTranspose2dFilterOperandLayout::try_from(layout.as_str()).unwrap(),
+                layout
+            );
+        }
+        assert!(MLConvTranspose2dFilterOperandLayout::try_from("hwio").is_err());
     }
 }
