@@ -13,7 +13,7 @@ use crate::backends::webnn::api_generated::{
 };
 use crate::converters::operand_name;
 use crate::graph::Dimension;
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{MLOperandDataType, MLPaddingMode};
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConv2dOptions,
     MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions, MLGatherOptions,
@@ -1522,7 +1522,7 @@ fn to_pad_options(options: &Option<MLPadOptions>) -> Result<MlPadOptions> {
     let opts = MlPadOptions::new();
     if let Some(options) = options {
         opts.set_label(&options.label);
-        opts.set_mode(to_padding_mode(&options.mode)?);
+        opts.set_mode(to_padding_mode(options.mode));
     }
 
     Ok(opts)
@@ -1802,18 +1802,12 @@ fn to_filter_transpose_operand_layout(
     }
 }
 
-fn to_padding_mode(mode: &str) -> Result<MlPaddingMode> {
-    Ok(match mode {
-        "constant" => MlPaddingMode::Constant,
-        "edge" => MlPaddingMode::Edge,
-        "reflection" => MlPaddingMode::Reflection,
-        _ => {
-            return Err(GraphError::ConversionFailed {
-                format: "webnn".to_string(),
-                reason: format!("Unsupported padding mode: {mode:?}"),
-            });
-        }
-    })
+fn to_padding_mode(mode: MLPaddingMode) -> MlPaddingMode {
+    match mode {
+        MLPaddingMode::Constant => MlPaddingMode::Constant,
+        MLPaddingMode::Edge => MlPaddingMode::Edge,
+        MLPaddingMode::Reflection => MlPaddingMode::Reflection,
+    }
 }
 
 fn to_resample2d_mode(mode: &str) -> Result<MlInterpolationMode> {
