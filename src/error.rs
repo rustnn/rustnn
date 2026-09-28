@@ -397,6 +397,22 @@ pub enum Error {
         #[from]
         source: DriverError,
     },
+
+    #[error("Invalid MLPaddingMode: {value}. Available: \"constant\" | \"edge\" | \"reflection\"")]
+    InvalidPaddingMode { value: String },
+
+    #[error("Invalid MLInputOperandLayout : {value}. Available: \"nchw\" | \"nhwc\"")]
+    InvalidInputOperandLayout { value: String },
+
+    #[error(
+        "Invalid MLConv2dFilterOperandLayout : {value}. Available: \"oihw\" | \"hwio\" | \"ohwi\" | \"ihwo\""
+    )]
+    InvalidConv2dFilterOperandLayout { value: String },
+
+    #[error(
+        "Invalid MLConvTranspose2dFilterOperandLayout : {value}. Available: \"iohw\" | \"hwoi\" | \"ohwi\""
+    )]
+    InvalidConvTranspose2dFilterOperandLayout { value: String },
 }
 
 /// Errors of loading, validation, conversion and the legacy executors.

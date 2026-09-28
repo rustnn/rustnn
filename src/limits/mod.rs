@@ -13,18 +13,7 @@ pub use types::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::operator_enums::MLOperandDataType;
-
-/// `MLInputOperandLayout` — preferred layout for layout-dependent operators (e.g. conv2d).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum MLInputOperandLayout {
-    /// Channels-first layout (`NCHW`).
-    Nchw,
-    /// Channels-last layout (`NHWC`).
-    #[default]
-    Nhwc,
-}
+use crate::operator_enums::{MLInputOperandLayout, MLOperandDataType};
 
 /// In RustNN, we decide here to support up to rank 8, individual backends might return a lower limit
 pub const RUSTNN_MAX_RANK: u32 = 8;
