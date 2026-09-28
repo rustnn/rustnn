@@ -4377,6 +4377,240 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// ScatterElements: emulate with SCATTER_ND + coordinate conversion.
+    /// scatterElements with indices known only at run time. The coordinates SCATTER_ND
+    /// needs are built in the graph: a constant grid of the positions with its `axis`
+    /// column replaced by the index tensor. A second scatter of ones marks the positions
+    /// written, and the result is selected over the input.
+    fn build_runtime_scatter_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Operation::ScatterElements {
+            input,
+            indices,
+            updates,
+            options,
+            ..
+        } = op
+        else {
+            return false;
+        };
+        if graph.constant_operand_ids_to_handles.contains_key(indices) {
+            return false;
+        }
+        let out_id = op.outputs()[0];
+        let (Some(indices_operand), Some(out_operand), Some(updates_operand)) = (
+            graph.operand(*indices),
+            graph.operand(out_id),
+            graph.operand(*updates),
+        ) else {
+            return false;
+        };
+        let index_shape = dimensions_to_i32(&indices_operand.descriptor.shape);
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        let updates_shape = dimensions_to_i32(&updates_operand.descriptor.shape);
+        let rank = out_shape.len();
+        if index_shape.len() != rank || updates_shape != index_shape || rank == 0 {
+            return false;
+        }
+        let Ok(ty) = datatype_to_tflite(out_operand.descriptor.data_type) else {
+            return false;
+        };
+        let axis = options
+            .as_ref()
+            .map(|o| o.axis)
+            .unwrap_or(0)
+            .min(rank as u32 - 1) as usize;
+
+        // Per position, the coordinates it addresses: a constant grid with its `axis`
+        // column replaced by the index tensor.
+        let total: i32 = index_shape.iter().product();
+        let mut grid = Vec::with_capacity(total as usize * rank);
+        for position in 0..total {
+            let mut rest = position;
+            let mut coordinates = vec![0i32; rank];
+            for dim in (0..rank).rev() {
+                let size = index_shape[dim].max(1);
+                coordinates[dim] = rest % size;
+                rest /= size;
+            }
+            grid.extend_from_slice(&coordinates);
+        }
+        let mut grid_shape = index_shape.clone();
+        grid_shape.push(rank as i32);
+        let grid_bytes: Vec<u8> = grid.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let grid_tensor = self.add_constant(
+            "scatter_grid",
+            &grid_shape,
+            tflite::TensorType::INT32,
+            &grid_bytes,
+        );
+
+        let index_tensor = *tensor_map.get(indices).unwrap_or(indices) as i32;
+        let Ok(index_type) = datatype_to_tflite(indices_operand.descriptor.data_type) else {
+            return false;
+        };
+        let index_column = if index_type == tflite::TensorType::INT32 {
+            index_tensor
+        } else {
+            self.cast_into(
+                operator_offsets,
+                index_tensor,
+                index_type,
+                &index_shape,
+                tflite::TensorType::INT32,
+                "scatter_index_i32",
+            )
+        };
+        let mut column_shape = index_shape.clone();
+        column_shape.push(1);
+        let index_column = self.reshape_into(
+            operator_offsets,
+            index_column,
+            &column_shape,
+            tflite::TensorType::INT32,
+            "scatter_index_column",
+        );
+
+        let mut pieces = Vec::new();
+        if axis > 0 {
+            let mut before_shape = index_shape.clone();
+            before_shape.push(axis as i32);
+            let begin = vec![0i32; rank + 1];
+            pieces.push(self.slice_into(
+                operator_offsets,
+                grid_tensor as i32,
+                &begin,
+                &before_shape,
+                tflite::TensorType::INT32,
+                "scatter_grid_before",
+            ));
+        }
+        pieces.push(index_column);
+        if axis + 1 < rank {
+            let mut after_shape = index_shape.clone();
+            after_shape.push((rank - axis - 1) as i32);
+            let mut begin = vec![0i32; rank + 1];
+            begin[rank] = axis as i32 + 1;
+            pieces.push(self.slice_into(
+                operator_offsets,
+                grid_tensor as i32,
+                &begin,
+                &after_shape,
+                tflite::TensorType::INT32,
+                "scatter_grid_after",
+            ));
+        }
+        let coordinates = if pieces.len() == 1 {
+            pieces[0]
+        } else {
+            let out =
+                self.add_tensor("scatter_coords", &grid_shape, tflite::TensorType::INT32, 0) as i32;
+            let co = tflite::ConcatenationOptions::create(
+                &mut self.fbb,
+                &tflite::ConcatenationOptionsArgs {
+                    axis: rank as i32,
+                    fused_activation_function: tflite::ActivationFunctionType::NONE,
+                },
+            );
+            let oc = self.add_opcode(std_op::CONCATENATION, 1);
+            let iv = self.fbb.create_vector(&pieces);
+            let ov = self.fbb.create_vector(&[out]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: Some(co.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::ConcatenationOptions,
+                    ..Default::default()
+                },
+            ));
+            out
+        };
+
+        let out_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let out_shape_const = self.add_constant(
+            "scatter_out_shape",
+            &[rank as i32],
+            tflite::TensorType::INT32,
+            &out_bytes,
+        );
+        // SCATTER_ND wants the updates' leading dimensions to match the coordinates',
+        // which they do: WebNN gives the updates the indices' shape.
+        let updates_tensor = *tensor_map.get(updates).unwrap_or(updates) as i32;
+        let scattered = self.add_tensor("scatter_values", &out_shape, ty, 0) as i32;
+        let oc = self.add_opcode(std_op::SCATTER_ND, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[coordinates, updates_tensor, out_shape_const as i32]);
+        let ov = self.fbb.create_vector(&[scattered]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+
+        // A second scatter of ones, shaped like the updates, marks what was written.
+        let ones_count: usize = updates_shape.iter().map(|d| *d as usize).product();
+        let ones = self.add_constant(
+            "scatter_ones",
+            &updates_shape,
+            ty,
+            &vec![1u8; ones_count * 4],
+        );
+        let written = self.add_tensor("scatter_written", &out_shape, ty, 0) as i32;
+        let oc = self.add_opcode(std_op::SCATTER_ND, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[coordinates, ones as i32, out_shape_const as i32]);
+        let ov = self.fbb.create_vector(&[written]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+
+        let input_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+        let zero = self.add_constant("scatter_zero", &[1], ty, &0f32.to_le_bytes()) as i32;
+        let touched = emit_op!(
+            self,
+            operator_offsets,
+            std_op::GREATER,
+            [written, zero],
+            "scatter_touched",
+            &out_shape,
+            tflite::TensorType::BOOL
+        );
+        let out = emit_op!(
+            self,
+            operator_offsets,
+            std_op::SELECT_V2,
+            [touched, scattered, input_tensor],
+            "scatter_out",
+            &out_shape,
+            ty
+        );
+        tensor_map.insert(out_id, out as u32);
+        true
+    }
+
     fn build_scatter_elements_op(
         &mut self,
         op: &Operation,
@@ -5028,6 +5262,178 @@ impl<'a> TfliteContext<'a> {
                 outputs: Some(ov),
                 builtin_options: Some(to.as_union_value()),
                 builtin_options_type: tflite::BuiltinOptions::TransposeConvOptions,
+                ..Default::default()
+            },
+        ));
+        true
+    }
+
+    /// convTranspose2d with groups. TRANSPOSE_CONV has none, so each group runs its own
+    /// convolution over its slice of the input and filter channels and the results are
+    /// concatenated along the output channels. The filter stores its input channels as the
+    /// last OHWI dimension and only the per-group output channels, so one axis is sliced.
+    fn build_grouped_conv_transpose_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Operation::ConvTranspose2d { input, options, .. } = op else {
+            return false;
+        };
+        let opts = options.as_ref().cloned().unwrap_or_default();
+        let groups = opts.groups.max(1);
+        if groups <= 1 {
+            return false;
+        }
+        if opts.padding.iter().any(|&p| p > 0) || opts.dilations.iter().any(|&d| d > 1) {
+            return false;
+        }
+        let input_ids = op.inputs();
+        if input_ids.len() < 2 {
+            return false;
+        }
+        let out_id = op.outputs()[0];
+        let (Some(in_operand), Some(out_operand)) = (graph.operand(*input), graph.operand(out_id))
+        else {
+            return false;
+        };
+        let in_shape = dimensions_to_i32(&in_operand.descriptor.shape);
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        if in_shape.len() != 4 || out_shape.len() != 4 {
+            return false;
+        }
+        let (input_channels, output_channels) = (in_shape[3], out_shape[3]);
+        if input_channels % groups as i32 != 0 || output_channels % groups as i32 != 0 {
+            return false;
+        }
+        let channels_per_group = input_channels / groups as i32;
+        let channels_out_per_group = output_channels / groups as i32;
+        let Ok(ty) = datatype_to_tflite(in_operand.descriptor.data_type) else {
+            return false;
+        };
+
+        // The filter is OHWI: constants were transposed by the pre-scan, input filters by
+        // the layout pass.
+        let mut filter_inputs = vec![
+            0,
+            *tensor_map.get(&input_ids[1]).unwrap_or(&input_ids[1]) as i32,
+        ];
+        build_conv_transpose_filter_layout(self, op, graph, &mut filter_inputs, operator_offsets);
+        let filter = filter_inputs[1];
+        let filter_shape = self
+            .tensor_shapes
+            .get(filter as usize)
+            .cloned()
+            .unwrap_or_default();
+        if filter_shape.len() != 4 || filter_shape[0] != channels_out_per_group {
+            return false;
+        }
+        let input_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+        let bias = self.conv_transpose_bias(op, graph, tensor_map, &input_ids);
+        let (stride_w, stride_h) = if opts.strides.len() >= 2 {
+            (opts.strides[1] as i32, opts.strides[0] as i32)
+        } else {
+            (1, 1)
+        };
+
+        let group_in_shape = vec![in_shape[0], in_shape[1], in_shape[2], channels_per_group];
+        let group_out_shape = vec![
+            out_shape[0],
+            out_shape[1],
+            out_shape[2],
+            channels_out_per_group,
+        ];
+        let out_bytes: Vec<u8> = group_out_shape
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let out_shape_tensor = self.add_constant(
+            "conv_transpose_group_shape",
+            &[group_out_shape.len() as i32],
+            tflite::TensorType::INT32,
+            &out_bytes,
+        );
+        let zeros = vec![0u8; channels_out_per_group as usize * 4];
+        let group_bias = self.add_constant(
+            "conv_transpose_group_bias",
+            &[channels_out_per_group],
+            ty,
+            &zeros,
+        );
+
+        let mut pieces = Vec::with_capacity(groups as usize);
+        for group in 0..groups as i32 {
+            let offset = group * channels_per_group;
+            let input_piece = self.slice_into(
+                operator_offsets,
+                input_tensor,
+                &[0, 0, 0, offset],
+                &group_in_shape,
+                ty,
+                "conv_transpose_group_in",
+            );
+            let mut filter_piece_shape = filter_shape.clone();
+            filter_piece_shape[3] = channels_per_group;
+            let filter_piece = self.slice_into(
+                operator_offsets,
+                filter,
+                &[0, 0, 0, offset],
+                &filter_piece_shape,
+                ty,
+                "conv_transpose_group_filter",
+            );
+            let piece = self.add_tensor("conv_transpose_group_out", &group_out_shape, ty, 0) as i32;
+            let to = tflite::TransposeConvOptions::create(
+                &mut self.fbb,
+                &tflite::TransposeConvOptionsArgs {
+                    padding: tflite::Padding::VALID,
+                    stride_w,
+                    stride_h,
+                    fused_activation_function: tflite::ActivationFunctionType::NONE,
+                    ..Default::default()
+                },
+            );
+            let oc = self.add_opcode(std_op::TRANSPOSE_CONV, 1);
+            let iv =
+                self.fbb
+                    .create_vector(&[out_shape_tensor as i32, filter_piece, input_piece, bias]);
+            let ov = self.fbb.create_vector(&[piece]);
+            operator_offsets.push(tflite::Operator::create(
+                &mut self.fbb,
+                &tflite::OperatorArgs {
+                    opcode_index: oc,
+                    inputs: Some(iv),
+                    outputs: Some(ov),
+                    builtin_options: Some(to.as_union_value()),
+                    builtin_options_type: tflite::BuiltinOptions::TransposeConvOptions,
+                    ..Default::default()
+                },
+            ));
+            pieces.push(piece);
+            let _ = group_bias;
+        }
+
+        let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+        let co = tflite::ConcatenationOptions::create(
+            &mut self.fbb,
+            &tflite::ConcatenationOptionsArgs {
+                axis: 3,
+                fused_activation_function: tflite::ActivationFunctionType::NONE,
+            },
+        );
+        let oc = self.add_opcode(std_op::CONCATENATION, 1);
+        let iv = self.fbb.create_vector(&pieces);
+        let ov = self.fbb.create_vector(&[out_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(co.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::ConcatenationOptions,
                 ..Default::default()
             },
         ));
@@ -7024,12 +7430,15 @@ fn build_native_operators<'a>(
         decomposed |=
             ctx.build_gather_elements_op(op, graph, &mut tensor_map, &mut operator_offsets);
 
-        // scatter_elements_op: emulate with SCATTER_ND (constant indices only)
+        // scatter_elements_op: SCATTER_ND, with the coordinates built in the graph when the
+        // indices are only known at run time.
         if matches!(op, Operation::ScatterElements { .. }) {
-            if !ctx.build_scatter_elements_op(op, graph, &mut tensor_map, &mut operator_offsets) {
+            if !ctx.build_runtime_scatter_op(op, graph, &mut tensor_map, &mut operator_offsets)
+                && !ctx.build_scatter_elements_op(op, graph, &mut tensor_map, &mut operator_offsets)
+            {
                 return Err(GraphError::ConversionFailed {
                     format: "litert".to_string(),
-                    reason: "scatterElements: non-constant indices not yet supported".to_string(),
+                    reason: "scatterElements: unsupported indices".to_string(),
                 });
             }
             continue;
@@ -7135,6 +7544,12 @@ fn build_native_operators<'a>(
         // dilations by zero-stuffing the filter.
         if ctx.build_conv_transpose_padded_op(op, graph, &mut tensor_map, &mut operator_offsets)
             || ctx.build_dilated_conv_transpose_op(
+                op,
+                graph,
+                &mut tensor_map,
+                &mut operator_offsets,
+            )
+            || ctx.build_grouped_conv_transpose_op(
                 op,
                 graph,
                 &mut tensor_map,
