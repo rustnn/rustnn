@@ -1453,6 +1453,315 @@ impl<'a> TfliteContext<'a> {
         }
     }
 
+    /// Emit a TILE of `tensor` by `multiples`, one per axis.
+    fn tile_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        multiples: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let bytes: Vec<u8> = multiples.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let multiples_const = self.add_constant(
+            &format!("{name}_multiples"),
+            &[multiples.len() as i32],
+            tflite::TensorType::INT32,
+            &bytes,
+        );
+        let shape: Vec<i32> = self
+            .tensor_shapes
+            .get(tensor as usize)
+            .cloned()
+            .unwrap_or_default();
+        let out_shape: Vec<i32> = shape
+            .iter()
+            .zip(multiples.iter())
+            .map(|(d, m)| d * m)
+            .collect();
+        let out = self.add_tensor(name, &out_shape, ty, 0) as i32;
+        let oc = self.add_opcode(std_op::TILE, opcode_version(std_op::TILE));
+        let iv = self.fbb.create_vector(&[tensor, multiples_const as i32]);
+        let ov = self.fbb.create_vector(&[out]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        out
+    }
+
+    /// Repeat every element of `tensor` over its block. `shape` is the parameter's shape
+    /// and `target_shape` the tensor it quantizes, whose dimensions divide by it.
+    fn expand_blocks(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        shape: &[i32],
+        target_shape: &[i32],
+        ty: tflite::TensorType,
+    ) -> i32 {
+        let mut current = tensor;
+        let mut current_shape = shape.to_vec();
+        if current_shape.len() != target_shape.len() {
+            return tensor;
+        }
+        for axis in 0..current_shape.len() {
+            if current_shape[axis] <= 0 || target_shape[axis] % current_shape[axis] != 0 {
+                return tensor;
+            }
+            let ratio = target_shape[axis] / current_shape[axis];
+            if ratio <= 1 {
+                continue;
+            }
+            let mut unit = current_shape.clone();
+            unit.insert(axis + 1, 1);
+            let expanded = self.reshape_into(operator_offsets, current, &unit, ty, "block_unit");
+            let multiples: Vec<i32> = (0..unit.len())
+                .map(|position| if position == axis + 1 { ratio } else { 1 })
+                .collect();
+            let tiled = self.tile_into(operator_offsets, expanded, &multiples, ty, "block_tile");
+            current_shape[axis] = target_shape[axis];
+            current = self.reshape_into(
+                operator_offsets,
+                tiled,
+                &current_shape,
+                ty,
+                "block_expanded",
+            );
+        }
+        current
+    }
+
+    /// Emit a RESHAPE of `tensor` into `shape`, returning the reshaped tensor.
+    fn reshape_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        shape: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let shape_bytes: Vec<u8> = shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let shape_const = self.add_constant(
+            &format!("{name}_shape"),
+            &[shape.len() as i32],
+            tflite::TensorType::INT32,
+            &shape_bytes,
+        );
+        let shape_vec = self.fbb.create_vector(shape);
+        let ro = tflite::ReshapeOptions::create(
+            &mut self.fbb,
+            &tflite::ReshapeOptionsArgs {
+                new_shape: Some(shape_vec),
+            },
+        );
+        let out = self.add_tensor(name, shape, ty, 0) as i32;
+        let oc = self.add_opcode(std_op::RESHAPE, 1);
+        let iv = self.fbb.create_vector(&[tensor, shape_const as i32]);
+        let ov = self.fbb.create_vector(&[out]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(ro.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::ReshapeOptions,
+                ..Default::default()
+            },
+        ));
+        out
+    }
+
+    /// Emit a CONCATENATION of `first` then `second` along `axis`.
+    fn concat_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        first: i32,
+        second: i32,
+        axis: i32,
+        shape: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let out = self.add_tensor(name, shape, ty, 0) as i32;
+        let co = tflite::ConcatenationOptions::create(
+            &mut self.fbb,
+            &tflite::ConcatenationOptionsArgs {
+                axis,
+                fused_activation_function: tflite::ActivationFunctionType::NONE,
+            },
+        );
+        let oc = self.add_opcode(std_op::CONCATENATION, 1);
+        let iv = self.fbb.create_vector(&[first, second]);
+        let ov = self.fbb.create_vector(&[out]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(co.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::ConcatenationOptions,
+                ..Default::default()
+            },
+        ));
+        out
+    }
+
+    /// pad in edge mode. TFLite has no kernel for it, so every padded axis is extended with
+    /// copies of its own border: the first or last slab, tiled and concatenated on.
+    fn build_edge_pad_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Operation::Pad {
+            input,
+            beginning_padding,
+            ending_padding,
+            options,
+            ..
+        } = op
+        else {
+            return false;
+        };
+        let is_edge = options
+            .as_ref()
+            .map(|o| o.mode.eq_ignore_ascii_case("edge"))
+            .unwrap_or(false);
+        if !is_edge {
+            return false;
+        }
+        let out_id = op.outputs()[0];
+        let (Some(in_operand), Some(out_operand)) = (graph.operand(*input), graph.operand(out_id))
+        else {
+            return false;
+        };
+        let shape = dimensions_to_i32(&in_operand.descriptor.shape);
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        if shape.is_empty() || shape.len() != out_shape.len() {
+            return false;
+        }
+        let Ok(ty) = datatype_to_tflite(in_operand.descriptor.data_type) else {
+            return false;
+        };
+        let mut tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+        let mut current = shape.clone();
+        for axis in 0..shape.len() {
+            let begin = beginning_padding.get(axis).copied().unwrap_or(0) as i32;
+            let end = ending_padding.get(axis).copied().unwrap_or(0) as i32;
+            for (amount, at_end) in [(begin, false), (end, true)] {
+                if amount <= 0 {
+                    continue;
+                }
+                let mut slab_shape = current.clone();
+                slab_shape[axis] = 1;
+                let slab_begin: Vec<i32> = (0..current.len())
+                    .map(|position| {
+                        if position == axis && at_end {
+                            current[axis] - 1
+                        } else {
+                            0
+                        }
+                    })
+                    .collect();
+                let slab = self.slice_into(
+                    operator_offsets,
+                    tensor,
+                    &slab_begin,
+                    &slab_shape,
+                    ty,
+                    "pad_edge_slab",
+                );
+                let multiples: Vec<i32> = (0..current.len())
+                    .map(|position| if position == axis { amount } else { 1 })
+                    .collect();
+                let repeated =
+                    self.tile_into(operator_offsets, slab, &multiples, ty, "pad_edge_tile");
+                let mut next_shape = current.clone();
+                next_shape[axis] += amount;
+                tensor = if at_end {
+                    self.concat_into(
+                        operator_offsets,
+                        tensor,
+                        repeated,
+                        axis as i32,
+                        &next_shape,
+                        ty,
+                        "pad_edge_concat",
+                    )
+                } else {
+                    self.concat_into(
+                        operator_offsets,
+                        repeated,
+                        tensor,
+                        axis as i32,
+                        &next_shape,
+                        ty,
+                        "pad_edge_concat",
+                    )
+                };
+                current = next_shape;
+            }
+        }
+        tensor_map.insert(out_id, tensor as u32);
+        true
+    }
+
+    /// Emit a SLICE of `tensor` starting at `begin` with `size`, both per axis.
+    fn slice_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        begin: &[i32],
+        size: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let begin_bytes: Vec<u8> = begin.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let begin_const = self.add_constant(
+            &format!("{name}_begin"),
+            &[begin.len() as i32],
+            tflite::TensorType::INT32,
+            &begin_bytes,
+        );
+        let size_bytes: Vec<u8> = size.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let size_const = self.add_constant(
+            &format!("{name}_size"),
+            &[size.len() as i32],
+            tflite::TensorType::INT32,
+            &size_bytes,
+        );
+        let out = self.add_tensor(name, size, ty, 0) as i32;
+        let oc = self.add_opcode(65, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[tensor, begin_const as i32, size_const as i32]);
+        let ov = self.fbb.create_vector(&[out]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        out
+    }
+
     /// Allocate `name` as `to_type` and cast `tensor` into it.
     fn cast_into(
         &mut self,
@@ -1560,15 +1869,34 @@ impl<'a> TfliteContext<'a> {
                     float_in as i32,
                     tflite::TensorType::FLOAT32,
                 );
-                let float_zp =
-                    self.add_tensor(&format!("dq_cast_zp_{out_id}"), &out_shape, in_type, 0);
-                self.emit_cast_op(
+                // A per-block scale or zero point covers several elements and has to be
+                // repeated over its block before the arithmetic.
+                let shape_of = |id: u32| -> Vec<i32> {
+                    graph
+                        .operand(id)
+                        .map(|o| dimensions_to_i32(&o.descriptor.shape))
+                        .unwrap_or_default()
+                };
+                let zp_shape = shape_of(zp_id);
+                let float_zp = self.cast_into(
                     operator_offsets,
                     zp_t,
                     zp_dt,
-                    float_zp as i32,
+                    &zp_shape,
                     tflite::TensorType::FLOAT32,
+                    &format!("dq_cast_zp_{out_id}"),
                 );
+                let float_zp = if zp_shape == out_shape {
+                    float_zp
+                } else {
+                    self.expand_blocks(operator_offsets, float_zp, &zp_shape, &out_shape, in_type)
+                };
+                let scale_shape = shape_of(*scale_id);
+                let scale_t = if scale_shape == out_shape {
+                    scale_t
+                } else {
+                    self.expand_blocks(operator_offsets, scale_t, &scale_shape, &out_shape, in_type)
+                };
 
                 let sub_val = emit_op!(
                     self,
@@ -1599,6 +1927,18 @@ impl<'a> TfliteContext<'a> {
             } => {
                 let in_t = *tensor_map.get(input).unwrap_or(input) as i32;
                 let scale_t = *tensor_map.get(scale_id).unwrap_or(scale_id) as i32;
+                let shape_of = |id: u32| -> Vec<i32> {
+                    graph
+                        .operand(id)
+                        .map(|o| dimensions_to_i32(&o.descriptor.shape))
+                        .unwrap_or_default()
+                };
+                let scale_shape = shape_of(*scale_id);
+                let scale_t = if scale_shape == out_shape {
+                    scale_t
+                } else {
+                    self.expand_blocks(operator_offsets, scale_t, &scale_shape, &out_shape, in_type)
+                };
 
                 let div_val = emit_op!(
                     self,
@@ -1636,11 +1976,23 @@ impl<'a> TfliteContext<'a> {
                         zp_f as i32,
                         tflite::TensorType::FLOAT32,
                     );
+                    let zp_shape = shape_of(*zp);
+                    let zp_f = if zp_shape == out_shape {
+                        zp_f as i32
+                    } else {
+                        self.expand_blocks(
+                            operator_offsets,
+                            zp_f as i32,
+                            &zp_shape,
+                            &out_shape,
+                            in_type,
+                        )
+                    };
                     emit_op!(
                         self,
                         operator_offsets,
                         std_op::ADD,
-                        [round_val, zp_f as i32],
+                        [round_val, zp_f],
                         &format!("q_add_{out_id}"),
                         &out_shape,
                         in_type
@@ -3049,6 +3401,67 @@ impl<'a> TfliteContext<'a> {
         let keep_dimensions = options.as_ref().map(|o| o.keep_dimensions).unwrap_or(false);
         let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
 
+        // The ARG kernels take neither int64 nor uint32 inputs. Subtracting the axis
+        // minimum keeps the ordering while the values fit int32, which the shifted ones do
+        // whenever the range of the reduced axis does.
+        let in_type = op
+            .inputs()
+            .first()
+            .and_then(|id| graph.operand(*id))
+            .and_then(|o| datatype_to_tflite(o.descriptor.data_type).ok())
+            .unwrap_or(tflite::TensorType::FLOAT32);
+        let axis_bytes: Vec<u8> = (axis as i32).to_le_bytes().to_vec();
+        let axis_tensor =
+            self.add_constant("arg_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
+        let arg_tensor = match in_type {
+            tflite::TensorType::INT64 | tflite::TensorType::UINT32 => {
+                let wide = if in_type == tflite::TensorType::UINT32 {
+                    let widened = self.cast_into(
+                        operator_offsets,
+                        in_tensor,
+                        in_type,
+                        &out_shape,
+                        tflite::TensorType::INT64,
+                        "arg_wide",
+                    );
+                    widened
+                } else {
+                    in_tensor
+                };
+                let mut reduced_shape = out_shape.clone();
+                if (axis as usize) < reduced_shape.len() {
+                    reduced_shape[axis as usize] = 1;
+                }
+                let minimum = reduce_op!(
+                    self,
+                    operator_offsets,
+                    std_op::REDUCE_MIN,
+                    [wide, axis_tensor as i32],
+                    "arg_min",
+                    &reduced_shape,
+                    tflite::TensorType::INT64
+                );
+                let shifted = emit_op!(
+                    self,
+                    operator_offsets,
+                    std_op::SUB,
+                    [wide, minimum],
+                    "arg_shifted",
+                    &out_shape,
+                    tflite::TensorType::INT64
+                );
+                self.cast_into(
+                    operator_offsets,
+                    shifted,
+                    tflite::TensorType::INT64,
+                    &out_shape,
+                    tflite::TensorType::INT32,
+                    "arg_i32",
+                )
+            }
+            _ => in_tensor,
+        };
+
         // The TFLite result is the output shape minus the reduced axis.
         let rank_reduced_shape: Vec<i32> = out_shape
             .iter()
@@ -3062,9 +3475,6 @@ impl<'a> TfliteContext<'a> {
             out_tensor
         };
 
-        let axis_bytes: Vec<u8> = (axis as i32).to_le_bytes().to_vec();
-        let axis_tensor =
-            self.add_constant("arg_axis", &[1], tflite::TensorType::INT32, &axis_bytes);
         let oc = self.add_opcode(opcode, 3);
         // ARG_MIN carries ArgMinOptions, ARG_MAX carries ArgMaxOptions; handing the
         // runtime the other table fails the dispatch with kLiteRtStatusErrorInvalidArgument.
@@ -3085,7 +3495,7 @@ impl<'a> TfliteContext<'a> {
             );
             (ao.as_union_value(), tflite::BuiltinOptions::ArgMinOptions)
         };
-        let iv = self.fbb.create_vector(&[in_tensor, axis_tensor as i32]);
+        let iv = self.fbb.create_vector(&[arg_tensor, axis_tensor as i32]);
         let ov = self.fbb.create_vector(&[raw_tensor]);
         operator_offsets.push(tflite::Operator::create(
             &mut self.fbb,
@@ -6404,6 +6814,9 @@ fn build_native_operators<'a>(
             &in_shape,
             in_type,
         );
+
+        // pad in edge mode: no TFLite kernel replicates a border.
+        decomposed |= ctx.build_edge_pad_op(op, graph, &mut tensor_map, &mut operator_offsets);
 
         // resample2d over axes the RESIZE kernels do not resize directly.
         decomposed |= ctx.build_resample2d_op(op, graph, &mut tensor_map, &mut operator_offsets);
