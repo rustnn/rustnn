@@ -1580,6 +1580,46 @@ impl<'a> TfliteContext<'a> {
         out
     }
 
+    /// Emit a PAD of `tensor` by `paddings` (a begin/end pair per axis), filled with
+    /// `value`, and return the padded tensor of `shape`.
+    fn pad_into(
+        &mut self,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+        tensor: i32,
+        paddings: &[i32],
+        value: &[u8],
+        shape: &[i32],
+        ty: tflite::TensorType,
+        name: &str,
+    ) -> i32 {
+        let pad_bytes: Vec<u8> = paddings.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let pad_const = self.add_constant(
+            &format!("{name}_paddings"),
+            &[paddings.len() as i32 / 2, 2],
+            tflite::TensorType::INT32,
+            &pad_bytes,
+        );
+        let value_const = self.add_constant(&format!("{name}_value"), &[1], ty, value) as i32;
+        let out = self.add_tensor(name, shape, ty, 0) as i32;
+        let oc = self.add_opcode(std_op::PAD, opcode_version(std_op::PAD));
+        let iv = self
+            .fbb
+            .create_vector(&[tensor, pad_const as i32, value_const]);
+        let ov = self.fbb.create_vector(&[out]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: None,
+                builtin_options_type: tflite::BuiltinOptions::NONE,
+                ..Default::default()
+            },
+        ));
+        out
+    }
+
     /// Emit a CONCATENATION of `first` then `second` along `axis`.
     fn concat_into(
         &mut self,
@@ -4835,6 +4875,165 @@ impl<'a> TfliteContext<'a> {
     }
 
     /// ConvTranspose2d: reorder inputs to TFLite format [output_shape, filter, input, bias].
+    /// convTranspose2d with dilations. TRANSPOSE_CONV carries no dilation factor, so the
+    /// filter is zero-stuffed instead: (k-1)d + 1 taps with (d-1) zeros between the
+    /// original ones, which the kernel then reaches at unit stride.
+    fn build_dilated_conv_transpose_op(
+        &mut self,
+        op: &Operation,
+        graph: &GraphInfo,
+        tensor_map: &mut HashMap<u32, u32>,
+        operator_offsets: &mut Vec<WIPOffset<tflite::Operator<'a>>>,
+    ) -> bool {
+        let Operation::ConvTranspose2d { input, options, .. } = op else {
+            return false;
+        };
+        let opts = options.as_ref().cloned().unwrap_or_default();
+        let (dilate_h, dilate_w) = if opts.dilations.len() >= 2 {
+            (opts.dilations[0] as i32, opts.dilations[1] as i32)
+        } else {
+            (1, 1)
+        };
+        if dilate_h <= 1 && dilate_w <= 1 {
+            return false;
+        }
+        // Padding needs the un-cropped convolution, which its own builder runs.
+        if opts.padding.iter().any(|&p| p > 0) {
+            return false;
+        }
+        let input_ids = op.inputs();
+        if input_ids.len() < 2 {
+            return false;
+        }
+        let out_id = op.outputs()[0];
+        let (Some(in_operand), Some(out_operand)) = (graph.operand(*input), graph.operand(out_id))
+        else {
+            return false;
+        };
+        let in_shape = dimensions_to_i32(&in_operand.descriptor.shape);
+        let out_shape = dimensions_to_i32(&out_operand.descriptor.shape);
+        if in_shape.len() != 4 || out_shape.len() != 4 {
+            return false;
+        }
+        let Ok(ty) = datatype_to_tflite(in_operand.descriptor.data_type) else {
+            return false;
+        };
+
+        let mut filter_inputs = vec![
+            0,
+            *tensor_map.get(&input_ids[1]).unwrap_or(&input_ids[1]) as i32,
+        ];
+        build_conv_transpose_filter_layout(self, op, graph, &mut filter_inputs, operator_offsets);
+        let mut filter = filter_inputs[1];
+        let mut filter_shape = self
+            .tensor_shapes
+            .get(filter as usize)
+            .cloned()
+            .unwrap_or_default();
+        if filter_shape.len() != 4 {
+            return false;
+        }
+        let zeros = 0f32.to_le_bytes().to_vec();
+        for (axis, dilate) in [(1usize, dilate_h), (2usize, dilate_w)] {
+            if dilate <= 1 {
+                continue;
+            }
+            let taps = filter_shape[axis];
+            let head = filter_shape[..axis].to_vec();
+            let tail = filter_shape[axis + 1..].to_vec();
+            let mut unit_shape = head.clone();
+            unit_shape.push(taps);
+            unit_shape.push(1);
+            unit_shape.extend_from_slice(&tail);
+            let unit = self.reshape_into(
+                operator_offsets,
+                filter,
+                &unit_shape,
+                ty,
+                "dilated_filter_unit",
+            );
+            // The unit axis sits right after the one being spread.
+            let unit_axis = axis + 1;
+            let mut paddings = vec![0i32; unit_shape.len() * 2];
+            paddings[unit_axis * 2 + 1] = dilate - 1;
+            let mut padded_shape = unit_shape.clone();
+            *padded_shape.get_mut(unit_axis).unwrap() = dilate;
+            let padded = self.pad_into(
+                operator_offsets,
+                unit,
+                &paddings,
+                &zeros,
+                &padded_shape,
+                ty,
+                "dilated_filter_pad",
+            );
+            let mut flat_shape = head.clone();
+            flat_shape.push(taps * dilate);
+            flat_shape.extend_from_slice(&tail);
+            let flat = self.reshape_into(
+                operator_offsets,
+                padded,
+                &flat_shape,
+                ty,
+                "dilated_filter_flat",
+            );
+            let mut kept_shape = flat_shape.clone();
+            *kept_shape.get_mut(axis).unwrap() = (taps - 1) * dilate + 1;
+            filter = self.slice_into(
+                operator_offsets,
+                flat,
+                &vec![0i32; kept_shape.len()],
+                &kept_shape,
+                ty,
+                "dilated_filter",
+            );
+            filter_shape = kept_shape;
+        }
+
+        let input_tensor = *tensor_map.get(input).unwrap_or(input) as i32;
+        let bias = self.conv_transpose_bias(op, graph, tensor_map, &input_ids);
+        let shape_bytes: Vec<u8> = out_shape.iter().flat_map(|v| v.to_le_bytes()).collect();
+        let shape_tensor = self.add_constant(
+            "conv_transpose_dilated_shape",
+            &[4],
+            tflite::TensorType::INT32,
+            &shape_bytes,
+        );
+        let (stride_w, stride_h) = if opts.strides.len() >= 2 {
+            (opts.strides[1] as i32, opts.strides[0] as i32)
+        } else {
+            (1, 1)
+        };
+        let to = tflite::TransposeConvOptions::create(
+            &mut self.fbb,
+            &tflite::TransposeConvOptionsArgs {
+                padding: tflite::Padding::VALID,
+                stride_w,
+                stride_h,
+                fused_activation_function: tflite::ActivationFunctionType::NONE,
+                ..Default::default()
+            },
+        );
+        let out_tensor = *tensor_map.get(&out_id).unwrap_or(&out_id) as i32;
+        let oc = self.add_opcode(std_op::TRANSPOSE_CONV, 1);
+        let iv = self
+            .fbb
+            .create_vector(&[shape_tensor as i32, filter, input_tensor, bias]);
+        let ov = self.fbb.create_vector(&[out_tensor]);
+        operator_offsets.push(tflite::Operator::create(
+            &mut self.fbb,
+            &tflite::OperatorArgs {
+                opcode_index: oc,
+                inputs: Some(iv),
+                outputs: Some(ov),
+                builtin_options: Some(to.as_union_value()),
+                builtin_options_type: tflite::BuiltinOptions::TransposeConvOptions,
+                ..Default::default()
+            },
+        ));
+        true
+    }
+
     /// convTranspose2d with an explicit padding. TRANSPOSE_CONV knows only SAME and
     /// VALID, so the convolution runs at the un-cropped output size and the declared
     /// window is sliced out of it.
@@ -6931,8 +7130,20 @@ fn build_native_operators<'a>(
             &mut operator_offsets,
         )?;
 
-        // TRANSPOSE_CONV carries no dilation factors, so a dilated transposed
-        // convolution would come out undilated rather than fail.
+        // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
+        // Padding is handled by running the convolution un-cropped and slicing it,
+        // dilations by zero-stuffing the filter.
+        if ctx.build_conv_transpose_padded_op(op, graph, &mut tensor_map, &mut operator_offsets)
+            || ctx.build_dilated_conv_transpose_op(
+                op,
+                graph,
+                &mut tensor_map,
+                &mut operator_offsets,
+            )
+        {
+            continue;
+        }
+        // Only a dilated transposed convolution both builders declined reaches this.
         if let Operation::ConvTranspose2d { options, .. } = op
             && options
                 .as_ref()
@@ -6942,13 +7153,6 @@ fn build_native_operators<'a>(
                 format: "litert".to_string(),
                 reason: "convTranspose2d: dilations other than 1 are not supported".to_string(),
             });
-        }
-
-        // ConvTranspose2d: reorder inputs to [output_shape, filter, input, bias]
-        // Padding is handled by running the convolution un-cropped and slicing it;
-        // groups by one convolution per group.
-        if ctx.build_conv_transpose_padded_op(op, graph, &mut tensor_map, &mut operator_offsets) {
-            continue;
         }
         ctx.build_conv_transpose_op(op, graph, &tensor_map, &mut inputs);
         build_conv_transpose_filter_layout(ctx, op, graph, &mut inputs, &mut operator_offsets);
