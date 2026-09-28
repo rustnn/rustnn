@@ -8196,21 +8196,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 output_sizes[axes[0]] = spatial_sizes[0];
                 output_sizes[axes[1]] = spatial_sizes[1];
 
-                // Provide only scales input to avoid ORT ambiguity when both scales/sizes exist.
-                let scales: Vec<f32> = output_sizes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &out_dim)| {
-                        let in_dim = input_shape[i].max(1) as f32;
-                        out_dim as f32 / in_dim
-                    })
-                    .collect();
-                let scales_name = format!("{}_scales", op_name);
+                // Exact `sizes`, not fractional `scales`: Resize floors output dims (in * scale).
+                let sizes_name = format!("{}_sizes", op_name);
                 initializers.push(TensorProto {
-                    name: scales_name.clone(),
-                    data_type: ProtoDataType::Float as i32,
-                    dims: vec![scales.len() as i64],
-                    float_data: scales,
+                    name: sizes_name.clone(),
+                    data_type: ProtoDataType::Int64 as i32,
+                    dims: vec![output_sizes.len() as i64],
+                    int64_data: output_sizes,
                     ..Default::default()
                 });
 
@@ -8229,7 +8221,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 };
 
                 nodes.push(NodeProto {
-                    input: vec![input_name, String::new(), scales_name],
+                    input: vec![input_name, String::new(), String::new(), sizes_name],
                     output: vec![output_name],
                     name: op_name,
                     op_type: "Resize".to_string(),
@@ -11103,6 +11095,39 @@ mod tests {
             .find(|a| a.name == "reverse")
             .expect("reverse attr");
         assert_eq!(reverse_attr.i, 1);
+    }
+
+    // TODO: Get rid of this test once we run WPT promise_test.
+    // This test verifies the behaviour logic of resample2d-gather-shape-divergence.https.any.js
+    #[test]
+    fn test_resample2d_emits_exact_sizes() {
+        // 19 -> 37: fractional scales (37/19) floor to 36 in ORT, so the emitted Resize
+        // must carry exact int64 `sizes` and leave `scales` empty.
+        let src = r#"
+webnn_graph "t" v1 {
+  inputs { x: f32[1, 19, 19, 64]; }
+  nodes { y = resample2d(x, scales=[1.9473684, 1.9473684], axes=[1, 2]); }
+  outputs { y; }
+}"#;
+        let json = webnn_graph::parser::parse_wg_text(src).expect("parse");
+        let graph = crate::webnn_json::from_graph_json(&json).expect("import");
+        let converted = OnnxConverter.convert(&graph).expect("convert");
+        let model = ModelProto::decode(converted.data.as_slice()).expect("decode");
+        let proto = model.graph.expect("graph");
+
+        let resize = proto
+            .node
+            .iter()
+            .find(|n| n.op_type == "Resize")
+            .expect("Resize node");
+        assert!(resize.input[2].is_empty(), "scales must be omitted");
+        let sizes = proto
+            .initializer
+            .iter()
+            .find(|t| t.name == resize.input[3])
+            .expect("sizes initializer");
+        assert_eq!(sizes.data_type, ProtoDataType::Int64 as i32);
+        assert_eq!(sizes.int64_data, vec![1, 37, 37, 64]);
     }
 
     #[test]
