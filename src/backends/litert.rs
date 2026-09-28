@@ -200,7 +200,7 @@ unsafe impl Sync for LiteRtTensor {}
 
 impl LiteRtTensor {
     fn new_with_layout(descriptor: &MLTensorDescriptor, nhwc: bool) -> Result<Self> {
-        let element_type = ml_operand_to_litert_element_type(descriptor.data_type())?;
+        let element_type = model_element_type_for(descriptor.data_type())?;
         let orig = descriptor.shape();
         let dims: Vec<i32> = if nhwc && orig.len() == 4 {
             vec![
@@ -1015,13 +1015,19 @@ fn order_by_signature<'a>(
     ordered
 }
 
+/// Element type the model uses for an operand of this data type. A float16 graph runs as
+/// float32 and a uint64 one as int64; see [`emulate_float16`] and [`emulate_uint64`].
+fn model_element_type_for(data_type: MLOperandDataType) -> Result<litert::ElementType> {
+    Ok(match data_type {
+        MLOperandDataType::Float16 => litert::ElementType::Float32,
+        MLOperandDataType::Uint64 => litert::ElementType::Int64,
+        other => ml_operand_to_litert_element_type(other)?,
+    })
+}
+
 /// Element type the model uses for a caller-side buffer.
 fn model_element_type(t: &MLTensor) -> Result<litert::ElementType> {
-    if t.descriptor().data_type() == MLOperandDataType::Float16 {
-        Ok(litert::ElementType::Float32)
-    } else {
-        ml_operand_to_litert_element_type(t.descriptor().data_type())
-    }
+    model_element_type_for(t.descriptor().data_type())
 }
 
 fn tensor_dims(t: &MLTensor) -> Vec<i32> {
@@ -1085,6 +1091,42 @@ fn emulate_float16(graph: &mut GraphInfo) -> bool {
             && options.output_data_type == MLOperandDataType::Float16
         {
             options.output_data_type = MLOperandDataType::Float32;
+        }
+    }
+    true
+}
+
+/// Rewrites a uint64 graph to int64, which is the same width and the same bits.
+///
+/// The LiteRT model loader has no UINT64 tensor type ("Element type not currently
+/// supported"), so a model holding one fails to compile. Nothing is converted: only the
+/// declared type changes, and signedness only matters to operations that order values.
+fn emulate_uint64(graph: &mut GraphInfo) -> bool {
+    let is_u64 = |dt: crate::graph::DataType| dt == crate::graph::DataType::Uint64;
+    if !graph
+        .operands
+        .iter()
+        .any(|o| is_u64(o.descriptor.data_type))
+    {
+        return false;
+    }
+    for operand in graph.operands.iter_mut() {
+        if is_u64(operand.descriptor.data_type) {
+            operand.descriptor.data_type = crate::graph::DataType::Int64;
+        }
+    }
+    for op in graph.operations.iter_mut() {
+        if let Operation::ArgMax {
+            options: Some(options),
+            ..
+        }
+        | Operation::ArgMin {
+            options: Some(options),
+            ..
+        } = op
+            && options.output_data_type == MLOperandDataType::Uint64
+        {
+            options.output_data_type = MLOperandDataType::Int64;
         }
     }
     true
@@ -1451,8 +1493,10 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
 
         let (spatial_operand_names, filter_transpose_info) = collect_spatial_info(&graph_info);
         let mut graph_info = graph_info;
-        // A float16 graph runs as float32; the buffers convert at dispatch.
+        // A float16 graph runs as float32; the buffers convert at dispatch. A uint64 graph
+        // runs as int64, same bits, no conversion.
         let float16_emulated = emulate_float16(&mut graph_info);
+        emulate_uint64(&mut graph_info);
         modify_graph_for_nhwc(&mut graph_info, &spatial_operand_names);
         let tflite_bytes = LiteRtConverter.convert(&graph_info)?.data;
 
