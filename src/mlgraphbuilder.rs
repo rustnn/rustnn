@@ -2518,17 +2518,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         filter
     );
 
-    /// Former name of [`Self::conv2d_with_options`], kept for compatibility.
-    #[deprecated(note = "renamed to conv2d_with_options")]
-    pub fn conv2_with_options(
-        &mut self,
-        input: MLOperand,
-        filter: MLOperand,
-        options: MLConv2dOptions,
-    ) -> Result<MLOperand> {
-        self.conv2d_with_options(input, filter, options)
-    }
-
     impl_binary_op!(
         /// 2-D transposed (fractionally strided) convolution.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d>
