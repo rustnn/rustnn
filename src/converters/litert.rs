@@ -3119,39 +3119,17 @@ impl<'a> TfliteContext<'a> {
                 [cols as i32, masked_rows],
                 "tri_mask",
                 in_shape,
-                tflite::TensorType::INT32
+                tflite::TensorType::BOOL
             );
 
-            // Cast int32 mask to float via properly built CAST op
-            let mask_f_tensor = self.add_tensor("tri_mask_f", in_shape, in_type, 0);
-            let oc_cast = self.add_opcode(53, 1); // CAST opcode
-            let iv_cast = self.fbb.create_vector(&[mask]);
-            let ov_cast = self.fbb.create_vector(&[mask_f_tensor as i32]);
-            let co = tflite::CastOptions::create(
-                &mut self.fbb,
-                &tflite::CastOptionsArgs {
-                    in_data_type: tflite::TensorType::INT32,
-                    out_data_type: in_type,
-                },
-            );
-            operator_offsets.push(tflite::Operator::create(
-                &mut self.fbb,
-                &tflite::OperatorArgs {
-                    opcode_index: oc_cast,
-                    inputs: Some(iv_cast),
-                    outputs: Some(ov_cast),
-                    builtin_options: Some(co.as_union_value()),
-                    builtin_options_type: tflite::BuiltinOptions::CastOptions,
-                    ..Default::default()
-                },
-            ));
-            let mask_f = mask_f_tensor as i32;
-
+            // Selecting zeroes the outside rather than masking with a multiply, which
+            // would keep a non-finite input (NaN * 0 is NaN).
+            let zero = scalar_const!(self, "tri_zero", 0.0, in_type);
             let out = emit_op!(
                 self,
                 operator_offsets,
-                std_op::MUL,
-                [in_tensor, mask_f],
+                std_op::SELECT_V2,
+                [mask, in_tensor, zero],
                 "tri_out",
                 in_shape,
                 in_type
