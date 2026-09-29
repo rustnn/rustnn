@@ -1145,6 +1145,21 @@ fn symbolic_multi_descriptors(
         .collect()
 }
 
+fn convolution_array<const N: usize>(
+    values: &[u32],
+    default: [u32; N],
+    operation: &Operation,
+    name: &str,
+) -> Result<[u32; N]> {
+    if values.is_empty() {
+        Ok(default)
+    } else {
+        values
+            .try_into()
+            .map_err(|_| symbolic_error(operation, format!("{name} must have {N} elements")))
+    }
+}
+
 fn symbolic_conv_shape(
     operation: &Operation,
     context: &mut shapeinfer_symbolic::Context,
@@ -1152,76 +1167,25 @@ fn symbolic_conv_shape(
     filter: &shapeinfer_symbolic::expression::Shape,
     options: &MLConv2dOptions,
 ) -> Result<shapeinfer_symbolic::expression::Shape> {
-    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
-    let input: Vec<_> = input.iter().cloned().collect();
-    let filter: Vec<_> = filter.iter().cloned().collect();
-    if input.len() != 4 || filter.len() != 4 {
-        return Err(symbolic_error(
-            operation,
-            "conv2d requires rank-four input and filter",
-        ));
-    }
-    let input_layout = options.input_layout;
-    let nhwc = input_layout == MLInputOperandLayout::Nhwc;
-    let (channel, height, width) = if nhwc { (3, 1, 2) } else { (1, 2, 3) };
-    let filter_layout = options.filter_layout;
-    let (output_channels, filter_channels, kernel_h, kernel_w) = match filter_layout {
-        MLConv2dFilterOperandLayout::Hwio => (3, 2, 0, 1),
-        MLConv2dFilterOperandLayout::Ohwi => (0, 3, 1, 2),
-        MLConv2dFilterOperandLayout::Ihwo => (3, 0, 1, 2),
-        MLConv2dFilterOperandLayout::Oihw => (0, 1, 2, 3),
+    use shapeinfer_symbolic::shape_ops::{self, Conv2dFilterLayout, Conv2dOptions, InputLayout};
+    let params = Conv2dOptions {
+        input_layout: match options.input_layout {
+            MLInputOperandLayout::Nchw => InputLayout::Nchw,
+            MLInputOperandLayout::Nhwc => InputLayout::Nhwc,
+        },
+        filter_layout: match options.filter_layout {
+            MLConv2dFilterOperandLayout::Oihw => Conv2dFilterLayout::Oihw,
+            MLConv2dFilterOperandLayout::Hwio => Conv2dFilterLayout::Hwio,
+            MLConv2dFilterOperandLayout::Ohwi => Conv2dFilterLayout::Ohwi,
+            MLConv2dFilterOperandLayout::Ihwo => Conv2dFilterLayout::Ihwo,
+        },
+        groups: options.groups,
+        padding: convolution_array(&options.padding, [0; 4], operation, "conv2d padding")?,
+        strides: convolution_array(&options.strides, [1; 2], operation, "conv2d strides")?,
+        dilations: convolution_array(&options.dilations, [1; 2], operation, "conv2d dilations")?,
     };
-    if options.groups == 0 {
-        return Err(symbolic_error(operation, "conv2d groups must be positive"));
-    }
-    context
-        .equal_dim(
-            &input[channel],
-            &(filter[filter_channels].clone() * Expression::new_const(options.groups as i64)),
-        )
-        .map_err(|error| symbolic_error(operation, error.to_string()))?;
-    let padding = if options.padding.is_empty() {
-        vec![0; 4]
-    } else {
-        options.padding.clone()
-    };
-    let strides = if options.strides.is_empty() {
-        vec![1; 2]
-    } else {
-        options.strides.clone()
-    };
-    let dilations = if options.dilations.is_empty() {
-        vec![1; 2]
-    } else {
-        options.dilations.clone()
-    };
-    if padding.len() != 4 || strides.len() != 2 || dilations.len() != 2 {
-        return Err(symbolic_error(
-            operation,
-            "conv2d padding, strides, or dilations have wrong length",
-        ));
-    }
-    let mut result = input.clone();
-    result[channel] = filter[output_channels].clone();
-    result[height] = shape_ops::window_output(
-        input[height].clone(),
-        filter[kernel_h].clone(),
-        [padding[0], padding[1]],
-        strides[0],
-        dilations[0],
-        false,
-    )
-    .map_err(|error| symbolic_error(operation, error.to_string()))?;
-    result[width] = shape_ops::window_output(
-        input[width].clone(),
-        filter[kernel_w].clone(),
-        [padding[2], padding[3]],
-        strides[1],
-        dilations[1],
-        false,
-    )
-    .map_err(|error| symbolic_error(operation, error.to_string()))?;
-    Ok(Shape::from_vec(result))
+    shape_ops::conv2d(context, input, filter, &params)
+        .map_err(|error| symbolic_error(operation, error.to_string()))
 }
 
 fn symbolic_pool_shape(
@@ -1308,96 +1272,60 @@ fn symbolic_conv_transpose_shape(
     filter: &shapeinfer_symbolic::expression::Shape,
     options: &MLConvTranspose2dOptions,
 ) -> Result<shapeinfer_symbolic::expression::Shape> {
-    use shapeinfer_symbolic::{Expression, expression::Shape, shape_ops};
-    let input: Vec<_> = input.iter().cloned().collect();
-    let filter: Vec<_> = filter.iter().cloned().collect();
-    if input.len() != 4 || filter.len() != 4 {
-        return Err(symbolic_error(
+    use shapeinfer_symbolic::shape_ops::{
+        self, ConvTranspose2dFilterLayout, ConvTranspose2dOptions, InputLayout,
+    };
+    let output_sizes = options
+        .output_sizes
+        .as_deref()
+        .map(|sizes| {
+            sizes.try_into().map_err(|_| {
+                symbolic_error(
+                    operation,
+                    "convTranspose2d output sizes must have 2 elements",
+                )
+            })
+        })
+        .transpose()?;
+    let params = ConvTranspose2dOptions {
+        input_layout: match options.input_layout {
+            MLInputOperandLayout::Nchw => InputLayout::Nchw,
+            MLInputOperandLayout::Nhwc => InputLayout::Nhwc,
+        },
+        filter_layout: match options.filter_layout {
+            MLConvTranspose2dFilterOperandLayout::Iohw => ConvTranspose2dFilterLayout::Iohw,
+            MLConvTranspose2dFilterOperandLayout::Hwoi => ConvTranspose2dFilterLayout::Hwoi,
+            MLConvTranspose2dFilterOperandLayout::Ohwi => ConvTranspose2dFilterLayout::Ohwi,
+        },
+        groups: options.groups,
+        padding: convolution_array(
+            &options.padding,
+            [0; 4],
             operation,
-            "convTranspose2d requires rank-four input and filter",
-        ));
-    }
-    let input_layout = options.input_layout;
-    let (channel, height, width) = if input_layout == MLInputOperandLayout::Nhwc {
-        (3, 1, 2)
-    } else {
-        (1, 2, 3)
-    };
-    let filter_layout = options.filter_layout;
-    let (filter_channels, output_channels, kernel_h, kernel_w) = match filter_layout {
-        MLConvTranspose2dFilterOperandLayout::Iohw => (0, 1, 2, 3),
-        MLConvTranspose2dFilterOperandLayout::Hwoi => (3, 2, 0, 1),
-        MLConvTranspose2dFilterOperandLayout::Ohwi => (3, 0, 1, 2),
-    };
-    if options.groups == 0 {
-        return Err(symbolic_error(
+            "convTranspose2d padding",
+        )?,
+        strides: convolution_array(
+            &options.strides,
+            [1; 2],
             operation,
-            "convTranspose2d groups must be positive",
-        ));
-    }
-    context
-        .equal_dim(&input[channel], &filter[filter_channels])
-        .map_err(|error| symbolic_error(operation, error.to_string()))?;
-    let padding = if options.padding.is_empty() {
-        vec![0; 4]
-    } else {
-        options.padding.clone()
-    };
-    let strides = if options.strides.is_empty() {
-        vec![1; 2]
-    } else {
-        options.strides.clone()
-    };
-    let dilations = if options.dilations.is_empty() {
-        vec![1; 2]
-    } else {
-        options.dilations.clone()
-    };
-    let output_padding = if options.output_padding.is_empty() {
-        vec![0; 2]
-    } else {
-        options.output_padding.clone()
-    };
-    if padding.len() != 4 || strides.len() != 2 || dilations.len() != 2 || output_padding.len() != 2
-    {
-        return Err(symbolic_error(
+            "convTranspose2d strides",
+        )?,
+        dilations: convolution_array(
+            &options.dilations,
+            [1; 2],
             operation,
-            "convTranspose2d spatial options have wrong length",
-        ));
-    }
-    let mut result = input.clone();
-    result[channel] =
-        filter[output_channels].clone() * Expression::new_const(options.groups as i64);
-    if let Some(sizes) = &options.output_sizes {
-        if sizes.len() != 2 {
-            return Err(symbolic_error(
-                operation,
-                "convTranspose2d output sizes need two elements",
-            ));
-        }
-        result[height] = Expression::new_const(sizes[0] as i64);
-        result[width] = Expression::new_const(sizes[1] as i64);
-    } else {
-        result[height] = shape_ops::transposed_window_output(
-            input[height].clone(),
-            filter[kernel_h].clone(),
-            [padding[0], padding[1]],
-            strides[0],
-            dilations[0],
-            output_padding[0],
-        )
-        .map_err(|error| symbolic_error(operation, error.to_string()))?;
-        result[width] = shape_ops::transposed_window_output(
-            input[width].clone(),
-            filter[kernel_w].clone(),
-            [padding[2], padding[3]],
-            strides[1],
-            dilations[1],
-            output_padding[1],
-        )
-        .map_err(|error| symbolic_error(operation, error.to_string()))?;
-    }
-    Ok(Shape::from_vec(result))
+            "convTranspose2d dilations",
+        )?,
+        output_padding: convolution_array(
+            &options.output_padding,
+            [0; 2],
+            operation,
+            "convTranspose2d output padding",
+        )?,
+        output_sizes,
+    };
+    shape_ops::conv_transpose2d(context, input, filter, &params)
+        .map_err(|error| symbolic_error(operation, error.to_string()))
 }
 
 fn preserve_input_shape(
@@ -4876,6 +4804,59 @@ mod test {
                 max_size: 4,
             })
         );
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn symbolic_conv_transpose_maps_webnn_layouts_and_sizes() {
+        use crate::operator_enums::{
+            MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout, MLOperandDataType,
+        };
+        use crate::operator_options::MLConvTranspose2dOptions;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "image",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Float32,
+                    vec![
+                        MLDimension::Static(1),
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "height".into(),
+                            max_size: 10,
+                        }),
+                        MLDimension::Static(6),
+                        MLDimension::Static(4),
+                    ],
+                ),
+            )
+            .unwrap();
+        let filter = builder
+            .input(
+                "filter",
+                &MLOperandDescriptor::new(MLOperandDataType::Float32, vec![3, 3, 3, 4]),
+            )
+            .unwrap();
+        let output = builder
+            .conv_transpose2d_with_options(
+                input,
+                filter,
+                MLConvTranspose2dOptions {
+                    input_layout: MLInputOperandLayout::Nhwc,
+                    filter_layout: MLConvTranspose2dFilterOperandLayout::Hwoi,
+                    groups: 2,
+                    output_sizes: Some(vec![9, 11]),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let shape = &builder.recorder.as_ref().unwrap().graph().operands[output.id]
+            .descriptor
+            .shape;
+        assert_eq!(&shape[..3], &crate::graph::to_dimension_vector(&[1, 9, 11]));
+        assert_eq!(shape[3].get_static_or_max_size(), 6);
+        assert!(matches!(shape[3], crate::graph::Dimension::Expression(_)));
     }
 
     #[cfg(feature = "dynamic-inputs")]
