@@ -572,7 +572,7 @@ impl MLOperand {
             .map(|dimension| match dimension {
                 Dimension::Static(value) => value.to_string(),
                 Dimension::Dynamic(value) => value.name.clone(),
-                Dimension::Expression(value) => value.expression.clone(),
+                Dimension::Expression(value) => value.expression.to_string(),
             });
         Ok(format!("[{}]", dimensions.collect::<Vec<_>>().join(", ")))
     }

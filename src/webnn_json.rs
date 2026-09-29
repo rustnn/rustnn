@@ -106,7 +106,7 @@ fn to_webnn_dimension(dim: &Dimension) -> webnn_graph::ast::Dimension {
         }
         Dimension::Expression(d) => {
             webnn_graph::ast::Dimension::Dynamic(webnn_graph::ast::DynamicDimension {
-                name: d.expression.clone(),
+                name: d.expression.to_string(),
                 max_size: d.max_size,
             })
         }
@@ -117,12 +117,12 @@ fn from_webnn_dimension(dim: &webnn_graph::ast::Dimension) -> Dimension {
     match dim {
         webnn_graph::ast::Dimension::Static(v) => Dimension::Static(*v),
         webnn_graph::ast::Dimension::Dynamic(d) => {
-            if shapeinfer_symbolic::Expression::parse(&d.name)
-                .ok()
-                .is_some_and(|expr| expr.as_dynamic().is_none() && expr.as_const().is_none())
+            if let Ok(expression) = shapeinfer_symbolic::Expression::parse(&d.name)
+                && expression.as_dynamic().is_none()
+                && expression.as_const().is_none()
             {
                 Dimension::Expression(crate::graph::ExpressionDimension {
-                    expression: d.name.clone(),
+                    expression,
                     max_size: d.max_size,
                 })
             } else {
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn expression_dimension_roundtrips_webnn_dimension() {
         let original = crate::graph::Dimension::Expression(crate::graph::ExpressionDimension {
-            expression: "(batch * 2)".into(),
+            expression: shapeinfer_symbolic::Expression::parse("(batch * 2)").unwrap(),
             max_size: 20,
         });
         assert_eq!(

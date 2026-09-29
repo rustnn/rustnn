@@ -10188,7 +10188,7 @@ fn value_info(name: &str, desc: &crate::graph::OperandDescriptor) -> ValueInfoPr
             crate::protos::onnx::tensor_shape_proto::Dimension {
                 value: Some(
                     crate::protos::onnx::tensor_shape_proto::dimension::Value::DimParam(
-                        dd.expression.clone(),
+                        dd.expression.to_string(),
                     ),
                 ),
                 ..Default::default()

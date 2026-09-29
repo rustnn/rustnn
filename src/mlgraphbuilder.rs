@@ -4718,7 +4718,7 @@ mod test {
         assert_eq!(
             graph.operands[tiled.id].descriptor.shape[0],
             Dimension::Expression(ExpressionDimension {
-                expression: "(batch * 2)".into(),
+                expression: shapeinfer_symbolic::Expression::parse("(batch * 2)").unwrap(),
                 max_size: 20
             })
         );
@@ -4841,7 +4841,10 @@ mod test {
         assert_eq!(
             graph.operands[conv.id].descriptor.shape[2],
             Dimension::Expression(ExpressionDimension {
-                expression: "((((height + 0) - (((3 - 1) * 1) + 1)) / 1) + 1)".into(),
+                expression: shapeinfer_symbolic::Expression::parse(
+                    "((((height + 0) - (((3 - 1) * 1) + 1)) / 1) + 1)",
+                )
+                .unwrap(),
                 max_size: 18,
             })
         );
@@ -4869,7 +4872,7 @@ mod test {
         assert_eq!(
             graph.operands[outputs[0].id].descriptor.shape[0],
             Dimension::Expression(ExpressionDimension {
-                expression: "(batch / 3)".into(),
+                expression: shapeinfer_symbolic::Expression::parse("(batch / 3)").unwrap(),
                 max_size: 4,
             })
         );
