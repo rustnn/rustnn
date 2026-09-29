@@ -262,6 +262,13 @@ pub enum Error {
         source: GraphError,
     },
 
+    /// Failed to validate or evaluate symbolic shapes: `source`.
+    #[error("Failed to compute shape: {source}")]
+    ShapeComputationError {
+        #[source]
+        source: GraphError,
+    },
+
     /// An error occurred while using the graph builder API: `source`.
     #[error("An error occurred while using the graph builder API: {source}")]
     GraphBuilderError {

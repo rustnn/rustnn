@@ -23,7 +23,7 @@ use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
 use crate::graph_recorder::GraphRecorder;
 #[cfg(feature = "dynamic-inputs")]
-use crate::mlcontext::MLDynamicOperandDescriptor;
+use crate::mlcontext::{MLDynamicOperandDescriptor, MLNamedShapes};
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
 use crate::operator_enums::{
     MLConv2dFilterOperandLayout, MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout,
@@ -324,6 +324,44 @@ pub(crate) fn get_operand(input: MLOperand, graph: &GraphInfo) -> Result<&Operan
         .operands
         .get(input.id)
         .ok_or(GraphBuilderError::InvalidOperand(input))
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl MLOperand {
+    /// Compute this operand's concrete shape from the builder's named input shapes.
+    ///
+    /// This works before the builder is consumed by `build` or `finish_graph_info` and checks
+    /// the symbolic constraints accumulated while recording operations.
+    pub fn rustnn_compute_shape(
+        self,
+        builder: &MLGraphBuilder<'_, '_>,
+        input_shapes: &MLNamedShapes,
+    ) -> crate::error::Result<Vec<u32>> {
+        let graph = builder
+            .recorder
+            .as_ref()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let operand = get_operand(self, graph)?;
+        let (input_descriptors, _) = graph
+            .io_binding_maps()
+            .map_err(|source| crate::error::Error::ShapeComputationError { source })?;
+        let bindings = crate::mlcontext::validated_shape_bindings(input_shapes, &input_descriptors)
+            .map_err(|source| crate::error::Error::ShapeComputationError { source })?;
+        let shape = crate::graph::to_symbolic_shape(&operand.descriptor.shape)
+            .map_err(|source| crate::error::Error::ShapeComputationError { source })?;
+        let fallback = shapeinfer_symbolic::Context::new(
+            &shapeinfer_symbolic::context::ContextOptions::default(),
+        );
+        let context = builder.symbolic_context.as_ref().unwrap_or(&fallback);
+        crate::mlcontext::evaluate_descriptor_shape(
+            &shape,
+            &operand.descriptor,
+            &bindings,
+            context,
+            operand.name.as_deref().unwrap_or("operand"),
+        )
+        .map_err(|source| crate::error::Error::ShapeComputationError { source })
+    }
 }
 
 fn get_operands<'graph>(
