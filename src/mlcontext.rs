@@ -150,9 +150,8 @@ pub(crate) fn validated_shape_bindings(
         let descriptor = &descriptors[name];
         for (axis, (&actual, dimension)) in actual_shape.iter().zip(&descriptor.shape).enumerate() {
             if let Dimension::Expression(expression) = dimension {
-                let shape = shapeinfer_symbolic::Shape::from_vec(
-                    vec![expression.expression.clone()].into(),
-                );
+                let shape =
+                    shapeinfer_symbolic::Shape::from_vec(vec![expression.expression.clone()]);
                 let expected = context
                     .compute_shapes_cel_comcrete(&[shape], &variables)
                     .map_err(|error| GraphError::ShapeInferenceFailed {

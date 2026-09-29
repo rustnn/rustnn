@@ -4718,6 +4718,84 @@ mod test {
                 )
                 .is_err()
         );
+
+        let input_shapes =
+            MLNamedShapes::from([("x".to_string(), vec![4, 3]), ("y".to_string(), vec![1, 3])]);
+        assert_eq!(
+            tiled.rustnn_compute_shape(&builder, &input_shapes).unwrap(),
+            vec![8, 3]
+        );
+        let wrong_static =
+            MLNamedShapes::from([("x".to_string(), vec![4, 4]), ("y".to_string(), vec![1, 3])]);
+        assert!(tiled.rustnn_compute_shape(&builder, &wrong_static).is_err());
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("tiled", tiled);
+        let graph_info = builder.finish_graph_info(&outputs).unwrap();
+        let graph = crate::mlcontext::MLGraph::new(
+            crate::mlcontext::MLBackendGraph::PhantomData(std::marker::PhantomData),
+            &graph_info,
+        )
+        .unwrap();
+        drop(graph_info);
+
+        assert_eq!(
+            graph.compute_shapes(&input_shapes).unwrap(),
+            MLNamedShapes::from([("tiled".to_string(), vec![8, 3])])
+        );
+        let next_shapes =
+            MLNamedShapes::from([("x".to_string(), vec![5, 3]), ("y".to_string(), vec![1, 3])]);
+        assert_eq!(
+            graph.compute_shapes(&next_shapes).unwrap()["tiled"],
+            vec![10, 3]
+        );
+
+        let too_large = MLNamedShapes::from([
+            ("x".to_string(), vec![11, 3]),
+            ("y".to_string(), vec![1, 3]),
+        ]);
+        assert!(graph.compute_shapes(&too_large).is_err());
+        assert!(graph.compute_shapes(&MLNamedShapes::new()).is_err());
+        assert!(graph.compute_shapes(&wrong_static).is_err());
+        let unexpected = MLNamedShapes::from([
+            ("x".to_string(), vec![4, 3]),
+            ("y".to_string(), vec![1, 3]),
+            ("extra".to_string(), vec![1]),
+        ]);
+        assert!(graph.compute_shapes(&unexpected).is_err());
+        assert!(tiled.rustnn_compute_shape(&builder, &input_shapes).is_err());
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn compute_shapes_rejects_conflicting_named_dimensions() {
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let descriptor = MLDynamicOperandDescriptor::new(
+            MLOperandDataType::Float32,
+            vec![MLDimension::Dynamic(MLDynamicDimension {
+                name: "batch".into(),
+                max_size: 10,
+            })],
+        );
+        let x = builder.dynamic_input("x", &descriptor).unwrap();
+        let y = builder.dynamic_input("y", &descriptor).unwrap();
+        let sum = builder.add(x, y).unwrap();
+        let conflicting =
+            MLNamedShapes::from([("x".to_string(), vec![3]), ("y".to_string(), vec![4])]);
+        assert!(sum.rustnn_compute_shape(&builder, &conflicting).is_err());
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("sum", sum);
+        let graph_info = builder.finish_graph_info(&outputs).unwrap();
+        let graph = crate::mlcontext::MLGraph::new(
+            crate::mlcontext::MLBackendGraph::PhantomData(std::marker::PhantomData),
+            &graph_info,
+        )
+        .unwrap();
+        drop(graph_info);
+        assert!(graph.compute_shapes(&conflicting).is_err());
     }
 
     #[cfg(feature = "dynamic-inputs")]
@@ -5047,25 +5125,24 @@ mod test {
             let mut outputs = MLNamedOperands::new();
             outputs.insert("out1", output);
             outputs.insert("out2", two_x_output);
-            let _graph = builder.build(&outputs).unwrap();
+            let graph = builder.build(&outputs).unwrap();
 
-            // transform descriptor into concrete shape. "fritz" is obviously 42
+            // Transform the descriptor into a concrete shape within its declared bound.
             let concrete_shape: Vec<_> = descriptor
                 .shape()
                 .iter()
                 .map(|s| match s {
                     MLDimension::Static(s) => *s,
-                    MLDimension::Dynamic(MLDynamicDimension { name, .. }) if name == "fritz" => 42,
+                    MLDimension::Dynamic(MLDynamicDimension { name, .. }) if name == "fritz" => 4,
                     _ => unreachable!(),
                 })
                 .collect();
 
             let mut shapes = MLNamedShapes::new();
-            shapes.insert("input", &concrete_shape);
-
-            //let output_shapes = context.compute_shapes(&mut graph, &shapes).unwrap();
-            //assert!(output_shapes.contains_key("out1"));
-            //assert!(output_shapes.contains_key("out2"));
+            shapes.insert("input".to_string(), concrete_shape);
+            let output_shapes = graph.compute_shapes(&shapes).unwrap();
+            assert!(output_shapes.contains_key("out1"));
+            assert!(output_shapes.contains_key("out2"));
         }
     }
 
