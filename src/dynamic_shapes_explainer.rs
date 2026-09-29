@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Nvidia
 //
 // SPDX-License-Identifier: Apache-2
+#![allow(missing_docs)]
 
 use crate::{
     mlcontext::MLOperand,
@@ -11,9 +12,10 @@ use crate::{
     },
 };
 
-// From https://github.com/webmachinelearning/webnn/pull/945.
+/// From https://github.com/webmachinelearning/webnn/pull/945.
+#[allow(missing_docs)]
 pub trait DynamicShapeBuilder {
-    // Read an operand's shape as a runtime uint32 1-D tensor.
+    /// Read an operand's shape as a runtime uint32 1-D tensor.
     fn shape(&mut self, input: MLOperand) -> Result<MLOperand> {
         self.shape_with_options(input, MLOperatorOptions::default())
     }
@@ -24,9 +26,12 @@ pub trait DynamicShapeBuilder {
     ) -> Result<MLOperand>;
 
     // Shape generators / arithmetic on shape tensors.
+
+    /// Shape generator: generates a numpy-like range (start, end, step)
     fn range(&mut self, start: MLOperand, limit: MLOperand, delta: MLOperand) -> Result<MLOperand> {
         self.range_with_options(start, limit, delta, MLOperatorOptions::default())
     }
+    /// Shape generator: generates a numpy-like range (start, end, step)
     fn range_with_options(
         &mut self,
         start: MLOperand,
@@ -34,6 +39,7 @@ pub trait DynamicShapeBuilder {
         delta: MLOperand,
         options: MLOperatorOptions,
     ) -> Result<MLOperand>;
+    /// Shape generator: modulus with rounding down operator
     fn modulus_floor(&mut self, a: MLOperand, b: MLOperand) -> Result<MLOperand> {
         self.modulus_floor_with_options(a, b, MLOperatorOptions::default())
     }

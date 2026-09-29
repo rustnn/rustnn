@@ -254,6 +254,10 @@ pub struct MLOperatorOptions {
 #[cfg(feature = "dynamic-inputs")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
+/// Dynamic variant of [MLReshapeTo2dOptions] from dynamic shape explainer
+///
+/// From https://github.com/webmachinelearning/webnn/pull/945.
+#[allow(missing_docs)]
 pub struct MLReshapeTo2dOptions {
     #[serde(default)]
     pub label: String,
@@ -279,6 +283,10 @@ fn default_reshape_to_2d_axis() -> u32 {
 #[cfg(feature = "dynamic-inputs")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
+#[allow(missing_docs)]
+/// Like [MLSliceOptions] but for the dynamic version of slice (sliceDynamic)
+///
+/// From dynamic shape explainer https://github.com/webmachinelearning/webnn/pull/945.
 pub struct MLSliceDynamicOptions {
     #[serde(default)]
     pub label: String,
@@ -289,6 +297,10 @@ pub struct MLSliceDynamicOptions {
 #[cfg(feature = "dynamic-inputs")]
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[allow(missing_docs)]
+/// Like [MLResample2dOptions] but for the dynamic version of resample2d (resample2dDynamic)
+///
+/// From dynamic shape explainer https://github.com/webmachinelearning/webnn/pull/945.
 pub struct MLResample2dDynamicOptions {
     #[serde(default)]
     pub label: String,

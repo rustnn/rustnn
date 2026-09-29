@@ -37,6 +37,7 @@ pub enum Dimension {
     Static(u32),
     /// Bounded dynamic size; requires the `dynamic-inputs` feature.
     Dynamic(DynamicDimension),
+    /// Symbolic calculations on a dynamic shape
     Expression(ExpressionDimension),
 }
 
