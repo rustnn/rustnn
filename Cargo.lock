@@ -472,7 +472,7 @@ dependencies = [
  "pastey",
  "regex",
  "serde",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2841,7 +2841,7 @@ version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
 dependencies = [
- "bitflags 2.13.1",
+ "bitflags 2.13.2",
 ]
 
 [[package]]
@@ -3364,7 +3364,7 @@ name = "shapeinfer-symbolic"
 version = "0.1.0"
 dependencies = [
  "cel",
- "thiserror 2.0.20",
+ "thiserror 2.0.21",
  "z3",
 ]
 
