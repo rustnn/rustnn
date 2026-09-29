@@ -1991,6 +1991,72 @@ fn shape_op_shape(input: MLOperand, graph: &GraphInfo) -> Result<OperandDescript
     })
 }
 
+#[cfg(feature = "dynamic-inputs")]
+fn range_shape(operation: &Operation, graph: &GraphInfo) -> Result<OperandDescriptor> {
+    let Operation::Range {
+        start,
+        limit,
+        delta,
+        ..
+    } = operation
+    else {
+        unreachable!()
+    };
+    let scalar = |id: u32| -> std::result::Result<i64, GraphError> {
+        let operand =
+            graph
+                .operands
+                .get(id as usize)
+                .ok_or_else(|| GraphError::ShapeInferenceFailed {
+                    reason: format!("range operand {id} is missing"),
+                })?;
+        if operand.descriptor.data_type != DataType::Int64 || !operand.descriptor.shape.is_empty() {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: "range shape inference requires int64 scalar operands".into(),
+            });
+        }
+        let data = graph
+            .constant_operand_ids_to_handles
+            .get(&id)
+            .ok_or_else(|| GraphError::ShapeInferenceFailed {
+                reason: "range shape inference requires constant bounds and step".into(),
+            })?;
+        let bytes: [u8; 8] =
+            data.data
+                .as_slice()
+                .try_into()
+                .map_err(|_| GraphError::ShapeInferenceFailed {
+                    reason: "range scalar constant must contain eight bytes".into(),
+                })?;
+        Ok(i64::from_le_bytes(bytes))
+    };
+    let shape = (|| {
+        let start = scalar(*start)? as i128;
+        let limit = scalar(*limit)? as i128;
+        let delta = scalar(*delta)? as i128;
+        if delta == 0 {
+            return Err(GraphError::ShapeInferenceFailed {
+                reason: "range step must be nonzero".into(),
+            });
+        }
+        let distance = limit - start;
+        let length = if distance.signum() == delta.signum() {
+            (distance.abs() + delta.abs() - 1) / delta.abs()
+        } else {
+            0
+        };
+        let length = u32::try_from(length).map_err(|_| GraphError::ShapeInferenceFailed {
+            reason: "range length exceeds u32".into(),
+        })?;
+        Ok(vec![Dimension::Static(length)])
+    })();
+    Ok(OperandDescriptor {
+        data_type: DataType::Int64,
+        shape: infer_shape_err("range", operation, shape)?,
+        pending_permutation: vec![],
+    })
+}
+
 fn where_shape(
     inputs: &[MLOperand],
     operation: &Operation,
@@ -3144,10 +3210,17 @@ fn shape_inference_single_output(
             panic!("This method only supports single output ops. Use shape_inference_multi_output")
         }
         #[cfg(feature = "dynamic-inputs")]
-        Operation::Range { .. }
-        | Operation::ModulusFloor { .. }
-        | Operation::ModulusTruncate { .. }
-        | Operation::ReshapeTo2d { .. }
+        Operation::Range { .. } => range_shape(operation, graph),
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::ModulusFloor { a, b, .. } | Operation::ModulusTruncate { a, b, .. } => {
+            same_shape(
+                &[MLOperand { id: *a as usize }, MLOperand { id: *b as usize }],
+                operation,
+                graph,
+            )
+        }
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::ReshapeTo2d { .. }
         | Operation::ReshapeDynamic { .. }
         | Operation::ExpandDynamic { .. }
         | Operation::SliceDynamic { .. }
@@ -4782,6 +4855,12 @@ mod test {
         let x = builder.dynamic_input("x", &descriptor).unwrap();
         let y = builder.dynamic_input("y", &descriptor).unwrap();
         let sum = builder.add(x, y).unwrap();
+        let matching =
+            MLNamedShapes::from([("x".to_string(), vec![3]), ("y".to_string(), vec![3])]);
+        assert_eq!(
+            sum.rustnn_compute_shape(&builder, &matching).unwrap(),
+            vec![3]
+        );
         let conflicting =
             MLNamedShapes::from([("x".to_string(), vec![3]), ("y".to_string(), vec![4])]);
         assert!(sum.rustnn_compute_shape(&builder, &conflicting).is_err());
@@ -4795,7 +4874,91 @@ mod test {
         )
         .unwrap();
         drop(graph_info);
+        assert_eq!(
+            graph.compute_shapes(&matching).unwrap(),
+            MLNamedShapes::from([("sum".to_string(), vec![3])])
+        );
         assert!(graph.compute_shapes(&conflicting).is_err());
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    #[test]
+    fn compute_shapes_through_shape_range_and_modulus() {
+        use crate::dynamic_shapes_explainer::DynamicShapeBuilder;
+        use crate::operator_enums::MLOperandDataType;
+
+        let mut builder = MLGraphBuilder::new_uncompiled();
+        let input = builder
+            .dynamic_input(
+                "input",
+                &MLDynamicOperandDescriptor::new(
+                    MLOperandDataType::Int64,
+                    vec![
+                        MLDimension::Dynamic(MLDynamicDimension {
+                            name: "batch".into(),
+                            max_size: 10,
+                        }),
+                        MLDimension::Static(3),
+                        MLDimension::Static(4),
+                    ],
+                ),
+            )
+            .unwrap();
+        let shape = builder.shape(input).unwrap();
+        let start = builder
+            .constant_from_value(MLOperandDataType::Int64, 1i64)
+            .unwrap();
+        let limit = builder
+            .constant_from_value(MLOperandDataType::Int64, 4i64)
+            .unwrap();
+        let delta = builder
+            .constant_from_value(MLOperandDataType::Int64, 1i64)
+            .unwrap();
+        let range = builder.range(start, limit, delta).unwrap();
+        let floor_remainder = builder.modulus_floor(shape, range).unwrap();
+        let truncate_remainder = builder
+            .modulus_truncate_with_options(shape, range, MLOperatorOptions::default())
+            .unwrap();
+        let input_shapes = MLNamedShapes::from([("input".to_string(), vec![5, 3, 4])]);
+
+        assert_eq!(
+            shape.rustnn_compute_shape(&builder, &input_shapes).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            range.rustnn_compute_shape(&builder, &input_shapes).unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            floor_remainder
+                .rustnn_compute_shape(&builder, &input_shapes)
+                .unwrap(),
+            vec![3]
+        );
+        assert_eq!(
+            truncate_remainder
+                .rustnn_compute_shape(&builder, &input_shapes)
+                .unwrap(),
+            vec![3]
+        );
+
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("floor_remainder", floor_remainder);
+        outputs.insert("truncate_remainder", truncate_remainder);
+        let graph_info = builder.finish_graph_info(&outputs).unwrap();
+        let graph = crate::mlcontext::MLGraph::new(
+            crate::mlcontext::MLBackendGraph::PhantomData(std::marker::PhantomData),
+            &graph_info,
+        )
+        .unwrap();
+        drop(graph_info);
+        assert_eq!(
+            graph.compute_shapes(&input_shapes).unwrap(),
+            MLNamedShapes::from([
+                ("floor_remainder".to_string(), vec![3]),
+                ("truncate_remainder".to_string(), vec![3]),
+            ])
+        );
     }
 
     #[cfg(feature = "dynamic-inputs")]
@@ -5141,8 +5304,14 @@ mod test {
             let mut shapes = MLNamedShapes::new();
             shapes.insert("input".to_string(), concrete_shape);
             let output_shapes = graph.compute_shapes(&shapes).unwrap();
-            assert!(output_shapes.contains_key("out1"));
-            assert!(output_shapes.contains_key("out2"));
+            let expected_shape = vec![descriptor.shape().len() as u32];
+            assert_eq!(
+                output_shapes,
+                MLNamedShapes::from([
+                    ("out1".to_string(), expected_shape.clone()),
+                    ("out2".to_string(), expected_shape),
+                ])
+            );
         }
     }
 
