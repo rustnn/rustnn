@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-/// From https://github.com/webmachinelearning/webnn/pull/945.
+/// From <https://github.com/webmachinelearning/webnn/pull/945>.
 #[allow(missing_docs)]
 pub trait DynamicShapeBuilder {
     /// Read an operand's shape as a runtime uint32 1-D tensor.

@@ -9,10 +9,10 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 
 | Backend | Converter source | Detection rule | Supported |
 |---|---|---|---|
-| ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 100 of 100 |
-| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 100 of 100 |
-| TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 99 of 100 |
-| LiteRT | `src/converters/litert.rs` | `Operation` variants referenced by the converter | 92 of 100 |
+| ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 100 of 111 |
+| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 100 of 111 |
+| TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 99 of 111 |
+| LiteRT | `src/converters/litert.rs` | `Operation` variants referenced by the converter | 92 of 111 |
 
 ## Operation matrix
 
@@ -39,6 +39,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `erf` | yes | yes | yes | yes |
 | `exp` | yes | yes | yes | yes |
 | `expand` | yes | yes | yes | yes |
+| `expandDynamic` | - | - | - | - |
 | `floor` | yes | yes | yes | yes |
 | `gather` | yes | yes | yes | yes |
 | `gatherElements` | yes | yes | yes | yes |
@@ -74,13 +75,17 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `max` | yes | yes | yes | yes |
 | `maxPool2d` | yes | yes | yes | yes |
 | `min` | yes | yes | yes | yes |
+| `modulusFloor` | - | - | - | - |
+| `modulusTruncate` | - | - | - | - |
 | `mul` | yes | yes | yes | yes |
 | `neg` | yes | yes | yes | yes |
 | `notEqual` | yes | yes | yes | yes |
 | `pad` | yes | yes | yes | yes |
+| `padDynamic` | - | - | - | - |
 | `pow` | yes | yes | yes | yes |
 | `prelu` | yes | yes | yes | yes |
 | `quantizeLinear` | yes | yes | yes | yes |
+| `range` | - | - | - | - |
 | `reciprocal` | yes | yes | yes | yes |
 | `reduceL1` | yes | yes | yes | yes |
 | `reduceL2` | yes | yes | yes | yes |
@@ -94,7 +99,10 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `reduceSumSquare` | yes | yes | yes | yes |
 | `relu` | yes | yes | yes | yes |
 | `resample2d` | yes | yes | yes | yes |
+| `resample2dDynamic` | - | - | - | - |
 | `reshape` | yes | yes | yes | yes |
+| `reshapeDynamic` | - | - | - | - |
+| `reshapeTo2d` | - | - | - | - |
 | `reverse` | yes | yes | yes | yes |
 | `roundEven` | yes | yes | yes | yes |
 | `scatterElements` | yes | yes | yes | yes |
@@ -104,16 +112,19 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `sign` | yes | yes | yes | yes |
 | `sin` | yes | yes | yes | yes |
 | `slice` | yes | yes | yes | yes |
+| `sliceDynamic` | - | - | - | - |
 | `softmax` | yes | yes | yes | yes |
 | `softplus` | yes | yes | yes | yes |
 | `softsign` | yes | yes | yes | yes |
 | `split` | yes | yes | yes | yes |
+| `splitDynamic` | - | - | - | - |
 | `sqrt` | yes | yes | yes | yes |
 | `squeeze` | yes | yes | yes | yes |
 | `sub` | yes | yes | yes | yes |
 | `tan` | yes | yes | yes | yes |
 | `tanh` | yes | yes | yes | yes |
 | `tile` | yes | yes | yes | yes |
+| `tileDynamic` | - | - | - | - |
 | `transpose` | yes | yes | yes | yes |
 | `triangular` | yes | yes | yes | yes |
 | `unsqueeze` | yes | yes | yes | - |
@@ -121,10 +132,10 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 
 ## Unsupported operations per backend
 
-- ONNX Runtime: none
-- CoreML: none
-- TensorRT: `shape`
-- LiteRT: `globalAveragePool`, `globalMaxPool`, `gru`, `gruCell`, `lstm`, `lstmCell`, `shape`, `unsqueeze`
+- ONNX Runtime: `expandDynamic`, `modulusFloor`, `modulusTruncate`, `padDynamic`, `range`, `resample2dDynamic`, `reshapeDynamic`, `reshapeTo2d`, `sliceDynamic`, `splitDynamic`, `tileDynamic`
+- CoreML: `expandDynamic`, `modulusFloor`, `modulusTruncate`, `padDynamic`, `range`, `resample2dDynamic`, `reshapeDynamic`, `reshapeTo2d`, `sliceDynamic`, `splitDynamic`, `tileDynamic`
+- TensorRT: `expandDynamic`, `modulusFloor`, `modulusTruncate`, `padDynamic`, `range`, `resample2dDynamic`, `reshapeDynamic`, `reshapeTo2d`, `shape`, `sliceDynamic`, `splitDynamic`, `tileDynamic`
+- LiteRT: `expandDynamic`, `globalAveragePool`, `globalMaxPool`, `gru`, `gruCell`, `lstm`, `lstmCell`, `modulusFloor`, `modulusTruncate`, `padDynamic`, `range`, `resample2dDynamic`, `reshapeDynamic`, `reshapeTo2d`, `shape`, `sliceDynamic`, `splitDynamic`, `tileDynamic`, `unsqueeze`
 
 ## Notes
 

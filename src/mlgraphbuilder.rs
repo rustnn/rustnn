@@ -3123,6 +3123,7 @@ fn shape_inference_single_output(
 }
 
 impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
+    /// Return the constraint context used for symbolic shape inference, when initialized.
     pub fn symbolic_context(&self) -> Option<&shapeinfer_symbolic::Context> {
         self.symbolic_context.as_ref()
     }
@@ -3341,6 +3342,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     }
 
     #[cfg(feature = "dynamic-inputs")]
+    /// Declare a named graph input with bounded dynamic dimensions.
     pub fn dynamic_input(
         &mut self,
         name: &str,

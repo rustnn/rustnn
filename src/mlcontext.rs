@@ -453,7 +453,9 @@ impl From<&MLOperandDescriptor> for OperandDescriptor {
     }
 }
 
-// https://github.com/webmachinelearning/webnn/pull/945
+/// Operand descriptor that accepts bounded dynamic dimensions.
+///
+/// See <https://github.com/webmachinelearning/webnn/pull/945>.
 #[cfg(feature = "dynamic-inputs")]
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLDynamicOperandDescriptor {
@@ -484,22 +486,27 @@ impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
 
 #[cfg(feature = "dynamic-inputs")]
 impl MLDynamicOperandDescriptor {
+    /// Create a descriptor with an element type and static or dynamic dimensions.
     pub fn new(data_type: MLOperandDataType, shape: Vec<MLDimension>) -> Self {
         Self { data_type, shape }
     }
 
+    /// Element data type.
     pub fn data_type(&self) -> MLOperandDataType {
         self.data_type
     }
 
+    /// Dimensions of the operand.
     pub fn shape(&self) -> &[MLDimension] {
         &self.shape
     }
 
+    /// Replace the element data type.
     pub fn set_data_type(&mut self, data_type: MLOperandDataType) {
         self.data_type = data_type;
     }
 
+    /// Replace the dimensions of the operand.
     pub fn set_shape(&mut self, shape: Vec<MLDimension>) {
         self.shape = shape;
     }
@@ -910,6 +917,7 @@ impl<'context> MLContext<'context> {
     }
 
     #[cfg(feature = "dynamic-inputs")]
+    /// Compute concrete output shapes for the supplied input shapes.
     pub fn compute_shapes(
         &mut self,
         graph: &mut MLGraph,
