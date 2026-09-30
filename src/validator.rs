@@ -80,6 +80,16 @@ impl<'a> GraphValidator<'a> {
     }
 
     /// Run all checks; the first failure is returned as a [`GraphError`].
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "info",
+        fields(
+            operands = self.graph.operands.len(),
+            operations = self.graph.operations.len(),
+            dynamic = self.graph.has_dynamic_dimensions(),
+        )
+    )]
     pub fn validate(mut self) -> Result<ValidationArtifacts, GraphError> {
         if self.graph.operands.is_empty()
             || self.graph.operations.is_empty()

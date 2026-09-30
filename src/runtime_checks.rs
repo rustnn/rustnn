@@ -47,6 +47,13 @@ impl RuntimeShapeState {
 
     /// Check that `actual_shapes` covers exactly the named `descriptors` and that every shape
     /// passes [`Self::validate_shape`].
+    #[tracing::instrument(
+        name = "validate_shapes",
+        skip_all,
+        err(level = "debug"),
+        level = "debug",
+        fields(kind = ?kind, tensors = actual_shapes.len())
+    )]
     pub fn validate_named_shapes(
         &mut self,
         actual_shapes: &HashMap<String, Vec<usize>>,
@@ -148,6 +155,13 @@ impl RuntimeShapeState {
 }
 
 /// Check that `data_len` elements match the element count of `shape`.
+#[tracing::instrument(
+    name = "validate_data_length",
+    skip_all,
+    err,
+    level = "debug",
+    fields(name = %name, shape = ?shape, elements = data_len)
+)]
 pub fn validate_shape_data_length(
     name: &str,
     shape: &[usize],
