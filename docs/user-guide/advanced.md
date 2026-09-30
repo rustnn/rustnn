@@ -112,6 +112,13 @@ start cold. Details are in [TensorRT-RTX](../integration/tensorrt.md).
 | `cargo run --features onnx-runtime -- graph.webnn --export-dot graph.dot` | Graph structure as Graphviz |
 | `make test-wpt-op OP=<operation>` | Runs the WPT conformance cases of one operation, printing expected and actual values on failure |
 
+### Spans
+
+- `tracing` (off by default) adds spans over the backend-agnostic layer: one per context, graph or
+  file, and one per call.
+- Targets are module paths, so a subscriber can filter as narrowly as `rustnn::backends::caching`.
+- Additive: `log` output is unchanged, and backends, executors and converters still use `log`.
+
 ## Threads
 
 `MLContext` is `Send + Sync`. `dispatch`, `write_tensor` and `read_tensor` take `&mut self`,

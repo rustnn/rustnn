@@ -91,7 +91,8 @@ make onnxruntime-download       # ONNX Runtime for the onnx-runtime feature; the
 Feature checks CI runs: `cargo check`, `cargo check --features onnx-runtime`,
 `cargo check -F trtx-runtime --all-targets`, `cargo check --features litert-runtime`,
 `cargo check --features cann-runtime`, `cargo check --features coreml-runtime` (macOS), wasm32
-with `webnn-runtime`; `cargo test --lib` and `cargo test --lib --features cann-runtime-mock`.
+with `webnn-runtime`, and `cargo check --features tracing`; `cargo test --lib` and
+`cargo test --lib --features cann-runtime-mock`.
 
 Environment variables: `ORT_DYLIB_PATH` (ONNX Runtime library), `RUST_LOG`, `RUSTNN_DEBUG=1|2`
 with `RUSTNN_DEBUG_ONNX_DIR`, `RUSTNN_TRTX_LOG_VERBOSITY`, `TRTX_JSON_DUMP_PATH`, `WPT_BACKEND`,

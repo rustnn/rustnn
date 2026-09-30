@@ -85,6 +85,13 @@
 //! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
 //! | `zstd-cache-compression` | Compress the on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
+//! | `tracing` | Span instrumentation for the backend-agnostic layer, for a [`tracing`](https://docs.rs/tracing) subscriber |
+//!
+//! The `tracing` feature is off by default: nothing is compiled and no span is emitted unless a
+//! program enables it *and* installs a subscriber. `INFO` spans mark the once-per-context, -graph
+//! or -file steps and `DEBUG` spans the per-call ones, on targets named after the instrumented
+//! module. The spans are additive: the `log` output of a `tracing` build is the same as a build
+//! without the feature.
 //!
 //! # Environment variables
 //!
@@ -114,6 +121,8 @@ pub mod executors;
 pub mod graph;
 mod graph_recorder;
 pub mod graphviz;
+#[cfg(feature = "tracing")]
+pub(crate) mod instrumentation;
 pub mod limits;
 pub mod loader;
 pub mod mlcontext;

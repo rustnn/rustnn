@@ -125,6 +125,8 @@ test:
 	$(CARGO) clippy --all-targets -- -D warnings
 	@echo "Running tests..."
 	$(CARGO) test
+	@echo "Running tests (tracing feature)..."
+	$(CARGO) test --lib --features tracing
 	@echo "Checking backend operator support report drift..."
 	$(MAKE) docs-backend-ops-check
 

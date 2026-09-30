@@ -81,6 +81,8 @@ impl<'a> GraphValidator<'a> {
 
     /// Run all checks; the first failure is returned as a [`GraphError`].
     pub fn validate(mut self) -> Result<ValidationArtifacts, GraphError> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::validate_span(self.graph).entered();
         if self.graph.operands.is_empty()
             || self.graph.operations.is_empty()
             || self.graph.output_operands.is_empty()

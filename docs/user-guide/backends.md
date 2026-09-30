@@ -50,6 +50,9 @@ Both error variants list the backends that were wanted and the backends that are
 so a build without the expected feature is visible in the error message. `RUST_LOG=info` logs
 the selected device.
 
+The optional `tracing` feature instruments the backend-agnostic layer with spans for a
+[`tracing`](https://docs.rs/tracing) subscriber; see [Advanced topics](advanced.md#spans).
+
 ## Execution model
 
 - `MLGraphBuilder::build` converts the recorded graph with the backend's converter and compiles

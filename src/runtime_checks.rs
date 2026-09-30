@@ -53,6 +53,9 @@ impl RuntimeShapeState {
         descriptors: &HashMap<String, OperandDescriptor>,
         kind: TensorKind,
     ) -> Result<(), GraphError> {
+        #[cfg(feature = "tracing")]
+        let _span =
+            crate::instrumentation::validate_shapes_span(kind, actual_shapes.len()).entered();
         for name in descriptors.keys() {
             if !actual_shapes.contains_key(name) {
                 return Err(GraphError::RuntimeTensorMissing {
@@ -153,6 +156,8 @@ pub fn validate_shape_data_length(
     shape: &[usize],
     data_len: usize,
 ) -> Result<(), GraphError> {
+    #[cfg(feature = "tracing")]
+    let _span = crate::instrumentation::validate_data_length_span(name, shape, data_len).entered();
     let expected = shape
         .iter()
         .try_fold(1usize, |acc, &dim| acc.checked_mul(dim))
