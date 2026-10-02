@@ -22,12 +22,14 @@ pub mod wpt_types;
 
 use tolerance::{
     FloatErrorMetrics, IntegerErrorMetrics, cann_fp16_tolerance, check_integer_tolerance,
-    float_error_metrics, get_operation_tolerance, integer_error_metrics, validate_result,
+    float_error_metrics, get_operation_tolerance, integer_error_metrics,
+    upstream_float_error_metrics, validate_result, validate_upstream_result,
 };
 use wpt_audit::WptAuditCollector;
 use wpt_backend::WptBackend;
 use wpt_tensor::{
-    expected_output_to_f32, expected_output_to_i32, expected_output_to_i64, expected_output_to_u64,
+    expected_output_to_f32, expected_output_to_f64, expected_output_to_i32, expected_output_to_i64,
+    expected_output_to_u64,
 };
 use wpt_types::WptGraph;
 
@@ -369,28 +371,55 @@ pub fn run_one_test_case_with_audit(
     let graph = &test_case.graph;
     let graph_op_names = graph_operator_names(graph);
     let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
-    let (tolerance_kind, tolerance_value) =
-        get_operation_tolerance(operation, test_case.tolerance.as_ref(), &graph_op_refs);
-    // The CANN/HiAI NPU executes in fp16 even for float32 I/O; compare at fp16
-    // significance so conformant fp16 arithmetic is not judged as a float32
-    // failure.
-    let (tolerance_kind, tolerance_value) = if backend.trial_prefix() == "cann" {
-        cann_fp16_tolerance(tolerance_kind, tolerance_value)
-    } else {
-        (tolerance_kind, tolerance_value)
-    };
-    let wpt_ulp_only = test_case
-        .tolerance
-        .as_ref()
-        .is_some_and(|t| t.metric_type.eq_ignore_ascii_case("ulp"));
+    let strict_tolerance = wpt_config::strict_wpt_tolerance();
 
     wpt_context_pool::with_context(backend, |context| {
-        let artifacts = wpt_execute_graph::execute_wpt_graph(context, graph)?;
+        let needs_intermediates = strict_tolerance && test_case.tolerance.is_none();
+        let artifacts = wpt_execute_graph::execute_wpt_graph(context, graph, needs_intermediates)?;
+        let mut resolved_case;
+        let test_case = if needs_intermediates {
+            resolved_case = test_case.clone();
+            resolved_case.tolerance = Some(wpt_js_loader::resolve_source_tolerance(
+                file_name,
+                &test_case.name,
+                &artifacts.intermediate_descriptors,
+            )?);
+            &resolved_case
+        } else {
+            test_case
+        };
+        if strict_tolerance {
+            tolerance::validate_strict_source_tolerance(test_case.tolerance.as_ref())?;
+        }
+        let (tolerance_kind, tolerance_value) =
+            get_operation_tolerance(operation, test_case.tolerance.as_ref(), &graph_op_refs);
+        if strict_tolerance
+            && tolerance_kind != tolerance::ToleranceKind::Ulp
+            && graph
+                .expected_outputs
+                .values()
+                .any(|spec| !matches!(spec.data_type(), "float16" | "float32"))
+        {
+            return Err("strict integer comparison requires an upstream ULP budget".into());
+        }
+        // CANN/HiAI's compatibility allowance is not an upstream WPT budget.
+        let (tolerance_kind, tolerance_value) =
+            if backend.trial_prefix() == "cann" && !strict_tolerance {
+                cann_fp16_tolerance(tolerance_kind, tolerance_value)
+            } else {
+                (tolerance_kind, tolerance_value)
+            };
+        let allow_absolute_floor = !strict_tolerance
+            && test_case
+                .tolerance
+                .as_ref()
+                .is_some_and(|t| t.metric_type.eq_ignore_ascii_case("ulp"));
         let webnn_text = artifacts.webnn_text.as_deref();
         let outputs = artifacts.outputs;
         let input_names = runtime_input_names(graph);
         let mut float_metrics = FloatErrorMetrics::default();
         let mut int_metrics = IntegerErrorMetrics::default();
+        let mut int_tolerance = 0u64;
         let mut saw_float = false;
         let mut saw_int = false;
 
@@ -419,6 +448,7 @@ pub fn run_one_test_case_with_audit(
                         })
                         .unwrap_or(0) as i64;
                     let (pass, msg) = check_integer_tolerance(actual_i64, &expected, int_tol);
+                    int_tolerance = int_tolerance.max(int_tol.unsigned_abs());
                     let im = integer_error_metrics(actual_i64, &expected);
                     int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
                     saw_int = true;
@@ -436,20 +466,32 @@ pub fn run_one_test_case_with_audit(
                             actual.data_type()
                         )
                     })?;
-                    let pass = actual_i64.len() == expected.len()
-                        && actual_i64
-                            .iter()
-                            .zip(expected.iter())
-                            .all(|(&a, &e)| a as u64 == e);
                     let expected_i64: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
-                    let im = integer_error_metrics(actual_i64, &expected_i64);
+                    let ((pass, msg), im) = if strict_tolerance {
+                        let actual_u64: Vec<u64> =
+                            actual_i64.iter().map(|&value| value as u64).collect();
+                        int_tolerance = int_tolerance.max(tolerance_value);
+                        (
+                            tolerance::check_unsigned_tolerance(
+                                &actual_u64,
+                                &expected,
+                                tolerance_value,
+                            ),
+                            tolerance::unsigned_error_metrics(&actual_u64, &expected),
+                        )
+                    } else {
+                        let pass = actual_i64.len() == expected.len()
+                            && actual_i64
+                                .iter()
+                                .zip(&expected)
+                                .all(|(&a, &e)| a as u64 == e);
+                        (
+                            (pass, (!pass).then(|| "uint64 output mismatch".to_string())),
+                            integer_error_metrics(actual_i64, &expected_i64),
+                        )
+                    };
                     int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
                     saw_int = true;
-                    let msg = if pass {
-                        None
-                    } else {
-                        Some("uint64 output mismatch".to_string())
-                    };
                     let expected_u64_str: Vec<i64> = expected.iter().map(|&u| u as i64).collect();
                     let expected_str =
                         format_int_slice_for_failure(&expected_u64_str, FAILURE_RESULT_DISPLAY_LEN);
@@ -476,8 +518,24 @@ pub fn run_one_test_case_with_audit(
                         .unwrap_or(0) as i64;
                     let expected_i64: Vec<i64> = expected.iter().map(|&x| x as i64).collect();
                     let actual_i64: Vec<i64> = actual_i32.iter().map(|&x| x as i64).collect();
-                    let (pass, msg) = check_integer_tolerance(&actual_i64, &expected_i64, int_tol);
-                    let im = integer_error_metrics(&actual_i64, &expected_i64);
+                    let ((pass, msg), im) = if strict_tolerance && dtype == "uint32" {
+                        let actual_u64 = tolerance::unsigned_32_values(actual_i32);
+                        let expected_u64 = tolerance::unsigned_32_values(&expected);
+                        (
+                            tolerance::check_unsigned_tolerance(
+                                &actual_u64,
+                                &expected_u64,
+                                int_tol.unsigned_abs(),
+                            ),
+                            tolerance::unsigned_error_metrics(&actual_u64, &expected_u64),
+                        )
+                    } else {
+                        (
+                            check_integer_tolerance(&actual_i64, &expected_i64, int_tol),
+                            integer_error_metrics(&actual_i64, &expected_i64),
+                        )
+                    };
+                    int_tolerance = int_tolerance.max(int_tol.unsigned_abs());
                     int_metrics.max_abs_diff = int_metrics.max_abs_diff.max(im.max_abs_diff);
                     saw_int = true;
                     let expected_str =
@@ -495,18 +553,40 @@ pub fn run_one_test_case_with_audit(
                         )
                     })?;
                     let float16 = dtype.eq_ignore_ascii_case("float16");
-                    let (pass, msg) = validate_result(
-                        actual_f32,
-                        &expected,
-                        tolerance_kind,
-                        tolerance_value,
-                        float16,
-                        wpt_ulp_only,
-                    );
-                    let fm = float_error_metrics(actual_f32, &expected, float16);
+                    let ((pass, msg), fm) = if strict_tolerance {
+                        let expected_source = expected_output_to_f64(expected_spec)?;
+                        (
+                            validate_upstream_result(
+                                actual_f32,
+                                &expected_source,
+                                tolerance_kind,
+                                tolerance_value,
+                                float16,
+                            ),
+                            upstream_float_error_metrics(
+                                actual_f32,
+                                &expected_source,
+                                float16,
+                                tolerance_kind,
+                            ),
+                        )
+                    } else {
+                        (
+                            validate_result(
+                                actual_f32,
+                                &expected,
+                                tolerance_kind,
+                                tolerance_value,
+                                float16,
+                                allow_absolute_floor,
+                            ),
+                            float_error_metrics(actual_f32, &expected, float16),
+                        )
+                    };
                     float_metrics.max_ulp = float_metrics.max_ulp.max(fm.max_ulp);
                     float_metrics.max_abs = float_metrics.max_abs.max(fm.max_abs);
                     float_metrics.max_rtol = float_metrics.max_rtol.max(fm.max_rtol);
+                    float_metrics.nonfinite_mismatches += fm.nonfinite_mismatches;
                     saw_float = true;
                     let expected_str =
                         format_f32_slice_for_failure(&expected, FAILURE_RESULT_DISPLAY_LEN);
@@ -573,9 +653,14 @@ pub fn run_one_test_case_with_audit(
                 &test_case.name,
                 operation,
                 &graph_op_refs,
-                test_case.tolerance.as_ref(),
+                if saw_float {
+                    (tolerance_kind, tolerance_value)
+                } else {
+                    (tolerance::ToleranceKind::Ulp, int_tolerance)
+                },
                 saw_float.then_some(float_metrics),
                 saw_int.then_some(int_metrics),
+                saw_int.then_some(int_tolerance),
             );
         }
         Ok(())

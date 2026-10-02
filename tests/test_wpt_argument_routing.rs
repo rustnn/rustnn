@@ -1,5 +1,7 @@
 #![allow(dead_code)] // This focused test imports only the graph-compilation half of the WPT harness.
 
+#[path = "wpt_conformance/wpt_config.rs"]
+mod wpt_config;
 #[path = "wpt_conformance/wpt_execute_graph.rs"]
 mod wpt_execute_graph;
 #[path = "wpt_conformance/wpt_tensor.rs"]

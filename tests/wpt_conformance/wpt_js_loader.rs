@@ -86,6 +86,39 @@ pub fn fetch_wpt_cache(_wpt_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Some upstream callbacks require builder-inferred intermediate shapes.
+/// Retry those callbacks without inventing a fallback budget.
+pub fn resolve_source_tolerance(
+    file_name: &str,
+    test_name: &str,
+    intermediates: &serde_json::Value,
+) -> Result<super::wpt_types::WptTolerance, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new("node")
+        .arg(bridge_dir().join("resolve_tolerance.mjs"))
+        .arg(default_wpt_dir())
+        .args([file_name, test_name])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!("resolving upstream tolerance requires Node.js and the WPT checkout: {e}")
+        })?;
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(intermediates.to_string().as_bytes())
+        .map_err(|e| format!("writing upstream tolerance descriptors: {e}"))?;
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid upstream tolerance: {e}"))
+}
+
 pub fn ensure_wpt_cache(wpt_dir: &Path) -> Result<(), String> {
     if wpt_cache_available(wpt_dir) {
         return Ok(());

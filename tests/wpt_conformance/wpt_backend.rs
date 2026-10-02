@@ -2,7 +2,7 @@
 
 use std::hash::{Hash, Hasher};
 
-use rustnn::backend_selection::Backend;
+use rustnn::backend_selection::{Backend, BackendDevice, DeviceType};
 use rustnn::mlcontext::{MLContext, MLContextOptions, MLPowerPreference};
 
 /// One WPT trial backend: a stable name prefix plus [`MLContextOptions`] with backend hints.
@@ -105,7 +105,24 @@ impl WptBackend {
         };
 
         let mut available = Vec::new();
-        for backend in candidates {
+        for mut backend in candidates {
+            if backend.prefix == "coreml"
+                && cfg!(all(feature = "coreml-runtime", target_os = "macos"))
+            {
+                let requested = super::wpt_config::coreml_requested_device();
+                let device_type = match requested {
+                    "cpu" => DeviceType::Cpu,
+                    "gpu" => DeviceType::Gpu,
+                    "npu" => DeviceType::Npu,
+                    _ => unreachable!("validated CoreML policy"),
+                };
+                backend.options = MLContextOptions::new(
+                    MLPowerPreference::Default,
+                    device_type != DeviceType::Cpu,
+                )
+                .with_rustnn_device_hint(BackendDevice::Coreml { device_type });
+                eprintln!("[WPT] CoreML requested device: {requested} (not measured placement)");
+            }
             if backend.is_available() {
                 available.push(backend);
             } else {

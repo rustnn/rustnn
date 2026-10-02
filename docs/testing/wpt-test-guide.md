@@ -75,20 +75,14 @@ trtx::clamp::clamp_uint64_1D_tensor_with_bigint_max
 | `make fetch-wpt` | Download/update WPT corpus into `.cache/wpt` |
 | `make test-wpt` | Full suite, ONNX CPU backend |
 | `make test-wpt-trtx` | Full suite, TensorRT backend |
-<<<<<<< HEAD
-| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
-| `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
 | `make test-wpt-cann` | Full suite on the CANN/HiAI NPU (cross-compiled for OHOS, run over `hdc`) |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
-| `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
-=======
 | `make test-wpt-litert` | Full suite, LiteRT backend |
 | `make test-wpt-coreml` | Full suite, CoreML backend (macOS); `make test-wpt-coreml-report` also writes the JSON report |
 | `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`); `WPT_BACKEND=<backend>` selects the backend |
 | `make test-wpt-report` | Full run with JSON/HTML reports even on failures; `WPT_BACKEND=onnx|trtx|litert|coreml` picks the backend |
-| `make wpt-sync-onnx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-trtx` | Regenerate PASS snapshots and expected-failure lists against the pinned corpus |
->>>>>>> ad69c55f (Initial doc cleanup)
+| `make wpt-sync-onnx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-trtx`, `wpt-sync-cann` | Regenerate PASS snapshots and expected-failure lists against the pinned corpus |
+| `make test-wpt-tolerance` | Backend-independent tolerance regressions |
+| `make test-wpt-tolerance-parity` | Compare strict finite ULP metrics with the fetched upstream JavaScript helpers |
 
 Equivalent `cargo` invocations:
 
@@ -110,23 +104,59 @@ Set `WPT_BACKEND` to limit which backends register trials:
 
 | Value | Backend | Notes |
 |-------|---------|-------|
-<<<<<<< HEAD
-| `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
-| `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
 | `cann` | CANN/HiAI NPU | `MLPowerPreference::Default`, `accelerated=true`; on-device only |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
-| `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
-=======
 | `onnx` | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
 | `trtx` | TensorRT-RTX | `MLPowerPreference::HighPerformance`, `accelerated=true`; requires the `trtx-runtime` feature |
 | `litert` | LiteRT | requires the `litert-runtime` feature |
 | `coreml` | CoreML | macOS, requires the `coreml-runtime` feature |
->>>>>>> ad69c55f (Initial doc cleanup)
 
 Aliases: `ort`, `cpu`, `onnx-cpu`, `ort-cpu` (onnx); `tensorrt`, `trt` (trtx); `tflite` (litert); `core-ml`, `mlprogram` (coreml).
 
 When `WPT_BACKEND` is unset, all **available** backends register trials. Unavailable backends (e.g. TRTX without a GPU) are skipped with a log message — they do not count as skips in the summary.
+
+CoreML defaults to its CPU policy. Set `WPT_COREML_DEVICE=cpu|gpu|npu` to
+request another policy, without asserting where CoreML actually schedules work.
+Use `TEST_FILTER` for a focused operation run and separate report files when
+comparing policies:
+
+```bash
+WPT_COREML_DEVICE=npu WPT_REPORT_JSON=reports/gelu-coreml-npu.json \
+  make test-wpt-coreml TEST_FILTER=coreml::gelu
+```
+
+Add `WPT_STRICT_TOLERANCE=1` to use the upstream case's tolerance without local
+ULP minima, absolute-error floors, or CANN's FP16 allowance. This opt-in mode
+preserves the historical default while exposing numerical conformance gaps.
+A missing or malformed source tolerance fails explicitly rather than selecting
+a local default. Strict mode accepts upstream ULP and ATOL, not the local RTOL
+extension. Keep strict and compatibility results separate when reporting passes.
+The compatibility ATOL/RTOL and ULP comparators retain their existing behavior;
+the stronger nonfinite gate and full-width ULP budgets apply only to strict mode.
+Callbacks that require intermediate operands are reevaluated with shapes and
+types from the Rust builder, using Node.js and the fetched source file. No
+tolerance formula is reimplemented. An upstream callback that still returns
+an undefined or nonfinite budget remains a test failure.
+The strict finite-value comparator follows the upstream helpers: raw half-bit
+distance except signed zero, the helper's FP16 halfway rounding, and unrounded
+JavaScript-number expected values for ATOL. Its audit uses the same comparator
+and applied budget. Nonfinite values use classification rules instead of the
+upstream bit-distance helper: NaN matches NaN regardless of payload, and
+infinities must match in sign. A large budget cannot hide a class mismatch.
+ULP classification uses the expected value after conversion to the output
+dtype; ATOL retains the original source number, including at overflow boundaries.
+Strict FP16 runtime inputs and constants also use
+the upstream halfway-rounding helper; compatibility packing is unchanged.
+
+`make test-wpt-tolerance` runs the comparator regressions without a backend.
+Fetch the corpus with `make fetch-wpt`, then, with Node.js available, run
+`make test-wpt-tolerance-parity` to compare finite ULP cases directly with the
+upstream JavaScript helpers across every finite FP16 encoding, opposite signs,
+zeros and adjacent halfway values, plus FP32 and ATOL boundary cases. Set
+`WPT_TOLERANCE_PARITY_JSON=/path/to/parity.json` to save the vectors and checked
+distances for replay through the browser's upstream `testharness.js`/`utils.js`.
+The full ONNX and CoreML Make targets run this parity check after a successful
+WPT run, using the same fetched corpus. The reporting target used by CI runs
+parity after fetching the corpus and before executing the backend trials.
 
 ## On-device (CANN/HiAI)
 
@@ -153,13 +183,9 @@ make test-wpt-cann
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WPT_DIR` | `.cache/wpt` | Path to WPT checkout |
-<<<<<<< HEAD
 | `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert`, `coreml`, or `cann` |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `WPT_BACKEND` | (all available) | Limit backend: `onnx` or `trtx` |
-=======
-| `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert` or `coreml` |
->>>>>>> ad69c55f (Initial doc cleanup)
+| `WPT_COREML_DEVICE` | `cpu` | Requested CoreML policy: `cpu`, `gpu`, or `npu`; not measured execution placement |
+| `WPT_STRICT_TOLERANCE` | (off) | Set to `1` for upstream source budgets and strict finite-value comparison; otherwise local compatibility allowances remain enabled |
 | `WPT_REPORT_JSON` | (none; `reports/wpt-conformance.json` when `CI` is set) | Write structured pass/fail JSON report |
 | `WPT_REPORT_HTML` | (derived from JSON path) | HTML report path; set to empty string to disable |
 | `WPT_AUDIT` | (off) | Enable per-pass error metrics collection (see [Audit mode](#audit-mode)) |
@@ -175,7 +201,9 @@ Validation logic is in `tests/wpt_conformance/tolerance.rs`, aligned with pywebn
 - **RTOL** — used for conv2d/conv_transpose2d when no per-case ULP override is present.
 - **Integer** — exact match by default; per-case tolerance from WPT JSON when specified.
 
-WPT per-case tolerance overrides take precedence. For ULP, the applied tolerance is `max(wpt_value, merged_ulp_minimum(operation, graph_operators))`.
+In default compatibility mode, the applied ULP tolerance is
+`max(wpt_value, merged_ulp_minimum(operation, graph_operators))`, with the local
+absolute floor described below. Strict mode uses the source budget unchanged.
 
 On failure, the harness prints inputs, expected/actual slices, and n-dimensional tensor dumps for triage.
 
@@ -210,12 +238,14 @@ Each entry in `cases[]`:
 | `operation` | Primary operation under test |
 | `toleranceKind` | `Ulp`, `Atol`, or `Rtol` |
 | `toleranceValue` | Applied tolerance |
-| `tightUlpMinimum` | Minimum ULP across graph operators (strict floor) |
+| `tightUlpMinimum` | Historical local audit reference across graph operators, not an upstream budget |
 | `maxUlp` | Peak ULP distance vs reference (float outputs) |
 | `maxAbs` | Peak absolute error |
 | `maxRtol` | Peak relative error |
 | `maxIntDiff` | Peak integer difference (integer outputs) |
-| `slackRatio` | `max_error / tolerance` (how much of the budget is used) |
+| `integerTolerance` | Applied integer budget, reported separately when float compatibility allowances differ |
+| `nonfiniteMismatches` | Floating-point classification mismatches (must be zero for a valid pass) |
+| `slackRatio` | Largest applicable error/budget fraction across floating-point and integer outputs |
 | `flagged` | `true` if the case warrants review |
 | `flagReasons` | Why it was flagged |
 
@@ -223,13 +253,24 @@ Each entry in `cases[]`:
 
 | Reason | Meaning |
 |--------|---------|
-| `max_ulp N exceeds tight minimum M` | Would fail at the strict per-operator ULP floor; passes only because applied tolerance is wider |
+| `max_ulp N exceeds local audit reference M` | Actual error exceeds a local per-operation audit reference, not an upstream WPT budget |
 | `wide ULP tolerance N` | Applied tolerance ≥ 1000 ULP (policy flag; result may still be exact) |
 | `uses X% of tolerance budget` | `slackRatio ≥ 0.5` — close to the edge |
 
-**Note:** WPT cases that specify ULP tolerance also allow an absolute floor (`|actual − expected| ≤ 2e-6` for float32). A test can show enormous ULP but still pass via this abs floor. Check `maxUlp > toleranceValue` in the audit JSON to catch these.
+**Note:** The default compatibility mode adds an absolute floor to WPT ULP cases
+(`|actual − expected| ≤ 2e-6` for float32, `≤ 1e-2` for float16). These are local
+RustNN allowances, not upstream WPT tolerances. A case can exceed its ULP budget
+and still pass. Check `maxUlp > toleranceValue` in the audit JSON or use
+`WPT_STRICT_TOLERANCE=1` to disable these allowances.
 
 ## Structured reports
+
+The JSON report's `options.strictTolerance` labels the comparison mode, and
+`options.coremlRequestedDevice` records the requested CoreML policy. Audit JSON
+records the same information as `strict_tolerance` and
+`coreml_requested_device`. Neither field demonstrates GPU/NPU execution;
+placement needs separate runtime evidence. Keep policy and comparison mode in
+any published summary rather than combining these runs into one pass rate.
 
 `make test-wpt-report` (or `WPT_REPORT_JSON=...`) writes a JSON conformance report compatible with `scripts/wpt_bridge/render_conformance_html.mjs`. HTML is generated automatically unless `WPT_REPORT_HTML=""`.
 

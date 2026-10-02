@@ -180,6 +180,40 @@ pub fn get_operation_tolerance(
     tolerance_override: Option<&super::wpt_types::WptTolerance>,
     graph_operator_names: &[&str],
 ) -> (ToleranceKind, u64) {
+    get_operation_tolerance_with_mode(
+        operation,
+        tolerance_override,
+        graph_operator_names,
+        super::wpt_config::strict_wpt_tolerance(),
+    )
+}
+
+/// Reject missing or malformed source budgets instead of guessing in strict mode.
+pub fn validate_strict_source_tolerance(
+    source: Option<&super::wpt_types::WptTolerance>,
+) -> Result<(), String> {
+    let source =
+        source.ok_or("strict WPT comparison requires a tolerance from the upstream test")?;
+    let value = source
+        .value
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or("strict WPT comparison requires a finite nonnegative source tolerance")?;
+    match source.metric_type.to_ascii_lowercase().as_str() {
+        // WPT budgets are JavaScript Numbers; reject integers that Number cannot
+        // represent exactly instead of silently rounding them through as_f64.
+        "ulp" if value.fract() == 0.0 && value <= 9_007_199_254_740_991.0 => Ok(()),
+        "atol" => Ok(()),
+        _ => Err("strict WPT comparison requires ULP with a safe integer budget or ATOL".into()),
+    }
+}
+
+pub fn get_operation_tolerance_with_mode(
+    operation: &str,
+    tolerance_override: Option<&super::wpt_types::WptTolerance>,
+    graph_operator_names: &[&str],
+    strict: bool,
+) -> (ToleranceKind, u64) {
     if let Some(t) = tolerance_override {
         let metric = t.metric_type.as_str();
         let kind = if metric.eq_ignore_ascii_case("atol") {
@@ -198,7 +232,11 @@ pub fn get_operation_tolerance(
                     .as_u64()
                     .or_else(|| t.value.as_f64().map(|f| f as u64))
                     .unwrap_or(100);
-                wpt_ulp.max(merged_ulp_minimum(operation, graph_operator_names))
+                if strict {
+                    wpt_ulp
+                } else {
+                    wpt_ulp.max(merged_ulp_minimum(operation, graph_operator_names))
+                }
             }
         };
         return (kind, value);
@@ -270,13 +308,144 @@ pub fn ulp_distance_f16(a: f32, b: f32) -> u32 {
     f16_bits_to_ordered(a_bits).abs_diff(f16_bits_to_ordered(b_bits))
 }
 
+/// The upstream ULP metric, including raw FP16 bits across opposite signs and
+/// the signed-zero exception. Expected values retain their original JS precision.
+pub fn upstream_ulp_distance(actual: f32, expected: f64, float16: bool) -> u32 {
+    if float16 {
+        let actual = half::f16::from_f32(actual).to_bits();
+        let expected = super::wpt_tensor::wpt_half_bits(expected);
+        if actual & 0x7fff == 0 && expected & 0x7fff == 0 {
+            0
+        } else {
+            u32::from(actual.abs_diff(expected))
+        }
+    } else {
+        let signed_bits = |value: f64| {
+            let magnitude = i64::from((value.abs() as f32).to_bits());
+            if value < 0.0 { -magnitude } else { magnitude }
+        };
+        signed_bits(actual as f64).abs_diff(signed_bits(expected)) as u32
+    }
+}
+
+fn nonfinite_mismatch(actual: f64, expected: f64) -> bool {
+    !(actual.is_finite() && expected.is_finite()
+        || actual.is_nan() && expected.is_nan()
+        || actual == expected)
+}
+
+fn expected_classification_value(expected: f64, float16: bool, kind: ToleranceKind) -> f64 {
+    if kind != ToleranceKind::Ulp {
+        expected
+    } else if float16 {
+        half::f16::from_bits(super::wpt_tensor::wpt_half_bits(expected)).to_f64()
+    } else {
+        (expected as f32) as f64
+    }
+}
+
+/// Upstream budgets and finite-value arithmetic, with an explicit nonfinite
+/// classification gate. Unlike the upstream bit metric alone, a large budget
+/// cannot turn a finite/infinite or NaN mismatch into a pass.
+pub fn validate_upstream_result(
+    actual: &[f32],
+    expected: &[f64],
+    kind: ToleranceKind,
+    value: u64,
+    float16: bool,
+) -> (bool, Option<String>) {
+    if kind == ToleranceKind::Rtol {
+        return (
+            false,
+            Some("RTOL is not an upstream WPT comparison metric".into()),
+        );
+    }
+    if actual.len() != expected.len() {
+        return (
+            false,
+            Some(format!(
+                "shape mismatch: actual len {} expected len {}",
+                actual.len(),
+                expected.len()
+            )),
+        );
+    }
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        let classified_expected = expected_classification_value(expected, float16, kind);
+        if nonfinite_mismatch(actual as f64, classified_expected) {
+            return (
+                false,
+                Some(format!(
+                    "index {index}: actual={actual} expected={expected} nonfinite classification mismatch"
+                )),
+            );
+        }
+        if !actual.is_finite() || !classified_expected.is_finite() {
+            continue;
+        }
+        let (pass, error, budget) = match kind {
+            ToleranceKind::Ulp => {
+                let distance = upstream_ulp_distance(actual, expected, float16);
+                (u64::from(distance) <= value, distance as f64, value as f64)
+            }
+            ToleranceKind::Atol => {
+                let distance = (actual as f64 - expected).abs();
+                let budget = f64::from_bits(value);
+                (distance <= budget, distance, budget)
+            }
+            ToleranceKind::Rtol => {
+                return (
+                    false,
+                    Some("RTOL is not an upstream WPT comparison metric".into()),
+                );
+            }
+        };
+        if !pass {
+            return (
+                false,
+                Some(format!(
+                    "index {index}: actual={actual} expected={expected} {kind:?} error={error} tolerance={budget}"
+                )),
+            );
+        }
+    }
+    (true, None)
+}
+
+/// Audit using exactly the same expected values and ULP metric as strict checks.
+pub fn upstream_float_error_metrics(
+    actual: &[f32],
+    expected: &[f64],
+    float16: bool,
+    kind: ToleranceKind,
+) -> FloatErrorMetrics {
+    let mut metrics = FloatErrorMetrics::default();
+    for (&actual, &expected) in actual.iter().zip(expected) {
+        let classified_expected = expected_classification_value(expected, float16, kind);
+        if nonfinite_mismatch(actual as f64, classified_expected) {
+            metrics.nonfinite_mismatches += 1;
+            metrics.max_ulp = u32::MAX;
+            metrics.max_abs = f64::INFINITY;
+            metrics.max_rtol = f64::INFINITY;
+        } else if actual.is_finite() && classified_expected.is_finite() {
+            metrics.max_ulp = metrics
+                .max_ulp
+                .max(upstream_ulp_distance(actual, expected, float16));
+            let abs = (actual as f64 - expected).abs();
+            metrics.max_abs = metrics.max_abs.max(abs);
+            metrics.max_rtol = metrics.max_rtol.max(abs / expected.abs().max(1e-6));
+        }
+    }
+    metrics
+}
+
 /// Check ULP tolerance; returns (pass, optional first failure message).
 pub fn check_ulp_tolerance(
     actual: &[f32],
     expected: &[f32],
     tolerance: u64,
     float16: bool,
-    wpt_ulp_only: bool,
+    allow_absolute_floor: bool,
 ) -> (bool, Option<String>) {
     if actual.len() != expected.len() {
         return (
@@ -296,7 +465,7 @@ pub fn check_ulp_tolerance(
         } else {
             ulp_distance_f32(a, e)
         };
-        let abs_ok = wpt_ulp_only && (a - e).abs() <= abs_floor;
+        let abs_ok = allow_absolute_floor && (a - e).abs() <= abs_floor;
         if ulp > tol && !abs_ok {
             return (
                 false,
@@ -339,6 +508,54 @@ pub fn check_integer_tolerance(
         }
     }
     (true, None)
+}
+
+/// Unsigned WPT distance must not pass through signed subtraction or f64.
+pub fn check_unsigned_tolerance(
+    actual: &[u64],
+    expected: &[u64],
+    tolerance: u64,
+) -> (bool, Option<String>) {
+    if actual.len() != expected.len() {
+        return (
+            false,
+            Some(format!(
+                "shape mismatch: actual len {} expected len {}",
+                actual.len(),
+                expected.len()
+            )),
+        );
+    }
+    for (index, (&actual, &expected)) in actual.iter().zip(expected).enumerate() {
+        if actual.abs_diff(expected) > tolerance {
+            return (
+                false,
+                Some(format!(
+                    "index {index}: actual={actual} expected={expected} tolerance={tolerance}"
+                )),
+            );
+        }
+    }
+    (true, None)
+}
+
+/// Convert the harness's signed storage payloads back to uint32 values.
+pub fn unsigned_32_values(values: &[i32]) -> Vec<u64> {
+    values
+        .iter()
+        .map(|&value| u64::from(value as u32))
+        .collect()
+}
+
+pub fn unsigned_error_metrics(actual: &[u64], expected: &[u64]) -> IntegerErrorMetrics {
+    IntegerErrorMetrics {
+        max_abs_diff: actual
+            .iter()
+            .zip(expected)
+            .map(|(&a, &e)| a.abs_diff(e))
+            .max()
+            .unwrap_or(0),
+    }
 }
 
 /// Check relative tolerance: |actual - expected| / max(|expected|, 1e-6) <= rtol.
@@ -443,8 +660,9 @@ pub fn check_atol_tolerance(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct FloatErrorMetrics {
     pub max_ulp: u32,
-    pub max_abs: f32,
-    pub max_rtol: f32,
+    pub max_abs: f64,
+    pub max_rtol: f64,
+    pub nonfinite_mismatches: u64,
 }
 
 /// Compute max ULP / absolute / relative error across a float tensor pair.
@@ -461,11 +679,15 @@ pub fn float_error_metrics(actual: &[f32], expected: &[f32], float16: bool) -> F
             ulp_distance_f32(a, e)
         };
         metrics.max_ulp = metrics.max_ulp.max(ulp);
-        if !(e.is_nan() || e.is_infinite()) {
+        if nonfinite_mismatch(a as f64, e as f64) {
+            metrics.nonfinite_mismatches += 1;
+            metrics.max_abs = f64::INFINITY;
+            metrics.max_rtol = f64::INFINITY;
+        } else if a.is_finite() && e.is_finite() {
             let abs = (a - e).abs();
-            metrics.max_abs = metrics.max_abs.max(abs);
+            metrics.max_abs = metrics.max_abs.max(abs as f64);
             let denom = e.abs().max(eps);
-            metrics.max_rtol = metrics.max_rtol.max(abs / denom);
+            metrics.max_rtol = metrics.max_rtol.max((abs / denom) as f64);
         }
     }
     metrics
@@ -496,10 +718,12 @@ pub fn validate_result(
     kind: ToleranceKind,
     value: u64,
     float16: bool,
-    wpt_ulp_only: bool,
+    allow_absolute_floor: bool,
 ) -> (bool, Option<String>) {
     match kind {
-        ToleranceKind::Ulp => check_ulp_tolerance(actual, expected, value, float16, wpt_ulp_only),
+        ToleranceKind::Ulp => {
+            check_ulp_tolerance(actual, expected, value, float16, allow_absolute_floor)
+        }
         ToleranceKind::Atol => {
             let atol_f = f64::from_bits(value);
             check_atol_tolerance(actual, expected, atol_f)

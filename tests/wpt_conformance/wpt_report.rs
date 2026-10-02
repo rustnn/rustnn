@@ -29,6 +29,13 @@ struct ReportOptions {
     #[serde(rename = "reportJson")]
     report_json: Option<String>,
     filter: Option<String>,
+    #[serde(rename = "strictTolerance")]
+    strict_tolerance: bool,
+    #[serde(
+        rename = "coremlRequestedDevice",
+        skip_serializing_if = "Option::is_none"
+    )]
+    coreml_requested_device: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -341,6 +348,12 @@ impl WptReportCollector {
                         .clone()
                         .or_else(|| report_output_path().map(|p| p.display().to_string())),
                     filter: state.filter.clone(),
+                    strict_tolerance: super::wpt_config::strict_wpt_tolerance(),
+                    coreml_requested_device: state
+                        .backends
+                        .iter()
+                        .any(|name| name == "coreml")
+                        .then(|| super::wpt_config::coreml_requested_device().to_string()),
                 },
                 cwd: std::env::current_dir()
                     .map(|p| p.display().to_string())
@@ -388,6 +401,10 @@ fn backend_and_variant(backend_prefix: &str) -> (String, String) {
         "onnx-gpu" => ("onnx".to_string(), "gpu".to_string()),
         "trtx" => ("trtx".to_string(), "trtx".to_string()),
         "cann" => ("cann".to_string(), "npu".to_string()),
+        "coreml" => (
+            "coreml".to_string(),
+            super::wpt_config::coreml_requested_device().to_string(),
+        ),
         other => (other.to_string(), "default".to_string()),
     }
 }

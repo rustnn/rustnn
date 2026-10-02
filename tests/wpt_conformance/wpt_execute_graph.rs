@@ -1611,6 +1611,7 @@ pub fn append_webnn_graph_text(msg: String, webnn_text: Option<&str>) -> String 
 pub struct WptExecuteArtifacts {
     pub outputs: HashMap<String, WptActualOutput>,
     pub webnn_text: Option<String>,
+    pub intermediate_descriptors: serde_json::Value,
 }
 
 /// Build a backend-agnostic graph from a WPT graph without creating a native runtime context.
@@ -1705,6 +1706,7 @@ pub fn compile_wpt_graph(graph: &WptGraph) -> Result<rustnn::GraphInfo, String> 
 pub fn execute_wpt_graph(
     context: &mut MLContext,
     graph: &WptGraph,
+    capture_intermediates: bool,
 ) -> Result<WptExecuteArtifacts, String> {
     let mut builder = MLGraphBuilder::new(context).map_err(|e| e.to_string())?;
     let mut operand_map: HashMap<String, MLOperand> = HashMap::new();
@@ -1797,6 +1799,24 @@ pub fn execute_wpt_graph(
 
     let webnn_text = builder.rustnn_webnn_text_for_outputs(&build_outputs);
 
+    let mut intermediate_descriptors = serde_json::Map::new();
+    if capture_intermediates {
+        for (name, &operand) in &operand_map {
+            let shape = builder
+                .rustnn_operand_shape(operand)
+                .map_err(|e| e.to_string())?;
+            let data_type = builder
+                .rustnn_operand_data_type(operand)
+                .map_err(|e| e.to_string())?;
+            intermediate_descriptors.insert(
+                name.clone(),
+                serde_json::json!({
+                    "shape": shape, "dataType": data_type
+                }),
+            );
+        }
+    }
+
     let mut ml_graph = builder
         .build(&build_outputs)
         .map_err(|e| append_webnn_graph_text(e.to_string(), webnn_text.as_deref()))?;
@@ -1850,5 +1870,6 @@ pub fn execute_wpt_graph(
     Ok(WptExecuteArtifacts {
         outputs,
         webnn_text,
+        intermediate_descriptors: intermediate_descriptors.into(),
     })
 }

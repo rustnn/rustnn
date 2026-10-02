@@ -201,6 +201,36 @@ fn parse_integer_for_tensor(v: &serde_json::Value) -> Option<i32> {
         .map(|x| x as i32)
 }
 
+/// Port of webnn/resources/utils.js toHalf, including its halfway rounding.
+/// Strict packing and comparison use the same helper; compatibility mode keeps
+/// the historical IEEE ties-to-even conversion.
+pub(crate) fn wpt_half_bits(value: f64) -> u16 {
+    let bits = (value as f32).to_bits();
+    let sign = (bits >> 16) & 0x8000;
+    let mut mantissa = (bits >> 12) & 0x07ff;
+    let exponent = (bits >> 23) & 0xff;
+    if exponent < 103 {
+        return sign as u16;
+    }
+    if exponent > 142 {
+        return (sign | 0x7c00 | u32::from(exponent == 255 && bits & 0x007f_ffff != 0)) as u16;
+    }
+    if exponent < 113 {
+        mantissa |= 0x0800;
+        return (sign | ((mantissa >> (114 - exponent)) + ((mantissa >> (113 - exponent)) & 1)))
+            as u16;
+    }
+    ((sign | ((exponent - 112) << 10) | (mantissa >> 1)) + (mantissa & 1)) as u16
+}
+
+fn float16_bits(value: f32, strict: bool) -> u16 {
+    if strict {
+        wpt_half_bits(value as f64)
+    } else {
+        half::f16::from_f32(value).to_bits()
+    }
+}
+
 pub(crate) fn fill_i32_tensor_values(spec: &WptTensorSpec, n: usize) -> Vec<i32> {
     let mut buf = vec![0i32; n];
     if let Some(arr) = spec.data.as_array() {
@@ -263,6 +293,13 @@ pub(crate) fn output_names(op: &WptOperator) -> Vec<String> {
 
 /// Serialize tensor spec data to bytes (for constants).
 pub(crate) fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, String> {
+    tensor_spec_to_bytes_with_mode(spec, super::wpt_config::strict_wpt_tolerance())
+}
+
+pub(crate) fn tensor_spec_to_bytes_with_mode(
+    spec: &WptTensorSpec,
+    strict: bool,
+) -> Result<Vec<u8>, String> {
     let shape = spec.shape();
     let dtype = spec.data_type();
     let n: usize = shape.iter().map(|&d| d as usize).product();
@@ -286,10 +323,10 @@ pub(crate) fn tensor_spec_to_bytes(spec: &WptTensorSpec) -> Result<Vec<u8>, Stri
             if let Some(arr) = arr_opt {
                 for (i, v) in arr.iter().enumerate().take(n) {
                     let f = parse_float_for_tensor(v).unwrap_or(0.0);
-                    buf[i] = half::f16::from_f32(f).to_bits();
+                    buf[i] = float16_bits(f, strict);
                 }
             } else if let Some(f) = parse_float_for_tensor(&spec.data) {
-                let h = half::f16::from_f32(f).to_bits();
+                let h = float16_bits(f, strict);
                 buf.fill(h);
             }
             buf.iter().flat_map(|u| u.to_ne_bytes()).collect()
@@ -482,9 +519,13 @@ pub fn tensor_f32_values(spec: &WptTensorSpec) -> Vec<f32> {
 
 /// Float16 payload as raw bits for runtime I/O and builder constants.
 pub fn tensor_f16_bits(spec: &WptTensorSpec) -> Vec<u16> {
+    tensor_f16_bits_with_mode(spec, super::wpt_config::strict_wpt_tolerance())
+}
+
+pub(crate) fn tensor_f16_bits_with_mode(spec: &WptTensorSpec, strict: bool) -> Vec<u16> {
     tensor_f32_values(spec)
         .into_iter()
-        .map(|f| half::f16::from_f32(f).to_bits())
+        .map(|f| float16_bits(f, strict))
         .collect()
 }
 
@@ -534,6 +575,37 @@ pub fn expected_output_to_f32(spec: &WptTensorSpec) -> Vec<f32> {
         }
     }
     buf
+}
+
+/// Strict comparisons preserve the source's JavaScript Number precision instead
+/// of rounding expected data through the output dtype before applying a budget.
+pub fn expected_output_to_f64(spec: &WptTensorSpec) -> Result<Vec<f64>, String> {
+    let n = spec.shape().iter().try_fold(1usize, |n, &dimension| {
+        n.checked_mul(dimension as usize)
+            .ok_or("expected tensor element count overflow")
+    })?;
+    let parse = |value: &serde_json::Value| {
+        value
+            .as_f64()
+            .or_else(|| match value.as_str() {
+                Some("NaN") => Some(f64::NAN),
+                Some("Infinity") => Some(f64::INFINITY),
+                Some("-Infinity") => Some(f64::NEG_INFINITY),
+                _ => None,
+            })
+            .ok_or_else(|| format!("invalid expected floating-point value: {value}"))
+    };
+    if let Some(values) = spec.data.as_array() {
+        if values.len() != n {
+            return Err(format!(
+                "expected tensor data length {} does not match shape element count {n}",
+                values.len()
+            ));
+        }
+        values.iter().map(parse).collect()
+    } else {
+        Ok(vec![parse(&spec.data)?; n])
+    }
 }
 
 /// Expected output as i32 slice (for integer validation).

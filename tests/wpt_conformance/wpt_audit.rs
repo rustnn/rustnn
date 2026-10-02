@@ -6,11 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
-use super::tolerance::{
-    FloatErrorMetrics, IntegerErrorMetrics, ToleranceKind, get_operation_tolerance,
-    merged_ulp_minimum,
-};
-use super::wpt_types::WptTolerance;
+use super::tolerance::{FloatErrorMetrics, IntegerErrorMetrics, ToleranceKind, merged_ulp_minimum};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,11 +21,14 @@ pub struct AuditCaseMetrics {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_ulp: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_abs: Option<f32>,
+    pub max_abs: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_rtol: Option<f32>,
+    pub max_rtol: Option<f64>,
+    pub nonfinite_mismatches: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_int_diff: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integer_tolerance: Option<u64>,
     pub slack_ratio: Option<f64>,
     pub flagged: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -39,6 +38,9 @@ pub struct AuditCaseMetrics {
 #[derive(Debug, Serialize)]
 struct AuditReport {
     backend: String,
+    strict_tolerance: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coreml_requested_device: Option<String>,
     passed_cases: u64,
     flagged_cases: u64,
     cases: Vec<AuditCaseMetrics>,
@@ -84,31 +86,44 @@ impl WptAuditCollector {
         test_name: &str,
         operation: &str,
         graph_operator_names: &[&str],
-        tolerance_override: Option<&WptTolerance>,
+        applied_tolerance: (ToleranceKind, u64),
         float_metrics: Option<FloatErrorMetrics>,
         int_metrics: Option<IntegerErrorMetrics>,
+        integer_tolerance: Option<u64>,
     ) {
-        let (kind, value) =
-            get_operation_tolerance(operation, tolerance_override, graph_operator_names);
+        // Use the actual comparison budget, including any backend compatibility
+        // adjustment. Recomputing it here can misreport a passing case's slack.
+        let (kind, value) = applied_tolerance;
         let tight_ulp = merged_ulp_minimum(operation, graph_operator_names);
         let tolerance_value = tolerance_value_f64(kind, value);
         let tolerance_kind = format!("{kind:?}");
 
-        let (max_ulp, max_abs, max_rtol, slack_ratio) = match kind {
+        let (max_ulp, max_abs, max_rtol, mut slack_ratio) = match kind {
             ToleranceKind::Ulp => {
-                let fm = float_metrics.unwrap_or_default();
-                let slack = if value > 0 {
-                    Some(fm.max_ulp as f64 / value as f64)
-                } else {
-                    Some(if fm.max_ulp == 0 { 0.0 } else { f64::INFINITY })
-                };
-                (Some(fm.max_ulp), Some(fm.max_abs), Some(fm.max_rtol), slack)
+                let error = float_metrics
+                    .map(|metrics| u64::from(metrics.max_ulp))
+                    .or_else(|| int_metrics.map(|metrics| metrics.max_abs_diff));
+                let slack = error.map(|error| {
+                    if value > 0 {
+                        error as f64 / value as f64
+                    } else if error == 0 {
+                        0.0
+                    } else {
+                        f64::INFINITY
+                    }
+                });
+                (
+                    float_metrics.map(|metrics| metrics.max_ulp),
+                    float_metrics.map(|metrics| metrics.max_abs),
+                    float_metrics.map(|metrics| metrics.max_rtol),
+                    slack,
+                )
             }
             ToleranceKind::Atol => {
                 let fm = float_metrics.unwrap_or_default();
-                let atol = f64::from_bits(value) as f32;
+                let atol = f64::from_bits(value);
                 let slack = if atol > 0.0 {
-                    Some((fm.max_abs / atol) as f64)
+                    Some(fm.max_abs / atol)
                 } else {
                     Some(if fm.max_abs == 0.0 {
                         0.0
@@ -120,9 +135,9 @@ impl WptAuditCollector {
             }
             ToleranceKind::Rtol => {
                 let fm = float_metrics.unwrap_or_default();
-                let rtol = f64::from_bits(value) as f32;
+                let rtol = f64::from_bits(value);
                 let slack = if rtol > 0.0 {
-                    Some((fm.max_rtol / rtol) as f64)
+                    Some(fm.max_rtol / rtol)
                 } else {
                     Some(if fm.max_rtol == 0.0 {
                         0.0
@@ -135,12 +150,24 @@ impl WptAuditCollector {
         };
 
         let max_int_diff = int_metrics.map(|im| im.max_abs_diff);
+        if let Some((metrics, budget)) = int_metrics.zip(integer_tolerance) {
+            let integer_slack = if budget > 0 {
+                metrics.max_abs_diff as f64 / budget as f64
+            } else if metrics.max_abs_diff == 0 {
+                0.0
+            } else {
+                f64::INFINITY
+            };
+            slack_ratio = Some(
+                slack_ratio.map_or(integer_slack, |float_slack| float_slack.max(integer_slack)),
+            );
+        }
 
         let mut flag_reasons = Vec::new();
         if let Some(fm) = float_metrics {
-            if matches!(kind, ToleranceKind::Ulp) && fm.max_ulp > tight_ulp as u32 {
+            if matches!(kind, ToleranceKind::Ulp) && u64::from(fm.max_ulp) > tight_ulp {
                 flag_reasons.push(format!(
-                    "max_ulp {} exceeds tight minimum {} (passes only with wider tolerance)",
+                    "max_ulp {} exceeds local audit reference {}",
                     fm.max_ulp, tight_ulp
                 ));
             }
@@ -153,7 +180,7 @@ impl WptAuditCollector {
         }
         if let Some(im) = int_metrics
             && im.max_abs_diff > 0
-            && tolerance_value == 0.0
+            && integer_tolerance == Some(0)
         {
             flag_reasons.push(format!(
                 "integer diff {} with zero tolerance (unexpected pass)",
@@ -182,7 +209,9 @@ impl WptAuditCollector {
             max_ulp,
             max_abs,
             max_rtol,
+            nonfinite_mismatches: float_metrics.map_or(0, |metrics| metrics.nonfinite_mismatches),
             max_int_diff,
+            integer_tolerance,
             slack_ratio,
             flagged,
             flag_reasons,
@@ -194,6 +223,9 @@ impl WptAuditCollector {
         let state = self.inner.lock().expect("audit lock");
         let flagged_cases = state.cases.iter().filter(|c| c.flagged).count() as u64;
         let report = AuditReport {
+            strict_tolerance: super::wpt_config::strict_wpt_tolerance(),
+            coreml_requested_device: (state.backend == "coreml")
+                .then(|| super::wpt_config::coreml_requested_device().to_string()),
             backend: state.backend.clone(),
             passed_cases: state.cases.len() as u64,
             flagged_cases,
@@ -224,5 +256,87 @@ fn tolerance_value_f64(kind: ToleranceKind, value: u64) -> f64 {
     match kind {
         ToleranceKind::Ulp => value as f64,
         ToleranceKind::Atol | ToleranceKind::Rtol => f64::from_bits(value),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn integer_only_audit_uses_integer_error_for_budget_slack() {
+        let collector = super::WptAuditCollector::new("onnx");
+        collector.record_pass(
+            "cast.https.any.js",
+            "integer test",
+            "cast",
+            &["cast"],
+            (super::ToleranceKind::Ulp, 1),
+            None,
+            Some(super::IntegerErrorMetrics { max_abs_diff: 1 }),
+            Some(1),
+        );
+        let state = collector.inner.lock().unwrap();
+        let case = &state.cases[0];
+        assert_eq!(case.max_int_diff, Some(1));
+        assert_eq!(case.slack_ratio, Some(1.0));
+        assert_eq!(case.max_ulp, None);
+        assert_eq!(case.max_abs, None);
+        assert_eq!(case.max_rtol, None);
+        assert!(case.flagged);
+        assert!(
+            case.flag_reasons
+                .iter()
+                .any(|reason| reason.contains("100% of tolerance budget"))
+        );
+    }
+
+    #[test]
+    fn audit_records_applied_budget_instead_of_recomputing_local_minimum() {
+        let collector = super::WptAuditCollector::new("cann");
+        collector.record_pass(
+            "gelu.https.any.js",
+            "gelu test",
+            "gelu",
+            &["gelu"],
+            (super::ToleranceKind::Ulp, 16_384),
+            Some(super::FloatErrorMetrics {
+                max_ulp: 8_192,
+                ..Default::default()
+            }),
+            None,
+            None,
+        );
+        let state = collector.inner.lock().unwrap();
+        let case = &state.cases[0];
+        assert_eq!(case.tolerance_value, 16_384.0);
+        assert_eq!(case.slack_ratio, Some(0.5));
+        assert!(
+            case.flag_reasons
+                .iter()
+                .all(|reason| !reason.contains("passes only"))
+        );
+    }
+
+    #[test]
+    fn mixed_audit_uses_larger_fraction_with_each_applied_budget() {
+        let collector = super::WptAuditCollector::new("cann");
+        collector.record_pass(
+            "mixed.https.any.js",
+            "mixed test",
+            "subgraph",
+            &["gelu"],
+            (super::ToleranceKind::Ulp, 16_384),
+            Some(super::FloatErrorMetrics {
+                max_ulp: 8_192,
+                ..Default::default()
+            }),
+            Some(super::IntegerErrorMetrics { max_abs_diff: 1 }),
+            Some(1),
+        );
+        let state = collector.inner.lock().unwrap();
+        let case = &state.cases[0];
+        assert_eq!(case.slack_ratio, Some(1.0));
+        assert_eq!(case.tolerance_value, 16_384.0);
+        assert_eq!(case.integer_tolerance, Some(1));
+        assert_eq!(case.max_ulp, Some(8_192));
     }
 }

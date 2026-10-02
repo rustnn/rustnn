@@ -109,6 +109,9 @@ jobs:
       - name: Run cargo test (library only)
         run: cargo test --lib
 
+      - name: Test WPT tolerance comparison and source budgets
+        run: make test-wpt-tolerance
+
       - name: Run CoreML unit and integration tests (without dynamic-inputs)
         if: runner.os == 'macOS'
         run: make test-coreml COREML_FEATURES=coreml-runtime

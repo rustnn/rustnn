@@ -7,6 +7,8 @@ use wasm_bindgen_test::*;
 
 #[path = "wpt_conformance/webnn_chrome_expected_failures.rs"]
 mod webnn_chrome_expected_failures;
+#[path = "wpt_conformance/wpt_config.rs"]
+mod wpt_config;
 #[path = "wpt_conformance/wpt_execute_graph.rs"]
 mod wpt_execute_graph;
 #[path = "wpt_conformance/wpt_tensor.rs"]
