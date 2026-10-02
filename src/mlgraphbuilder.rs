@@ -2100,6 +2100,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             .recorder
             .as_ref()
             .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::save_graph_span(path.as_ref(), outputs, graph.graph())
+            .entered();
 
         // Build the operand-id -> output-name override for the exporter, validating as we go.
         // Two names for the same operand (aliasing) would collide here, so we reject it like
@@ -2149,7 +2152,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         &mut self,
         outputs: &'_ MLNamedOperands,
     ) -> crate::error::Result<MLGraph<'context>> {
+        #[cfg(feature = "tracing")]
+        let span = crate::instrumentation::build_span(outputs);
+        #[cfg(feature = "tracing")]
+        let _guard = span.enter();
+
         let graph = self.finish_graph_info(outputs)?;
+        #[cfg(feature = "tracing")]
+        crate::instrumentation::record_graph_info(&span, &graph);
         self.backend.build(graph)
     }
 

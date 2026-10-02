@@ -14,6 +14,42 @@ use thiserror::Error;
 
 use log::debug;
 
+/// Run one cache read under the `get` span, which `read` runs inside. What it found — a hit, a
+/// missing entry or an I/O error — is recorded on the span once `read` returned. Every tracing
+/// line below disappears in a build without the feature, leaving a plain call to `read`.
+#[allow(unused_variables)] // the span-only parameters are unused without the feature
+fn with_cache_get_span(
+    root_path: &Path,
+    key: &str,
+    compressed: bool,
+    read: impl FnOnce() -> CacheResult<Vec<u8>>,
+) -> CacheResult<Vec<u8>> {
+    #[cfg(feature = "tracing")]
+    let span = crate::instrumentation::cache_get_span(root_path, key, compressed);
+    // `enter` borrows the span, so the outcome can be recorded once `read` returned.
+    #[cfg(feature = "tracing")]
+    let _guard = span.enter();
+    let result = read();
+    #[cfg(feature = "tracing")]
+    crate::instrumentation::record_cache_result(&span, &result);
+    result
+}
+
+/// Run one cache write under the `set` span, as above.
+#[allow(unused_variables)] // the span-only parameters are unused without the feature
+fn with_cache_set_span(
+    root_path: &Path,
+    key: &str,
+    bytes: usize,
+    compressed: bool,
+    write: impl FnOnce() -> CacheResult<()>,
+) -> CacheResult<()> {
+    #[cfg(feature = "tracing")]
+    let _guard =
+        crate::instrumentation::cache_set_span(root_path, key, bytes, compressed).entered();
+    write()
+}
+
 /// Failures of the on-disk caches.
 #[derive(Debug, Error)]
 pub enum CacheError {
@@ -85,21 +121,24 @@ impl<'cache> PersistentCache<'cache> for SimpleFileCache {
     fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>> {
         debug!("Looking up cache key: {key}");
         let cache_path = self.root_path.join(key);
-        read_cache_file(&cache_path)
-            .map_err(|e| CacheError::FailedToReadCacheFile {
+        with_cache_get_span(&self.root_path, key, false, || {
+            read_cache_file(&cache_path).map_err(|e| CacheError::FailedToReadCacheFile {
                 path: cache_path.clone(),
                 source: e,
             })
-            .map(Cow::Owned)
+        })
+        .map(Cow::Owned)
     }
 
     fn set(&self, key: &str, data: &[u8]) -> CacheResult<()> {
         debug!("Setting cache key: {key} with {} bytes", data.len());
         let cache_path = self.root_path.join(key);
-        // TODO: currently, blocking, especially the exclusive lock on the file
-        write_cache_file(&cache_path, data).map_err(|e| CacheError::FailedToWriteCacheFile {
-            path: cache_path.clone(),
-            source: e,
+        with_cache_set_span(&self.root_path, key, data.len(), false, || {
+            // TODO: currently, blocking, especially the exclusive lock on the file
+            write_cache_file(&cache_path, data).map_err(|e| CacheError::FailedToWriteCacheFile {
+                path: cache_path.clone(),
+                source: e,
+            })
         })
     }
 }
@@ -137,12 +176,13 @@ impl<'cache> PersistentCache<'cache> for ZstdCompressedFileCache {
     fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>> {
         debug!("Looking up compressed cache key: {key}");
         let cache_path = self.cache_path(key);
-        read_zstd_cache_file(&cache_path)
-            .map_err(|e| CacheError::FailedToReadCacheFile {
+        with_cache_get_span(&self.root_path, key, true, || {
+            read_zstd_cache_file(&cache_path).map_err(|e| CacheError::FailedToReadCacheFile {
                 path: cache_path.clone(),
                 source: e,
             })
-            .map(Cow::Owned)
+        })
+        .map(Cow::Owned)
     }
 
     fn set(&self, key: &str, data: &[u8]) -> CacheResult<()> {
@@ -151,9 +191,13 @@ impl<'cache> PersistentCache<'cache> for ZstdCompressedFileCache {
             data.len()
         );
         let cache_path = self.cache_path(key);
-        write_zstd_cache_file(&cache_path, data).map_err(|e| CacheError::FailedToWriteCacheFile {
-            path: cache_path.clone(),
-            source: e,
+        with_cache_set_span(&self.root_path, key, data.len(), true, || {
+            write_zstd_cache_file(&cache_path, data).map_err(|e| {
+                CacheError::FailedToWriteCacheFile {
+                    path: cache_path.clone(),
+                    source: e,
+                }
+            })
         })
     }
 }

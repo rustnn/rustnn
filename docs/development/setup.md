@@ -29,8 +29,8 @@ The default build needs no native runtime beyond the prerequisites above.
 | `cann-runtime` | An OHOS/Ascend HiAI environment and `libcann_shim.so` (or `CANN_SHIM_PATH`) |
 | `webnn-runtime` with `webnn-wpt-tests` | The `wasm32-unknown-unknown` target; browser tests additionally need `wasm-pack`, Node.js, Chrome/Chromium, `curl`, and `unzip` |
 
-The mock backend features and `dynamic-inputs`, `native-examples`, `pollster`, and
-`zstd-cache-compression` do not add external runtime prerequisites.
+The mock backend features and `dynamic-inputs`, `native-examples`, `pollster`,
+`zstd-cache-compression`, and `tracing` do not add external runtime prerequisites.
 
 ## Build and test
 
@@ -70,6 +70,7 @@ CI type-checks every backend. Do the same before pushing when shared code change
 
 ```bash
 cargo check
+cargo check --features tracing
 cargo check --features onnx-runtime
 cargo check -F trtx-runtime --all-targets
 cargo check --features litert-runtime

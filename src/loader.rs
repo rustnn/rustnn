@@ -101,6 +101,11 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
 /// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
 pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
     let path_ref = path.as_ref();
+    #[cfg(feature = "tracing")]
+    let span = crate::instrumentation::load_graph_span(path_ref);
+    #[cfg(feature = "tracing")]
+    let _guard = span.enter();
+
     let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
 
     // Determine format based on file extension
@@ -138,7 +143,10 @@ pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphEr
     webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
         .map_err(map_weight_resolve_error)?;
 
-    webnn_json::from_graph_json_owned(graph_json)
+    let graph = webnn_json::from_graph_json_owned(graph_json)?;
+    #[cfg(feature = "tracing")]
+    crate::instrumentation::record_graph_info(&span, &graph);
+    Ok(graph)
 }
 
 #[cfg(test)]

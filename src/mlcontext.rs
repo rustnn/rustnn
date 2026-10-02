@@ -573,6 +573,24 @@ pub struct MLContext<'context> {
     pub(crate) device: BackendDevice,
 }
 
+/// Run one tensor allocation under the `create_tensor` span, recording the id the backend
+/// assigned. Every tracing line below disappears in a build without the feature, leaving a plain
+/// call to `create`.
+#[allow(unused_variables)] // the span-only parameters are unused without the feature
+fn with_create_tensor_span(
+    descriptor: &MLTensorDescriptor,
+    create: impl FnOnce() -> Result<MLTensor>,
+) -> Result<MLTensor> {
+    #[cfg(feature = "tracing")]
+    let span = crate::instrumentation::create_tensor_span(descriptor);
+    #[cfg(feature = "tracing")]
+    let _guard = span.enter();
+    let tensor = create()?;
+    #[cfg(feature = "tracing")]
+    crate::instrumentation::record_tensor_id(&span, &tensor);
+    Ok(tensor)
+}
+
 impl<'context> MLContext<'context> {
     /// Select a backend device for `options` and create the context.
     ///
@@ -584,9 +602,16 @@ impl<'context> MLContext<'context> {
     // those are methods on `create_context`
     //pub async
     pub fn create(options: &MLContextOptions) -> Result<Self> {
+        #[cfg(feature = "tracing")]
+        let span = crate::instrumentation::select_backend_span(options);
+        #[cfg(feature = "tracing")]
+        let _guard = span.enter();
+
         let device = select_backend(options)
             .inspect_err(|e| log::warn!("Error selecting backend: {e:?}"))?;
         info!("Backend selected: {device:?}");
+        #[cfg(feature = "tracing")]
+        crate::instrumentation::record_selected_backend(&span, &device);
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match device {
             crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => Box::new(
                 OrtContext::new_from_ep_idx(ep_device_idx, Some(&options.rustnn_options))?,
@@ -649,7 +674,7 @@ impl<'context> MLContext<'context> {
     /// Allocate a tensor on the backend device. <https://www.w3.org/TR/webnn/#api-mlcontext-createtensor>
     // async
     pub fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
-        self.backend.create_tensor(descriptor)
+        with_create_tensor_span(descriptor, || self.backend.create_tensor(descriptor))
     }
 
     /// Not implemented: dropping the context releases it. <https://www.w3.org/TR/webnn/#api-mlcontext-destroy>
@@ -685,6 +710,8 @@ impl<'context> MLContext<'context> {
         inputs: &MLNamedTensors,
         outputs: &MLNamedTensors,
     ) -> crate::error::Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::dispatch_span(&self.device, inputs, outputs).entered();
         debug!("Dispatch {graph:?}, inputs={inputs:?}, outputs={outputs:?}");
         //https://www.w3.org/TR/webnn/#dom-mlcontext-dispatch
         // spec: 4. If allTensors contains any duplicate items, then throw a TypeError.
@@ -708,6 +735,9 @@ impl<'context> MLContext<'context> {
         tensor: &MLTensor,
         array: &mut [T],
     ) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::read_tensor_span(tensor, std::mem::size_of_val(array))
+            .entered();
         debug!(
             "Read {} bytes from tensor {tensor:?}",
             std::mem::size_of_val(array)
@@ -732,6 +762,9 @@ impl<'context> MLContext<'context> {
     /// [`MLTensor::rustnn_required_bytes`] bytes. <https://www.w3.org/TR/webnn/#api-mlcontext-writetensor>
     //async
     pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::write_tensor_span(tensor, std::mem::size_of_val(array))
+            .entered();
         debug!(
             "Write {} bytes to tensor {tensor:?}",
             std::mem::size_of_val(array)
@@ -756,6 +789,8 @@ impl<'context> MLContext<'context> {
     /// graphs built with the `dynamic-inputs` feature). The new shape must fit the capacity
     /// reserved with [`Self::rustnn_set_tensor_capacity`].
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::resize_tensor_span(tensor, new_shape).entered();
         self.backend.rustnn_resize_tensor(tensor, new_shape)
     }
 
@@ -766,6 +801,8 @@ impl<'context> MLContext<'context> {
         tensor: &mut MLTensor,
         max_shape: &[u64],
     ) -> Result<()> {
+        #[cfg(feature = "tracing")]
+        let _span = crate::instrumentation::set_tensor_capacity_span(tensor, max_shape).entered();
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
     }
 }
