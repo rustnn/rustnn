@@ -1,8 +1,7 @@
 //! C ABI for the public graph-construction API.
 //!
-//! The ABI intentionally wraps only types and methods exposed by `mlcontext` and
-//! `mlgraphbuilder`. Rust values remain opaque and must be released with their
-//! matching destroy function.
+//! The ABI wraps [MLContext], [MLGraphBuilder], and their related public types.
+//! Rust values remain opaque and must be released with their matching destroy function.
 //!
 //! # Safety
 //!
@@ -12,6 +11,8 @@
 //! exactly once with their matching destroy function and must not be used after
 //! destruction. The generated C header and C++ wrapper express these contracts
 //! for non-Rust callers.
+//!
+//! The underlying API follows the [WebNN specification](https://www.w3.org/TR/webnn/).
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -39,17 +40,28 @@ use crate::operator_options::{
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Result of a C API call. Call `rustnn_last_error_message` for failure details.
 pub enum RustnnStatus {
+    /// The call completed successfully.
     Success = 0,
+    /// A required pointer was null.
     NullPointer = 1,
+    /// A supplied string was not valid UTF-8.
     InvalidUtf8 = 2,
+    /// A supplied argument was invalid.
     InvalidArgument = 3,
+    /// The wrapped Rust operation returned an error.
     Error = 4,
+    /// The wrapped Rust operation panicked.
     Panic = 5,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// C representation of [MLOperandDataType].
+///
+/// See [WebNN operand data types](https://www.w3.org/TR/webnn/#enumdef-mloperanddatatype).
+#[expect(missing_docs)]
 pub enum RustnnDataType {
     Float32 = 0,
     Float16 = 1,
@@ -65,9 +77,15 @@ pub enum RustnnDataType {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// C representation of [MLPowerPreference].
+///
+/// See [WebNN power preference](https://www.w3.org/TR/webnn/#enumdef-mlpowerpreference).
 pub enum RustnnPowerPreference {
+    /// Use the default power preference.
     Default = 0,
+    /// Prefer high performance.
     HighPerformance = 1,
+    /// Prefer low power.
     LowPower = 2,
 }
 
@@ -81,17 +99,23 @@ impl From<RustnnPowerPreference> for MLPowerPreference {
     }
 }
 
-/// Runtime implementation requested for an [`RustnnContextOptions`] context.
+/// Backend hint for [MLContextOptions], wrapping [Backend].
 /// `Automatic` leaves backend selection to rustnn.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RustnnBackend {
     #[default]
+    /// Select a backend automatically.
     Automatic = 0,
+    /// Use ONNX Runtime.
     Onnx = 1,
+    /// Use TensorRT-RTX.
     Trtx = 2,
+    /// Use CoreML.
     Coreml = 3,
+    /// Use LiteRT.
     Litert = 4,
+    /// Use CANN.
     Cann = 5,
 }
 
@@ -110,10 +134,14 @@ impl RustnnBackend {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// C representation of [DeviceType] for a [BackendDevice] hint.
 pub enum RustnnDeviceType {
     #[default]
+    /// CPU device.
     Cpu = 0,
+    /// GPU device.
     Gpu = 1,
+    /// NPU device.
     Npu = 2,
 }
 
@@ -163,6 +191,8 @@ impl From<MLOperandDataType> for RustnnDataType {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(missing_docs)]
+/// Implementation detail of the C++ API
 pub enum RustnnUnaryOperation {
     Abs,
     RoundEven,
@@ -222,6 +252,8 @@ pub enum RustnnUnaryOperation {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(missing_docs)]
+/// Implementation detail of the C++ API
 pub enum RustnnBinaryOperation {
     Add,
     Sub,
@@ -251,6 +283,8 @@ pub enum RustnnBinaryOperation {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(missing_docs)]
+/// Implementation detail of the C++ API
 pub enum RustnnTernaryOperation {
     BatchNormalization,
     Where,
@@ -258,43 +292,82 @@ pub enum RustnnTernaryOperation {
     ScatterNd,
 }
 
+/// Opaque handle wrapping [MLOperandDescriptor].
+///
+/// See [WebNN operand descriptor](https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor).
 pub struct RustnnOperandDescriptor(MLOperandDescriptor);
+/// Opaque handle wrapping [MLTensorDescriptor].
+///
+/// See [WebNN tensor descriptor](https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor).
 pub struct RustnnTensorDescriptor(MLTensorDescriptor);
+/// Opaque handle wrapping [MLOperand].
+///
+/// See [WebNN operand](https://www.w3.org/TR/webnn/#api-mloperand).
 pub struct RustnnOperand(MLOperand);
+/// Opaque handle wrapping [MLGraphBuilder].
+///
+/// See [WebNN graph builder](https://www.w3.org/TR/webnn/#api-mlgraphbuilder).
 pub struct RustnnGraphBuilder(MLGraphBuilder<'static, 'static>);
+/// Opaque handle wrapping [MLContext].
+///
+/// See [WebNN context](https://www.w3.org/TR/webnn/#api-mlcontext).
 pub struct RustnnContext(MLContext<'static>);
+/// Opaque handle wrapping [MLGraph].
+///
+/// See [WebNN graph](https://www.w3.org/TR/webnn/#api-mlgraph).
 pub struct RustnnGraph(MLGraph<'static>);
+/// Opaque handle wrapping [MLTensor].
+///
+/// See [WebNN tensor](https://www.w3.org/TR/webnn/#api-mltensor).
 pub struct RustnnTensor(MLTensor);
 
 #[repr(C)]
+/// Name and operand pair used to form [MLNamedOperands].
+///
+/// See [WebNN named operands](https://www.w3.org/TR/webnn/#typedefdef-mlnamedoperands).
 pub struct RustnnNamedOperand {
+    /// Null-terminated UTF-8 operand name.
     pub name: *const c_char,
+    /// Borrowed operand handle.
     pub operand: *const RustnnOperand,
 }
 
 #[repr(C)]
+/// Name and tensor pair used to form [MLNamedTensors].
+///
+/// See [WebNN named tensors](https://www.w3.org/TR/webnn/#typedefdef-mlnamedtensors).
 pub struct RustnnNamedTensor {
+    /// Null-terminated UTF-8 tensor name.
     pub name: *const c_char,
+    /// Borrowed tensor handle.
     pub tensor: *const RustnnTensor,
 }
 
-/// A concrete backend device. `device_index` is the ONNX execution-provider
+/// C representation of [BackendDevice]. `device_index` is the ONNX execution-provider
 /// device index or TensorRT CUDA device index. It must be zero for the other
 /// backends, whose Rust device variants do not carry an index.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RustnnBackendDevice {
+    /// Backend that owns the device.
     pub backend: RustnnBackend,
+    /// Device class.
     pub device_type: RustnnDeviceType,
+    /// Backend-specific device index.
     pub device_index: usize,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// C representation of [TrtxOptions].
 pub struct RustnnTrtxOptions {
+    /// Cache compiled engines.
     pub engine_caching: bool,
+    /// Cache runtime state.
     pub runtime_cache: bool,
+    /// Fail if a compiled engine is absent from the cache.
     pub fail_on_cache_miss: bool,
+    /// Enable CUDA graph execution.
     pub cuda_graphs: bool,
 }
 
@@ -310,26 +383,34 @@ impl Default for RustnnTrtxOptions {
     }
 }
 
-/// RustNN-specific backend options. The other backend option structures in the
+/// C representation of [RustNNOptions]. The other backend option structures in the
 /// Rust API are currently empty, so TensorRT is the only member with settings.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RustnnOptions {
+    /// TensorRT-RTX backend settings.
     pub trtx: RustnnTrtxOptions,
 }
 
+/// C representation of [MLContextOptions].
+///
+/// See [WebNN context options](https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RustnnContextOptions {
+    /// WebNN power preference hint.
     pub power_preference: RustnnPowerPreference,
+    /// Whether to prefer an accelerated device.
     pub accelerated: bool,
     /// `Automatic` corresponds to no Rust backend hint.
     pub backend_hint: RustnnBackend,
     /// Whether `device_hint` should override automatic device selection.
     pub has_device_hint: bool,
+    /// Exact device to use when `has_device_hint` is true.
     pub device_hint: RustnnBackendDevice,
     /// Whether `rustnn_options` should replace the Rust defaults.
     pub has_rustnn_options: bool,
+    /// Backend settings used when `has_rustnn_options` is true.
     pub rustnn_options: RustnnOptions,
 }
 
@@ -347,10 +428,13 @@ impl Default for RustnnContextOptions {
     }
 }
 
-/// Options shared by the unary and binary operations exposed by this ABI.
+/// C representation of [MLOperatorOptions] shared by the operations exposed by this ABI.
 /// A null label is equivalent to an empty label.
+///
+/// See [WebNN operator options](https://www.w3.org/TR/webnn/#dictdef-mloperatoroptions).
 #[repr(C)]
 pub struct RustnnOperatorOptions {
+    /// Optional null-terminated UTF-8 label.
     pub label: *const c_char,
 }
 
@@ -653,6 +737,7 @@ fn return_operands<E: std::fmt::Display>(
     }
 }
 
+/// Return the last C API error message for this thread. The pointer remains valid until the next error on this thread.
 #[unsafe(no_mangle)]
 pub extern "C" fn rustnn_last_error_message() -> *const c_char {
     LAST_ERROR.with(|slot| slot.borrow().as_ptr())
@@ -667,6 +752,9 @@ pub extern "C" fn rustnn_init_logger() {
     let _ = pretty_env_logger::try_init();
 }
 
+/// Allocate an [MLOperandDescriptor] from a data type and shape.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_operand_descriptor_create(
     data_type: RustnnDataType,
@@ -690,6 +778,9 @@ pub unsafe extern "C" fn rustnn_operand_descriptor_create(
     })
 }
 
+/// Release an [MLOperandDescriptor] handle. A null pointer is accepted.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_operand_descriptor_destroy(
     descriptor: *mut RustnnOperandDescriptor,
@@ -699,6 +790,9 @@ pub unsafe extern "C" fn rustnn_operand_descriptor_destroy(
     }
 }
 
+/// Allocate an [MLTensorDescriptor] with read and write permissions.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_tensor_descriptor_create(
     data_type: RustnnDataType,
@@ -726,6 +820,9 @@ pub unsafe extern "C" fn rustnn_tensor_descriptor_create(
     })
 }
 
+/// Release an [MLTensorDescriptor] handle. A null pointer is accepted.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_tensor_descriptor_destroy(descriptor: *mut RustnnTensorDescriptor) {
     if !descriptor.is_null() {
@@ -733,12 +830,17 @@ pub unsafe extern "C" fn rustnn_tensor_descriptor_destroy(descriptor: *mut Rustn
     }
 }
 
-/// Returns context options initialized to the same defaults as the Rust API.
+/// Return the default [MLContextOptions].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mlcontextoptions).
 #[unsafe(no_mangle)]
 pub extern "C" fn rustnn_context_options_default() -> RustnnContextOptions {
     RustnnContextOptions::default()
 }
 
+/// Create an [MLContext]. A null options pointer uses the default WebNN hints.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-ml-createcontext).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_create(
     options: *const RustnnContextOptions,
@@ -772,6 +874,9 @@ pub unsafe extern "C" fn rustnn_context_create(
     })
 }
 
+/// Release an [MLContext] handle. A null pointer is accepted.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlcontext-destroy).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_destroy(context: *mut RustnnContext) {
     if !context.is_null() {
@@ -779,6 +884,9 @@ pub unsafe extern "C" fn rustnn_context_destroy(context: *mut RustnnContext) {
     }
 }
 
+/// Allocate an [MLTensor] from an [MLTensorDescriptor].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlcontext-createtensor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_create_tensor(
     context: *mut RustnnContext,
@@ -812,6 +920,9 @@ pub unsafe extern "C" fn rustnn_context_create_tensor(
     })
 }
 
+/// Release an [MLTensor] handle. A null pointer is accepted.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mltensor-destroy).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_tensor_destroy(tensor: *mut RustnnTensor) {
     if !tensor.is_null() {
@@ -819,6 +930,9 @@ pub unsafe extern "C" fn rustnn_tensor_destroy(tensor: *mut RustnnTensor) {
     }
 }
 
+/// Copy bytes into an [MLTensor] through [MLContext].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlcontext-writetensor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_write_tensor(
     context: *mut RustnnContext,
@@ -849,6 +963,9 @@ pub unsafe extern "C" fn rustnn_context_write_tensor(
     })
 }
 
+/// Copy bytes from an [MLTensor] through [MLContext].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlcontext-readtensor).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_read_tensor(
     context: *mut RustnnContext,
@@ -884,6 +1001,7 @@ pub unsafe extern "C" fn rustnn_context_read_tensor(
     })
 }
 
+/// Create an uncompiled [MLGraphBuilder] for graph construction and serialization.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_create_uncompiled(
     output: *mut *mut RustnnGraphBuilder,
@@ -900,11 +1018,12 @@ pub unsafe extern "C" fn rustnn_graph_builder_create_uncompiled(
     })
 }
 
-#[unsafe(no_mangle)]
-/// Create a runtime-backed builder that exclusively borrows `context`.
+/// Create a runtime-backed [MLGraphBuilder] that exclusively borrows `context`.
 ///
 /// The context must remain alive and must not be used until this builder is
 /// consumed by `rustnn_graph_builder_build` or destroyed.
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor).
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_create(
     context: *mut RustnnContext,
     output: *mut *mut RustnnGraphBuilder,
@@ -940,6 +1059,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_create(
     })
 }
 
+/// Release an [MLGraphBuilder] handle. A null pointer is accepted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_destroy(builder: *mut RustnnGraphBuilder) {
     if !builder.is_null() {
@@ -947,6 +1067,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_destroy(builder: *mut RustnnGraphB
     }
 }
 
+/// Release an [MLOperand] handle. A null pointer is accepted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_operand_destroy(operand: *mut RustnnOperand) {
     if !operand.is_null() {
@@ -954,6 +1075,9 @@ pub unsafe extern "C" fn rustnn_operand_destroy(operand: *mut RustnnOperand) {
     }
 }
 
+/// Declare a named input [MLOperand] on [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-input).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_input(
     builder: *mut RustnnGraphBuilder,
@@ -983,6 +1107,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_input(
     })
 }
 
+/// Create a constant [MLOperand] from descriptor and bytes on [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_constant(
     builder: *mut RustnnGraphBuilder,
@@ -1016,6 +1143,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_constant(
     })
 }
 
+/// Apply a selected unary operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_unary(
     builder: *mut RustnnGraphBuilder,
@@ -1097,6 +1227,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_unary(
     })
 }
 
+/// Apply a selected binary operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_binary(
     builder: *mut RustnnGraphBuilder,
@@ -1153,6 +1286,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary(
     })
 }
 
+/// Apply a selected ternary operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_ternary(
     builder: *mut RustnnGraphBuilder,
@@ -1198,6 +1334,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_ternary(
     })
 }
 
+/// Apply a selected unary operation and label using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_unary_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1350,6 +1489,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_unary_with_options(
     })
 }
 
+/// Apply a selected binary operation and label using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_binary_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1414,7 +1556,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary_with_options(
                     .0
                     .gemm_with_options(lhs, rhs, options_with_label!(MLGemmOptions, options))
             }
-            RustnnBinaryOperation::Conv2d => builder.0.conv2_with_options(
+            RustnnBinaryOperation::Conv2d => builder.0.conv2d_with_options(
                 lhs,
                 rhs,
                 options_with_label!(MLConv2dOptions, options),
@@ -1452,6 +1594,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_binary_with_options(
 // Named entry points mirror the corresponding public `MLGraphBuilder` methods.
 // Keep the ABI declarations explicit: cbindgen does not guarantee expansion of arbitrary
 // function-generating macros.
+/// Apply the add operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_add(
     builder: *mut RustnnGraphBuilder,
@@ -1462,6 +1607,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_add(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Add, lhs, rhs, output) }
 }
 
+/// Apply the subtract operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_subtract(
     builder: *mut RustnnGraphBuilder,
@@ -1472,6 +1620,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_subtract(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Sub, lhs, rhs, output) }
 }
 
+/// Apply the multiply operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_multiply(
     builder: *mut RustnnGraphBuilder,
@@ -1482,6 +1633,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_multiply(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Mul, lhs, rhs, output) }
 }
 
+/// Apply the divide operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_divide(
     builder: *mut RustnnGraphBuilder,
@@ -1492,6 +1646,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_divide(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Div, lhs, rhs, output) }
 }
 
+/// Apply the power operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_power(
     builder: *mut RustnnGraphBuilder,
@@ -1502,6 +1659,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_power(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Pow, lhs, rhs, output) }
 }
 
+/// Apply the maximum operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_maximum(
     builder: *mut RustnnGraphBuilder,
@@ -1512,6 +1672,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_maximum(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Max, lhs, rhs, output) }
 }
 
+/// Apply the minimum operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_minimum(
     builder: *mut RustnnGraphBuilder,
@@ -1522,6 +1685,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_minimum(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Min, lhs, rhs, output) }
 }
 
+/// Apply the equal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_equal(
     builder: *mut RustnnGraphBuilder,
@@ -1532,6 +1698,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_equal(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Equal, lhs, rhs, output) }
 }
 
+/// Apply the greater operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_greater(
     builder: *mut RustnnGraphBuilder,
@@ -1544,6 +1713,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_greater(
     }
 }
 
+/// Apply the greater or equal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_greater_or_equal(
     builder: *mut RustnnGraphBuilder,
@@ -1562,6 +1734,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_greater_or_equal(
     }
 }
 
+/// Apply the lesser operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lesser(
     builder: *mut RustnnGraphBuilder,
@@ -1572,6 +1747,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_lesser(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Lesser, lhs, rhs, output) }
 }
 
+/// Apply the lesser or equal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lesser_or_equal(
     builder: *mut RustnnGraphBuilder,
@@ -1590,6 +1768,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_lesser_or_equal(
     }
 }
 
+/// Apply the not equal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_not_equal(
     builder: *mut RustnnGraphBuilder,
@@ -1602,6 +1783,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_not_equal(
     }
 }
 
+/// Apply the logical and operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_and(
     builder: *mut RustnnGraphBuilder,
@@ -1614,6 +1798,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_and(
     }
 }
 
+/// Apply the logical or operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_or(
     builder: *mut RustnnGraphBuilder,
@@ -1626,6 +1813,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_or(
     }
 }
 
+/// Apply the logical xor operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_xor(
     builder: *mut RustnnGraphBuilder,
@@ -1638,6 +1828,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_xor(
     }
 }
 
+/// Apply the matmul operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-matmul).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_matmul(
     builder: *mut RustnnGraphBuilder,
@@ -1648,6 +1841,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_matmul(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Matmul, lhs, rhs, output) }
 }
 
+/// Apply the abs operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_abs(
     builder: *mut RustnnGraphBuilder,
@@ -1657,6 +1853,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_abs(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Abs, input, output) }
 }
 
+/// Apply the round even operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_round_even(
     builder: *mut RustnnGraphBuilder,
@@ -1666,6 +1865,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_round_even(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::RoundEven, input, output) }
 }
 
+/// Apply the ceil operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_ceil(
     builder: *mut RustnnGraphBuilder,
@@ -1675,6 +1877,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_ceil(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Ceil, input, output) }
 }
 
+/// Apply the cos operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_cos(
     builder: *mut RustnnGraphBuilder,
@@ -1684,6 +1889,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_cos(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Cos, input, output) }
 }
 
+/// Apply the exp operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_exp(
     builder: *mut RustnnGraphBuilder,
@@ -1693,6 +1901,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_exp(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Exp, input, output) }
 }
 
+/// Apply the floor operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_floor(
     builder: *mut RustnnGraphBuilder,
@@ -1702,6 +1913,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_floor(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Floor, input, output) }
 }
 
+/// Apply the gelu operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gelu-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gelu(
     builder: *mut RustnnGraphBuilder,
@@ -1711,6 +1925,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gelu(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Gelu, input, output) }
 }
 
+/// Apply the log operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_log(
     builder: *mut RustnnGraphBuilder,
@@ -1720,6 +1937,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_log(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Log, input, output) }
 }
 
+/// Apply the negate operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_negate(
     builder: *mut RustnnGraphBuilder,
@@ -1729,6 +1949,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_negate(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Neg, input, output) }
 }
 
+/// Apply the relu operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-relu-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_relu(
     builder: *mut RustnnGraphBuilder,
@@ -1738,6 +1961,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_relu(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Relu, input, output) }
 }
 
+/// Apply the sigmoid operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-sigmoid-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sigmoid(
     builder: *mut RustnnGraphBuilder,
@@ -1747,6 +1973,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sigmoid(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Sigmoid, input, output) }
 }
 
+/// Apply the sin operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sin(
     builder: *mut RustnnGraphBuilder,
@@ -1756,6 +1985,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sin(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Sin, input, output) }
 }
 
+/// Apply the sqrt operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sqrt(
     builder: *mut RustnnGraphBuilder,
@@ -1765,6 +1997,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sqrt(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Sqrt, input, output) }
 }
 
+/// Apply the tan operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_tan(
     builder: *mut RustnnGraphBuilder,
@@ -1774,6 +2009,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_tan(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Tan, input, output) }
 }
 
+/// Apply the tanh operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tanh-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_tanh(
     builder: *mut RustnnGraphBuilder,
@@ -1783,6 +2021,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_tanh(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Tanh, input, output) }
 }
 
+/// Apply the erf operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_erf(
     builder: *mut RustnnGraphBuilder,
@@ -1792,6 +2033,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_erf(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Erf, input, output) }
 }
 
+/// Apply the reciprocal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reciprocal(
     builder: *mut RustnnGraphBuilder,
@@ -1801,6 +2045,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reciprocal(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Reciprocal, input, output) }
 }
 
+/// Apply the sign operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sign(
     builder: *mut RustnnGraphBuilder,
@@ -1810,6 +2057,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sign(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Sign, input, output) }
 }
 
+/// Apply the logical not operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_not(
     builder: *mut RustnnGraphBuilder,
@@ -1819,6 +2069,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_not(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::LogicalNot, input, output) }
 }
 
+/// Apply the identity operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_identity(
     builder: *mut RustnnGraphBuilder,
@@ -1828,6 +2081,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_identity(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Identity, input, output) }
 }
 
+/// Apply the softplus operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softplus-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_softplus(
     builder: *mut RustnnGraphBuilder,
@@ -1837,6 +2093,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_softplus(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Softplus, input, output) }
 }
 
+/// Apply the softsign operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softsign-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_softsign(
     builder: *mut RustnnGraphBuilder,
@@ -1846,6 +2105,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_softsign(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Softsign, input, output) }
 }
 
+/// Apply the is nan operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_is_nan(
     builder: *mut RustnnGraphBuilder,
@@ -1855,6 +2117,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_is_nan(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::IsNan, input, output) }
 }
 
+/// Apply the is infinite operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_is_infinite(
     builder: *mut RustnnGraphBuilder,
@@ -1864,6 +2129,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_is_infinite(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::IsInfinite, input, output) }
 }
 
+/// Apply the shape operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_shape(
     builder: *mut RustnnGraphBuilder,
@@ -1873,6 +2141,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_shape(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Shape, input, output) }
 }
 
+/// Apply the add operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_add_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1893,6 +2164,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_add_with_options(
     }
 }
 
+/// Apply the subtract operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_subtract_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1913,6 +2187,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_subtract_with_options(
     }
 }
 
+/// Apply the multiply operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_multiply_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1933,6 +2210,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_multiply_with_options(
     }
 }
 
+/// Apply the divide operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_divide_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1953,6 +2233,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_divide_with_options(
     }
 }
 
+/// Apply the power operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_power_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1973,6 +2256,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_power_with_options(
     }
 }
 
+/// Apply the maximum operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_maximum_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -1993,6 +2279,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_maximum_with_options(
     }
 }
 
+/// Apply the minimum operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_minimum_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2013,6 +2302,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_minimum_with_options(
     }
 }
 
+/// Apply the equal operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_equal_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2033,6 +2325,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_equal_with_options(
     }
 }
 
+/// Apply the greater operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_greater_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2053,6 +2348,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_greater_with_options(
     }
 }
 
+/// Apply the greater or equal operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_greater_or_equal_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2073,6 +2371,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_greater_or_equal_with_options(
     }
 }
 
+/// Apply the lesser operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lesser_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2093,6 +2394,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_lesser_with_options(
     }
 }
 
+/// Apply the lesser or equal operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lesser_or_equal_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2113,6 +2417,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_lesser_or_equal_with_options(
     }
 }
 
+/// Apply the not equal operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-binary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_not_equal_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2133,6 +2440,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_not_equal_with_options(
     }
 }
 
+/// Apply the logical and operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_and_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2153,6 +2463,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_and_with_options(
     }
 }
 
+/// Apply the logical or operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_or_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2173,6 +2486,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_or_with_options(
     }
 }
 
+/// Apply the logical xor operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_xor_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2193,6 +2509,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_xor_with_options(
     }
 }
 
+/// Apply the matmul operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-matmul).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_matmul_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2213,6 +2532,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_matmul_with_options(
     }
 }
 
+/// Apply the abs operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_abs_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2231,6 +2553,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_abs_with_options(
     }
 }
 
+/// Apply the round even operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_round_even_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2249,6 +2574,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_round_even_with_options(
     }
 }
 
+/// Apply the ceil operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_ceil_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2267,6 +2595,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_ceil_with_options(
     }
 }
 
+/// Apply the cos operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_cos_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2285,6 +2616,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_cos_with_options(
     }
 }
 
+/// Apply the exp operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_exp_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2303,6 +2637,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_exp_with_options(
     }
 }
 
+/// Apply the floor operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_floor_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2321,6 +2658,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_floor_with_options(
     }
 }
 
+/// Apply the gelu operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gelu-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gelu_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2339,6 +2679,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gelu_with_options(
     }
 }
 
+/// Apply the log operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_log_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2357,6 +2700,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_log_with_options(
     }
 }
 
+/// Apply the negate operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_negate_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2375,6 +2721,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_negate_with_options(
     }
 }
 
+/// Apply the relu operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-relu-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_relu_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2393,6 +2742,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_relu_with_options(
     }
 }
 
+/// Apply the sigmoid operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-sigmoid-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sigmoid_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2411,6 +2763,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sigmoid_with_options(
     }
 }
 
+/// Apply the sin operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sin_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2429,6 +2784,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sin_with_options(
     }
 }
 
+/// Apply the sqrt operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sqrt_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2447,6 +2805,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sqrt_with_options(
     }
 }
 
+/// Apply the tan operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_tan_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2465,6 +2826,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_tan_with_options(
     }
 }
 
+/// Apply the tanh operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tanh-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_tanh_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2483,6 +2847,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_tanh_with_options(
     }
 }
 
+/// Apply the erf operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_erf_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2501,6 +2868,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_erf_with_options(
     }
 }
 
+/// Apply the reciprocal operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reciprocal_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2519,6 +2889,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reciprocal_with_options(
     }
 }
 
+/// Apply the sign operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_sign_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2537,6 +2910,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_sign_with_options(
     }
 }
 
+/// Apply the logical not operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-logical).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_logical_not_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2555,6 +2931,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_logical_not_with_options(
     }
 }
 
+/// Apply the identity operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_identity_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2573,6 +2952,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_identity_with_options(
     }
 }
 
+/// Apply the softplus operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softplus-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_softplus_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2591,6 +2973,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_softplus_with_options(
     }
 }
 
+/// Apply the softsign operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softsign-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_softsign_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2609,6 +2994,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_softsign_with_options(
     }
 }
 
+/// Apply the is nan operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_is_nan_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2627,6 +3015,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_is_nan_with_options(
     }
 }
 
+/// Apply the is infinite operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_is_infinite_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2645,6 +3036,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_is_infinite_with_options(
     }
 }
 
+/// Apply the shape operation using [MLGraphBuilder] with a label.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-unary).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_shape_with_options(
     builder: *mut RustnnGraphBuilder,
@@ -2663,6 +3057,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_shape_with_options(
     }
 }
 
+/// Apply the elu operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-elu).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_elu(
     builder: *mut RustnnGraphBuilder,
@@ -2672,6 +3069,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_elu(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Elu, input, output) }
 }
 
+/// Apply the hard sigmoid operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-sigmoid).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_hard_sigmoid(
     builder: *mut RustnnGraphBuilder,
@@ -2681,6 +3081,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_hard_sigmoid(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::HardSigmoid, input, output) }
 }
 
+/// Apply the hard swish operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-hard-swish).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_hard_swish(
     builder: *mut RustnnGraphBuilder,
@@ -2690,6 +3093,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_hard_swish(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::HardSwish, input, output) }
 }
 
+/// Apply the leaky relu operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-leakyrelu).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_leaky_relu(
     builder: *mut RustnnGraphBuilder,
@@ -2699,6 +3105,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_leaky_relu(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::LeakyRelu, input, output) }
 }
 
+/// Apply the linear operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-linear).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_linear(
     builder: *mut RustnnGraphBuilder,
@@ -2708,6 +3117,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_linear(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Linear, input, output) }
 }
 
+/// Apply the clamp operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-clamp).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_clamp(
     builder: *mut RustnnGraphBuilder,
@@ -2717,6 +3129,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_clamp(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Clamp, input, output) }
 }
 
+/// Apply the instance normalization operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-instancenorm).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_instance_normalization(
     builder: *mut RustnnGraphBuilder,
@@ -2733,6 +3148,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_instance_normalization(
     }
 }
 
+/// Apply the layer normalization operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-layernorm).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_layer_normalization(
     builder: *mut RustnnGraphBuilder,
@@ -2749,6 +3167,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_layer_normalization(
     }
 }
 
+/// Apply the resample2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-resample2d-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_resample2d(
     builder: *mut RustnnGraphBuilder,
@@ -2758,6 +3179,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_resample2d(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Resample2d, input, output) }
 }
 
+/// Apply the reverse operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reverse-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reverse(
     builder: *mut RustnnGraphBuilder,
@@ -2767,6 +3191,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reverse(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Reverse, input, output) }
 }
 
+/// Apply the triangular operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-triangular).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_triangular(
     builder: *mut RustnnGraphBuilder,
@@ -2776,6 +3203,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_triangular(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Triangular, input, output) }
 }
 
+/// Apply the average pool2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_average_pool2d(
     builder: *mut RustnnGraphBuilder,
@@ -2787,6 +3217,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_average_pool2d(
     }
 }
 
+/// Apply the max pool2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_max_pool2d(
     builder: *mut RustnnGraphBuilder,
@@ -2796,6 +3229,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_max_pool2d(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::MaxPool2d, input, output) }
 }
 
+/// Apply the l2 pool2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-l2).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_l2_pool2d(
     builder: *mut RustnnGraphBuilder,
@@ -2805,6 +3241,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_l2_pool2d(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::L2Pool2d, input, output) }
 }
 
+/// Apply the global average pool operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_global_average_pool(
     builder: *mut RustnnGraphBuilder,
@@ -2821,6 +3260,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_global_average_pool(
     }
 }
 
+/// Apply the global max pool operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_global_max_pool(
     builder: *mut RustnnGraphBuilder,
@@ -2832,6 +3274,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_global_max_pool(
     }
 }
 
+/// Apply the reduce sum operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum(
     builder: *mut RustnnGraphBuilder,
@@ -2841,6 +3286,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceSum, input, output) }
 }
 
+/// Apply the reduce mean operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_mean(
     builder: *mut RustnnGraphBuilder,
@@ -2850,6 +3298,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_mean(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMean, input, output) }
 }
 
+/// Apply the reduce max operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_max(
     builder: *mut RustnnGraphBuilder,
@@ -2859,6 +3310,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_max(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMax, input, output) }
 }
 
+/// Apply the reduce min operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_min(
     builder: *mut RustnnGraphBuilder,
@@ -2868,6 +3322,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_min(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceMin, input, output) }
 }
 
+/// Apply the reduce product operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_product(
     builder: *mut RustnnGraphBuilder,
@@ -2879,6 +3336,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_product(
     }
 }
 
+/// Apply the reduce l1 operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_l1(
     builder: *mut RustnnGraphBuilder,
@@ -2888,6 +3348,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_l1(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceL1, input, output) }
 }
 
+/// Apply the reduce l2 operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_l2(
     builder: *mut RustnnGraphBuilder,
@@ -2897,6 +3360,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_l2(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::ReduceL2, input, output) }
 }
 
+/// Apply the reduce log sum operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum(
     builder: *mut RustnnGraphBuilder,
@@ -2908,6 +3374,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum(
     }
 }
 
+/// Apply the reduce log sum exp operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum_exp(
     builder: *mut RustnnGraphBuilder,
@@ -2924,6 +3393,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_log_sum_exp(
     }
 }
 
+/// Apply the reduce sum square operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum_square(
     builder: *mut RustnnGraphBuilder,
@@ -2940,6 +3412,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reduce_sum_square(
     }
 }
 
+/// Apply the transpose operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-transpose).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_transpose(
     builder: *mut RustnnGraphBuilder,
@@ -2949,6 +3424,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_transpose(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Transpose, input, output) }
 }
 
+/// Apply the squeeze operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_squeeze(
     builder: *mut RustnnGraphBuilder,
@@ -2958,6 +3436,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_squeeze(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Squeeze, input, output) }
 }
 
+/// Apply the unsqueeze operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_unsqueeze(
     builder: *mut RustnnGraphBuilder,
@@ -2967,6 +3448,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_unsqueeze(
     unsafe { rustnn_graph_builder_unary(builder, RustnnUnaryOperation::Unsqueeze, input, output) }
 }
 
+/// Apply the gemm operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gemm).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gemm(
     builder: *mut RustnnGraphBuilder,
@@ -2977,6 +3461,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gemm(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Gemm, lhs, rhs, output) }
 }
 
+/// Apply the conv2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-conv2d).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_conv2d(
     builder: *mut RustnnGraphBuilder,
@@ -2987,6 +3474,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_conv2d(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Conv2d, lhs, rhs, output) }
 }
 
+/// Apply the conv transpose2d operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-convtranspose2d).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_conv_transpose2d(
     builder: *mut RustnnGraphBuilder,
@@ -3005,6 +3495,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_conv_transpose2d(
     }
 }
 
+/// Apply the gather operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gather).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gather(
     builder: *mut RustnnGraphBuilder,
@@ -3015,6 +3508,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gather(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Gather, lhs, rhs, output) }
 }
 
+/// Apply the gather elements operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gatherelements).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gather_elements(
     builder: *mut RustnnGraphBuilder,
@@ -3033,6 +3529,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gather_elements(
     }
 }
 
+/// Apply the gather nd operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gathernd).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gather_nd(
     builder: *mut RustnnGraphBuilder,
@@ -3045,6 +3544,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gather_nd(
     }
 }
 
+/// Apply the prelu operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-prelu).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_prelu(
     builder: *mut RustnnGraphBuilder,
@@ -3055,6 +3557,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_prelu(
     unsafe { rustnn_graph_builder_binary(builder, RustnnBinaryOperation::Prelu, lhs, rhs, output) }
 }
 
+/// Apply the batch normalization operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-batchnorm).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_batch_normalization(
     builder: *mut RustnnGraphBuilder,
@@ -3075,6 +3580,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_batch_normalization(
     }
 }
 
+/// Apply the where operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-where).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_where(
     builder: *mut RustnnGraphBuilder,
@@ -3095,6 +3603,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_where(
     }
 }
 
+/// Apply the scatter elements operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatterelements).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_scatter_elements(
     builder: *mut RustnnGraphBuilder,
@@ -3115,6 +3626,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_scatter_elements(
     }
 }
 
+/// Apply the scatter nd operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-scatternd).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_scatter_nd(
     builder: *mut RustnnGraphBuilder,
@@ -3135,6 +3649,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_scatter_nd(
     }
 }
 
+/// Apply the arg min operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_arg_min(
     builder: *mut RustnnGraphBuilder,
@@ -3149,6 +3666,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_arg_min(
     }
 }
 
+/// Apply the arg max operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-argminmax).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_arg_max(
     builder: *mut RustnnGraphBuilder,
@@ -3163,6 +3683,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_arg_max(
     }
 }
 
+/// Apply the cast operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cast).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_cast(
     builder: *mut RustnnGraphBuilder,
@@ -3177,6 +3700,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_cast(
     }
 }
 
+/// Apply the cumulative sum operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-cumulativesum).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_cumulative_sum(
     builder: *mut RustnnGraphBuilder,
@@ -3191,6 +3717,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_cumulative_sum(
     }
 }
 
+/// Apply the softmax operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-softmax-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_softmax(
     builder: *mut RustnnGraphBuilder,
@@ -3205,6 +3734,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_softmax(
     }
 }
 
+/// Apply the expand operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-expand).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_expand(
     builder: *mut RustnnGraphBuilder,
@@ -3234,6 +3766,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_expand(
     }
 }
 
+/// Apply the reshape operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reshape-method).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_reshape(
     builder: *mut RustnnGraphBuilder,
@@ -3263,6 +3798,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_reshape(
     }
 }
 
+/// Apply the tile operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-tile).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_tile(
     builder: *mut RustnnGraphBuilder,
@@ -3284,6 +3822,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_tile(
     }
 }
 
+/// Apply the pad operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pad).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_pad(
     builder: *mut RustnnGraphBuilder,
@@ -3327,6 +3868,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_pad(
     })
 }
 
+/// Apply the slice operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-slice).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_slice(
     builder: *mut RustnnGraphBuilder,
@@ -3367,6 +3911,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_slice(
     })
 }
 
+/// Apply the concat operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_concat(
     builder: *mut RustnnGraphBuilder,
@@ -3393,6 +3940,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_concat(
     })
 }
 
+/// Apply the quantize linear operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-quantizelinear).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_quantize_linear(
     builder: *mut RustnnGraphBuilder,
@@ -3430,6 +3980,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_quantize_linear(
     })
 }
 
+/// Apply the dequantize linear operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-dequantizelinear).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_dequantize_linear(
     builder: *mut RustnnGraphBuilder,
@@ -3467,6 +4020,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_dequantize_linear(
     })
 }
 
+/// Apply the split operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_split(
     builder: *mut RustnnGraphBuilder,
@@ -3503,6 +4059,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_split(
     })
 }
 
+/// Apply the split equal operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-split).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_split_equal(
     builder: *mut RustnnGraphBuilder,
@@ -3540,6 +4099,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_split_equal(
     })
 }
 
+/// Apply the gru operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-gru).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gru(
     builder: *mut RustnnGraphBuilder,
@@ -3593,6 +4155,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gru(
     })
 }
 
+/// Apply the gru cell operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-grucell).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_gru_cell(
     builder: *mut RustnnGraphBuilder,
@@ -3643,6 +4208,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_gru_cell(
     })
 }
 
+/// Apply the lstm operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstm).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lstm(
     builder: *mut RustnnGraphBuilder,
@@ -3696,6 +4264,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_lstm(
     })
 }
 
+/// Apply the lstm cell operation using [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-lstmcell).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_lstm_cell(
     builder: *mut RustnnGraphBuilder,
@@ -3759,8 +4330,10 @@ pub unsafe extern "C" fn rustnn_graph_builder_lstm_cell(
     })
 }
 
-/// Compile a runtime-backed builder and consume it, setting `builder` to null.
+/// Compile a runtime-backed [MLGraphBuilder] into an [MLGraph] and consume it,
+/// setting `builder` to null.
 /// The originating context must outlive the returned graph.
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraphbuilder-build).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_build(
     builder: *mut *mut RustnnGraphBuilder,
@@ -3817,6 +4390,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_build(
     })
 }
 
+/// Release an [MLGraph] handle. A null pointer is accepted.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlgraph-destroy).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_destroy(graph: *mut RustnnGraph) {
     if !graph.is_null() {
@@ -3824,6 +4400,9 @@ pub unsafe extern "C" fn rustnn_graph_destroy(graph: *mut RustnnGraph) {
     }
 }
 
+/// Run an [MLGraph] through [MLContext] with named input and output tensors.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mlcontext-dispatch).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_context_dispatch(
     context: *mut RustnnContext,
@@ -3893,6 +4472,9 @@ pub unsafe extern "C" fn rustnn_context_dispatch(
     })
 }
 
+/// Copy an [MLOperand] shape from [MLGraphBuilder]. Set `dimensions` to null and capacity to zero to query the required length.
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mloperand).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_operand_shape(
     builder: *mut RustnnGraphBuilder,
@@ -3943,6 +4525,9 @@ pub unsafe extern "C" fn rustnn_graph_builder_operand_shape(
     })
 }
 
+/// Read an [MLOperand] data type from [MLGraphBuilder].
+///
+/// See [WebNN specification](https://www.w3.org/TR/webnn/#api-mloperand).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_operand_data_type(
     builder: *mut RustnnGraphBuilder,
@@ -3975,6 +4560,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_operand_data_type(
     })
 }
 
+/// Serialize [MLGraphBuilder] output operands as rustnn WebNN text. Release the returned string with `rustnn_string_destroy`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_graph_builder_webnn_text(
     builder: *const RustnnGraphBuilder,
@@ -4028,6 +4614,7 @@ pub unsafe extern "C" fn rustnn_graph_builder_webnn_text(
     })
 }
 
+/// Release a string returned by this C API. A null pointer is accepted.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rustnn_string_destroy(value: *mut c_char) {
     if !value.is_null() {
