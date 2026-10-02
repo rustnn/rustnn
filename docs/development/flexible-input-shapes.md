@@ -26,6 +26,14 @@ exports use the same model. Shape inference carries dynamic dimensions through t
 whose rules are defined for them and falls back to the maximum size elsewhere
 (`Dimension::get_static_or_max_size`).
 
+With `dynamic-inputs`, `MLOperand::rustnn_compute_shape(&builder, &input_shapes)` evaluates
+an operand's symbolic dimensions while the builder is recording. After compilation,
+`MLGraph::compute_shapes(&input_shapes)` evaluates all named output shapes. `MLNamedShapes`
+is an owned map from input or output names to concrete `Vec<u32>` shapes. The compiled graph
+keeps output expressions and input descriptors while releasing the full `GraphInfo`.
+Both queries validate the supplied input names, ranks, static dimensions, repeated dynamic
+names and maximum sizes. They cannot evaluate a shape that depends on tensor values.
+
 ## Runtime validation
 
 `MLContext::dispatch` and the checked legacy executors enforce, through `src/runtime_checks.rs`:

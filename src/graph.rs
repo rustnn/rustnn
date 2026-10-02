@@ -7,16 +7,18 @@
 //! are nibble-packed, see [`pack_int4`]). Dynamic shapes use [`Dimension::Dynamic`] with an
 //! upper bound and require the `dynamic-inputs` feature at runtime.
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
 
 use crate::error::GraphError;
-use std::hash::{Hash, Hasher};
 
 use crate::operator_options::{MLDimension, MLDynamicDimension};
 use crate::operators::Operation;
+use shapeinfer_symbolic::{Expression, expression::Shape};
 
 /// A dimension whose size is only known at dispatch time, bounded by `max_size`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -28,7 +30,8 @@ pub struct DynamicDimension {
     pub max_size: u32,
 }
 
-/// One entry of an operand shape. Serializes as a number or as `{ "name", "maxSize" }`.
+/// One entry of an operand shape. Serializes as a number, a named dynamic dimension,
+/// or an expression with an upper bound.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
 pub enum Dimension {
@@ -36,6 +39,67 @@ pub enum Dimension {
     Static(u32),
     /// Bounded dynamic size; requires the `dynamic-inputs` feature.
     Dynamic(DynamicDimension),
+    /// Symbolic calculation on a dynamic shape.
+    Expression(ExpressionDimension),
+}
+
+/// A symbolic size expression and its current upper bound.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpressionDimension {
+    /// The symbolic size expression.
+    #[serde(with = "expression_serde")]
+    pub expression: Expression,
+    /// Upper bound used for allocation and backend conversion.
+    pub max_size: u32,
+}
+
+mod expression_serde {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+    use shapeinfer_symbolic::Expression;
+
+    pub fn serialize<S: Serializer>(
+        expression: &Expression,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&expression.to_string())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Expression, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Expression::parse(&text).map_err(D::Error::custom)
+    }
+}
+
+impl PartialEq for ExpressionDimension {
+    fn eq(&self, other: &Self) -> bool {
+        self.max_size == other.max_size
+            && self.expression.to_string() == other.expression.to_string()
+    }
+}
+
+impl Eq for ExpressionDimension {}
+
+impl PartialOrd for ExpressionDimension {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ExpressionDimension {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.expression
+            .to_string()
+            .cmp(&other.expression.to_string())
+            .then_with(|| self.max_size.cmp(&other.max_size))
+    }
+}
+
+impl Hash for ExpressionDimension {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.expression.to_string().hash(state);
+        self.max_size.hash(state);
+    }
 }
 
 impl Dimension {
@@ -44,6 +108,7 @@ impl Dimension {
         match self {
             Self::Static(value) => *value,
             Self::Dynamic(dimension) => dimension.max_size,
+            Self::Expression(dimension) => dimension.max_size,
         }
     }
 }
@@ -56,6 +121,52 @@ pub fn to_dimension_vector(shape: &[u32]) -> Vec<Dimension> {
 /// Free-function form of [`Dimension::get_static_or_max_size`], handy in iterator chains.
 pub fn get_static_or_max_size(dim: &Dimension) -> u32 {
     dim.get_static_or_max_size()
+}
+
+/// Convert a graph shape to a symbolic shape without replacing dynamic sizes by their bounds.
+pub fn to_symbolic_shape(shape: &[Dimension]) -> Result<Shape, GraphError> {
+    let expressions = shape
+        .iter()
+        .map(|dimension| match dimension {
+            Dimension::Static(value) => Expression::new_const(i64::from(*value)),
+            Dimension::Dynamic(value) => Expression::new_dynamic(&value.name),
+            Dimension::Expression(value) => value.expression.clone(),
+        })
+        .collect();
+    Ok(Shape::from_vec(expressions))
+}
+
+/// Convert symbolic results back to graph dimensions, using known input bounds for derived sizes.
+pub fn from_symbolic_shape(
+    shape: &Shape,
+    bounds: &std::collections::BTreeMap<String, u32>,
+    max_sizes: &[u32],
+) -> Result<Vec<Dimension>, GraphError> {
+    shape
+        .iter()
+        .enumerate()
+        .map(|(index, expression)| {
+            if let Some(value) = expression.as_const() {
+                return u32::try_from(value).map(Dimension::Static).map_err(|_| {
+                    GraphError::ShapeInferenceFailed {
+                        reason: format!("symbolic dimension {value} is outside the u32 range"),
+                    }
+                });
+            }
+            if let Some(name) = expression.as_dynamic()
+                && let Some(&max_size) = bounds.get(name)
+            {
+                return Ok(Dimension::Dynamic(DynamicDimension {
+                    name: name.to_owned(),
+                    max_size,
+                }));
+            }
+            Ok(Dimension::Expression(ExpressionDimension {
+                expression: expression.clone(),
+                max_size: max_sizes[index],
+            }))
+        })
+        .collect()
 }
 
 impl From<MLDimension> for Dimension {
@@ -85,6 +196,10 @@ impl From<Dimension> for MLDimension {
             Dimension::Static(n) => MLDimension::Static(n),
             Dimension::Dynamic(d) => MLDimension::Dynamic(MLDynamicDimension {
                 name: d.name,
+                max_size: d.max_size,
+            }),
+            Dimension::Expression(d) => MLDimension::Dynamic(MLDynamicDimension {
+                name: d.expression.to_string(),
                 max_size: d.max_size,
             }),
         }
@@ -257,7 +372,7 @@ impl OperandDescriptor {
     pub fn has_dynamic_dimensions(&self) -> bool {
         self.shape
             .iter()
-            .any(|dim| matches!(dim, Dimension::Dynamic(_)))
+            .any(|dim| !matches!(dim, Dimension::Static(_)))
     }
 
     /// The shape as plain sizes, or `None` if any dimension is dynamic.
@@ -266,7 +381,7 @@ impl OperandDescriptor {
         for dim in &self.shape {
             match dim {
                 Dimension::Static(v) => shape.push(*v),
-                Dimension::Dynamic(_) => return None,
+                Dimension::Dynamic(_) | Dimension::Expression(_) => return None,
             }
         }
         Some(shape)
@@ -598,6 +713,28 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<DataType>("\"float32\"").unwrap(),
             DataType::Float32
+        );
+    }
+
+    #[test]
+    fn expression_dimension_keeps_symbolic_value_through_json() {
+        let expression = Expression::parse("(batch * 2)").unwrap();
+        let dimension = Dimension::Expression(ExpressionDimension {
+            expression,
+            max_size: 20,
+        });
+        let json = serde_json::to_string(&dimension).unwrap();
+        assert_eq!(json, r#"{"expression":"(batch * 2)","maxSize":20}"#);
+        let restored: Dimension = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored, dimension);
+        assert_eq!(
+            to_symbolic_shape(&[restored])
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap()
+                .to_string(),
+            "(batch * 2)"
         );
     }
 

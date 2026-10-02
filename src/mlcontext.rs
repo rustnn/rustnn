@@ -20,8 +20,12 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
+#[cfg(feature = "dynamic-inputs")]
+use crate::graph::DynamicDimension;
 use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
+#[cfg(feature = "dynamic-inputs")]
+use crate::operator_options::MLDimension;
 use crate::operator_options::OperandIndex;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
 
@@ -30,6 +34,7 @@ use crate::backends::coreml::CoremlContext;
 use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
+use crate::tensor::BackendKind;
 use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
@@ -58,6 +63,155 @@ fn validate_unique_tensor_bindings(
         }
     }
     Ok(())
+}
+
+/// Named concrete tensor shapes for symbolic shape queries.
+#[cfg(feature = "dynamic-inputs")]
+pub type MLNamedShapes = BTreeMap<String, Vec<u32>>;
+
+#[cfg(feature = "dynamic-inputs")]
+pub(crate) fn validated_shape_bindings(
+    input_shapes: &MLNamedShapes,
+    descriptors: &HashMap<String, OperandDescriptor>,
+) -> std::result::Result<BTreeMap<String, u32>, crate::error::GraphError> {
+    use crate::error::GraphError;
+
+    for name in descriptors.keys() {
+        if !input_shapes.contains_key(name) {
+            return Err(GraphError::RuntimeTensorMissing {
+                kind: "input".to_string(),
+                name: name.clone(),
+            });
+        }
+    }
+    let mut bindings = BTreeMap::new();
+    for (name, actual_shape) in input_shapes {
+        let descriptor =
+            descriptors
+                .get(name)
+                .ok_or_else(|| GraphError::RuntimeTensorUnexpected {
+                    kind: "input".to_string(),
+                    name: name.clone(),
+                })?;
+        if actual_shape.len() != descriptor.shape.len() {
+            return Err(GraphError::RuntimeTensorRankMismatch {
+                kind: "input".to_string(),
+                name: name.clone(),
+                expected_rank: descriptor.shape.len(),
+                actual_rank: actual_shape.len(),
+            });
+        }
+        for (axis, (&actual, dimension)) in actual_shape.iter().zip(&descriptor.shape).enumerate() {
+            match dimension {
+                Dimension::Static(expected) if actual != *expected => {
+                    return Err(GraphError::RuntimeStaticDimensionMismatch {
+                        kind: "input".to_string(),
+                        name: name.clone(),
+                        axis,
+                        expected: *expected,
+                        actual: actual as usize,
+                    });
+                }
+                Dimension::Dynamic(dynamic) => {
+                    if actual > dynamic.max_size {
+                        return Err(GraphError::RuntimeDynamicDimensionExceeded {
+                            kind: "input".to_string(),
+                            name: name.clone(),
+                            axis,
+                            dim_name: dynamic.name.clone(),
+                            max_size: dynamic.max_size,
+                            actual: actual as usize,
+                        });
+                    }
+                    if let Some(&expected) = bindings.get(&dynamic.name) {
+                        if actual != expected {
+                            return Err(GraphError::RuntimeDynamicDimensionNameMismatch {
+                                dim_name: dynamic.name.clone(),
+                                expected: expected as usize,
+                                actual: actual as usize,
+                            });
+                        }
+                    } else {
+                        bindings.insert(dynamic.name.clone(), actual);
+                    }
+                }
+                Dimension::Static(_) | Dimension::Expression(_) => {}
+            }
+        }
+    }
+
+    let context =
+        shapeinfer_symbolic::Context::new(&shapeinfer_symbolic::context::ContextOptions::default());
+    let variables = bindings
+        .iter()
+        .map(|(name, &value)| (name.as_str(), value))
+        .collect();
+    for (name, actual_shape) in input_shapes {
+        let descriptor = &descriptors[name];
+        for (axis, (&actual, dimension)) in actual_shape.iter().zip(&descriptor.shape).enumerate() {
+            if let Dimension::Expression(expression) = dimension {
+                let shape =
+                    shapeinfer_symbolic::Shape::from_vec(vec![expression.expression.clone()]);
+                let expected = context
+                    .compute_shapes_cel_comcrete(&[shape], &variables)
+                    .map_err(|error| GraphError::ShapeInferenceFailed {
+                        reason: format!(
+                            "cannot resolve input shape expression for {name}: {error}"
+                        ),
+                    })?[0][0];
+                if actual != expected {
+                    return Err(GraphError::RuntimeStaticDimensionMismatch {
+                        kind: "input".to_string(),
+                        name: name.clone(),
+                        axis,
+                        expected,
+                        actual: actual as usize,
+                    });
+                }
+            }
+        }
+    }
+    Ok(bindings)
+}
+
+#[cfg(feature = "dynamic-inputs")]
+pub(crate) fn evaluate_descriptor_shape(
+    shape: &shapeinfer_symbolic::Shape,
+    descriptor: &OperandDescriptor,
+    bindings: &BTreeMap<String, u32>,
+    context: &shapeinfer_symbolic::Context,
+    name: &str,
+) -> std::result::Result<Vec<u32>, crate::error::GraphError> {
+    use crate::error::GraphError;
+
+    let variables = bindings
+        .iter()
+        .map(|(name, &value)| (name.as_str(), value))
+        .collect();
+    let result = context
+        .compute_shapes_cel_comcrete(std::slice::from_ref(shape), &variables)
+        .map_err(|error| GraphError::ShapeInferenceFailed {
+            reason: format!("cannot resolve shape for {name}: {error}"),
+        })?
+        .remove(0);
+    for (axis, (&actual, dimension)) in result.iter().zip(&descriptor.shape).enumerate() {
+        let max_size = dimension.get_static_or_max_size();
+        if actual > max_size {
+            return Err(GraphError::RuntimeDynamicDimensionExceeded {
+                kind: "computed".to_string(),
+                name: name.to_string(),
+                axis,
+                dim_name: match dimension {
+                    Dimension::Dynamic(dynamic) => dynamic.name.clone(),
+                    Dimension::Expression(expression) => expression.expression.to_string(),
+                    Dimension::Static(_) => name.to_string(),
+                },
+                max_size,
+                actual: actual as usize,
+            });
+        }
+    }
+    Ok(result)
 }
 
 pub use crate::mlgraphbuilder::MLGraphBuilder;
@@ -103,6 +257,8 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
         inputs: &MLNamedTensors,
         outputs: &MLNamedTensors,
     ) -> Result<()>;
+
+    fn backend_kind(&self) -> BackendKind;
 }
 
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
@@ -260,6 +416,9 @@ pub struct MLGraph<'context> {
     pub input_descriptors: HashMap<String, OperandDescriptor>,
     /// Graph outputs by name, as passed to `MLGraphBuilder::build`.
     pub output_descriptors: HashMap<String, OperandDescriptor>,
+    /// Output expressions retained after the backend consumes `GraphInfo`.
+    #[cfg(feature = "dynamic-inputs")]
+    output_shapes: BTreeMap<String, shapeinfer_symbolic::Shape>,
 }
 
 impl<'context> MLGraph<'context> {
@@ -284,11 +443,61 @@ impl<'context> MLGraph<'context> {
         let (input_descriptors, output_descriptors) = graph_info
             .io_binding_maps()
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        Self::from_descriptors(backend, input_descriptors, output_descriptors)
+    }
+
+    pub(crate) fn from_descriptors(
+        backend: MLBackendGraph<'context>,
+        input_descriptors: HashMap<String, OperandDescriptor>,
+        output_descriptors: HashMap<String, OperandDescriptor>,
+    ) -> Result<Self> {
+        #[cfg(feature = "dynamic-inputs")]
+        let output_shapes = output_descriptors
+            .iter()
+            .map(|(name, descriptor)| {
+                crate::graph::to_symbolic_shape(&descriptor.shape)
+                    .map(|shape| (name.clone(), shape))
+                    .map_err(|error| Error::GraphBuildError {
+                        source: Box::new(error),
+                    })
+            })
+            .collect::<Result<_>>()?;
         Ok(Self {
             backend,
             input_descriptors,
             output_descriptors,
+            #[cfg(feature = "dynamic-inputs")]
+            output_shapes,
         })
+    }
+
+    /// Compute all named output shapes from concrete input shapes without running the graph.
+    ///
+    /// The compiled graph retains only output expressions and I/O descriptors for this query;
+    /// its full `GraphInfo` is released after compilation. The `dynamic-inputs` feature is
+    /// required. An expression that needs tensor values rather than input dimensions cannot be
+    /// evaluated by this method.
+    #[cfg(feature = "dynamic-inputs")]
+    pub fn compute_shapes(&self, input_shapes: &MLNamedShapes) -> Result<MLNamedShapes> {
+        let bindings = validated_shape_bindings(input_shapes, &self.input_descriptors)
+            .map_err(|source| Error::ShapeComputationError { source })?;
+        let context = shapeinfer_symbolic::Context::new(
+            &shapeinfer_symbolic::context::ContextOptions::default(),
+        );
+        self.output_shapes
+            .iter()
+            .map(|(name, shape)| {
+                evaluate_descriptor_shape(
+                    shape,
+                    &self.output_descriptors[name],
+                    &bindings,
+                    &context,
+                    name,
+                )
+                .map(|dimensions| (name.clone(), dimensions))
+                .map_err(|source| Error::ShapeComputationError { source })
+            })
+            .collect()
     }
 
     fn operand_descriptors(
@@ -377,6 +586,20 @@ pub struct MLOperandDescriptor {
     shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
 }
 
+#[cfg(feature = "dynamic-inputs")]
+impl From<&MLOperandDescriptor> for MLDynamicOperandDescriptor {
+    fn from(val: &MLOperandDescriptor) -> Self {
+        MLDynamicOperandDescriptor {
+            data_type: val.data_type,
+            shape: val
+                .shape
+                .iter()
+                .map(|s| MLDimension::Static(*s as u32))
+                .collect(),
+        }
+    }
+}
+
 impl From<&MLOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         OperandDescriptor {
@@ -388,6 +611,65 @@ impl From<&MLOperandDescriptor> for OperandDescriptor {
                 .collect(),
             pending_permutation: Default::default(),
         }
+    }
+}
+
+/// Operand descriptor that accepts bounded dynamic dimensions.
+///
+/// See <https://github.com/webmachinelearning/webnn/pull/945>.
+#[cfg(feature = "dynamic-inputs")]
+#[derive(Debug, Eq, PartialEq, Default, Clone)]
+pub struct MLDynamicOperandDescriptor {
+    data_type: MLOperandDataType,
+    shape: Vec<MLDimension>,
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl From<&MLDynamicOperandDescriptor> for OperandDescriptor {
+    fn from(val: &MLDynamicOperandDescriptor) -> Self {
+        OperandDescriptor {
+            data_type: val.data_type.into(),
+            shape: val
+                .shape
+                .iter()
+                .map(|s| match s {
+                    MLDimension::Static(s) => Dimension::Static(*s),
+                    MLDimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
+                        name: d.name.clone(),
+                        max_size: d.max_size,
+                    }),
+                })
+                .collect(),
+            pending_permutation: Default::default(),
+        }
+    }
+}
+
+#[cfg(feature = "dynamic-inputs")]
+impl MLDynamicOperandDescriptor {
+    /// Create a descriptor with an element type and static or dynamic dimensions.
+    pub fn new(data_type: MLOperandDataType, shape: Vec<MLDimension>) -> Self {
+        Self { data_type, shape }
+    }
+
+    /// Element data type.
+    pub fn data_type(&self) -> MLOperandDataType {
+        self.data_type
+    }
+
+    /// Dimensions of the operand.
+    pub fn shape(&self) -> &[MLDimension] {
+        &self.shape
+    }
+
+    /// Replace the element data type.
+    pub fn set_data_type(&mut self, data_type: MLOperandDataType) {
+        self.data_type = data_type;
+    }
+
+    /// Replace the dimensions of the operand.
+    pub fn set_shape(&mut self, shape: Vec<MLDimension>) {
+        self.shape = shape;
     }
 }
 
@@ -447,6 +729,32 @@ pub struct MLOperand {
 // TODO: actually, WebNN requires shape, data_type directly on MLOperand
 // would require MLOperand==Operand and we give the user &MLOperand or Rc<MLOperand>
 impl MLOperand {
+    /// Experimental: render the inferred symbolic shape for human inspection.
+    /// This string is not a stable serialization format.
+    pub fn rustnn_symbolic_shape_string(self, graph: &GraphInfo) -> Result<String> {
+        let operand = get_operand(self, graph)?;
+        let dimensions = operand
+            .descriptor
+            .shape
+            .iter()
+            .map(|dimension| match dimension {
+                Dimension::Static(value) => value.to_string(),
+                Dimension::Dynamic(value) => value.name.clone(),
+                Dimension::Expression(value) => value.expression.to_string(),
+            });
+        Ok(format!("[{}]", dimensions.collect::<Vec<_>>().join(", ")))
+    }
+
+    /// Experimental: render the Z3 form of the inferred shape for human inspection.
+    /// This string is not a stable serialization format.
+    #[cfg(feature = "z3")]
+    pub fn rustnn_symbolic_shape_string_z3(self, graph: &GraphInfo) -> Result<String> {
+        let operand = get_operand(self, graph)?;
+        let shape = crate::graph::to_symbolic_shape(&operand.descriptor.shape)?;
+        let dimensions = shape.iter().map(shapeinfer_symbolic::Expression::z3_string);
+        Ok(format!("[{}]", dimensions.collect::<Vec<_>>().join(", ")))
+    }
+
     /// Shape of the operand in `graph` (dynamic dimensions report their maximum size).
     pub fn shape(self, graph: &GraphInfo) -> Result<Vec<u64>> {
         let operand = get_operand(self, graph)?;
@@ -566,7 +874,7 @@ impl MLTensorDescriptor {
 /// Create it with [`MLContext::create`], build graphs with [`MLGraphBuilder::new`], create
 /// tensors with [`MLContext::create_tensor`], and run graphs with [`MLContext::dispatch`].
 /// The context is `Send + Sync`, so it can be shared behind a `Mutex` across threads.
-// TODO: this is wrong. must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
+// TODO: this is wrong. Must be 'context and `for <'builder>` to be valid for each builder lifetime (multiple children!)
 #[derive(Debug)]
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
@@ -767,6 +1075,19 @@ impl<'context> MLContext<'context> {
         max_shape: &[u64],
     ) -> Result<()> {
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
+    }
+
+    #[cfg(feature = "dynamic-inputs")]
+    /// Compute concrete output shapes for the supplied input shapes.
+    ///
+    /// This compatibility method delegates to [`MLGraph::compute_shapes`].
+    pub fn compute_shapes(
+        &mut self,
+        graph: &MLGraph,
+        input_shapes: &MLNamedShapes,
+    ) -> Result<MLNamedShapes> {
+        debug!("compute_shapes: {input_shapes:?}");
+        graph.compute_shapes(input_shapes)
     }
 }
 

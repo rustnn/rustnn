@@ -43,6 +43,7 @@ These are load diagnostics, not accelerator-placement measurements; see the
 | `MLOperand` | `rustnn::mlcontext` | Copyable handle to an operand of one builder; `rustnn_index()` is the index that option structs take |
 | `MLOperandDescriptor` | `rustnn::mlcontext` | Data type and shape (`Vec<u64>`) |
 | `MLGraph` | `rustnn::mlcontext` | Compiled graph with `input_descriptors` and `output_descriptors` |
+| `MLNamedShapes` | `rustnn::mlcontext` | Owned `BTreeMap<String, Vec<u32>>` of concrete input or output shapes (`dynamic-inputs`) |
 | `MLTensor`, `MLTensorDescriptor` | `rustnn::mlcontext` | Backend tensor and its shape, data type, `readable` and `writable` flags |
 | `MLNamedOperands`, `MLNamedTensors` | `rustnn::mlcontext` | `BTreeMap<&str, MLOperand>` and `BTreeMap<&str, &MLTensor>` |
 | `MLOperandDataType` and the other `ML*` enums | `rustnn::operator_enums` | Spec enums (`MLInputOperandLayout`, `MLPaddingMode`, ...) |
@@ -79,6 +80,7 @@ These are load diagnostics, not accelerator-placement measurements; see the
 | `rustnn_save_webnn(&outputs, path)` | extension | Writes `.webnn` text plus a `.safetensors` weights file; the builder stays usable |
 | `rustnn_webnn_text_for_outputs(&outputs)` | extension | The `.webnn` text of the graph so far, for debugging |
 | `rustnn_operand_shape(operand)`, `rustnn_operand_data_type(operand)` | extension | Inspect operands while recording |
+| `operand.rustnn_compute_shape(&builder, &input_shapes)` | extension | Evaluate one operand's symbolic shape before the builder is consumed (`dynamic-inputs`) |
 
 Shape inference runs inside every operation method; a shape or data type conflict is returned
 from that call as `Error::GraphBuilderError` wrapping a `ShapeInferenceError`.

@@ -296,7 +296,7 @@ impl CoremlMlProgramConverter {
                     dimension::ConstantDimension { size: *v as u64 },
                 )),
             },
-            GraphDimension::Dynamic(_) => Dimension {
+            GraphDimension::Dynamic(_) | GraphDimension::Expression(_) => Dimension {
                 dimension: Some(dimension::Dimension::Unknown(dimension::UnknownDimension {
                     variadic: false,
                 })),
@@ -5510,11 +5510,12 @@ impl CoremlMlProgramConverter {
 
         // A MIL unknown dimension must also be flexible at the model interface.
         // Keep the maximum as the default, but do not require it at dispatch.
-        if descriptor
-            .shape
-            .iter()
-            .any(|dim| matches!(dim, GraphDimension::Dynamic(_)))
-        {
+        if descriptor.shape.iter().any(|dim| {
+            matches!(
+                dim,
+                GraphDimension::Dynamic(_) | GraphDimension::Expression(_)
+            )
+        }) {
             use crate::protos::coreml::specification::{SizeRange, array_feature_type};
             array_feature.shape_flexibility = Some(
                 array_feature_type::ShapeFlexibility::ShapeRange(array_feature_type::ShapeRange {
@@ -5527,6 +5528,10 @@ impl CoremlMlProgramConverter {
                                 upper_bound: i64::from(*size),
                             },
                             GraphDimension::Dynamic(dim) => SizeRange {
+                                lower_bound: 0,
+                                upper_bound: i64::from(dim.max_size),
+                            },
+                            GraphDimension::Expression(dim) => SizeRange {
                                 lower_bound: 0,
                                 upper_bound: i64::from(dim.max_size),
                             },
@@ -8839,26 +8844,17 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     let shape = &input_op.descriptor.shape;
                     let batch_size: u32 = shape[..axis]
                         .iter()
-                        .map(|d| match d {
-                            GraphDimension::Static(v) => *v,
-                            GraphDimension::Dynamic(d) => d.max_size,
-                        })
+                        .map(GraphDimension::get_static_or_max_size)
                         .product::<u32>()
                         .max(1);
                     let channel_size: u32 = if axis < shape.len() {
-                        match &shape[axis] {
-                            GraphDimension::Static(v) => *v,
-                            GraphDimension::Dynamic(d) => d.max_size,
-                        }
+                        shape[axis].get_static_or_max_size()
                     } else {
                         1
                     };
                     let spatial_size: u32 = shape[axis + 1..]
                         .iter()
-                        .map(|d| match d {
-                            GraphDimension::Static(v) => *v,
-                            GraphDimension::Dynamic(d) => d.max_size,
-                        })
+                        .map(GraphDimension::get_static_or_max_size)
                         .product::<u32>()
                         .max(1);
                     let shape_3d = [batch_size, channel_size, spatial_size];
@@ -8942,10 +8938,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             o.descriptor
                                 .shape
                                 .iter()
-                                .map(|d| match d {
-                                    GraphDimension::Static(v) => *v,
-                                    GraphDimension::Dynamic(d) => d.max_size,
-                                })
+                                .map(GraphDimension::get_static_or_max_size)
                                 .collect()
                         })
                         .unwrap_or_default();
@@ -9472,10 +9465,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                                 .descriptor
                                 .shape
                                 .get(axis)
-                                .map(|d| match d {
-                                    GraphDimension::Static(v) => *v,
-                                    GraphDimension::Dynamic(d) => d.max_size,
-                                })
+                                .map(GraphDimension::get_static_or_max_size)
                                 .unwrap_or(1);
                             let mut bcast_shape = vec![1u32; input_rank];
                             bcast_shape[axis] = c_size;

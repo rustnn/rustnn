@@ -99,6 +99,9 @@ fn merge_broadcast_dim(dim_a: &Dimension, dim_b: &Dimension) -> Result<Dimension
                 }))
             }
         }
+        _ => Err(GraphError::ShapeInferenceFailed {
+            reason: "expression dimensions require symbolic broadcasting".to_owned(),
+        }),
     }
 }
 
@@ -2199,6 +2202,10 @@ pub fn infer_resample2d_shape(
                     })
                 }
             }
+            Dimension::Expression(d) => Dimension::Expression(crate::graph::ExpressionDimension {
+                expression: d.expression.clone(),
+                max_size: ((d.max_size.max(1) as f32) * scale).round().max(1.0) as u32,
+            }),
         };
     }
 

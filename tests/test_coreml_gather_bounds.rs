@@ -372,7 +372,7 @@ fn scalar_gather_squeezes_only_the_indexed_axis_and_keeps_dynamic_dimensions() {
             .iter()
             .map(|dim| match dim {
                 Dimension::Static(size) => Some(u64::from(*size)),
-                Dimension::Dynamic(_) => None,
+                Dimension::Dynamic(_) | Dimension::Expression(_) => None,
             })
             .collect();
         dimensions[axis] = Some(1);

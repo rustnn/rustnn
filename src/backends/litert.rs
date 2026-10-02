@@ -1318,6 +1318,10 @@ impl ListDevices for LiteRtContext {
 }
 
 impl<'context> MLBackendContext<'context> for LiteRtContext {
+    fn backend_kind(&self) -> crate::tensor::BackendKind {
+        crate::tensor::BackendKind::LiteRT
+    }
+
     fn accelerated(&self) -> bool {
         self.device_type != DeviceType::Cpu
     }
@@ -1509,11 +1513,11 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for LiteRtBuilder 
             source: format!("failed to compile model: {e}").into(),
         })?;
 
-        Ok(MLGraph {
-            backend: crate::mlcontext::MLBackendGraph::LiteRtGraph(graph),
+        MLGraph::from_descriptors(
+            crate::mlcontext::MLBackendGraph::LiteRtGraph(graph),
             input_descriptors,
             output_descriptors,
-        })
+        )
     }
 }
 

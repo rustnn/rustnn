@@ -113,6 +113,7 @@ fn format_shape(shape: &[Dimension]) -> String {
         .map(|dim| match dim {
             Dimension::Static(v) => v.to_string(),
             Dimension::Dynamic(d) => format!("{}(maxSize:{})", d.name, d.max_size),
+            Dimension::Expression(d) => format!("{}(maxSize:{})", d.expression, d.max_size),
         })
         .collect();
     dims.join("x")

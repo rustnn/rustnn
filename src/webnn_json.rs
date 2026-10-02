@@ -104,16 +104,34 @@ fn to_webnn_dimension(dim: &Dimension) -> webnn_graph::ast::Dimension {
                 max_size: d.max_size,
             })
         }
+        Dimension::Expression(d) => {
+            webnn_graph::ast::Dimension::Dynamic(webnn_graph::ast::DynamicDimension {
+                name: d.expression.to_string(),
+                max_size: d.max_size,
+            })
+        }
     }
 }
 
 fn from_webnn_dimension(dim: &webnn_graph::ast::Dimension) -> Dimension {
     match dim {
         webnn_graph::ast::Dimension::Static(v) => Dimension::Static(*v),
-        webnn_graph::ast::Dimension::Dynamic(d) => Dimension::Dynamic(DynamicDimension {
-            name: d.name.clone(),
-            max_size: d.max_size,
-        }),
+        webnn_graph::ast::Dimension::Dynamic(d) => {
+            if let Ok(expression) = shapeinfer_symbolic::Expression::parse(&d.name)
+                && expression.as_dynamic().is_none()
+                && expression.as_const().is_none()
+            {
+                Dimension::Expression(crate::graph::ExpressionDimension {
+                    expression,
+                    max_size: d.max_size,
+                })
+            } else {
+                Dimension::Dynamic(DynamicDimension {
+                    name: d.name.clone(),
+                    max_size: d.max_size,
+                })
+            }
+        }
     }
 }
 
@@ -613,6 +631,17 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn expression_dimension_roundtrips_webnn_dimension() {
+        let original = crate::graph::Dimension::Expression(crate::graph::ExpressionDimension {
+            expression: shapeinfer_symbolic::Expression::parse("(batch * 2)").unwrap(),
+            max_size: 20,
+        });
+        assert_eq!(
+            super::from_webnn_dimension(&super::to_webnn_dimension(&original)),
+            original
+        );
+    }
     use super::*;
     use webnn_graph::serialize::{SerializeOptions, serialize_graph_to_wg_text};
 
