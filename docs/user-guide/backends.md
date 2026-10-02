@@ -10,13 +10,18 @@ compiled for that backend only.
 |---|---|---|---|---|---|
 | ONNX Runtime | `onnx-runtime` | Linux, macOS, Windows | CPU, GPU and NPU devices reported by ONNX Runtime execution providers | ONNX Runtime shared library, loaded from `ORT_DYLIB_PATH`; the release must provide the API level the `ort` crate is built against (`make onnxruntime-download` fetches a matching build) | `OnnxConverter`: ONNX protobuf, with an external weights file for large models |
 | TensorRT-RTX | `trtx-runtime`, `trtx-runtime-mock`, `trtx-enterprise` | Linux and Windows with an NVIDIA RTX GPU | GPU, one device per CUDA device | NVIDIA driver and the TensorRT-RTX 1.6 library, found by name on `PATH` or `LD_LIBRARY_PATH`, or loaded explicitly with `dynamically_load_tensorrt` | `TrtxConverter`: builds the TensorRT network directly |
-| CoreML | `coreml-runtime` | macOS (compiles to failing shims elsewhere) | CPU, GPU, NPU (Neural Engine) via compute units | none beyond macOS | `CoremlMlProgramConverter`: MLProgram (MIL) |
+| CoreML | `coreml-runtime` | macOS, iOS | CPU, GPU, NPU (Neural Engine) via compute units | system CoreML and Foundation frameworks | `CoremlMlProgramConverter`: MLProgram (MIL) |
 | LiteRT | `litert-runtime` | Linux, macOS | CPU, GPU and NPU accelerators | LiteRT libraries downloaded by `litert-sys` into `~/.cache/litert-sys/`; `flatc` at build time | `LiteRtConverter`: TFLite flatbuffer, NCHW operands transposed to NHWC |
 | CANN | `cann-runtime`, `cann-runtime-mock` | OpenHarmony (`aarch64-unknown-linux-ohos`) with a Kirin NPU | NPU | HiAI through the `hiai-rs` crate | `CannConverter` |
 | Browser WebNN | `webnn-runtime` (`wasm32-unknown-unknown`) | browsers with WebNN | as provided by the browser | none | generated bindings only; not selectable through `MLContext::create` yet |
 
 Without a runtime feature the crate still validates graphs and converts them to ONNX and
 CoreML, but `MLContext::create` fails with `Error::NoBackendAvailable`.
+
+The native CoreML bridge targets macOS and iOS. tvOS is not enabled because the
+published `objc` dependency uses the wrong message ABI for that target. watchOS
+is not enabled because CoreML's public source-model compilation API is unavailable
+there. Other platforms retain type-check-only failing shims.
 
 ## Selection rules
 
@@ -92,6 +97,8 @@ Per-backend data type restrictions and the cases that still fail are tracked in
 
 The [WPT Conformance Guide](../testing/wpt-test-guide.md) explains filtering by operation and
 regenerating snapshots after a converter change.
+For CoreML storage validation, `WPT_COREML_TENSOR_MODE=persistent` or `backings` selects the
+opt-in tensor paths in that harness; unset it or use `baseline` for the default path.
 
 Each backend has its own page with requirements, device mapping, execution details and known
 limits: [TensorRT-RTX](../integration/tensorrt.md), [CoreML](../integration/coreml.md),

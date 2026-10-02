@@ -78,7 +78,7 @@
 //! | `onnx-runtime` | ONNX Runtime backend through the `ort` crate (dynamic loading, `ORT_DYLIB_PATH`) |
 //! | `trtx-runtime` | NVIDIA TensorRT-RTX backend through the `trtx` crate; `trtx-runtime-mock` builds without a GPU |
 //! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features are compiled out (validation only) |
-//! | `coreml-runtime` | Apple CoreML backend; executes on macOS, compiles to failing shims elsewhere |
+//! | `coreml-runtime` | Apple CoreML backend; executes on macOS/iOS; failing shims on other targets |
 //! | `litert-runtime` | LiteRT (TensorFlow Lite) backend through `litert-sys`; needs `flatc` at build time |
 //! | `cann-runtime` | Huawei CANN/HiAI backend on OpenHarmony; `cann-runtime-mock` validates without a device |
 //! | `webnn-runtime` | Browser WebNN backend for `wasm32-unknown-unknown` (`webnn-wpt-tests` embeds the WPT corpus) |
@@ -96,6 +96,7 @@
 //! | `RUSTNN_TRTX_LOG_VERBOSITY` | TensorRT logger filter: `internal_error`, `error`, `warning`, `info` or `verbose` |
 //! | `TRTX_JSON_DUMP_PATH` | Directory for per-engine TensorRT layer dumps |
 //! | `ORT_DYLIB_PATH` | Path of the ONNX Runtime shared library loaded by `ort` |
+//! | `WPT_COREML_TENSOR_MODE` | WPT harness only: `baseline` (default), `persistent`, or `backings`; does not change library defaults |
 //!
 //! Persistent caches (TensorRT engines and the TensorRT runtime cache) live under the
 //! platform cache directory, `<cache_dir>/rustnn/<category>`; see [`backends::caching`].

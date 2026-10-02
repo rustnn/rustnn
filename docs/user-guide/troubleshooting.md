@@ -38,7 +38,7 @@ lines to most of these situations.
 | `Error::DuplicateTensorBinding` | One `MLTensor` appears under two names or as both input and output; use distinct tensors |
 | `Error::WrongWriteSize` / `WrongReadSize` | The host buffer must hold exactly `tensor.rustnn_required_bytes()` bytes |
 | `Error::WriteToNonWritableTensor` / `ReadToNonReadableTensor` | Create the tensor with `to_writable()` or `to_readable()` |
-| `Error::TensorCapacityError` | `rustnn_resize_tensor` asked for more elements than reserved with `rustnn_set_tensor_capacity` |
+| `Error::TensorCapacityError` | `rustnn_set_tensor_capacity` requested less storage than the active shape. Resize it first; rejection leaves shape and values unchanged on every backend. The error can also report growth beyond reserved capacity |
 | Wrong results after editing a converter (TensorRT) | A cached engine from before the edit is unlikely (the cache key includes the converter sources) but possible for local uncommitted files; delete `<cache_dir>/rustnn/trtx` |
 
 ## Tests and tooling

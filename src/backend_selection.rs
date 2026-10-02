@@ -57,7 +57,7 @@ pub enum Backend {
     Onnx,
     /// NVIDIA TensorRT-RTX (`trtx-runtime`).
     Trtx,
-    /// Apple CoreML (`coreml-runtime`, macOS).
+    /// Apple CoreML (`coreml-runtime`, macOS or iOS).
     Coreml,
     /// LiteRT (`litert-runtime`).
     Litert,
@@ -172,7 +172,10 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     let have_onnx = cfg!(feature = "onnx-runtime");
     let want_onnx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Onnx);
 
-    let have_coreml = cfg!(all(target_os = "macos", feature = "coreml-runtime"));
+    let have_coreml = cfg!(all(
+        any(target_os = "macos", target_os = "ios"),
+        feature = "coreml-runtime"
+    ));
     let want_coreml =
         options.backend_hint.is_none() || options.backend_hint == Some(Backend::Coreml);
 

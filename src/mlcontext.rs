@@ -34,14 +34,28 @@ use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 pub use crate::mlcontextoptions::{
-    CoremlOptions, LiteRtOptions, MLContextOptions, MLPowerPreference, OrtOptions, RustNNOptions,
-    TrtxOptions,
+    BackendStatistics, CoremlOptions, CoremlTensorStatistics, LiteRtOptions, MLContextOptions,
+    MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
 };
 
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedtensors>
 pub type MLNamedTensors<'names> = BTreeMap<&'names str, &'names MLTensor>;
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedoperands>
 pub type MLNamedOperands<'names> = BTreeMap<&'names str, MLOperand>;
+
+fn checked_tensor_capacity_bytes(data_type: MLOperandDataType, shape: &[u64]) -> Result<u64> {
+    let bytes = shape
+        .iter()
+        .try_fold(1u64, |elements, &size| elements.checked_mul(size))
+        .and_then(|elements| elements.checked_mul(data_type.rustnn_element_size_bits() as u64))
+        .and_then(|bits| bits.checked_add(7))
+        .map(|bits| bits / 8)
+        .filter(|&bytes| usize::try_from(bytes).is_ok())
+        .ok_or_else(|| Error::GraphDispatchError {
+            source: "rustnn_set_tensor_capacity: tensor byte length overflow".into(),
+        })?;
+    Ok(bytes)
+}
 
 fn validate_unique_tensor_bindings(
     inputs: &MLNamedTensors,
@@ -75,6 +89,9 @@ pub(crate) trait ListDevices {
 
 // could make public later if interface stabilized
 pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
+    fn backend_statistics(&self) -> Option<BackendStatistics> {
+        None
+    }
     fn accelerated(&self) -> bool;
     fn create_builder<'builder>(
         &mut self,
@@ -761,18 +778,124 @@ impl<'context> MLContext<'context> {
 
     /// Reserve storage for the largest shape a tensor will take (rustnn extension); see
     /// [`Self::rustnn_resize_tensor`].
+    ///
+    /// Returns [`Error::TensorCapacityError`] without changing the tensor if the
+    /// requested capacity cannot hold its active shape, on every backend.
     pub fn rustnn_set_tensor_capacity(
         &mut self,
         tensor: &mut MLTensor,
         max_shape: &[u64],
     ) -> Result<()> {
+        let requested_bytes = checked_tensor_capacity_bytes(tensor.data_type(), max_shape)?;
+        // Preserve read/write storage's one-element minimum for zero extents.
+        let required_bytes = checked_tensor_capacity_bytes(tensor.data_type(), tensor.shape())?
+            .max(tensor.data_type().rustnn_storage_byte_length(1) as u64);
+        if requested_bytes < required_bytes {
+            return Err(Error::TensorCapacityError {
+                requested_shape: max_shape.to_vec(),
+                current_shape: tensor.shape().to_vec(),
+                requested_bytes,
+                required_bytes,
+            });
+        }
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
+    }
+
+    /// Snapshot the selected backend's diagnostics, or `None` if it does not report them.
+    /// Counter meanings are specific to the [`BackendStatistics`] variant; they are not
+    /// standardized WebNN metrics or a guarantee of measured accelerator placement.
+    pub fn rustnn_backend_statistics(&self) -> Option<BackendStatistics> {
+        self.backend.backend_statistics()
     }
 }
 
 #[cfg(test)]
 mod test {
     use crate::{mlcontext::*, mlgraphbuilder::MLGraphBuilder, webnn_json::from_graph_json};
+
+    #[test]
+    fn capacity_shrink_is_rejected_before_calling_any_backend() {
+        let mut context = MLContext {
+            // All mutation methods panic, so reaching it would fail this test.
+            backend: Box::new(crate::backends::DisabledContext {}),
+            device: BackendDevice::LiteRt {
+                device_type: DeviceType::Cpu,
+            },
+        };
+        let mut tensor = MLTensor {
+            id: 0,
+            constant: false,
+            descriptor: MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 3]),
+        };
+        let error = context
+            .rustnn_set_tensor_capacity(&mut tensor, &[2])
+            .unwrap_err();
+        std::assert_matches!(error, Error::TensorCapacityError {
+            requested_shape, current_shape, requested_bytes: 8, required_bytes: 24,
+        } if requested_shape == [2] && current_shape == [2, 3]);
+        assert_eq!(tensor.shape(), [2, 3]);
+        tensor.descriptor.set_shape(vec![0]);
+        std::assert_matches!(
+            context.rustnn_set_tensor_capacity(&mut tensor, &[0]),
+            Err(Error::TensorCapacityError {
+                requested_bytes: 0,
+                required_bytes: 4,
+                ..
+            })
+        );
+        assert_eq!(tensor.shape(), [0]);
+    }
+
+    #[test]
+    fn capacity_byte_counts_handle_scalars_packed_types_and_overflow() {
+        assert_eq!(
+            checked_tensor_capacity_bytes(MLOperandDataType::Float32, &[]).unwrap(),
+            4
+        );
+        assert_eq!(
+            checked_tensor_capacity_bytes(MLOperandDataType::Int4, &[3]).unwrap(),
+            2
+        );
+        assert_eq!(
+            checked_tensor_capacity_bytes(MLOperandDataType::Uint4, &[4]).unwrap(),
+            2
+        );
+        for shape in [&[u64::MAX, 2][..], &[u64::MAX][..]] {
+            assert!(checked_tensor_capacity_bytes(MLOperandDataType::Float32, shape).is_err());
+        }
+    }
+
+    #[test]
+    fn capacity_overflow_is_rejected_before_calling_any_backend() {
+        let mut context = MLContext {
+            backend: Box::new(crate::backends::DisabledContext {}),
+            device: BackendDevice::LiteRt {
+                device_type: DeviceType::Cpu,
+            },
+        };
+        let mut tensor = MLTensor {
+            id: 0,
+            constant: false,
+            descriptor: MLTensorDescriptor::new(MLOperandDataType::Float32, vec![]),
+        };
+        assert!(matches!(
+            context.rustnn_set_tensor_capacity(&mut tensor, &[u64::MAX]),
+            Err(Error::GraphDispatchError { .. })
+        ));
+        assert!(tensor.shape().is_empty());
+    }
+
+    #[test]
+    fn backend_statistics_are_optional() {
+        // This backend uses the default trait method, without a runtime dependency.
+        let context = MLContext {
+            backend: Box::new(crate::backends::DisabledContext {}),
+            device: BackendDevice::LiteRt {
+                device_type: DeviceType::Cpu,
+            },
+        };
+        assert_eq!(context.rustnn_backend_statistics(), None);
+    }
 
     #[test]
     fn graph_without_backend_diagnostics_returns_none() {

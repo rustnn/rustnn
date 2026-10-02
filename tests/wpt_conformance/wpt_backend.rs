@@ -3,7 +3,7 @@
 use std::hash::{Hash, Hasher};
 
 use rustnn::backend_selection::Backend;
-use rustnn::mlcontext::{MLContext, MLContextOptions, MLPowerPreference};
+use rustnn::mlcontext::{MLContext, MLContextOptions, MLPowerPreference, RustNNOptions};
 
 /// One WPT trial backend: a stable name prefix plus [`MLContextOptions`] with backend hints.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -33,6 +33,21 @@ impl WptBackend {
 
     /// Candidate backends for WPT trials (before availability probing).
     pub fn all() -> Vec<Self> {
+        let mut coreml = RustNNOptions::default();
+        match std::env::var("WPT_COREML_TENSOR_MODE").as_deref() {
+            Err(_) | Ok("baseline") => {}
+            Ok("persistent") => {
+                coreml.coreml.reuse_tensor_storage = true;
+                coreml.coreml.output_backings = false;
+            }
+            Ok("backings") => {
+                coreml.coreml.reuse_tensor_storage = true;
+                coreml.coreml.output_backings = true;
+            }
+            Ok(mode) => panic!(
+                "invalid WPT_COREML_TENSOR_MODE={mode}; expected baseline, persistent or backings"
+            ),
+        }
         vec![
             Self::new(
                 "onnx",
@@ -55,7 +70,8 @@ impl WptBackend {
             Self::new(
                 "coreml",
                 MLContextOptions::new(MLPowerPreference::Default, false)
-                    .with_rustnn_backend_hint(Backend::Coreml),
+                    .with_rustnn_backend_hint(Backend::Coreml)
+                    .with_rustnn_options(coreml),
             ),
             // CANN/HiAI (Huawei Ascend NPU). Filtered out by `is_available` unless the
             // binary is built with `cann-runtime`; availability is still probed at startup

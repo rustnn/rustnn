@@ -34,6 +34,10 @@ make test-wpt-trtx
 # LiteRT, and CoreML on macOS
 make test-wpt-litert
 make test-wpt-coreml
+
+# Compare the opt-in CoreML storage paths with the default baseline
+WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
+WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
@@ -75,20 +79,12 @@ trtx::clamp::clamp_uint64_1D_tensor_with_bigint_max
 | `make fetch-wpt` | Download/update WPT corpus into `.cache/wpt` |
 | `make test-wpt` | Full suite, ONNX CPU backend |
 | `make test-wpt-trtx` | Full suite, TensorRT backend |
-<<<<<<< HEAD
-| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
-| `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
 | `make test-wpt-cann` | Full suite on the CANN/HiAI NPU (cross-compiled for OHOS, run over `hdc`) |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`) |
-| `make test-wpt-report` | Full ONNX run; writes JSON/HTML report even on failures |
-=======
 | `make test-wpt-litert` | Full suite, LiteRT backend |
 | `make test-wpt-coreml` | Full suite, CoreML backend (macOS); `make test-wpt-coreml-report` also writes the JSON report |
-| `make test-wpt-op OP=<name>` | Filter trials by operation (e.g. `OP=add`, `OP=dequantize`); `WPT_BACKEND=<backend>` selects the backend |
+| `make test-wpt-op OP=<name>` | Filter ONNX trials by operation (e.g. `OP=add`, `OP=dequantize`) |
 | `make test-wpt-report` | Full run with JSON/HTML reports even on failures; `WPT_BACKEND=onnx|trtx|litert|coreml` picks the backend |
 | `make wpt-sync-onnx`, `wpt-sync-litert`, `wpt-sync-coreml`, `wpt-sync-trtx` | Regenerate PASS snapshots and expected-failure lists against the pinned corpus |
->>>>>>> ad69c55f (Initial doc cleanup)
 
 Equivalent `cargo` invocations:
 
@@ -110,19 +106,11 @@ Set `WPT_BACKEND` to limit which backends register trials:
 
 | Value | Backend | Notes |
 |-------|---------|-------|
-<<<<<<< HEAD
-| `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
-| `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
 | `cann` | CANN/HiAI NPU | `MLPowerPreference::Default`, `accelerated=true`; on-device only |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `onnx` (default when unset) | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
-| `trtx` | TensorRT | `MLPowerPreference::HighPerformance`, `accelerated=true` |
-=======
 | `onnx` | ONNX Runtime CPU | `MLPowerPreference::Default`, `accelerated=false` |
 | `trtx` | TensorRT-RTX | `MLPowerPreference::HighPerformance`, `accelerated=true`; requires the `trtx-runtime` feature |
 | `litert` | LiteRT | requires the `litert-runtime` feature |
 | `coreml` | CoreML | macOS, requires the `coreml-runtime` feature |
->>>>>>> ad69c55f (Initial doc cleanup)
 
 Aliases: `ort`, `cpu`, `onnx-cpu`, `ort-cpu` (onnx); `tensorrt`, `trt` (trtx); `tflite` (litert); `core-ml`, `mlprogram` (coreml).
 
@@ -153,13 +141,8 @@ make test-wpt-cann
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WPT_DIR` | `.cache/wpt` | Path to WPT checkout |
-<<<<<<< HEAD
 | `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert`, `coreml`, or `cann` |
-||||||| parent of ad69c55f (Initial doc cleanup)
-| `WPT_BACKEND` | (all available) | Limit backend: `onnx` or `trtx` |
-=======
-| `WPT_BACKEND` | (all available) | Limit backend: `onnx`, `trtx`, `litert` or `coreml` |
->>>>>>> ad69c55f (Initial doc cleanup)
+| `WPT_COREML_TENSOR_MODE` | `baseline` | CoreML-only storage mode: `baseline`, `persistent` (native inputs, copied outputs), or `backings` (also propose fixed-output backings); the corpus and tolerances are unchanged |
 | `WPT_REPORT_JSON` | (none; `reports/wpt-conformance.json` when `CI` is set) | Write structured pass/fail JSON report |
 | `WPT_REPORT_HTML` | (derived from JSON path) | HTML report path; set to empty string to disable |
 | `WPT_AUDIT` | (off) | Enable per-pass error metrics collection (see [Audit mode](#audit-mode)) |

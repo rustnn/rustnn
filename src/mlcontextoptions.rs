@@ -2,11 +2,12 @@
 //
 // SPDX-License-Identifier: Apache-2
 
-//! Options for [`crate::mlcontext::MLContext::create`].
+//! Options and backend diagnostics for [`crate::mlcontext::MLContext`].
 //!
 //! [`MLContextOptions`] carries the two WebNN hints (`powerPreference`, `accelerated`) plus
 //! rustnn extensions: a backend or device hint that overrides automatic selection, and
 //! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`].
+//! [`BackendStatistics`] holds optional, backend-specific diagnostic snapshots.
 
 use crate::mlcontext::{Backend, BackendDevice};
 
@@ -96,7 +97,7 @@ impl MLContextOptions {
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct RustNNOptions {
-    /// CoreML backend options (none yet).
+    /// CoreML tensor storage and prediction options.
     pub coreml: CoremlOptions,
     /// LiteRT backend options (none yet).
     pub litert: LiteRtOptions,
@@ -158,14 +159,64 @@ impl Default for OrtOptions {
     }
 }
 
-/// CoreML backend options; no fields yet.
+/// CoreML tensor storage options; see the CoreML integration guide.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
-pub struct CoremlOptions {}
+pub struct CoremlOptions {
+    /// Keep compatible tensors in persistent native storage between dispatches.
+    /// Defaults to false. Enable to evaluate the experimental native storage path;
+    /// otherwise the byte-buffer reference implementation remains in use.
+    pub reuse_tensor_storage: bool,
+    /// Propose persistent destination arrays as CoreML output backings.
+    /// Defaults to true. Flexible output features are excluded. CoreML may decline
+    /// compatible backings; the backend then copies into its owned storage.
+    pub output_backings: bool,
+}
 
 #[allow(clippy::derivable_impls)]
 impl Default for CoremlOptions {
     fn default() -> Self {
-        Self {}
+        Self {
+            reuse_tensor_storage: false,
+            output_backings: true,
+        }
     }
+}
+
+/// A snapshot of the selected backend's diagnostics (rustnn extension).
+///
+/// Backends opt into reporting statistics; an unsupported capability is returned as `None`
+/// by [`crate::mlcontext::MLContext::rustnn_backend_statistics`]. Each variant retains its
+/// backend's counter definitions rather than implying comparable measurements across backends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BackendStatistics {
+    /// Cumulative CoreML tensor I/O counters.
+    Coreml(CoremlTensorStatistics),
+}
+
+/// Cumulative CoreML tensor I/O counters for a context (rustnn extension).
+///
+/// These count work in rustnn, not copies or allocations inside CoreML or a driver.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CoremlTensorStatistics {
+    /// Compute units used by the last dispatched model, including load fallback.
+    /// Empty until the first dispatch. This is permission, not measured placement.
+    pub last_compute_units: &'static str,
+    /// Native tensor buffer allocations, including capacity growth.
+    pub native_allocations: u64,
+    /// Bytes explicitly read into user-provided host buffers.
+    pub host_read_bytes: u64,
+    /// Bytes explicitly written from user-provided host buffers.
+    pub host_write_bytes: u64,
+    /// Inputs supplied from persistent arrays without host materialization.
+    pub native_input_bindings: u64,
+    /// Input bytes copied or converted to temporary native arrays during dispatch.
+    pub input_copy_bytes: u64,
+    /// Compatible destination arrays proposed to CoreML.
+    pub output_backings_requested: u64,
+    /// Returned outputs that are the requested backing object.
+    pub output_backings_accepted: u64,
+    /// Logical output bytes copied into owned native or host tensor storage.
+    pub output_copy_bytes: u64,
 }

@@ -61,8 +61,13 @@ These are load diagnostics, not accelerator-placement measurements; see the
 | `write_tensor(&tensor, &[T])`, `read_tensor(&tensor, &mut [T])` | implemented | `T: bytemuck::Pod`; the byte size must equal `tensor.rustnn_required_bytes()` |
 | `dispatch(&mut graph, &inputs, &outputs)` | implemented | Validates bindings, then runs |
 | `rustnn_backend()`, `rustnn_device()`, `rustnn_device_type()` | extension | Inspect the selection |
+| `rustnn_backend_statistics()` | extension | Optional typed `BackendStatistics` snapshot; counter meanings remain backend-specific |
 | `rustnn_set_tensor_capacity(&mut tensor, max_shape)`, `rustnn_resize_tensor(&mut tensor, shape)` | extension | Dynamic shapes; see [Advanced Topics](advanced.md) |
 | `create_from_gpu_device`, `lost`, `create_constant_tensor`, `destroy`, `op_support_limits` | not implemented (`todo!()`) | Tensors and contexts are released by `Drop` |
+
+`RustNNOptions::coreml` controls opt-in persistent CoreML tensor storage and optional output
+backings. Storage reuse is disabled by default; see [CoreML](../integration/coreml.md#reusing-tensor-storage)
+for compatibility, ownership and diagnostic controls.
 
 ## MLGraphBuilder
 

@@ -60,6 +60,10 @@ values for dynamic dimensions that share a name. `examples/smollm_mlcontext.rs` 
 cache this way. The checked legacy executors (`run_onnx_with_inputs_checked` and friends)
 apply the same rules to one-shot runs; see [Flexible Input Shapes](../development/flexible-input-shapes.md).
 
+`rustnn_set_tensor_capacity` returns `Error::TensorCapacityError` on every backend
+if the requested storage is smaller than the tensor's active shape. Rejection leaves
+the shape and stored values unchanged; resize the active shape before reducing capacity.
+
 ## Saving and exporting graphs
 
 | Goal | Call |

@@ -240,8 +240,8 @@ objc = { version = "0.2", optional = true, features = [
 block = { version = "0.1", optional = true }
 pollster = { version = "1.0.1", optional = true }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# For macOS, explicitly enable the "exception" feature
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+# Native CoreML targets require Objective-C exception handling.
 objc = { version = "0.2", optional = true, features = ["exception"] }
 
 [build-dependencies]

@@ -313,9 +313,9 @@ pub enum Error {
         tensor: MLTensor,
     },
 
-    /// Set capacity error: requested to set capacity to max shape `requested_shape` with `required_bytes` bytes but current shape is `current_shape` which needs `required_bytes` bytes.
+    /// Requested capacity is smaller than the storage required by the active shape.
     #[error(
-        "Set capacity error: requested to set capacity to max shape {requested_shape:?} with {required_bytes} bytes but current shape is {current_shape:?} which needs {required_bytes} bytes"
+        "Set capacity error: requested to set capacity to max shape {requested_shape:?} with {requested_bytes} bytes but current shape is {current_shape:?} which needs {required_bytes} bytes"
     )]
     TensorCapacityError {
         requested_shape: Vec<u64>,

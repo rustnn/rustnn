@@ -127,6 +127,16 @@ jobs:
           make test-coreml-dtypes COREML_FEATURES=coreml-runtime
           make test-coreml-dtypes
 
+      - name: Test CoreML retained tensor ownership and reuse
+        if: runner.os == 'macOS'
+        run: |
+          make test-coreml-tensor-reuse COREML_FEATURES=coreml-runtime
+          make test-coreml-tensor-reuse
+
+      - name: Test self-contained CoreML KV benchmark
+        if: runner.os == 'macOS'
+        run: make test-coreml-kv-benchmark
+
       - name: Run cargo test (library only, CANN mock)
         run: cargo test --lib --features cann-runtime-mock
 
