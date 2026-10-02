@@ -30,7 +30,7 @@ use crate::error::GraphError;
 use crate::graph::{
     DataType, Dimension, GraphInfo, get_static_or_max_size, unpack_int4, unpack_uint4,
 };
-use crate::operator_enums::MLOperandDataType;
+use crate::operator_enums::{MLOperandDataType, MLPaddingMode};
 use crate::operator_options::{MLDimension, MLPool2dOptions, mldimensions_static_or_max};
 use crate::operators::Operation;
 use crate::protos::onnx::{
@@ -8043,11 +8043,10 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
 
                 let mut inputs = vec![data_input_name, pads_name];
-                let mode = pad_opts.mode.to_ascii_lowercase();
-                let onnx_mode = match mode.as_str() {
-                    "edge" => "edge",
-                    "reflection" => "reflect",
-                    _ => "constant",
+                let onnx_mode = match pad_opts.mode {
+                    MLPaddingMode::Edge => "edge",
+                    MLPaddingMode::Reflection => "reflect",
+                    MLPaddingMode::Constant => "constant",
                 };
                 if onnx_mode == "constant" {
                     let data_dtype = graph
