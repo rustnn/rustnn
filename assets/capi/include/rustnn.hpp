@@ -483,9 +483,6 @@ public:
   RUSTNN_ML_UNARY_METHOD(averagePool2d, rustnn_graph_builder_average_pool2d)
   RUSTNN_ML_UNARY_METHOD(maxPool2d, rustnn_graph_builder_max_pool2d)
   RUSTNN_ML_UNARY_METHOD(l2Pool2d, rustnn_graph_builder_l2_pool2d)
-  RUSTNN_ML_UNARY_METHOD(globalAveragePool,
-                         rustnn_graph_builder_global_average_pool)
-  RUSTNN_ML_UNARY_METHOD(globalMaxPool, rustnn_graph_builder_global_max_pool)
   RUSTNN_ML_UNARY_METHOD(reduceSum, rustnn_graph_builder_reduce_sum)
   RUSTNN_ML_UNARY_METHOD(reduceMean, rustnn_graph_builder_reduce_mean)
   RUSTNN_ML_UNARY_METHOD(reduceMax, rustnn_graph_builder_reduce_max)
