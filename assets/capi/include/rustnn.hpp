@@ -1,5 +1,12 @@
 #pragma once
 
+/** @file
+ * @brief C++17 owning wrappers for the rustnn C API.
+ *
+ * Handles are move-only. Keep each context alive while using its builder,
+ * graphs and tensors. Failing C API calls throw rustnn::Error.
+ */
+
 #include <rustnn/rustnn.h>
 
 #include <cstddef>
@@ -13,13 +20,16 @@
 
 namespace rustnn {
 
+/// Initialize rustnn's logger using the environment configuration.
 inline void initializeLogger() { rustnn_init_logger(); }
 
+/// Exception containing the C API's failure message.
 class Error : public std::runtime_error {
 public:
   explicit Error(const std::string &message) : std::runtime_error(message) {}
 };
 
+/// Throw Error if a C API call returned a failing status.
 inline void check(RustnnStatus status) {
   if (status != RustnnStatus_Success) {
     const char *message = rustnn_last_error_message();
@@ -27,6 +37,7 @@ inline void check(RustnnStatus status) {
   }
 }
 
+/// Element type, including packed signed and unsigned 4-bit integers.
 enum class MLOperandDataType {
   Float32 = RustnnDataType_Float32,
   Float16 = RustnnDataType_Float16,
@@ -40,12 +51,14 @@ enum class MLOperandDataType {
   Uint4 = RustnnDataType_Uint4,
 };
 
+/// Power preference used for automatic backend selection.
 enum class MLPowerPreference {
   Default = RustnnPowerPreference_Default,
   HighPerformance = RustnnPowerPreference_HighPerformance,
   LowPower = RustnnPowerPreference_LowPower,
 };
 
+/// Backend hint; Automatic delegates selection to rustnn.
 enum class Backend {
   Automatic = RustnnBackend_Automatic,
   Onnx = RustnnBackend_Onnx,
@@ -55,18 +68,21 @@ enum class Backend {
   Cann = RustnnBackend_Cann,
 };
 
+/// Kind of device used to execute a graph.
 enum class DeviceType {
   Cpu = RustnnDeviceType_Cpu,
   Gpu = RustnnDeviceType_Gpu,
   Npu = RustnnDeviceType_Npu,
 };
 
+/// Explicit backend and device hint for context creation.
 struct BackendDevice {
   Backend backend;
   DeviceType device_type;
   std::size_t device_index = 0;
 };
 
+/// TensorRT-RTX engine caching and execution options.
 struct TrtxOptions {
   bool engine_caching = true;
   bool runtime_cache = true;
@@ -74,10 +90,12 @@ struct TrtxOptions {
   bool cuda_graphs = true;
 };
 
+/// rustnn-specific backend configuration.
 struct RustNNOptions {
   TrtxOptions trtx;
 };
 
+/// Backend selection and runtime configuration for MLContext.
 struct MLContextOptions {
   MLPowerPreference power_preference = MLPowerPreference::Default;
   bool accelerated = true;
@@ -86,10 +104,12 @@ struct MLContextOptions {
   std::optional<RustNNOptions> rustnn_options;
 };
 
+/// Optional operator label used in diagnostics.
 struct MLOperatorOptions {
   std::string label;
 };
 
+/// Owns an operand's element type and shape descriptor.
 class MLOperandDescriptor {
 public:
   MLOperandDescriptor(MLOperandDataType data_type, const std::vector<std::uint64_t> &shape) {
@@ -117,6 +137,7 @@ private:
   RustnnOperandDescriptor *value_ = nullptr;
 };
 
+/// Owns a tensor descriptor with host read and write permissions.
 class MLTensorDescriptor {
 public:
   MLTensorDescriptor(MLOperandDataType data_type, const std::vector<std::uint64_t> &shape,
@@ -146,6 +167,7 @@ private:
   RustnnTensorDescriptor *value_ = nullptr;
 };
 
+/// Owns an operand handle belonging to a graph builder.
 class MLOperand {
 public:
   ~MLOperand() { rustnn_operand_destroy(value_); }
@@ -168,6 +190,7 @@ private:
   RustnnOperand *value_ = nullptr;
 };
 
+/// Owns a compiled graph. Its originating context must outlive it.
 class MLGraph {
 public:
   ~MLGraph() { rustnn_graph_destroy(value_); }
@@ -191,6 +214,7 @@ private:
   RustnnGraph *value_ = nullptr;
 };
 
+/// Owns a backend tensor. Its originating context must outlive it.
 class MLTensor {
 public:
   ~MLTensor() { rustnn_tensor_destroy(value_); }
@@ -213,6 +237,7 @@ private:
   RustnnTensor *value_ = nullptr;
 };
 
+/// Owns a backend context for graph compilation, tensors and dispatch.
 class MLContext {
 public:
   explicit MLContext(const MLContextOptions &options = {}) {
@@ -258,12 +283,14 @@ public:
     return *this;
   }
 
+  /// Allocate a backend tensor with the descriptor's host access flags.
   MLTensor createTensor(const MLTensorDescriptor &descriptor) {
     RustnnTensor *tensor = nullptr;
     check(rustnn_context_create_tensor(value_, descriptor.value_, &tensor));
     return MLTensor(tensor);
   }
 
+  /// Copy raw bytes from data into a writable tensor; T must match its storage.
   template <typename T>
   void writeTensor(const MLTensor &tensor, const std::vector<T> &data) {
     static_assert(std::is_trivially_copyable_v<T>, "tensor elements must be plain data");
@@ -271,6 +298,7 @@ public:
                                       data.size() * sizeof(T)));
   }
 
+  /// Copy a readable tensor into element_count values; T must match its storage.
   template <typename T>
   std::vector<T> readTensor(const MLTensor &tensor, std::size_t element_count) {
     static_assert(std::is_trivially_copyable_v<T>, "tensor elements must be plain data");
@@ -280,6 +308,7 @@ public:
     return data;
   }
 
+  /// Execute a compiled graph with tensors bound by input and output name.
   void dispatch(MLGraph &graph,
                 const std::vector<std::pair<std::string, const MLTensor *>> &inputs,
                 const std::vector<std::pair<std::string, const MLTensor *>> &outputs) {
@@ -348,6 +377,11 @@ private:
     return MLOperand(output);                                                 \
   }
 
+/** @brief Records and validates graph operations.
+ *
+ * The default constructor supports graph construction and text export.
+ * Construct with MLContext to compile a graph; build() consumes the builder.
+ */
 class MLGraphBuilder {
 public:
   MLGraphBuilder() { check(rustnn_graph_builder_create_uncompiled(&value_)); }
@@ -369,12 +403,14 @@ public:
     return *this;
   }
 
+  /// Declare a named graph input with the supplied type and shape.
   MLOperand input(const std::string &name, const MLOperandDescriptor &descriptor) {
     RustnnOperand *output = nullptr;
     check(rustnn_graph_builder_input(value_, name.c_str(), descriptor.value_, &output));
     return MLOperand(output);
   }
 
+  /// Copy constant data into the graph; T must match the descriptor's storage.
   template <typename T>
   MLOperand constant(const MLOperandDescriptor &descriptor, const std::vector<T> &data) {
     static_assert(std::is_trivially_copyable_v<T>, "tensor elements must be plain data");
@@ -687,6 +723,7 @@ public:
     return wrapOperands(raw_outputs, outputs_len);
   }
 
+  /// Return an operand's inferred dimensions.
   std::vector<std::uint64_t> operandShape(const MLOperand &operand) {
     std::size_t rank = 0;
     check(rustnn_graph_builder_operand_shape(value_, operand.value_, nullptr, 0, &rank));
@@ -702,6 +739,7 @@ public:
     return static_cast<MLOperandDataType>(data_type);
   }
 
+  /// Serialize the named outputs as rustnn WebNN graph text.
   std::string webnnText(
       const std::vector<std::pair<std::string, const MLOperand *>> &outputs) const {
     std::vector<RustnnNamedOperand> named;
@@ -716,6 +754,7 @@ public:
     return result;
   }
 
+  /// Compile named outputs and consume this builder; the context must outlive the graph.
   MLGraph build(const std::vector<std::pair<std::string, const MLOperand *>> &outputs) {
     std::vector<RustnnNamedOperand> named;
     named.reserve(outputs.size());

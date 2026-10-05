@@ -1,0 +1,42 @@
+# Run from the repository root with `make docs-capi` to generate rustnn.h first.
+PROJECT_NAME           = "rustnn C and C++ API"
+PROJECT_BRIEF          = "WebNN graph construction and execution"
+OUTPUT_DIRECTORY       = target/doxygen
+INPUT                  = assets/capi/include/rustnn.hpp \
+                         target/doxygen/include/rustnn/rustnn.h \
+                         docs/reference/c-api.md
+USE_MDFILE_AS_MAINPAGE  = docs/reference/c-api.md
+FILE_PATTERNS          = *.h *.hpp *.md
+RECURSIVE              = NO
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+HIDE_FRIEND_COMPOUNDS  = YES
+EXCLUDE_SYMBOLS        = RUSTNN_ML_*
+JAVADOC_AUTOBRIEF      = YES
+MARKDOWN_SUPPORT       = YES
+
+# Expand the wrapper's operation macros so each method and overload is indexed.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = YES
+EXPAND_AS_DEFINED      = RUSTNN_ML_UNARY_METHOD \
+                         RUSTNN_ML_UNARY_METHOD_WITH_OPTIONS \
+                         RUSTNN_ML_BINARY_METHOD \
+                         RUSTNN_ML_BINARY_METHOD_WITH_OPTIONS \
+                         RUSTNN_ML_TERNARY_METHOD
+INCLUDE_PATH           = target/doxygen/include
+SEARCH_INCLUDES        = NO
+
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+GENERATE_TREEVIEW      = YES
+SEARCHENGINE           = YES
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+FULL_PATH_NAMES        = NO
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = NO
+WARN_AS_ERROR          = YES

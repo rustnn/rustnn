@@ -45,6 +45,9 @@ theme:
 plugins:
   - search
 
+hooks:
+  - scripts/build_capi_docs.py
+
 # Exclude files from the docs site. docs/archive holds superseded plans and
 # investigation notes that reference removed APIs; they are kept for history only.
 exclude_docs: |
@@ -80,6 +83,7 @@ nav:
       - Advanced Topics: user-guide/advanced.md
       - Troubleshooting: user-guide/troubleshooting.md
       - Rust API Reference (rustdoc, deployed from main): https://rustnn.github.io/rustnn/api/rustnn/
+      - C and C++ API Reference (Doxygen): https://rustnn.github.io/rustnn/c-api/
   - Architecture:
       - Overview: architecture/overview.md
   - Development:
@@ -101,6 +105,7 @@ nav:
       - CANN (OpenHarmony): integration/cann.md
       - Browser WebNN (wasm32): integration/webnn-browser.md
   - Reference:
+      - C and C++ API: reference/c-api.md
       - WebNN Specification and rustnn: reference/webnn-spec.md
       - Graph Files and Weights: reference/graph-files.md
       - Changelog: https://github.com/rustnn/rustnn/blob/main/CHANGELOG.md

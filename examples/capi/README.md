@@ -16,6 +16,11 @@ cmake --build build
 - [`main.c`](main.c) uses the generated C API directly.
 - [`main.cpp`](main.cpp) uses the header-only C++ RAII wrapper.
 
+Run `make docs-capi` to generate the C and C++ API reference with Doxygen, then
+open `target/doxygen/html/index.html`. This regenerates `rustnn.h` from
+`src/capi.rs` without building a backend. Install Doxygen and cbindgen first;
+see [C and C++ API documentation](../../docs/reference/c-api.md).
+
 ## API stability
 
 The C ABI and C++ API are experimental and are not stable. They are subject to
@@ -223,15 +228,6 @@ options.device_hint = rustnn::BackendDevice{
     rustnn::Backend::Trtx, rustnn::DeviceType::Gpu, 0};
 rustnn::MLContext context(options);
 ```
-
-The generic `unary()` and `binary()` methods remain available when an operation
-is selected dynamically. Named methods cover all 101 Rust `MLGraphBuilder`
-operation variants, including typed overloads for parameterized operations and
-`std::vector<rustnn::MLOperand>` results for split and recurrent operations.
-`MLContext::createTensor()`, `writeTensor()`, `dispatch()`, and `readTensor()`
-wrap the corresponding C execution APIs. `operandShape()` queries an operand's
-inferred dimensions, while `shape()` creates the WebNN shape operation. See
-[`main.cpp`](main.cpp) for the complete example.
 
 ## Consuming rustnn from another CMake project
 

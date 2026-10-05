@@ -5,6 +5,12 @@ on:
     paths:
       - 'docs/**'
       - 'mkdocs.yml'
+      - 'Doxyfile'
+      - 'cbindgen.toml'
+      - 'assets/capi/include/**'
+      - 'scripts/build_capi_docs.py'
+      - 'src/capi.rs'
+      - 'Makefile'
       - 'scripts/embed_wpt_conformance_pages.sh'
       - '.github/workflows/docs*.yml'
 
@@ -36,7 +42,7 @@ jobs:
       - name: Install protobuf compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler doxygen
           protoc --version
 
       - name: Install flatc
@@ -56,6 +62,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r docs/requirements.txt
+
+      - name: Install cbindgen
+        run: cargo install cbindgen --version 0.29.4 --locked
 
       - name: Check documentation build
         run: mkdocs build --strict --verbose
@@ -93,7 +102,7 @@ jobs:
             const output = `### Documentation Build: ${process.env.BUILD_STATUS === 'success' ? 'passed' : 'failed'}
 
             ${process.env.BUILD_STATUS === 'success'
-              ? 'MkDocs pages and Rust API docs build successfully.'
+              ? 'MkDocs pages, C/C++ API docs and Rust API docs build successfully.'
               : 'Documentation build failed. Please check the logs above.'}
 
             Preview will be available after merge.`;
