@@ -4,7 +4,7 @@ rustnn exposes a C ABI in `rustnn.h` and a header-only C++17 wrapper in
 `rustnn.hpp`. Both APIs are experimental and can change without backward
 compatibility. Pin the release or Git commit used by your application.
 
-Browse the [C and C++ API reference](https://rustnn.github.io/rustnn/c-api/)
+Browse the [C and C++ API reference](../c-api/index.html)
 for the generated declarations and source browser.
 
 ## Build the reference
