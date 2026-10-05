@@ -83,7 +83,7 @@ nav:
       - Advanced Topics: user-guide/advanced.md
       - Troubleshooting: user-guide/troubleshooting.md
       - Rust API Reference (rustdoc, deployed from main): https://rustnn.github.io/rustnn/api/rustnn/
-      - C and C++ API Reference (Doxygen): https://rustnn.github.io/rustnn/c-api/
+      - C and C++ API Reference (Doxygen): c-api/index.html
   - Architecture:
       - Overview: architecture/overview.md
   - Development:

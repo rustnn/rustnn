@@ -4,7 +4,7 @@ rustnn exposes a C ABI in `rustnn.h` and a header-only C++17 wrapper in
 `rustnn.hpp`. Both APIs are experimental and can change without backward
 compatibility. Pin the release or Git commit used by your application.
 
-Browse the [C and C++ API reference](https://rustnn.github.io/rustnn/c-api/)
+Browse the [C and C++ API reference](../c-api/index.html)
 for the generated declarations and source browser.
 
 ## Build the reference
@@ -40,6 +40,7 @@ them. Handles cannot be copied. Calls that return a failing C status throw
 
 ```cpp
 #include <rustnn/rustnn.hpp>
+#include <iostream>
 
 int main() {
   try {
@@ -116,12 +117,15 @@ Configure it with:
 
 ```bash
 cmake -S . -B build \
-  -DCMAKE_PREFIX_PATH=/absolute/path/to/rustnn-capi-install
+  -DCMAKE_PREFIX_PATH=/absolute/path/to/rustnn-capi-install/
 cmake --build build
 ```
 
 You can create cargo-c build of RustNN and configure it with your preferred runtimes (e.g. with onnx-runtime and trtx-runtime)
 
 ```bash
-cargo cinstall --features capi,trtx-runtime,onnx-runtime
+cargo cbuild --features capi,trtx-runtime,onnx-runtime --prefix /absolute/path/to/rustnn-capi-install/
 ```
+
+See https://github.com/lu-zero/cargo-c#usage for more detailed usage of cargo-c (e.g. --prefix/--libdir parameters).
+The prefix path (e.g. ~/.local) must exist.
