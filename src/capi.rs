@@ -790,7 +790,7 @@ pub unsafe extern "C" fn rustnn_operand_descriptor_destroy(
     }
 }
 
-/// Allocate an [MLTensorDescriptor] with read and write permissions.
+/// Allocate an [MLTensorDescriptor]
 ///
 /// See [WebNN specification](https://www.w3.org/TR/webnn/#dictdef-mltensordescriptor).
 #[unsafe(no_mangle)]

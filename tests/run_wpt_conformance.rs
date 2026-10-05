@@ -106,6 +106,8 @@ fn main() {
         feature = "trtx-runtime",
         feature = "trtx-runtime-mock",
         feature = "litert-runtime",
+        feature = "cann-runtime",
+        feature = "cann-runtime-mock",
         all(target_os = "macos", feature = "coreml-runtime")
     ));
     if !BACKEND_FEATURE_ENABLED {
