@@ -46,7 +46,7 @@ jobs:
       - name: Install protobuf compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler doxygen
 
       - name: Install flatc
         run: |
@@ -88,6 +88,9 @@ jobs:
         with:
           path: reports
           key: wpt-conformance-pages-${{ runner.os }}-${{ github.run_id }}
+
+      - name: Install cbindgen
+        run: cargo install cbindgen --version 0.29.4 --locked
 
       - name: Build documentation site
         run: mkdocs build --strict --verbose

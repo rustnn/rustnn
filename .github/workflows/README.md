@@ -22,8 +22,10 @@
   It also builds and tests CoreML with and without dynamic inputs using `make build-coreml`
   and `make test-coreml`. `make test-coreml-gather` also runs the focused gather bounds and
   scalar-index shape regressions; numerical checks remain strict.
-- The documentation site combines three generated parts: MkDocs pages from `docs/`, rustdoc from
-  `make docs-api`, and the WPT dashboard cached by the nightly workflow. Test a docs change
+- The documentation site combines four generated parts: MkDocs pages from `docs/`, the C/C++
+  Doxygen reference under `/c-api/`, rustdoc from `make docs-api`, and the WPT dashboard cached
+  by the nightly workflow. MkDocs runs `scripts/build_capi_docs.py` to regenerate the C header
+  and embed Doxygen output. Website jobs install Doxygen and cbindgen. Test a docs change
   locally with `make ci-docs` and `make docs-api`.
 
 ## Pages deployment

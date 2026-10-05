@@ -155,8 +155,15 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
       - name: Install dependencies
-        run: pip install -r docs/requirements.txt
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y doxygen
+          cargo install cbindgen --version 0.29.4 --locked
+          pip install -r docs/requirements.txt
 
       - name: Build documentation
         run: mkdocs build --strict
