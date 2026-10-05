@@ -748,28 +748,6 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                     &to_pool2d_options(options)?,
                 )]
             }
-            // halluzination?
-            crate::Operation::GlobalAveragePool {
-                input,
-                options,
-                outputs: _,
-            } => {
-                vec![builder.average_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
-            }
-            // halluzination?
-            crate::Operation::GlobalMaxPool {
-                input,
-                options,
-                outputs: _,
-            } => {
-                vec![builder.max_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
-            }
             crate::Operation::ReduceSum {
                 input,
                 options,

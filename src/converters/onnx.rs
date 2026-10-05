@@ -1329,9 +1329,7 @@ impl OnnxConverter {
         let opts = match &op {
             Operation::AveragePool2d { options, .. }
             | Operation::MaxPool2d { options, .. }
-            | Operation::L2Pool2d { options, .. }
-            | Operation::GlobalAveragePool { options, .. }
-            | Operation::GlobalMaxPool { options, .. } => options.as_ref().unwrap_or(&default_pool),
+            | Operation::L2Pool2d { options, .. } => options.as_ref().unwrap_or(&default_pool),
             _ => return attributes,
         };
 
@@ -1495,9 +1493,7 @@ impl OnnxConverter {
         let opts = match &op {
             Operation::AveragePool2d { options, .. }
             | Operation::MaxPool2d { options, .. }
-            | Operation::L2Pool2d { options, .. }
-            | Operation::GlobalAveragePool { options, .. }
-            | Operation::GlobalMaxPool { options, .. } => options.as_ref().unwrap_or(&default_pool),
+            | Operation::L2Pool2d { options, .. } => options.as_ref().unwrap_or(&default_pool),
             _ => return attributes,
         };
         let layout = opts.layout.to_ascii_lowercase();
@@ -1700,9 +1696,7 @@ impl OnnxConverter {
         let opts = match &op {
             Operation::AveragePool2d { options, .. }
             | Operation::MaxPool2d { options, .. }
-            | Operation::L2Pool2d { options, .. }
-            | Operation::GlobalAveragePool { options, .. }
-            | Operation::GlobalMaxPool { options, .. } => options.as_ref(),
+            | Operation::L2Pool2d { options, .. } => options.as_ref(),
             _ => None,
         };
         if let Some(opts) = opts {
@@ -3979,9 +3973,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let pool_opts = match &op {
                     Operation::AveragePool2d { options, .. }
                     | Operation::MaxPool2d { options, .. }
-                    | Operation::L2Pool2d { options, .. }
-                    | Operation::GlobalAveragePool { options, .. }
-                    | Operation::GlobalMaxPool { options, .. } => options.as_ref(),
+                    | Operation::L2Pool2d { options, .. } => options.as_ref(),
                     _ => None,
                 };
                 let layout = pool_opts
