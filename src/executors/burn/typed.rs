@@ -338,22 +338,6 @@ pub(super) fn execute<B: Backend>(
         Operation::MaxPool2d { input, options, .. } => {
             integer_max_pool(&Array::load(env, *input)?, options)?
         }
-        Operation::GlobalMaxPool { input, options, .. } => {
-            let a = Array::load(env, *input)?;
-            let mut opts = options.clone().unwrap_or_default();
-            let (y, x) = if parse_option::<MLInputOperandLayout>(&opts.layout, "layout")?
-                == MLInputOperandLayout::Nhwc
-            {
-                (1, 2)
-            } else {
-                (2, 3)
-            };
-            opts.window_dimensions = Some(vec![a.shape[y] as u32, a.shape[x] as u32]);
-            if opts.strides.is_empty() {
-                opts.strides = vec![a.shape[y] as u32, a.shape[x] as u32];
-            }
-            integer_max_pool(&a, &Some(opts))?
-        }
         Operation::Resample2d { input, options, .. } => {
             integer_resample(&Array::load(env, *input)?, options)?
         }

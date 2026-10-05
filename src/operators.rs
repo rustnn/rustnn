@@ -555,18 +555,6 @@ pub enum Operation {
         options: Option<MLPool2dOptions>,
         outputs: Vec<OperandIndex>,
     },
-    /// Global average pooling (same options as pool2d; see spec table § 7.3).
-    GlobalAveragePool {
-        input: OperandIndex,
-        options: Option<MLPool2dOptions>,
-        outputs: Vec<OperandIndex>,
-    },
-    /// Global max pooling (same options as pool2d; see spec table § 7.3).
-    GlobalMaxPool {
-        input: OperandIndex,
-        options: Option<MLPool2dOptions>,
-        outputs: Vec<OperandIndex>,
-    },
 
     // ---------- Reduction ----------
     /// [reduceSum()](https://www.w3.org/TR/webnn/#dom-mlgraphbuilder-reducesum)
@@ -984,8 +972,6 @@ impl Operation {
             Operation::AveragePool2d { .. } => "averagePool2d",
             Operation::MaxPool2d { .. } => "maxPool2d",
             Operation::L2Pool2d { .. } => "l2Pool2d",
-            Operation::GlobalAveragePool { .. } => "globalAveragePool",
-            Operation::GlobalMaxPool { .. } => "globalMaxPool",
             Operation::ReduceSum { .. } => "reduceSum",
             Operation::ReduceMean { .. } => "reduceMean",
             Operation::ReduceMax { .. } => "reduceMax",
@@ -1149,8 +1135,6 @@ impl Operation {
             Operation::AveragePool2d { input, .. } => vec![*input],
             Operation::MaxPool2d { input, .. } => vec![*input],
             Operation::L2Pool2d { input, .. } => vec![*input],
-            Operation::GlobalAveragePool { input, .. } => vec![*input],
-            Operation::GlobalMaxPool { input, .. } => vec![*input],
             Operation::ReduceSum { input, .. } => vec![*input],
             Operation::ReduceMean { input, .. } => vec![*input],
             Operation::ReduceMax { input, .. } => vec![*input],
@@ -1287,8 +1271,6 @@ impl Operation {
             Operation::AveragePool2d { outputs, .. } => outputs,
             Operation::MaxPool2d { outputs, .. } => outputs,
             Operation::L2Pool2d { outputs, .. } => outputs,
-            Operation::GlobalAveragePool { outputs, .. } => outputs,
-            Operation::GlobalMaxPool { outputs, .. } => outputs,
             Operation::ReduceSum { outputs, .. } => outputs,
             Operation::ReduceMean { outputs, .. } => outputs,
             Operation::ReduceMax { outputs, .. } => outputs,
@@ -1413,9 +1395,7 @@ impl Operation {
             Operation::Pad { options, .. } => opt_label!(options),
             Operation::AveragePool2d { options, .. }
             | Operation::MaxPool2d { options, .. }
-            | Operation::L2Pool2d { options, .. }
-            | Operation::GlobalAveragePool { options, .. }
-            | Operation::GlobalMaxPool { options, .. } => opt_label!(options),
+            | Operation::L2Pool2d { options, .. } => opt_label!(options),
             Operation::ReduceSum { options, .. }
             | Operation::ReduceMean { options, .. }
             | Operation::ReduceMax { options, .. }
@@ -2045,16 +2025,6 @@ impl Operation {
                 OO::Pool2d(options.clone().unwrap_or_default()),
             ),
             Operation::L2Pool2d { input, options, .. } => (
-                tag.clone(),
-                vec![*input],
-                OO::Pool2d(options.clone().unwrap_or_default()),
-            ),
-            Operation::GlobalAveragePool { input, options, .. } => (
-                tag.clone(),
-                vec![*input],
-                OO::Pool2d(options.clone().unwrap_or_default()),
-            ),
-            Operation::GlobalMaxPool { input, options, .. } => (
                 tag.clone(),
                 vec![*input],
                 OO::Pool2d(options.clone().unwrap_or_default()),
@@ -2755,18 +2725,6 @@ impl Operation {
                 outputs: outputs.to_vec(),
             }),
             "l2Pool2d" if !input_operands.is_empty() => Some(Operation::L2Pool2d {
-                input: at(input_operands, 0)?,
-                options: attributes.as_pool2d().cloned(),
-                outputs: outputs.to_vec(),
-            }),
-            "globalAveragePool" if !input_operands.is_empty() => {
-                Some(Operation::GlobalAveragePool {
-                    input: at(input_operands, 0)?,
-                    options: attributes.as_pool2d().cloned(),
-                    outputs: outputs.to_vec(),
-                })
-            }
-            "globalMaxPool" if !input_operands.is_empty() => Some(Operation::GlobalMaxPool {
                 input: at(input_operands, 0)?,
                 options: attributes.as_pool2d().cloned(),
                 outputs: outputs.to_vec(),
