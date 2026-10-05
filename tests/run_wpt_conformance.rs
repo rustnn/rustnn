@@ -99,6 +99,22 @@ fn push_backend_trials(
 fn main() {
     pretty_env_logger::init();
 
+    // A build without any backend feature has nothing to test; only a compiled-in backend
+    // that fails to come up is an error (for example a missing ONNX Runtime library).
+    const BACKEND_FEATURE_ENABLED: bool = cfg!(any(
+        feature = "onnx-runtime",
+        feature = "trtx-runtime",
+        feature = "trtx-runtime-mock",
+        feature = "litert-runtime",
+        all(target_os = "macos", feature = "coreml-runtime")
+    ));
+    if !BACKEND_FEATURE_ENABLED {
+        eprintln!(
+            "[WPT] no backend feature enabled; skipping the conformance trials (build with --features onnx-runtime, trtx-runtime, litert-runtime or coreml-runtime)."
+        );
+        return;
+    }
+
     let args = Arguments::from_args();
     let wpt_dir = default_wpt_dir();
 
@@ -133,21 +149,6 @@ fn main() {
 
     let backends = WptBackend::selected();
     if backends.is_empty() {
-        // A build without any backend feature has nothing to test; only a compiled-in backend
-        // that fails to come up is an error (for example a missing ONNX Runtime library).
-        const BACKEND_FEATURE_ENABLED: bool = cfg!(any(
-            feature = "onnx-runtime",
-            feature = "trtx-runtime",
-            feature = "trtx-runtime-mock",
-            feature = "litert-runtime",
-            all(target_os = "macos", feature = "coreml-runtime")
-        ));
-        if !BACKEND_FEATURE_ENABLED {
-            eprintln!(
-                "[WPT] no backend feature enabled; skipping the conformance trials (build with --features onnx-runtime, trtx-runtime, litert-runtime or coreml-runtime)."
-            );
-            return;
-        }
         eprintln!(
             "No WPT backends available (enable onnx-runtime, trtx-runtime, coreml-runtime, ...)."
         );

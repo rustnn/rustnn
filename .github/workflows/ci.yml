@@ -193,7 +193,7 @@ jobs:
           key: ${{ runner.os }}-capi-examples-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run capi tests
-        run: cargo test -F capi,onnx-runtime capi
+        run: cargo test -F capi,onnx-runtime capi --lib
 
       - name: Build and run C and C++ API examples
         run: make capi-examples
