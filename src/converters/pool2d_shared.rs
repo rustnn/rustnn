@@ -14,9 +14,7 @@ pub(crate) fn infer_pool2d_ceil_mode_from_output_sizes(
     let opts = match &op {
         Operation::AveragePool2d { options, .. }
         | Operation::MaxPool2d { options, .. }
-        | Operation::L2Pool2d { options, .. }
-        | Operation::GlobalAveragePool { options, .. }
-        | Operation::GlobalMaxPool { options, .. } => options.as_ref()?,
+        | Operation::L2Pool2d { options, .. } => options.as_ref()?,
         _ => return None,
     };
 

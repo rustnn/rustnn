@@ -35,14 +35,13 @@ use crate::operator_options::{
     MLUnsqueezeOptions, OperandIndex,
 };
 use crate::shape_inference::{
-    InputLayout, ReduceOptions, SplitSpec, infer_concat_shape_dimensions,
-    infer_conv_transpose2d_shape, infer_conv2d_shape, infer_expand_shape_dimensions,
-    infer_gather_shape_dimensions, infer_gemm_shape_dimensions, infer_global_pool_shape,
-    infer_matmul_shape_dimensions, infer_pad_shape, infer_pool2d_shape_dimensions,
-    infer_prelu_shape, infer_reduce_shape_dimensions, infer_resample2d_shape,
-    infer_scatter_elements_shape, infer_scatter_nd_shape, infer_slice_shape, infer_split_shapes,
-    infer_squeeze_shape, infer_tile_shape, infer_transpose_shape_dimensions,
-    infer_triangular_shape, infer_unsqueeze_shape_dimensions,
+    ReduceOptions, SplitSpec, infer_concat_shape_dimensions, infer_conv_transpose2d_shape,
+    infer_conv2d_shape, infer_expand_shape_dimensions, infer_gather_shape_dimensions,
+    infer_gemm_shape_dimensions, infer_matmul_shape_dimensions, infer_pad_shape,
+    infer_pool2d_shape_dimensions, infer_prelu_shape, infer_reduce_shape_dimensions,
+    infer_resample2d_shape, infer_scatter_elements_shape, infer_scatter_nd_shape,
+    infer_slice_shape, infer_split_shapes, infer_squeeze_shape, infer_tile_shape,
+    infer_transpose_shape_dimensions, infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
 use crate::webnn_json::to_graph_json;
 use crate::{DataType, Operand, OperandDescriptor, OperandKind, Operation};
@@ -677,33 +676,6 @@ fn pool2d_shape(
             o.output_sizes.as_deref(),
             o.output_shape_rounding.eq_ignore_ascii_case("ceil"),
         ),
-    )?;
-    Ok(OperandDescriptor {
-        data_type: operand.descriptor.data_type,
-        shape,
-        pending_permutation: vec![],
-    })
-}
-
-fn global_pool_shape(
-    input: MLOperand,
-    operation: &Operation,
-    options: Option<&MLPool2dOptions>,
-    graph: &GraphInfo,
-) -> Result<OperandDescriptor> {
-    let operand = get_operand(input, graph)?;
-    let default_pool = MLPool2dOptions::default();
-    let o = options.unwrap_or(&default_pool);
-    let layout_enum = if o.layout.eq_ignore_ascii_case("nhwc") {
-        InputLayout::Nhwc
-    } else {
-        InputLayout::Nchw
-    };
-    let shape = infer_shape_err(
-        "globalPool",
-        operation,
-        infer_global_pool_shape(&shape_dims_u32(&operand.descriptor.shape), layout_enum)
-            .map(|v| to_dimension_vector(&v)),
     )?;
     Ok(OperandDescriptor {
         data_type: operand.descriptor.data_type,
@@ -1786,15 +1758,6 @@ fn shape_inference_single_output(
         Operation::AveragePool2d { input, options, .. }
         | Operation::MaxPool2d { input, options, .. }
         | Operation::L2Pool2d { input, options, .. } => pool2d_shape(
-            MLOperand {
-                id: *input as usize,
-            },
-            operation,
-            options.as_ref(),
-            graph,
-        ),
-        Operation::GlobalAveragePool { input, options, .. }
-        | Operation::GlobalMaxPool { input, options, .. } => global_pool_shape(
             MLOperand {
                 id: *input as usize,
             },
@@ -2970,22 +2933,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         /// 2-D L2-norm pooling over the spatial dimensions.
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-l2>
         l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
-    impl_unary_op!(
-        /// Average pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `average_pool2d` with the default window).
-        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
-        global_average_pool,
-        global_average_pool_with_options,
-        GlobalAveragePool,
-        MLPool2dOptions
-    );
-    impl_unary_op!(
-        /// Max pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `max_pool2d` with the default window).
-        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
-        global_max_pool,
-        global_max_pool_with_options,
-        GlobalMaxPool,
-        MLPool2dOptions
-    );
     impl_unary_op!(
         /// Sum over `axes` (default: all).
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>

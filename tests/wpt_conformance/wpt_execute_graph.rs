@@ -44,13 +44,7 @@ const LARGE_SCALAR_INLINE_BYTES_THRESHOLD: usize = 8 * 1024 * 1024;
 
 const MULTI_OUTPUT_OPS: &[&str] = &["split", "gru", "lstm", "lstmCell"];
 
-const POOL2D_LIKE_OPS: &[&str] = &[
-    "averagePool2d",
-    "maxPool2d",
-    "l2Pool2d",
-    "globalAveragePool",
-    "globalMaxPool",
-];
+const POOL2D_LIKE_OPS: &[&str] = &["averagePool2d", "maxPool2d", "l2Pool2d"];
 
 /// Actual tensor output from graph execution, for tolerance validation in `mod.rs`.
 #[derive(Debug, Clone)]
@@ -1283,14 +1277,6 @@ fn invoke_builder_method(
         }),
         "l2Pool2d" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
             b.l2_pool2d_with_options(i, o)
-        }),
-        "globalAveragePool" => {
-            invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
-                b.global_average_pool_with_options(i, o)
-            })
-        }
-        "globalMaxPool" => invoke_pool2d(builder, op_name, args, operator_options, |b, i, o| {
-            b.global_max_pool_with_options(i, o)
         }),
         other => {
             let method = normalize_wpt_op_name(other);

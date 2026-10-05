@@ -148,8 +148,6 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::IsNaN { .. } => None,
         Operation::IsInfinite { .. } => None,
         Operation::Reverse { .. } => None,
-        Operation::GlobalAveragePool { .. } => None,
-        Operation::GlobalMaxPool { .. } => None,
 
         // ── Not supported ─────────────────────────────────────────────
         Operation::Shape { .. }
@@ -242,28 +240,6 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     }
 
     Ok(())
-}
-
-// Spatial axes a global pool reduces: the trailing two for NCHW, 1..2 for NHWC. Reducing
-// them in place matches transposing to NCHW first, so no transpose is emitted. An unset
-// layout means NCHW.
-#[cfg(feature = "cann-runtime")]
-fn global_pool_axes(
-    rank: usize,
-    options: &Option<crate::operator_options::MLPool2dOptions>,
-) -> Vec<i32> {
-    let rank = rank as i32;
-    let is_nhwc = options
-        .as_ref()
-        .map(|o| o.layout.eq_ignore_ascii_case("nhwc"))
-        .unwrap_or(false);
-    if is_nhwc && rank >= 3 {
-        vec![1, 2]
-    } else if rank >= 2 {
-        vec![rank - 2, rank - 1]
-    } else {
-        vec![0]
-    }
 }
 
 // Transpose a 4-D f32 filter into the target layout: `perm[target] = source`,
@@ -1072,8 +1048,6 @@ mod adapter {
             | Operation::MaxPool2d { outputs, .. }
             | Operation::AveragePool2d { outputs, .. }
             | Operation::L2Pool2d { outputs, .. }
-            | Operation::GlobalMaxPool { outputs, .. }
-            | Operation::GlobalAveragePool { outputs, .. }
             // ArgMax / ArgMin
             | Operation::ArgMax { outputs, .. }
             | Operation::ArgMin { outputs, .. }
@@ -1944,74 +1918,6 @@ mod adapter {
                 connect_input(or_op, "x2", eq_neg)?;
 
                 handles[out_id as usize] = or_op;
-                continue;
-            }
-
-            // globalAveragePool = ReduceMean over the spatial axes.
-            if let Operation::GlobalAveragePool {
-                input,
-                options,
-                outputs,
-                ..
-            } = op
-            {
-                let out_id = outputs[0];
-                let mean = create_op(
-                    "ReduceMean",
-                    &format!("global_avg_pool_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(mean, "x", *input, &handles, &split_out)?;
-                let axes = global_pool_axes(
-                    graph.operands[*input as usize].descriptor.shape.len(),
-                    options,
-                );
-                let axes_const = make_const(
-                    &format!("global_avg_pool_axes_{out_id}"),
-                    bytemuck::cast_slice(&axes),
-                    &[axes.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(axes_const);
-                connect_input(mean, "axes", axes_const)?;
-                set_bool_attr(mean, "keep_dims", true);
-
-                handles[out_id as usize] = mean;
-                continue;
-            }
-
-            // globalMaxPool = ReduceMax over the spatial axes.
-            if let Operation::GlobalMaxPool {
-                input,
-                options,
-                outputs,
-                ..
-            } = op
-            {
-                let out_id = outputs[0];
-                let max = create_op(
-                    "ReduceMax",
-                    &format!("global_max_pool_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(max, "x", *input, &handles, &split_out)?;
-                let axes = global_pool_axes(
-                    graph.operands[*input as usize].descriptor.shape.len(),
-                    options,
-                );
-                let axes_const = make_const(
-                    &format!("global_max_pool_axes_{out_id}"),
-                    bytemuck::cast_slice(&axes),
-                    &[axes.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(axes_const);
-                connect_input(max, "axes", axes_const)?;
-                set_bool_attr(max, "keep_dims", true);
-
-                handles[out_id as usize] = max;
                 continue;
             }
 
