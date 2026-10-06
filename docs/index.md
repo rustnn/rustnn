@@ -17,6 +17,9 @@ without `MLContext`.
 
 - **The WebNN API in Rust.** `MLContext`, `MLGraphBuilder`, `MLGraph`, `MLTensor` and
   `dispatch` mirror the JavaScript API. rustnn-specific additions carry a `rustnn_` prefix.
+- **C and C++ APIs.** A generated C header and C++17 owning wrappers expose graph
+  construction and dispatch. See the [C and C++ guide](reference/c-api.md) and
+  [Doxygen reference](c-api/index.html).
 - **Backends selected at context creation.** ONNX Runtime, NVIDIA TensorRT-RTX, Apple CoreML,
   LiteRT and Huawei CANN, chosen from the WebNN `accelerated` and power-preference hints or
   forced with a backend hint. A browser WebNN backend for `wasm32` is in progress.
