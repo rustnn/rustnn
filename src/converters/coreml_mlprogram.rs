@@ -4187,20 +4187,6 @@ impl CoremlMlProgramConverter {
                 // 3. add beta * C if C is provided
             }
 
-            // Global pooling operations (reduce over spatial dimensions)
-            Operation::GlobalAveragePool { .. } | Operation::GlobalMaxPool { .. } => {
-                if !input_names.is_empty() {
-                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
-                }
-                // Global pooling reduces over spatial dimensions (2, 3) for NCHW format
-                inputs.insert(
-                    "axes".to_string(),
-                    Self::create_immediate_int_array(&[2, 3]),
-                );
-                // Keep dimensions to maintain rank
-                inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
-            }
-
             // Softmax operation (axis is required by WebNN spec)
             Operation::Softmax { axis, .. } => {
                 if !input_names.is_empty() {

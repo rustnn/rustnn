@@ -9,10 +9,10 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 
 | Backend | Converter source | Detection rule | Supported |
 |---|---|---|---|
-| ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 100 of 100 |
-| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 100 of 100 |
-| TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 99 of 100 |
-| LiteRT | `src/converters/litert.rs` | `Operation` variants referenced by the converter | 92 of 100 |
+| ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 98 of 98 |
+| CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 98 of 98 |
+| TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 97 of 98 |
+| LiteRT | `src/converters/litert.rs` | `Operation` variants referenced by the converter | 92 of 98 |
 
 ## Operation matrix
 
@@ -45,8 +45,6 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 | `gatherND` | yes | yes | yes | yes |
 | `gelu` | yes | yes | yes | yes |
 | `gemm` | yes | yes | yes | yes |
-| `globalAveragePool` | yes | yes | yes | - |
-| `globalMaxPool` | yes | yes | yes | - |
 | `greater` | yes | yes | yes | yes |
 | `greaterOrEqual` | yes | yes | yes | yes |
 | `gru` | yes | yes | yes | - |
@@ -124,7 +122,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 - ONNX Runtime: none
 - CoreML: none
 - TensorRT: `shape`
-- LiteRT: `globalAveragePool`, `globalMaxPool`, `gru`, `gruCell`, `lstm`, `lstmCell`, `shape`, `unsqueeze`
+- LiteRT: `gru`, `gruCell`, `lstm`, `lstmCell`, `shape`, `unsqueeze`
 
 ## Notes
 
