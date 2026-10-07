@@ -53,6 +53,10 @@ use crate::mlcontextoptions::TrtxOptions;
 /// Reexport [trtx::dynamically_load_tensorrt] so RustNN users (like pywebnn) can hint to location
 /// of TensorRT library without adding trtx as dependency themselves
 pub use trtx::dynamically_load_tensorrt;
+/// Reexport TensorRT version information. Useful for users of [dynamically_load_tensorrt]
+pub use trtx::trtx_sys::{
+    get_tensorrt_major_version, get_tensorrt_minor_version, get_tensorrt_patch_version,
+};
 
 const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
 
