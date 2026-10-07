@@ -1,17 +1,28 @@
 //! Enumerations of the WebNN IDL (`MLOperandDataType`, layouts, rounding, padding modes).
-//!
-//! Serde uses the kebab-case spelling of the specification (`"float32"`,
-//! `"nearest-neighbor"`); `as_str` returns the same strings for converters. [`MLOperandDataType`]
-//! converts to and from the graph-level [`DataType`].
 
 use crate::{DataType, error::GraphBuilderError};
 use serde::{Deserialize, Serialize};
+use strum::{AsRefStr, EnumString, IntoStaticStr};
 
 /// Operand data type of the WebNN API. <https://www.w3.org/TR/webnn/#enumdef-mloperanddatatype>
 ///
 /// `int4` and `uint4` are rustnn extensions that follow the WPT test data.
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize, Hash)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    Hash,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLOperandDataType {
     #[default]
     /// IEEE 754 binary32.
@@ -91,8 +102,21 @@ impl MLOperandDataType {
 }
 
 /// Gate order of LSTM weights. <https://www.w3.org/TR/webnn/#enumdef-mllstmweightlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLLstmWeightLayout {
     #[default]
     /// Input, output, forget, cell gate order.
@@ -102,8 +126,21 @@ pub enum MLLstmWeightLayout {
 }
 
 /// Rounding of pooling output sizes. <https://www.w3.org/TR/webnn/#enumdef-mlroundingtype>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLRoundingType {
     #[default]
     /// Round the output size down.
@@ -113,8 +150,21 @@ pub enum MLRoundingType {
 }
 
 /// Interpolation of `resample2d`. <https://www.w3.org/TR/webnn/#enumdef-mlinterpolationmode>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLInterpolationMode {
     #[default]
     /// Nearest-neighbor sampling.
@@ -124,8 +174,21 @@ pub enum MLInterpolationMode {
 }
 
 /// Processing direction of `gru` and `lstm`. <https://www.w3.org/TR/webnn/#enumdef-mlrecurrentnetworkdirection>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLRecurrentNetworkDirection {
     #[default]
     /// Process the sequence from the first to the last step.
@@ -137,8 +200,22 @@ pub enum MLRecurrentNetworkDirection {
 }
 
 /// Filter layout of `conv2d`. <https://www.w3.org/TR/webnn/#enumdef-mlconv2dfilteroperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLConv2dFilterOperandLayout {
     #[default]
     /// Output channels, input channels, height, width.
@@ -152,8 +229,22 @@ pub enum MLConv2dFilterOperandLayout {
 }
 
 /// Filter layout of `convTranspose2d`. <https://www.w3.org/TR/webnn/#enumdef-mlconvtranspose2dfilteroperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLConvTranspose2dFilterOperandLayout {
     #[default]
     /// Input channels, output channels, height, width.
@@ -165,8 +256,21 @@ pub enum MLConvTranspose2dFilterOperandLayout {
 }
 
 /// Gate activation of the recurrent operations. <https://www.w3.org/TR/webnn/#enumdef-mlrecurrentnetworkactivation>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLRecurrentNetworkActivation {
     #[default]
     /// Rectified linear unit.
@@ -178,8 +282,21 @@ pub enum MLRecurrentNetworkActivation {
 }
 
 /// Gate order of GRU weights. <https://www.w3.org/TR/webnn/#enumdef-mlgruweightlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLGruWeightLayout {
     #[default]
     /// Update, reset, new gate order.
@@ -189,8 +306,22 @@ pub enum MLGruWeightLayout {
 }
 
 /// Input layout of convolution, pooling and normalization. <https://www.w3.org/TR/webnn/#enumdef-mlinputoperandlayout>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLInputOperandLayout {
     #[default]
     /// Batch, channels, height, width.
@@ -200,8 +331,22 @@ pub enum MLInputOperandLayout {
 }
 
 /// Padding mode of `pad`. <https://www.w3.org/TR/webnn/#enumdef-mlpaddingmode>
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Default,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    Deserialize,
+    Serialize,
+    EnumString,
+    AsRefStr,
+    IntoStaticStr,
+)]
 #[serde(rename_all = "kebab-case")]
+#[strum(serialize_all = "kebab-case")]
 pub enum MLPaddingMode {
     #[default]
     /// Fill with a constant value.
@@ -212,199 +357,144 @@ pub enum MLPaddingMode {
     Reflection,
 }
 
-// ---------------------------------------------------------------------------
-// Stable WebNN JSON / IDL string forms (kebab-case / lowercase) for converters
-// ---------------------------------------------------------------------------
+// Stable WebNN JSON / IDL string forms for converters.
 
 impl MLOperandDataType {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            MLOperandDataType::Float32 => "float32",
-            MLOperandDataType::Float16 => "float16",
-            MLOperandDataType::Int32 => "int32",
-            MLOperandDataType::Uint32 => "uint32",
-            MLOperandDataType::Int64 => "int64",
-            MLOperandDataType::Uint64 => "uint64",
-            MLOperandDataType::Int8 => "int8",
-            MLOperandDataType::Uint8 => "uint8",
-            MLOperandDataType::Int4 => "int4",
-            MLOperandDataType::Uint4 => "uint4",
-        }
+        self.into()
+    }
+}
+
+impl MLLstmWeightLayout {
+    /// The specification spelling, as used in JSON and by the converters.
+    pub fn as_str(self) -> &'static str {
+        self.into()
     }
 }
 
 impl MLRoundingType {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Floor => "floor",
-            Self::Ceil => "ceil",
-        }
+        self.into()
     }
 }
 
 impl MLInterpolationMode {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::NearestNeighbor => "nearest-neighbor",
-            Self::Linear => "linear",
-        }
+        self.into()
     }
 }
 
 impl MLRecurrentNetworkDirection {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Forward => "forward",
-            Self::Backward => "backward",
-            Self::Both => "both",
-        }
-    }
-}
-
-impl TryFrom<&str> for MLConv2dFilterOperandLayout {
-    type Error = crate::error::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "oihw" => Ok(Self::Oihw),
-            "hwio" => Ok(Self::Hwio),
-            "ohwi" => Ok(Self::Ohwi),
-            "ihwo" => Ok(Self::Ihwo),
-            _ => Err(crate::error::Error::InvalidConv2dFilterOperandLayout {
-                value: value.to_string(),
-            }),
-        }
+        self.into()
     }
 }
 
 impl MLConv2dFilterOperandLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Oihw => "oihw",
-            Self::Hwio => "hwio",
-            Self::Ohwi => "ohwi",
-            Self::Ihwo => "ihwo",
-        }
-    }
-}
-
-impl TryFrom<&str> for MLConvTranspose2dFilterOperandLayout {
-    type Error = crate::error::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "iohw" => Ok(Self::Iohw),
-            "hwoi" => Ok(Self::Hwoi),
-            "ohwi" => Ok(Self::Ohwi),
-            _ => Err(
-                crate::error::Error::InvalidConvTranspose2dFilterOperandLayout {
-                    value: value.to_string(),
-                },
-            ),
-        }
+        self.into()
     }
 }
 
 impl MLConvTranspose2dFilterOperandLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Iohw => "iohw",
-            Self::Hwoi => "hwoi",
-            Self::Ohwi => "ohwi",
-        }
+        self.into()
     }
 }
 
 impl MLRecurrentNetworkActivation {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Relu => "relu",
-            Self::Sigmoid => "sigmoid",
-            Self::Tanh => "tanh",
-        }
+        self.into()
     }
 }
 
 impl MLGruWeightLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Zrn => "zrn",
-            Self::Rzn => "rzn",
-        }
-    }
-}
-
-impl TryFrom<&str> for MLInputOperandLayout {
-    type Error = crate::error::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "nchw" => Ok(Self::Nchw),
-            "nhwc" => Ok(Self::Nhwc),
-            _ => Err(crate::error::Error::InvalidInputOperandLayout {
-                value: value.to_string(),
-            }),
-        }
+        self.into()
     }
 }
 
 impl MLInputOperandLayout {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Nchw => "nchw",
-            Self::Nhwc => "nhwc",
-        }
-    }
-}
-
-impl TryFrom<&str> for MLPaddingMode {
-    type Error = crate::error::Error;
-
-    fn try_from(value: &str) -> Result<Self, Self::Error> {
-        match value {
-            "constant" => Ok(Self::Constant),
-            "edge" => Ok(Self::Edge),
-            "reflection" => Ok(Self::Reflection),
-            _ => Err(crate::error::Error::InvalidPaddingMode {
-                value: value.to_string(),
-            }),
-        }
+        self.into()
     }
 }
 
 impl MLPaddingMode {
     /// The specification spelling, as used in JSON and by the converters.
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Constant => "constant",
-            Self::Edge => "edge",
-            Self::Reflection => "reflection",
-        }
+        self.into()
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::operator_enums::{MLConvTranspose2dFilterOperandLayout, MLInputOperandLayout};
+    use super::*;
 
     #[test]
-    fn test_conversion() {
-        let layout: MLInputOperandLayout = "nhwc".try_into().unwrap();
-        assert_eq!(layout, MLInputOperandLayout::Nhwc);
-        let layout: crate::error::Result<MLInputOperandLayout> = "invalid".try_into();
-        std::assert_matches!(
-            layout.unwrap_err(),
-            crate::error::Error::InvalidInputOperandLayout { .. }
-        );
+    fn specification_string_conversions() {
+        macro_rules! check_strings {
+            ($enum:ident { $($variant:ident => $spelling:literal),+ $(,)? }) => {
+                $(
+                    let value = $enum::$variant;
+                    assert_eq!(value.as_ref(), $spelling);
+                    assert_eq!(value.as_str(), $spelling);
+                    assert_eq!($spelling.parse::<$enum>().unwrap(), value);
+                    assert_eq!($enum::try_from($spelling).unwrap(), value);
+                    assert_eq!(serde_json::to_value(value).unwrap(), $spelling);
+                    assert_eq!(
+                        serde_json::from_value::<$enum>(serde_json::json!($spelling)).unwrap(),
+                        value
+                    );
+                    assert!($spelling.to_uppercase().parse::<$enum>().is_err());
+                )+
+                assert_eq!(
+                    "invalid".parse::<$enum>(),
+                    Err(strum::ParseError::VariantNotFound)
+                );
+                assert_eq!(
+                    $enum::try_from("invalid"),
+                    Err(strum::ParseError::VariantNotFound)
+                );
+            };
+        }
+
+        check_strings!(MLOperandDataType {
+            Float32 => "float32", Float16 => "float16", Int32 => "int32",
+            Uint32 => "uint32", Int64 => "int64", Uint64 => "uint64",
+            Int8 => "int8", Uint8 => "uint8", Int4 => "int4", Uint4 => "uint4",
+        });
+        check_strings!(MLLstmWeightLayout { Iofg => "iofg", Ifgo => "ifgo" });
+        check_strings!(MLRoundingType { Floor => "floor", Ceil => "ceil" });
+        check_strings!(MLInterpolationMode {
+            NearestNeighbor => "nearest-neighbor", Linear => "linear",
+        });
+        check_strings!(MLRecurrentNetworkDirection {
+            Forward => "forward", Backward => "backward", Both => "both",
+        });
+        check_strings!(MLConv2dFilterOperandLayout {
+            Oihw => "oihw", Hwio => "hwio", Ohwi => "ohwi", Ihwo => "ihwo",
+        });
+        check_strings!(MLConvTranspose2dFilterOperandLayout {
+            Iohw => "iohw", Hwoi => "hwoi", Ohwi => "ohwi",
+        });
+        check_strings!(MLRecurrentNetworkActivation {
+            Relu => "relu", Sigmoid => "sigmoid", Tanh => "tanh",
+        });
+        check_strings!(MLGruWeightLayout { Zrn => "zrn", Rzn => "rzn" });
+        check_strings!(MLInputOperandLayout { Nchw => "nchw", Nhwc => "nhwc" });
+        check_strings!(MLPaddingMode {
+            Constant => "constant", Edge => "edge", Reflection => "reflection",
+        });
     }
 
     #[test]
