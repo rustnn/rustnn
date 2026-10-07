@@ -8,7 +8,7 @@ Steps to build and run rustnn with the TensorRT-RTX backend on Windows 10 or 11 
 2. The TensorRT-RTX 1.6 SDK from https://developer.nvidia.com/tensorrt-rtx (NVIDIA developer
    account required). Extract it, for example to `C:\TensorRT-RTX-1.6`, and add its `bin`
    directory to `PATH`: the `trtx` crate loads `tensorrt_rtx_1_6.dll` by name. Alternatively
-   call `rustnn::executors::trtx::dynamically_load_tensorrt(Some(path))` at startup.
+   call `rustnn::backends::trtx::dynamically_load_tensorrt(Some(path))` at startup.
 3. Visual Studio Build Tools with the "Desktop development with C++" workload (linker and
    Windows SDK).
 4. LLVM for libclang, which autocxx uses while building `trtx-sys`: `winget install LLVM.LLVM`,

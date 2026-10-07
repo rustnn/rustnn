@@ -50,6 +50,10 @@ use crate::mlcontext::{MLBackendBuilder, MLGraph, MLNamedTensors};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
 
+/// Reexport [trtx::dynamically_load_tensorrt] so RustNN users (like pywebnn) can hint to location
+/// of TensorRT library without adding trtx as dependency themselves
+pub use trtx::dynamically_load_tensorrt;
+
 const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
 
 // TODO: also used in trtexec-rs. Should be part of trtx API?

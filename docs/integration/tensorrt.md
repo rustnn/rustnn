@@ -22,7 +22,7 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
   `cudarc`; the CUDA toolkit is not required.
 - The TensorRT-RTX 1.6 library. The `trtx` crate loads it by name (`tensorrt_rtx_1_6`), so the
   SDK's `lib` directory (Linux) or `bin` directory (Windows) must be on `LD_LIBRARY_PATH` or
-  `PATH`, or the application calls `rustnn::executors::trtx::dynamically_load_tensorrt(Some(path))`
+  `PATH`, or the application calls `rustnn::backends::trtx::dynamically_load_tensorrt(Some(path))`
   before creating a context. When the library cannot be loaded, backend selection skips
   TensorRT (on Windows the underlying error is `LoadLibraryExW` code 126).
 - Build time: `trtx-sys` generates bindings from the TensorRT headers with autocxx and needs
