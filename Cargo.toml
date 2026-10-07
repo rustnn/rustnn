@@ -239,6 +239,7 @@ objc = { version = "0.2", optional = true, features = [
 ] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
 block = { version = "0.1", optional = true }
 pollster = { version = "1.0.1", optional = true }
+strum = { version = "0.28.0", features = ["derive"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 # Native CoreML targets require Objective-C exception handling.

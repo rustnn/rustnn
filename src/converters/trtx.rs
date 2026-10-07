@@ -34,7 +34,7 @@ use crate::graph::{
 };
 use crate::operator_enums::{
     MLConv2dFilterOperandLayout as ConvLayout,
-    MLConvTranspose2dFilterOperandLayout as TransposeLayout,
+    MLConvTranspose2dFilterOperandLayout as TransposeLayout, MLPaddingMode,
 };
 use crate::operator_options::{MLDimension, MLPool2dOptions};
 use crate::operators::Operation;
@@ -10821,23 +10821,9 @@ impl TrtxConverter {
 
         let original_ndims = input_dims.len();
 
-        let pad_mode_norm = pad_opts.mode.to_lowercase();
-        let is_constant_pad_mode = pad_mode_norm.is_empty() || pad_mode_norm == "constant";
-        let is_edge_pad_mode = pad_mode_norm == "edge";
-        let is_reflect_pad_mode = pad_mode_norm == "reflection" || pad_mode_norm == "reflect";
-        if !pad_mode_norm.is_empty()
-            && !is_constant_pad_mode
-            && !is_edge_pad_mode
-            && !is_reflect_pad_mode
-        {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!(
-                    "Pad: TensorRT pad supports constant, edge, and reflection mode (got {:?})",
-                    pad_opts.mode
-                ),
-            });
-        }
+        let is_constant_pad_mode = pad_opts.mode == MLPaddingMode::Constant;
+        let is_edge_pad_mode = pad_opts.mode == MLPaddingMode::Edge;
+        let is_reflect_pad_mode = pad_opts.mode == MLPaddingMode::Reflection;
         let fill_f32 = pad_opts
             .value
             .as_ref()

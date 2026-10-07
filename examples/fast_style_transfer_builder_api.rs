@@ -13,7 +13,7 @@ use rustnn::mlcontext::{
     MLContext, MLContextOptions, MLGraphBuilder, MLNamedOperands, MLNamedTensors, MLOperand,
     MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
 };
-use rustnn::operator_enums::MLOperandDataType;
+use rustnn::operator_enums::{MLOperandDataType, MLPaddingMode};
 use rustnn::operator_options::{
     MLConv2dOptions, MLConvTranspose2dOptions, MLPadOptions, MLReduceOptions,
 };
@@ -508,7 +508,7 @@ fn reflection_pad(
     let padding = vec![0, 0, amount, amount];
     let options = MLPadOptions {
         label: label.to_string(),
-        mode: "reflection".to_string(),
+        mode: MLPaddingMode::Reflection,
         ..Default::default()
     };
     builder

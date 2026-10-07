@@ -1681,8 +1681,7 @@ impl<'a> TfliteContext<'a> {
         };
         let is_edge = options
             .as_ref()
-            .map(|o| o.mode.eq_ignore_ascii_case("edge"))
-            .unwrap_or(false);
+            .is_some_and(|o| o.mode == crate::operator_enums::MLPaddingMode::Edge);
         if !is_edge {
             return false;
         }
@@ -6681,9 +6680,7 @@ fn opcode_version(code: i32) -> i32 {
 /// WebNN's reflection padding mirrors without repeating the edge, which is TFLite's
 /// REFLECT mode. The other modes have their own kernels.
 fn is_reflect_pad(options: Option<&MLPadOptions>) -> bool {
-    options
-        .map(|o| o.mode.eq_ignore_ascii_case("reflection"))
-        .unwrap_or(false)
+    options.is_some_and(|o| o.mode == crate::operator_enums::MLPaddingMode::Reflection)
 }
 
 /// WebNN's default interpolation mode is nearest neighbour; only `"linear"` selects the
