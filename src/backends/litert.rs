@@ -109,6 +109,7 @@ impl LiteRtGraph {
         unsafe {
             let mut model = std::ptr::null_mut();
             check(sys::LiteRtCreateModelFromBuffer(
+                LiteRt::env(),
                 owned.as_ptr() as *const c_void,
                 owned.len(),
                 &mut model,
@@ -247,7 +248,9 @@ impl LiteRtTensor {
 
         let mut layout = sys::LiteRtLayout::default();
         layout.set_rank(u32::try_from(shape.dims.len()).expect("rank fits in u32"));
-        layout.set_has_strides(has_strides);
+        // `has_strides` is an `unsigned int : 1` bit-field since LiteRT 2.2.0
+        // (it used to be `bool`), so the generated setter takes an integer.
+        layout.set_has_strides(u32::from(has_strides));
         for (slot, &d) in layout.dimensions.iter_mut().zip(shape.dims.iter()) {
             *slot = d;
         }
