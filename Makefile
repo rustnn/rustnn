@@ -185,11 +185,7 @@ test-wpt-trtx: onnxruntime-download trtxruntime-download
 	$(ORT_ENV_VARS) $(TRT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
 
 test-wpt-litert:
-	@HOST_TRIPLE=$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2); \
-	LITERT_LIB_DIR="$${HOME}/.cache/litert-sys/v0.10.2/$${HOST_TRIPLE}"; \
-	LD_LIBRARY_PATH="$$LITERT_LIB_DIR:$$LD_LIBRARY_PATH" \
-	LIBRARY_PATH="$$LITERT_LIB_DIR:$$LIBRARY_PATH" \
-	WPT_REPORT_JSON="$(WPT_REPORT_LITERT_JSON)" \
+	@WPT_REPORT_JSON="$(WPT_REPORT_LITERT_JSON)" \
 	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert --test-threads=1
 
 test-wpt-coreml:
@@ -253,11 +249,7 @@ WPT_BACKEND ?= onnx
 test-wpt-report: fetch-wpt onnxruntime-download
 	@mkdir -p reports
 	$(MAKE) test-wpt-tolerance-parity
-	@HOST_TRIPLE=$$(rustc -vV 2>/dev/null | grep host: | cut -d' ' -f2); \
-	LITERT_LIB_DIR="$${HOME}/.cache/litert-sys/v0.10.2/$${HOST_TRIPLE}"; \
-	LD_LIBRARY_PATH="$$LITERT_LIB_DIR:$$LD_LIBRARY_PATH" \
-	LIBRARY_PATH="$$LITERT_LIB_DIR:$$LIBRARY_PATH" \
-	RUST_BACKTRACE=1 WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features $(WPT_BACKEND)-runtime -- --test-threads 1
+	@RUST_BACKTRACE=1 WPT_REPORT_JSON=reports/wpt-conformance.json $(ORT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features $(WPT_BACKEND)-runtime -- --test-threads 1
 
 # ONNX: onnx_expected_failures.txt.
 wpt-sync-onnx: fetch-wpt
