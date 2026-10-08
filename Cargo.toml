@@ -208,8 +208,11 @@ ort = { version = "=2.0.0-rc.13", optional = true, features = [
 ] }
 half = "2.4"
 trtx = { version = "0.8.0", optional = true }
-litert = { version = "0.2.1", optional = true }
-litert-sys = { version = "0.2.1", optional = true }
+# Fork pin: carries the OpenHarmony binding (upstream PR offbit-ai/LiteRT#2) and
+# the LiteRT 2.2.0 / 4-arg migration. Swap for a released crate once one carries
+# both (the upstream Rust bindings repo is currently dormant).
+litert = { git = "https://github.com/shubhamg13/offbit-ai-LiteRT", rev = "e7517df93d85025dca2e8d3db35760760300ceef", optional = true }
+litert-sys = { git = "https://github.com/shubhamg13/offbit-ai-LiteRT", rev = "e7517df93d85025dca2e8d3db35760760300ceef", optional = true }
 flatbuffers = { version = "25.12", optional = true }
 regex = "1.11"
 hiai-rs = { version = "0.1.0", optional = true }
