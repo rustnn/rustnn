@@ -174,6 +174,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=OUT_DIR");
 
+    // Resolve the prebuilt lib path from litert-sys
+    if let Ok(dir) = env::var("DEP_LITERT_LIB_DIR") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
+    }
+
     create_source_hash(&[
         "src/converters/trtx.rs",
         "src/converters/trtx_gru.rs",
