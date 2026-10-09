@@ -198,7 +198,7 @@ test-wpt-coreml:
 
 .PHONY: test-wpt-tolerance test-wpt-tolerance-parity
 test-wpt-tolerance:
-	$(CARGO) test --test test_wpt_tolerance
+	$(CARGO) test --test test_wpt_tolerance --test test_wpt_report
 
 test-wpt-tolerance-parity: require-wpt-cache
 	$(CARGO) test --test test_wpt_tolerance strict_comparator_matches_upstream_javascript -- --ignored

@@ -56,6 +56,56 @@ establishes placement, energy savings or prediction-time fallback; use separate 
    turn and reports each attempt; `--coreml-compiled-output <dir>` stores the compiled
    `.mlmodelc` for reuse.
 
+## Tensor names
+
+Input and output names remain independent in the RustNN API, including names containing
+spaces, Unicode, punctuation, leading digits or MIL keywords. The converter records JSON
+logical-to-physical bindings in creator-defined `rustnn.webnn.input_aliases` and
+`rustnn.webnn.output_aliases` metadata. RustNN applies them automatically; standalone
+consumers should apply them when binding and retrieving CoreML features.
+The JSON maps are the binding contract; models without them keep literal feature names.
+Duplicate logical keys are rejected, even when their values match. Bindings and original
+constant references are validated once when the model is loaded.
+Proven equal copy outputs may share one physical result, avoiding CoreML's omission of
+duplicate scalar/dynamic features. RustNN supplies each requested logical output tensor;
+unequal computations and real dtype conversions remain separate. Returning an original
+input or constant directly remains invalid under WebNN's build rules.
+Same-dtype `cast` is a proven copy and may be fulfilled without reading CoreML's returned
+feature; a cast that changes dtype still executes the conversion boundary.
+For produced copy chains rooted in an input, the serialized
+`rustnn.webnn.output_passthroughs` map identifies the logical input and original descriptor.
+RustNN validates dtype, actual shape and byte length and snapshots that input before
+prediction, supplying independent output copies even if CoreML omits or changes a copy
+feature. Standalone consumers should honor these proven-copy bindings too; they must not
+infer an input/output alias from matching names or values.
+Copy proofs also cover same-shape reshape, identity transpose and static full-span
+unit-stride slice. Original constant copies use version-2
+`rustnn.webnn.output_constant_copies` metadata: each source has its original descriptor,
+a `WeightMetadata` offset in `weights/weights.bin`, and a SeaHash checksum of its raw
+bytes. Independent output bindings reference these sources; metadata contains no tensor
+payloads. Unchanged blob-backed weights reuse the existing MIL record. Constants stored
+as immediates or changed during lowering retain one additional raw UINT8 record per source.
+Consumers validate the file records, referenced ranges, descriptor byte lengths and
+checksums before prediction. The checksum detects a mismatched sidecar, not malicious
+modification. In-memory compiled graphs share the existing immutable weight allocation;
+one-shot diagnostics borrow it, without decoding a second source allocation. URL-compiled
+graphs retain that owner only when its capacity is at most twice the uniquely referenced
+bytes; otherwise they compact just those ranges into one shared allocation, so a tiny
+copy output does not retain a large unrelated weight file.
+Standalone consumers must retain the original weights sidecar alongside the compiled
+model; a `.mlmodelc` alone cannot supply RustNN's exact original-copy values. Missing or
+invalid source data fails closed, regardless of tensor size. Exported `.mlpackage`
+sources contain that sidecar and do not depend on the original Rust graph or its lifetime.
+The native graph still runs; these proofs do not replace arithmetic-derived results.
+The same checked bindings apply with retained tensor storage enabled. Proven copies
+are snapshotted before prediction and written into independently owned outputs;
+they do not propose native output backings. Coalesced arithmetic outputs use the
+returned physical result, with at most one backing proposed per physical feature.
+`proven_copy_outputs` counts logical outputs supplied this way in successful dispatches,
+separately from `output_copy_bytes` (which also includes those copies). WPT reports record
+per-trial deltas, including trials whose later result comparison fails. Neither counter
+measures work or copies inside CoreML or its selected hardware.
+
 ## Reusing tensor storage
 
 With `RustNNOptions::coreml.reuse_tensor_storage` enabled, CoreML contexts keep float32,
@@ -108,13 +158,31 @@ These count rustnn-side work, not total memory traffic or internal CoreML alloca
 reported compute-unit policy includes load fallback but does not measure accelerator
 placement. Take counter differences around the decode loop to exclude prefill and setup.
 
+## Converter-private input views
+
+Precision lowerings can request a compact native Half input through creator-defined
+`rustnn.webnn.compact_input_views` metadata: a JSON array of `{source, view}` bindings
+between declared physical input features. These are backend details, not additional
+WebNN inputs; the original graph, logical dtype and shape remain unchanged.
+
+RustNN binds each private rank-one feature using the source's actual element count,
+including growing and shrinking bounded dimensions. Contiguous source arrays share
+their pointer with a native view whose deallocator retains the source owner. Padded
+or strided arrays instead receive an exact raw-Half copy, preserving subnormals,
+signed zero and NaN bits without a Float32 round trip. The original feature remains
+bound for actual-shape queries and other consumers. Metadata, native dtype, shape
+constraints and storage layout are checked before prediction; standalone consumers
+of these exports must supply the same private bindings.
+Persistent `MLTensor` dispatch uses these bindings with output backings enabled or
+disabled, retaining the tensor storage and private view owners through prediction.
+
 ## Testing
 
 ```bash
 make test-wpt-coreml              # full WPT suite, expected failures are non-fatal
 make test-wpt-coreml-report       # same, plus the JSON report
 make wpt-sync-coreml              # regenerate tests/wpt_conformance/coreml_expected_failures.txt
-make test-coreml                  # unit and integration tests
+make test-coreml                  # ordinary native unit and integration tests
 WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
 WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
 ```
