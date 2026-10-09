@@ -11,7 +11,7 @@
 
 #![allow(dead_code, unused_variables)]
 
-use log::{debug, info};
+use log::trace;
 
 use crate::GraphInfo;
 use crate::OperandDescriptor;
@@ -600,10 +600,20 @@ impl<'context> MLContext<'context> {
     /// compiled backend can serve the request.
     // those are methods on `create_context`
     //pub async
+    #[tracing::instrument(
+        skip_all,
+        err(level = "warn"),
+        level = "info",
+        fields(
+            accelerated = options.accelerated(),
+            power_preference = ?options.power_preference(),
+            backend_hint = ?options.backend_hint,
+            device_hint = ?options.device_hint,
+        )
+    )]
     pub fn create(options: &MLContextOptions) -> Result<Self> {
-        let device = select_backend(options)
-            .inspect_err(|e| log::warn!("Error selecting backend: {e:?}"))?;
-        info!("Backend selected: {device:?}");
+        let device = select_backend(options)?;
+        tracing::info!(backend = ?device.backend(), device_type = ?device.device_type());
         let backend: Box<dyn MLBackendContext<'context> + 'context> = match device {
             crate::backend_selection::BackendDevice::Onnx { ep_device_idx, .. } => Box::new(
                 OrtContext::new_from_ep_idx(ep_device_idx, Some(&options.rustnn_options))?,
@@ -665,8 +675,21 @@ impl<'context> MLContext<'context> {
 
     /// Allocate a tensor on the backend device. <https://www.w3.org/TR/webnn/#api-mlcontext-createtensor>
     // async
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            data_type = ?descriptor.data_type(),
+            shape = ?descriptor.shape(),
+            readable = descriptor.readable(),
+            writable = descriptor.writable(),
+        )
+    )]
     pub fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
-        self.backend.create_tensor(descriptor)
+        let tensor = self.backend.create_tensor(descriptor)?;
+        tracing::debug!(tensor_id = tensor.id);
+        Ok(tensor)
     }
 
     /// Not implemented: dropping the context releases it. <https://www.w3.org/TR/webnn/#api-mlcontext-destroy>
@@ -696,13 +719,27 @@ impl<'context> MLContext<'context> {
     /// Before the backend runs, rustnn rejects a tensor bound under two names
     /// ([`Error::DuplicateTensorBinding`]) and checks every binding's name, shape and data
     /// type against the compiled graph ([`Error::GraphDispatchError`]).
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            backend = ?self.device.backend(),
+            device_type = ?self.device.device_type(),
+            inputs = ?crate::instrumentation::TensorBindings(inputs),
+            outputs = ?crate::instrumentation::TensorBindings(outputs),
+            input_count = inputs.len(),
+            output_count = outputs.len(),
+        )
+    )]
     pub fn dispatch(
         &mut self,
         graph: &mut MLGraph,
         inputs: &MLNamedTensors,
         outputs: &MLNamedTensors,
     ) -> crate::error::Result<()> {
-        debug!("Dispatch {graph:?}, inputs={inputs:?}, outputs={outputs:?}");
+        // The span carries the bindings with their ids; only the graph is extra here.
+        trace!("Dispatch {graph:?}");
         //https://www.w3.org/TR/webnn/#dom-mlcontext-dispatch
         // spec: 4. If allTensors contains any duplicate items, then throw a TypeError.
         validate_unique_tensor_bindings(inputs, outputs)?;
@@ -720,12 +757,23 @@ impl<'context> MLContext<'context> {
     /// Copy a readable tensor into `array`; `array` must hold exactly
     /// [`MLTensor::rustnn_required_bytes`] bytes. <https://www.w3.org/TR/webnn/#api-mlcontext-readtensor>
     //async
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            tensor_id = tensor.id,
+            data_type = ?tensor.data_type(),
+            shape = ?tensor.shape(),
+            bytes = std::mem::size_of_val(array),
+        )
+    )]
     pub fn read_tensor<T: bytemuck::Pod>(
         &mut self,
         tensor: &MLTensor,
         array: &mut [T],
     ) -> Result<()> {
-        debug!(
+        trace!(
             "Read {} bytes from tensor {tensor:?}",
             std::mem::size_of_val(array)
         );
@@ -748,8 +796,19 @@ impl<'context> MLContext<'context> {
     /// Copy `array` into a writable tensor; `array` must hold exactly
     /// [`MLTensor::rustnn_required_bytes`] bytes. <https://www.w3.org/TR/webnn/#api-mlcontext-writetensor>
     //async
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            tensor_id = tensor.id,
+            data_type = ?tensor.data_type(),
+            shape = ?tensor.shape(),
+            bytes = std::mem::size_of_val(array),
+        )
+    )]
     pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
-        debug!(
+        trace!(
             "Write {} bytes to tensor {tensor:?}",
             std::mem::size_of_val(array)
         );
@@ -773,6 +832,13 @@ impl<'context> MLContext<'context> {
     /// the `dynamic-inputs` feature). Resizing within the capacity reserved with
     /// [`Self::rustnn_set_tensor_capacity`] avoids reallocation; supported backends
     /// may grow storage when the new shape exceeds that capacity.
+    #[tracing::instrument(
+        name = "resize_tensor",
+        skip_all,
+        err,
+        level = "debug",
+        fields(tensor_id = tensor.id, from = ?tensor.shape(), to = ?new_shape)
+    )]
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
         self.backend.rustnn_resize_tensor(tensor, new_shape)
     }
@@ -782,6 +848,13 @@ impl<'context> MLContext<'context> {
     ///
     /// Returns [`Error::TensorCapacityError`] without changing the tensor if the
     /// requested capacity cannot hold its active shape, on every backend.
+    #[tracing::instrument(
+        name = "set_tensor_capacity",
+        skip_all,
+        err,
+        level = "debug",
+        fields(tensor_id = tensor.id, capacity = ?max_shape)
+    )]
     pub fn rustnn_set_tensor_capacity(
         &mut self,
         tensor: &mut MLTensor,

@@ -14,6 +14,47 @@ use thiserror::Error;
 
 use log::debug;
 
+/// The cache category, which is the last component of `<cache dir>/rustnn/<category>`.
+fn cache_category(root_path: &Path) -> impl std::fmt::Display + '_ {
+    root_path
+        .file_name()
+        .map(|name| Path::new(name).display())
+        .unwrap_or_else(|| Path::new("unknown").display())
+}
+
+/// Report what a cache read found, as an event inside its `get` span: a hit with its byte count, a
+/// miss, or an error. Emitted here so the event carries the same target as the span it belongs to.
+/// A read cannot use `err` on its attribute for that, because a missing entry arrives as an `Err`
+/// too, and a miss is a result rather than a failure.
+fn emit_cache_outcome(result: &CacheResult<Vec<u8>>) {
+    match cache_outcome(result) {
+        CacheOutcome::Hit(bytes) => tracing::debug!(outcome = "hit", bytes = bytes),
+        CacheOutcome::Miss => tracing::debug!(outcome = "miss"),
+        CacheOutcome::Error(error) => tracing::error!(outcome = "error", error = %error),
+    }
+}
+
+/// What a cache read found. A missing entry arrives as an `Err` with `NotFound`, which is how a
+/// miss is told apart from a real I/O error.
+#[derive(Debug)]
+enum CacheOutcome<'a> {
+    Hit(usize),
+    Miss,
+    Error(&'a CacheError),
+}
+
+fn cache_outcome(result: &CacheResult<Vec<u8>>) -> CacheOutcome<'_> {
+    match result {
+        Ok(data) => CacheOutcome::Hit(data.len()),
+        Err(CacheError::FailedToReadCacheFile { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            CacheOutcome::Miss
+        }
+        Err(error) => CacheOutcome::Error(error),
+    }
+}
+
 /// Failures of the on-disk caches.
 #[derive(Debug, Error)]
 pub enum CacheError {
@@ -82,17 +123,37 @@ impl<'cache> PersistentCache<'cache> for SimpleFileCache {
         Ok(Self { root_path })
     }
 
+    #[tracing::instrument(
+        skip_all,
+        level = "debug",
+        fields(
+            category = %cache_category(&self.root_path),
+            key = %key,
+            compressed = false,
+        )
+    )]
     fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>> {
         debug!("Looking up cache key: {key}");
         let cache_path = self.root_path.join(key);
-        read_cache_file(&cache_path)
-            .map_err(|e| CacheError::FailedToReadCacheFile {
-                path: cache_path.clone(),
-                source: e,
-            })
-            .map(Cow::Owned)
+        let result = read_cache_file(&cache_path).map_err(|e| CacheError::FailedToReadCacheFile {
+            path: cache_path.clone(),
+            source: e,
+        });
+        emit_cache_outcome(&result);
+        result.map(Cow::Owned)
     }
 
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            category = %cache_category(&self.root_path),
+            key = %key,
+            bytes = data.len(),
+            compressed = false,
+        )
+    )]
     fn set(&self, key: &str, data: &[u8]) -> CacheResult<()> {
         debug!("Setting cache key: {key} with {} bytes", data.len());
         let cache_path = self.root_path.join(key);
@@ -134,17 +195,38 @@ impl<'cache> PersistentCache<'cache> for ZstdCompressedFileCache {
         Ok(Self { root_path })
     }
 
+    #[tracing::instrument(
+        skip_all,
+        level = "debug",
+        fields(
+            category = %cache_category(&self.root_path),
+            key = %key,
+            compressed = true,
+        )
+    )]
     fn get(&self, key: &str) -> CacheResult<Cow<'cache, [u8]>> {
         debug!("Looking up compressed cache key: {key}");
         let cache_path = self.cache_path(key);
-        read_zstd_cache_file(&cache_path)
-            .map_err(|e| CacheError::FailedToReadCacheFile {
+        let result =
+            read_zstd_cache_file(&cache_path).map_err(|e| CacheError::FailedToReadCacheFile {
                 path: cache_path.clone(),
                 source: e,
-            })
-            .map(Cow::Owned)
+            });
+        emit_cache_outcome(&result);
+        result.map(Cow::Owned)
     }
 
+    #[tracing::instrument(
+        skip_all,
+        err,
+        level = "debug",
+        fields(
+            category = %cache_category(&self.root_path),
+            key = %key,
+            bytes = data.len(),
+            compressed = true,
+        )
+    )]
     fn set(&self, key: &str, data: &[u8]) -> CacheResult<()> {
         debug!(
             "Setting compressed cache key: {key} with {} bytes",
@@ -219,10 +301,14 @@ pub(crate) fn write_zstd_cache_file(cache_path: &Path, content: &[u8]) -> std::i
     })
 }
 
-#[cfg(all(test, feature = "zstd-cache-compression"))]
+#[cfg(test)]
 mod tests {
-    use super::*;
+    use tracing::Level;
 
+    use super::*;
+    use crate::instrumentation::test_support::events;
+
+    #[cfg(feature = "zstd-cache-compression")]
     #[test]
     fn zstd_cache_round_trip_uses_zstd_file_extension() {
         let directory = tempfile::tempdir().unwrap();
@@ -236,5 +322,60 @@ mod tests {
         assert!(!directory.path().join("engine").exists());
         assert!(directory.path().join("engine.zstd").exists());
         assert_eq!(cache.get("engine").unwrap().as_ref(), content);
+    }
+
+    fn read_error(kind: std::io::ErrorKind) -> CacheError {
+        CacheError::FailedToReadCacheFile {
+            path: "entry.cache".into(),
+            source: std::io::Error::from(kind),
+        }
+    }
+
+    #[test]
+    fn a_hit_reports_the_bytes_it_found() {
+        // Called inside the `get` span, the way the cache reads do it.
+        let reported = events(|| {
+            tracing::debug_span!("get").in_scope(|| emit_cache_outcome(&Ok(vec![0; 8])));
+        });
+
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert_eq!(reported[0].level, Level::DEBUG);
+        assert_eq!(reported[0].target, "rustnn::backends::caching");
+        assert_eq!(reported[0].within.as_deref(), Some("get"));
+        assert_eq!(reported[0].field("outcome"), Some("outcome=hit"));
+        assert_eq!(reported[0].field("bytes"), Some("bytes=8"));
+    }
+
+    #[test]
+    fn a_missing_file_is_a_miss() {
+        let reported = events(|| {
+            let missing = Err(read_error(std::io::ErrorKind::NotFound));
+            tracing::debug_span!("get").in_scope(|| emit_cache_outcome(&missing));
+        });
+
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert_eq!(reported[0].level, Level::DEBUG);
+        assert_eq!(reported[0].target, "rustnn::backends::caching");
+        assert_eq!(reported[0].within.as_deref(), Some("get"));
+        assert_eq!(reported[0].field("outcome"), Some("outcome=miss"));
+        assert_eq!(reported[0].field("error"), None, "a miss is not an error");
+    }
+
+    #[test]
+    fn a_failed_read_is_an_error() {
+        let reported = events(|| {
+            let denied = Err(read_error(std::io::ErrorKind::PermissionDenied));
+            tracing::debug_span!("get").in_scope(|| emit_cache_outcome(&denied));
+        });
+
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert_eq!(reported[0].level, Level::ERROR);
+        assert_eq!(reported[0].target, "rustnn::backends::caching");
+        assert_eq!(reported[0].within.as_deref(), Some("get"));
+        assert_eq!(reported[0].field("outcome"), Some("outcome=error"));
+        assert!(
+            reported[0].field("error").is_some(),
+            "the error itself is reported: {reported:?}"
+        );
     }
 }
