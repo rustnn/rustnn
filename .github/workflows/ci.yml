@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  # Pinned on every platform: the distro package and brew both drift, and the
+  # generated flatbuffer code must come from one flatc version everywhere.
+  FLATC_VERSION: v25.12.19
+
 jobs:
   # Rust tests
   rust-test:
@@ -29,25 +34,35 @@ jobs:
           components: rustfmt, clippy, rust-src
           targets: wasm32-unknown-unknown
 
-      - name: Install protobuf compiler (Linux)
-        if: runner.os == 'Linux'
+      - name: Install protoc
         run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-          protoc --version
-
-      - name: Install protobuf/flatbuffer compiler (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install protobuf flatbuffers
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y protobuf-compiler
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install protobuf
+          else
+            echo "unsupported runner OS: $RUNNER_OS" >&2
+            exit 1
+          fi
           protoc --version
 
       - name: Install flatc
-        if: runner.os == 'Linux'
         run: |
-          curl -sSL "https://github.com/google/flatbuffers/releases/download/v25.12.19/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
-          sudo unzip -o /tmp/flatc.zip flatc -d /usr/local/bin
-          sudo chmod +x /usr/local/bin/flatc
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            asset=Linux.flatc.binary.clang++-18.zip
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            asset=Mac.flatc.binary.zip
+          else
+            echo "unsupported runner OS: $RUNNER_OS" >&2
+            exit 1
+          fi
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/${FLATC_VERSION}/${asset}" -o /tmp/flatc.zip
+          mkdir -p "$HOME/.local/bin"
+          unzip -o /tmp/flatc.zip flatc -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/flatc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           flatc --version
 
       - name: Cache cargo registry
@@ -87,7 +102,7 @@ jobs:
         run: cargo check -F trtx-runtime --all-targets
 
       - name: Run cargo check (LiteRT)
-        run: cargo check --features litert-runtime
+        run: cargo check --features litert-runtime --all-targets
 
       - name: Build wasm32
         run: |
