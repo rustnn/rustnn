@@ -296,6 +296,13 @@ any published summary rather than combining these runs into one pass rate.
 
 `make test-wpt-report` (or `WPT_REPORT_JSON=...`) writes a JSON conformance report compatible with `scripts/wpt_bridge/render_conformance_html.mjs`. HTML is generated automatically unless `WPT_REPORT_HTML=""`.
 
+CoreML cases include `coremlExecution`: `logicalOutputs`, `provenCopyOutputs`, and
+`outputCopyBytes`. These are per-trial deltas even when a context is reused; observations
+are retained if comparison fails. `provenCopyOutputs` counts outputs supplied from
+graph-proven input/constant copies in successful dispatches, not CoreML's returned
+features. Those bytes are also included in `outputCopyBytes`. A zero count does not
+establish accelerator placement, and none of these counters measures CoreML-internal work.
+
 Report schema: per-file summaries, per-case status (`pass`/`fail`/`skip`), duration, and error messages.
 
 ## Module layout

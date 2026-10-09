@@ -114,6 +114,49 @@ Rules that hold for every converter:
   A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- WebNN names need not be MIL identifiers, and its input/output namespaces are independent.
+  Unsafe or colliding names receive unique physical identifiers. Creator-defined
+  `rustnn.webnn.input_aliases` and `rustnn.webnn.output_aliases` JSON mappings preserve
+  logical bindings in byte-buffer, retained-tensor and one-shot execution, and standalone
+  exports. The JSON maps define the binding contract; models without them keep literal names.
+  See the [tensor-name contract](https://rustnn.github.io/rustnn/integration/coreml/#tensor-names).
+  Source-proven copies with identical type, shape and pending layout share one
+  physical result: CoreML can omit duplicate scalar/dynamic copy features from prediction.
+  Logical tensors still receive independent results. Unequal computations and real dtype
+  conversions remain distinct. Same-float32 casts lower as identity rather than the native
+  cast kernel, which can narrow represented values through float16.
+  Produced copies rooted in a graph input additionally record that source and its descriptor
+  in `rustnn.webnn.output_passthroughs`. Execution snapshots the original bound input before
+  prediction, validates its dtype, actual shape and byte length, then supplies independent
+  output bytes. This also preserves a public float32 copy when CoreML narrows another consumer.
+  Copy proofs cover identity, same-type cast, same-shape reshape, identity transpose, and
+  static full-span, unit-stride slice. An equal square shape does not prove a transpose is
+  an identity; dynamic maximum extents do not prove a full-span slice.
+  Copies rooted in original constants use version-2 `rustnn.webnn.output_constant_copies`
+  metadata: output bindings reference a descriptor, original weight-record offset and
+  consistency checksum, without embedding tensor payloads. Unchanged blob weights reuse
+  their record; immediate or converted constants retain one original raw record per source.
+  Execution validates referenced ranges and byte lengths, shares the immutable weight owner
+  or compacts only the required ranges, then supplies independently owned results. Standalone
+  compiled models require the original weights sidecar. The valid native graph still
+  runs; arithmetic-derived outputs are not reconstructed from inputs or constants.
+- Float16 `gelu` widens to float32 for MIL `gelu(mode="EXACT")`, then rounds back to
+  float16. Native float16 GELU can exceed WebNN's error bound under accelerator-enabled
+  policies. This preserves the public dtype and shape without forcing CPU execution;
+  float32 GELU is unchanged. Deferred layout transposes are emitted after the final cast.
+  Arithmetic and typed boundaries compile locally from a URL while retaining the requested
+  compute policy. Only input-free single programs made entirely of proven constant copies
+  prefer an in-memory asset, avoiding a BNNS URL constant-fold crash without changing the
+  arithmetic loading path.
+- Typed precision boundaries use native Pipeline children when CoreML can eliminate a
+  real Half narrowing or fuse a widened kernel back into Half arithmetic. Child interfaces
+  carry live results only; constants are rematerialized from the shared weight blob rather
+  than carried through every stage. Public descriptors and the backend-independent graph
+  remain unchanged. Private scalar and Boolean interfaces use explicit rank/type adapters.
+- Affected Half widening layouts use compact private features. Original high-rank inputs
+  declare `rustnn.webnn.compact_input_views`; contiguous storage is viewed with its owner
+  retained, while padded storage is copied as raw Half bytes. Dynamic restoration uses
+  the actual input shape and retains its declared bounds, not maximum-size substitution.
 - The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
   inside CoreML and widening the public int64 result at readback. Imported shape tensors
   retain their type and rank through the shared `unsqueeze` inference path.

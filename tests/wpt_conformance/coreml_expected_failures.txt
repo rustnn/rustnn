@@ -3,7 +3,6 @@
 coreml::abs::abs_float16_6D_tensor
 coreml::abs::abs_int32_4D_tensor
 coreml::abs::abs_int64_4D_tensor
-coreml::add::add_float32_with_special_character_names
 coreml::averagePool2d::averagePool2d_float16_4D_tensor_options_dilations
 coreml::averagePool2d::averagePool2d_float32_4D_tensor_options_dilations
 coreml::clamp::clamp_int32_1D_tensor

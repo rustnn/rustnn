@@ -130,6 +130,12 @@ jobs:
           make test-coreml-dtypes COREML_FEATURES=coreml-runtime
           make test-coreml-dtypes
 
+      - name: Test CoreML exact GELU precision and composition
+        if: runner.os == 'macOS'
+        run: |
+          make test-coreml-gelu COREML_FEATURES=coreml-runtime
+          make test-coreml-gelu
+
       - name: Test CoreML retained tensor ownership and reuse
         if: runner.os == 'macOS'
         run: |

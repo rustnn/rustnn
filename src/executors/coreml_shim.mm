@@ -172,7 +172,7 @@ int rustnn_coreml_predict_backed(void *model, void *features, void *backings,
         id<MLFeatureProvider> out = [(__bridge MLModel *)model
             predictionFromFeatures:(__bridge id<MLFeatureProvider>)features options:options error:&nserr];
         if (out == nil) {
-            rustnn_copy_err(err, err_len, nserr.localizedDescription ?: @"prediction returned nil");
+            rustnn_copy_err(err, err_len, nserr.description ?: @"prediction returned nil");
             return 1;
         }
         *out_provider = (__bridge_retained void *)out;
