@@ -7,6 +7,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rustnn::mlcontext::BackendStatistics;
 use serde::Serialize;
 
 use super::wpt_types::{WptCorpus, WptFileError};
@@ -84,6 +85,40 @@ struct CaseReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coreml_execution: Option<CoremlTrialStatistics>,
+}
+
+/// Per-trial rustnn work, not placement or work performed inside CoreML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CoremlTrialStatistics {
+    pub logical_outputs: usize,
+    pub proven_copy_outputs: u64,
+    pub output_copy_bytes: u64,
+}
+
+impl CoremlTrialStatistics {
+    pub fn between(
+        before: Option<BackendStatistics>,
+        after: Option<BackendStatistics>,
+        logical_outputs: usize,
+    ) -> Option<Self> {
+        let (Some(BackendStatistics::Coreml(before)), Some(BackendStatistics::Coreml(after))) =
+            (before, after)
+        else {
+            return None;
+        };
+        Some(Self {
+            logical_outputs,
+            proven_copy_outputs: after
+                .proven_copy_outputs
+                .checked_sub(before.proven_copy_outputs)?,
+            output_copy_bytes: after
+                .output_copy_bytes
+                .checked_sub(before.output_copy_bytes)?,
+        })
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -158,6 +193,7 @@ impl WptReportCollector {
         test_name: &str,
         backend_prefix: &str,
         duration: Duration,
+        execution: Option<CoremlTrialStatistics>,
     ) {
         self.record_case(
             file_name,
@@ -167,6 +203,7 @@ impl WptReportCollector {
             None,
             None,
             duration,
+            execution,
         );
     }
 
@@ -177,6 +214,7 @@ impl WptReportCollector {
         backend_prefix: &str,
         reason: impl Into<String>,
         duration: Duration,
+        execution: Option<CoremlTrialStatistics>,
     ) {
         self.record_case(
             file_name,
@@ -186,6 +224,7 @@ impl WptReportCollector {
             Some(reason.into()),
             None,
             duration,
+            execution,
         );
     }
 
@@ -196,6 +235,7 @@ impl WptReportCollector {
         backend_prefix: &str,
         error: impl Into<String>,
         duration: Duration,
+        execution: Option<CoremlTrialStatistics>,
     ) {
         let error = error.into();
         let failure_line = format!(
@@ -213,6 +253,7 @@ impl WptReportCollector {
             None,
             Some(error),
             duration,
+            execution,
         );
     }
 
@@ -226,6 +267,7 @@ impl WptReportCollector {
         reason: Option<String>,
         error: Option<String>,
         duration: Duration,
+        execution: Option<CoremlTrialStatistics>,
     ) {
         let (backend, variant) = backend_and_variant(backend_prefix);
         let mut state = self.inner.lock().expect("report collector lock");
@@ -247,6 +289,7 @@ impl WptReportCollector {
             reason,
             error,
             duration_ms: duration.as_millis() as u64,
+            coreml_execution: execution,
         });
         // Write incremental JSON report so partial results survive SIGABRT mid-suite.
         drop(state);
@@ -509,6 +552,31 @@ mod time_format {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn case_serialization_keeps_execution_observations_for_all_statuses() {
+        let observations = Some(super::CoremlTrialStatistics {
+            logical_outputs: 2,
+            proven_copy_outputs: 1,
+            output_copy_bytes: 16,
+        });
+        for status in ["pass", "fail", "skip"] {
+            let record = super::CaseReport {
+                test_name: "mixed outputs".into(),
+                backend: "coreml".into(),
+                variant: "cpu".into(),
+                status,
+                reason: None,
+                error: None,
+                duration_ms: 1,
+                coreml_execution: observations,
+            };
+            let json = serde_json::to_value(record).unwrap();
+            assert_eq!(json["coremlExecution"]["provenCopyOutputs"], 1);
+            assert_eq!(json["coremlExecution"]["logicalOutputs"], 2);
+            assert_eq!(json["status"], status);
+        }
+    }
+
     #[test]
     fn backend_mapping() {
         assert_eq!(

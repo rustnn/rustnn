@@ -219,4 +219,8 @@ pub struct CoremlTensorStatistics {
     pub output_backings_accepted: u64,
     /// Logical output bytes copied into owned native or host tensor storage.
     pub output_copy_bytes: u64,
+    /// Logical outputs fulfilled from graph-proven input or constant copies in
+    /// successful dispatches, rather than CoreML's returned features. These are
+    /// included in `output_copy_bytes`; this is not a hardware execution counter.
+    pub proven_copy_outputs: u64,
 }
