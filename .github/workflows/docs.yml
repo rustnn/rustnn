@@ -120,6 +120,30 @@ jobs:
     needs: build
     if: (github.event_name == 'workflow_dispatch' ) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     steps:
+      # Forks usually do not enable GitHub Pages, and deploy-pages fails there with a 404.
+      # Deploy only when the repository publishes Pages from GitHub Actions; any other API
+      # error still fails the job, so a real deployment problem is not skipped silently.
+      - name: Check GitHub Pages source
+        id: pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if build_type=$(gh api "repos/$GITHUB_REPOSITORY/pages" --jq .build_type 2>"$RUNNER_TEMP/pages.err"); then
+            echo "GitHub Pages build type: $build_type"
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/pages.err"; then
+            build_type=none
+          else
+            cat "$RUNNER_TEMP/pages.err" >&2
+            exit 1
+          fi
+          if [ "$build_type" = workflow ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Skipping the deployment: GitHub Pages for $GITHUB_REPOSITORY is not set to deploy from GitHub Actions (build type: $build_type)."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Deploy to GitHub Pages
+        if: steps.pages.outputs.deploy == 'true'
         id: deployment
         uses: actions/deploy-pages@v4

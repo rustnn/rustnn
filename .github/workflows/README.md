@@ -39,6 +39,12 @@ GitHub Pages is configured with "GitHub Actions" as the source. `docs.yml` deplo
 `main`; the nightly workflow redeploys with fresh conformance data. If a deployment fails with a
 permission error, check Settings -> Actions -> General -> Workflow permissions (read and write).
 
+Before deploying, both workflows read the repository's Pages configuration and skip the deploy
+step with a notice unless the source is "GitHub Actions". A fork without Pages runs every other
+step, including the nightly's report cache save, and the `github-pages` artifact stays
+downloadable from the run; a fork that sets the Pages source to "GitHub Actions" deploys its own
+site. Any API error other than 404 fails the job instead of skipping the deployment.
+
 The nightly saves its `reports/` directory to the Actions cache under
 `wpt-conformance-pages-<os>-<run id>`; `docs.yml` and `docs-pr.yml` restore the newest entry by
 the `wpt-conformance-pages-<os>-` prefix, so a docs deploy republishes the latest nightly
