@@ -15,8 +15,8 @@ crate and runs it with the CPU, GPU or NPU accelerator.
   `~/.cache/litert-sys/<version>/<target triple>/` on the first build. `LITERT_LIB_DIR` points at
   a local build instead, `LITERT_CACHE_DIR` moves the cache and `LITERT_NO_DOWNLOAD` fails
   instead of downloading (air-gapped CI).
-- At run time the libraries must be on the loader path. `make test-wpt-litert` sets
-  `LD_LIBRARY_PATH` to the cache directory; do the same for your own binaries.
+- At run time the binaries built here find the libraries without extra setup: `build.rs` records
+  an rpath from `DEP_LITERT_LIB_DIR` on Unix and copies the DLLs beside the binaries on Windows.
 
 ## Selection and devices
 
