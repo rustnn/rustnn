@@ -99,6 +99,18 @@ fn push_backend_trials(
 fn main() {
     pretty_env_logger::init();
 
+    // Spans and events for the `log`-only runs this harness makes: same switch as the CLI, and
+    // nothing is printed unless `RUST_LOG` asks for it.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::OFF.into())
+                .with_env_var("RUST_LOG")
+                .from_env_lossy(),
+        )
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .try_init();
+
     // A build without any backend feature has nothing to test; only a compiled-in backend
     // that fails to come up is an error (for example a missing ONNX Runtime library).
     const BACKEND_FEATURE_ENABLED: bool = cfg!(any(

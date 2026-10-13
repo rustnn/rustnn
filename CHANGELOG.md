@@ -19,8 +19,12 @@ Changes on `main` since the `v0.5.12` publish branch (2026-05-02).
 - `MLOperand::rustnn_index()` and `From<MLOperand> for OperandIndex` to fill operand fields of `ML*Options` such as `MLConv2dOptions::bias`.
 - Rust API docs (rustdoc) built with warnings denied in CI and published under `/api/`; every public item is documented and `#![warn(missing_docs)]` keeps it that way; `docs/development/documentation-policy.md`.
 - Documentation pages: CoreML, LiteRT, CANN and browser WebNN backend pages under `docs/integration/`, `docs/development/converters.md` (converter contract and per-backend lowering rules), `docs/user-guide/troubleshooting.md`, `docs/reference/graph-files.md` (`.webnn`, JSON and weight formats) and a specification-to-API mapping in `docs/reference/webnn-spec.md`; the Make target table in `docs/development/setup.md` is complete.
+- Span instrumentation for a [`tracing`](https://docs.rs/tracing) subscriber, covering the crate's
+  common paths; the CLI prints spans and `log` records for `RUST_LOG`.
 
 ### Changed
+- The selected backend is reported as a span event instead of a `log` line, and messages the spans
+  already carry as fields moved from `debug` to `trace`.
 - **Breaking:** `MLContext::dispatch`, `MLGraphBuilder::build` and `rustnn_save_webnn` take `MLNamedTensors` and `MLNamedOperands` (`BTreeMap`) instead of `HashMap` (#202).
 - `MLGraphBuilder::conv2_with_options` renamed to `conv2d_with_options`; the old name stays as a deprecated alias. `MLTensor::destoy` renamed to `destroy`.
 - Errors are `Send + Sync` (#170); backend traits require `Send + Sync` (#145, #147).

@@ -279,8 +279,8 @@ pub fn run_coreml_with_inputs_checked(
 /// A CoreML model that has been compiled and loaded once, ready for repeated dispatch.
 ///
 /// Owns a retained `MLModel` and the in-memory CoreML asset backing it. All are
-/// released when the value is dropped. This type is intentionally not `Send`/`Sync`:
-/// `MLGraph`/`MLContext` are single-threaded, matching CoreML's usage model.
+/// released when the value is dropped. `Send` but not `Sync`: an owning graph may
+/// move to the thread that runs it, matching CoreML's single-threaded usage model.
 pub(crate) struct CompiledCoremlModel {
     /// Retained `MLModel` Objective-C object.
     model: *mut Object,
@@ -289,6 +289,11 @@ pub(crate) struct CompiledCoremlModel {
     diagnostics: CoremlLoadDiagnostics,
     backing: CoremlModelBacking,
 }
+
+// SAFETY: The retained Objective-C objects are exclusively owned and only used by
+// synchronous calls. Core ML models have no creating-thread affinity, so moving an
+// idle owner between threads is safe; concurrent access is not supported (no Sync impl).
+unsafe impl Send for CompiledCoremlModel {}
 
 enum CoremlModelBacking {
     InMemory {

@@ -99,6 +99,16 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
 ///
 /// External constants are resolved once through [`webnn_graph::resolve_external_weights`], which
 /// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
+#[tracing::instrument(
+    name = "load_graph",
+    skip_all,
+    err,
+    level = "info",
+    fields(
+        path = %path.as_ref().display(),
+        format = %graph_format(path.as_ref()),
+    )
+)]
 pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
     let path_ref = path.as_ref();
     let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
@@ -138,7 +148,21 @@ pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphEr
     webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
         .map_err(map_weight_resolve_error)?;
 
-    webnn_json::from_graph_json_owned(graph_json)
+    let graph = webnn_json::from_graph_json_owned(graph_json)?;
+    tracing::info!(
+        operands = graph.operands.len(),
+        operations = graph.operations.len()
+    );
+    Ok(graph)
+}
+
+/// The format `load_graph_from_path` parses a path as, from its extension.
+fn graph_format(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("webnn") => "webnn",
+        Some("json") => "json",
+        _ => "unknown",
+    }
 }
 
 #[cfg(test)]

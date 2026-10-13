@@ -216,6 +216,22 @@ fn run() -> Result<(), GraphError> {
 }
 
 fn main() {
+    // One subscriber carries both the spans and the crate's `log` records, filtered by the
+    // familiar `RUST_LOG` (`rustnn=debug`, or a single target, `rustnn::mlcontext=debug`).
+    // `try_init` also installs the `log` bridge. Nothing is printed unless `RUST_LOG` asks for
+    // it: a failing run already reports its error once, through this binary's own handler.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::builder()
+                .with_default_directive(tracing_subscriber::filter::LevelFilter::OFF.into())
+                .with_env_var("RUST_LOG")
+                .from_env_lossy(),
+        )
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        // Colour only for a human watching; a redirected log stays plain text.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
+        .try_init();
+
     #[cfg(any(
         feature = "onnx-runtime",
         feature = "cann-runtime",
