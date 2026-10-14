@@ -3273,7 +3273,7 @@ mod adapter {
             } = op
             {
                 if let Some(o) = options.as_ref() {
-                    let mode_ok = o.mode.is_empty() || o.mode.eq_ignore_ascii_case("constant");
+                    let mode_ok = o.mode == crate::operator_enums::MLPaddingMode::Constant;
                     let value_ok = match o.value.as_ref() {
                         None | Some(serde_json::Value::Null) => true,
                         Some(v) => {
