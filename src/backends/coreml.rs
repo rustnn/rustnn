@@ -351,6 +351,14 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     ) -> crate::error::Result<()> {
         // Gather raw-byte inputs keyed by feature name, then run; the borrow of
         // `self.tensors` is released before we write outputs back.
+        let proven_copy_outputs = graph
+            .backend
+            .as_coreml_model()
+            .ok_or_else(|| Error::GraphDispatchError {
+                source: "MLGraph is not a CoreML model graph".into(),
+            })?
+            .model
+            .proven_copy_output_count();
         let out_bytes = if self.options.reuse_tensor_storage {
             self.dispatch_native(graph, inputs, outputs)?
         } else {
@@ -470,6 +478,9 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                 .write(effective)
                 .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
         }
+        // Count logical copies only after the whole dispatch succeeds, in all
+        // storage modes. An arithmetic-derived alias is not a proven source copy.
+        self.statistics.proven_copy_outputs += proven_copy_outputs;
         Ok(())
     }
 
