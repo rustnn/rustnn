@@ -39,6 +39,7 @@ pub mod blob_data_type {
 pub struct WeightFileBuilder {
     data: Vec<u8>,
     offsets: HashMap<u32, u64>,
+    original_offsets: HashMap<u32, Vec<u64>>,
     entry_count: u32,
 }
 
@@ -47,6 +48,7 @@ impl WeightFileBuilder {
         let mut builder = Self {
             data: Vec::new(),
             offsets: HashMap::new(),
+            original_offsets: HashMap::new(),
             entry_count: 0,
         };
         // Write the 64-byte file header (count = 0 for now; patched at finalize)
@@ -71,13 +73,45 @@ impl WeightFileBuilder {
             });
         }
 
+        let offset = self.append_weight(mil_data_type, data);
+        self.offsets.insert(operand_id, offset);
+        Ok(offset)
+    }
+
+    /// Reuse an unchanged MIL weight, or retain one raw original record when
+    /// lowering has coerced the value or stored it as a MIL immediate.
+    pub(crate) fn original_weight(&mut self, operand_id: u32, bytes: &[u8]) -> u64 {
+        for &offset in self
+            .offsets
+            .get(&operand_id)
+            .into_iter()
+            .chain(self.original_offsets.get(&operand_id).into_iter().flatten())
+        {
+            let start = offset as usize + ALIGNMENT;
+            let length = u64::from_le_bytes(
+                self.data[offset as usize + 8..offset as usize + 16]
+                    .try_into()
+                    .expect("builder-owned weight header"),
+            ) as usize;
+            if self.data[start..start + length] == *bytes {
+                return offset;
+            }
+        }
+        let offset = self.append_weight(blob_data_type::UINT8, bytes);
+        self.original_offsets
+            .entry(operand_id)
+            .or_default()
+            .push(offset);
+        offset
+    }
+
+    fn append_weight(&mut self, mil_data_type: u32, data: &[u8]) -> u64 {
         // Align to 64-byte boundary before writing the metadata block
         let aligned_offset = align_to(self.data.len(), ALIGNMENT);
         self.data.resize(aligned_offset, 0);
 
         // Record the offset of the metadata block (returned as BlobFileValue.offset)
         let metadata_offset = self.data.len() as u64;
-        self.offsets.insert(operand_id, metadata_offset);
 
         let size_in_bytes = data.len() as u64;
         // Payload starts immediately after the 64-byte metadata block
@@ -94,7 +128,7 @@ impl WeightFileBuilder {
         self.data.extend_from_slice(data);
 
         self.entry_count += 1;
-        Ok(metadata_offset)
+        metadata_offset
     }
 
     /// Pre-allocate for the expected payload volume. Weight files reach
@@ -137,6 +171,53 @@ impl WeightFileBuilder {
         self.data.extend_from_slice(&FILE_VERSION.to_le_bytes()); // [4-7]  version = 2
         self.data.resize(ALIGNMENT, 0); // [8-63] zeros
     }
+}
+
+/// Index complete records before accepting metadata byte references. An aligned
+/// address inside another payload is not a record, even if it resembles a header.
+#[cfg(all(
+    feature = "coreml-runtime",
+    any(target_os = "macos", target_os = "ios", test)
+))]
+pub(crate) fn weight_ranges(
+    bytes: &[u8],
+) -> Result<HashMap<u64, std::ops::Range<usize>>, GraphError> {
+    let invalid = || GraphError::CoremlRuntimeFailed {
+        reason: "invalid CoreML constant-copy weight file".into(),
+    };
+    let header = bytes.get(..ALIGNMENT).ok_or_else(invalid)?;
+    let count = u32::from_le_bytes(header[..4].try_into().unwrap());
+    if u32::from_le_bytes(header[4..8].try_into().unwrap()) != FILE_VERSION
+        || header[8..].iter().any(|&byte| byte != 0)
+        || count as usize > bytes.len() / ALIGNMENT
+    {
+        return Err(invalid());
+    }
+    let mut ranges = HashMap::new();
+    let mut offset = ALIGNMENT;
+    for _ in 0..count {
+        let end = offset.checked_add(ALIGNMENT).ok_or_else(invalid)?;
+        let header = bytes.get(offset..end).ok_or_else(invalid)?;
+        let length = usize::try_from(u64::from_le_bytes(header[8..16].try_into().unwrap()))
+            .map_err(|_| invalid())?;
+        let start = usize::try_from(u64::from_le_bytes(header[16..24].try_into().unwrap()))
+            .map_err(|_| invalid())?;
+        if u32::from_le_bytes(header[..4].try_into().unwrap()) != SENTINEL
+            || !matches!(u32::from_le_bytes(header[4..8].try_into().unwrap()), 1..=4)
+            || start != end
+            || header[24..].iter().any(|&byte| byte != 0)
+        {
+            return Err(invalid());
+        }
+        let end = start.checked_add(length).ok_or_else(invalid)?;
+        bytes.get(start..end).ok_or_else(invalid)?;
+        ranges.insert(offset as u64, start..end);
+        offset = end.checked_add(ALIGNMENT - 1).ok_or_else(invalid)? & !(ALIGNMENT - 1);
+    }
+    if offset != bytes.len() {
+        return Err(invalid());
+    }
+    Ok(ranges)
 }
 
 fn align_to(offset: usize, alignment: usize) -> usize {
@@ -230,6 +311,36 @@ mod tests {
         let d = vec![0x00u8, 0x01];
         builder.add_weight(0, blob_data_type::FLOAT16, &d).unwrap();
         assert!(builder.add_weight(0, blob_data_type::FLOAT16, &d).is_err());
+    }
+
+    #[test]
+    fn original_weight_reuses_equal_bytes_but_keeps_coerced_bytes_separate() {
+        let mut builder = WeightFileBuilder::new();
+        let offset = builder
+            .add_weight(7, blob_data_type::UINT8, &[1, 2])
+            .unwrap();
+        assert_eq!(builder.original_weight(7, &[1, 2]), offset);
+        let original = builder.original_weight(7, &[1, 0, 2, 0]);
+        assert_ne!(original, offset);
+        assert_eq!(builder.original_weight(7, &[1, 0, 2, 0]), original);
+        let weights = builder.finalize();
+        assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 2);
+        assert_eq!(
+            &weights[original as usize + 64..original as usize + 68],
+            &[1, 0, 2, 0]
+        );
+    }
+
+    #[test]
+    fn original_weight_checks_bytes_when_reusing_an_operand_id() {
+        let mut builder = WeightFileBuilder::new();
+        let first = builder.original_weight(7, &[1, 0, 2, 0]);
+        let changed = builder.original_weight(7, &[1, 0, 3, 0]);
+        assert_ne!(first, changed);
+        assert_eq!(builder.original_weight(7, &[1, 0, 2, 0]), first);
+        assert_eq!(builder.original_weight(7, &[1, 0, 3, 0]), changed);
+        let weights = builder.finalize();
+        assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 2);
     }
 
     #[test]

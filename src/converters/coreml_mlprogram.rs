@@ -25,7 +25,7 @@
 /// - Better optimization
 ///
 /// This replaces the legacy NeuralNetwork format.
-use crate::converters::operand_name;
+use crate::converters::{coreml_names, operand_name as logical_operand_name};
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo, OperandKind};
 use crate::operator_enums::MLOperandDataType;
@@ -37,7 +37,421 @@ use crate::protos::coreml::mil_spec::{
 };
 use crate::protos::coreml::specification::Model;
 use prost::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
+
+pub(crate) const OUTPUT_ALIASES_METADATA_KEY: &str = "rustnn.webnn.output_aliases";
+pub(crate) const INPUT_ALIASES_METADATA_KEY: &str = "rustnn.webnn.input_aliases";
+pub(crate) const OUTPUT_PASSTHROUGHS_METADATA_KEY: &str = "rustnn.webnn.output_passthroughs";
+pub(crate) const OUTPUT_CONSTANT_COPIES_METADATA_KEY: &str = "rustnn.webnn.output_constant_copies";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CoremlPassthrough {
+    pub(crate) input: String,
+    pub(crate) descriptor: crate::graph::OperandDescriptor,
+}
+
+#[serde_with::serde_as]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CoremlConstantCopies {
+    pub(crate) version: u32,
+    #[serde_as(as = "serde_with::MapPreventDuplicates<_, _>")]
+    pub(crate) sources: std::collections::BTreeMap<u32, CoremlConstantSource>,
+    #[serde_as(as = "serde_with::MapPreventDuplicates<_, _>")]
+    pub(crate) outputs: std::collections::BTreeMap<String, u32>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CoremlConstantSource {
+    pub(crate) descriptor: crate::graph::OperandDescriptor,
+    /// WeightMetadata offset in the existing weights.bin sidecar.
+    pub(crate) offset: u64,
+    /// Detect a mismatched sidecar; this is not an authentication mechanism.
+    pub(crate) checksum: u64,
+}
+
+fn proven_copy_input(graph: &GraphInfo, operation: &Operation, output: u32) -> Option<u32> {
+    let input = match operation {
+        Operation::Identity { input, .. }
+        | Operation::Cast { input, .. }
+        | Operation::Transpose { input, .. }
+        | Operation::Slice { input, .. }
+        | Operation::Reshape { input, .. } => *input,
+        _ => return None,
+    };
+    let source = &graph.operand(input)?.descriptor;
+    let destination = &graph.operand(output)?.descriptor;
+    if source.data_type != destination.data_type
+        || source.shape != destination.shape
+        || source.pending_permutation != destination.pending_permutation
+    {
+        return None;
+    }
+    let is_copy = match operation {
+        Operation::Identity { .. } => true,
+        Operation::Cast { data_type, .. } => DataType::from(*data_type) == source.data_type,
+        Operation::Transpose { options, .. } => {
+            let permutation = options
+                .as_ref()
+                .map(|options| options.permutation.as_slice())
+                .unwrap_or(&[]);
+            if permutation.is_empty() {
+                source.shape.len() <= 1
+            } else {
+                permutation.len() == source.shape.len()
+                    && permutation
+                        .iter()
+                        .enumerate()
+                        .all(|(axis, &value)| value as usize == axis)
+            }
+        }
+        Operation::Reshape { new_shape, .. } => {
+            new_shape
+                .iter()
+                .cloned()
+                .map(GraphDimension::from)
+                .collect::<Vec<_>>()
+                == source.shape
+        }
+        Operation::Slice {
+            starts,
+            sizes,
+            options,
+            ..
+        } => {
+            let strides = options
+                .as_ref()
+                .map(|options| options.strides.as_slice())
+                .unwrap_or(&[]);
+            source.static_shape().is_some()
+                && starts.len() == source.shape.len()
+                && starts.iter().all(|&start| start == 0)
+                && sizes
+                    .iter()
+                    .cloned()
+                    .map(GraphDimension::from)
+                    .collect::<Vec<_>>()
+                    == source.shape
+                && (strides.is_empty()
+                    || (strides.len() == source.shape.len()
+                        && strides.iter().all(|&stride| stride == 1)))
+        }
+        _ => false,
+    };
+    is_copy.then_some(input)
+}
+
+fn copy_origins(graph: &LoweringGraph<'_>) -> Vec<Option<u32>> {
+    let mut origins = vec![None; graph.operands.len()];
+    for &input in &graph.input_operands {
+        origins[input as usize] = Some(input);
+    }
+    for (&id, data) in &graph.constant_operand_ids_to_handles {
+        if graph.operand(id).is_some_and(|operand| {
+            operand.kind == OperandKind::Constant
+                && operand.descriptor.static_shape().is_some()
+                && operand.descriptor.byte_length() == Some(data.data.len())
+        }) {
+            origins[id as usize] = Some(id);
+        }
+    }
+    for operation in &graph.operations {
+        for &output in operation.output_operands() {
+            if let Some(input) = proven_copy_input(graph, operation, output) {
+                origins[output as usize] = origins[input as usize];
+            }
+        }
+    }
+    origins
+}
+
+/// Proven copies of a graph input can be fulfilled from its original binding.
+/// This avoids CoreML eliminating no-op outputs or changing their precision
+/// when another consumer narrows the same input. No runtime value comparison
+/// or output-name heuristic is involved.
+fn input_passthroughs(
+    graph: &LoweringGraph<'_>,
+) -> std::collections::BTreeMap<String, CoremlPassthrough> {
+    let origins = copy_origins(graph);
+    graph
+        .output_operands
+        .iter()
+        .filter_map(|&output| {
+            let operand = graph.operand(output)?;
+            // WebNN build() rejects an original input or constant as an output.
+            if operand.kind != OperandKind::Output {
+                return None;
+            }
+            let input = origins[output as usize]?;
+            if graph.operand(input)?.kind != OperandKind::Input {
+                return None;
+            }
+            Some((
+                logical_operand_name(graph, output),
+                CoremlPassthrough {
+                    input: logical_operand_name(graph, input),
+                    descriptor: operand.descriptor.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn constant_copies(
+    graph: &LoweringGraph<'_>,
+    weights: &mut super::WeightFileBuilder,
+) -> CoremlConstantCopies {
+    let origins = copy_origins(graph);
+    let mut copies = CoremlConstantCopies {
+        version: 2,
+        sources: Default::default(),
+        outputs: Default::default(),
+    };
+    for &output in &graph.output_operands {
+        let Some(operand) = graph
+            .operand(output)
+            .filter(|operand| operand.kind == OperandKind::Output)
+        else {
+            continue;
+        };
+        let Some(origin) = origins[output as usize] else {
+            continue;
+        };
+        let Some(source) = graph
+            .operand(origin)
+            .filter(|source| source.kind == OperandKind::Constant)
+        else {
+            continue;
+        };
+        let Some(data) = graph.constant_operand_ids_to_handles.get(&origin) else {
+            continue;
+        };
+        copies
+            .sources
+            .entry(origin)
+            .or_insert_with(|| CoremlConstantSource {
+                descriptor: source.descriptor.clone(),
+                offset: weights.original_weight(origin, &data.data),
+                checksum: seahash::hash(&data.data),
+            });
+        copies
+            .outputs
+            .insert(logical_operand_name(graph, output), origin);
+        debug_assert_eq!(operand.descriptor.data_type, source.descriptor.data_type);
+    }
+    copies
+}
+
+impl CoremlMlProgramConverter {
+    /// Data-free URL compilation can crash BNNS for a constant identity transpose.
+    /// Only source-proven copies may use the asset route: arithmetic and real
+    /// typed boundaries must retain the precision-preserving URL route.
+    #[cfg(any(feature = "coreml-runtime", test))]
+    pub(crate) fn constant_copy_asset_eligible(graph: &GraphInfo, model_bytes: &[u8]) -> bool {
+        use prost::Message;
+        if !graph.input_operands.is_empty() || graph.output_operands.is_empty() {
+            return false;
+        }
+        let Ok(lowering_graph) = LoweringGraph::new(graph) else {
+            return false;
+        };
+        let graph = &lowering_graph;
+        let origins = copy_origins(graph);
+        let is_constant_copy = |id: u32| {
+            origins
+                .get(id as usize)
+                .copied()
+                .flatten()
+                .and_then(|origin| graph.operand(origin))
+                .is_some_and(|operand| operand.kind == OperandKind::Constant)
+        };
+        graph.output_operands.iter().all(|&id| {
+            graph
+                .operand(id)
+                .is_some_and(|operand| operand.kind == OperandKind::Output)
+                && is_constant_copy(id)
+        }) && graph.operations.iter().all(|operation| {
+            !operation.output_operands().is_empty()
+                && operation
+                    .output_operands()
+                    .iter()
+                    .copied()
+                    .all(is_constant_copy)
+        }) && Model::decode(model_bytes).is_ok_and(|model| {
+            matches!(
+                model.r#type,
+                Some(crate::protos::coreml::specification::model::Type::MlProgram(_))
+            )
+        })
+    }
+}
+
+/// Conversion-local names and the topology prerequisite for copy proofs.
+/// The public converter also accepts GraphInfo values not built by MLGraphBuilder.
+struct LoweringGraph<'a> {
+    graph: &'a GraphInfo,
+    names: Vec<String>,
+}
+
+impl<'a> LoweringGraph<'a> {
+    fn new(graph: &'a GraphInfo) -> Result<Self, GraphError> {
+        if graph.operands.len() >= u32::MAX as usize {
+            return Err(GraphError::TooManyOperands {
+                count: graph.operands.len(),
+            });
+        }
+        let mut ready = vec![false; graph.operands.len()];
+        for &id in graph
+            .input_operands
+            .iter()
+            .chain(graph.constant_operand_ids_to_handles.keys())
+        {
+            *ready
+                .get_mut(id as usize)
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })? = true;
+        }
+        for operation in &graph.operations {
+            for id in operation
+                .input_operands()
+                .into_iter()
+                .chain(operation.option_operands())
+            {
+                match ready.get(id as usize) {
+                    None => {
+                        return Err(GraphError::InvalidOperandReference {
+                            operation: operation.display_name(),
+                            operand: id,
+                        });
+                    }
+                    Some(false) => {
+                        return Err(GraphError::OperandNotReady {
+                            operation: operation.display_name(),
+                            operand: id,
+                        });
+                    }
+                    Some(true) => {}
+                }
+            }
+            for &id in operation.output_operands() {
+                let produced = ready.get_mut(id as usize).ok_or_else(|| {
+                    GraphError::InvalidOperandReference {
+                        operation: operation.display_name(),
+                        operand: id,
+                    }
+                })?;
+                if *produced {
+                    return Err(GraphError::OperandProducedTwice {
+                        operation: operation.display_name(),
+                        operand: id,
+                    });
+                }
+                *produced = true;
+            }
+        }
+        for &id in &graph.output_operands {
+            if !*ready
+                .get(id as usize)
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })?
+            {
+                return Err(GraphError::OutputNotProduced { operand: id });
+            }
+        }
+        Ok(Self {
+            graph,
+            names: physical_operand_names(
+                (0..graph.operands.len()).map(|id| logical_operand_name(graph, id as u32)),
+            ),
+        })
+    }
+}
+
+impl Deref for LoweringGraph<'_> {
+    type Target = GraphInfo;
+
+    fn deref(&self) -> &Self::Target {
+        self.graph
+    }
+}
+
+// Reserve all user-derived identifiers once, including later operands, before
+// assigning unique names to repeated logical names. Lookups during lowering
+// then neither rescan nor re-encode the operand table.
+fn physical_operand_names(logical_names: impl Iterator<Item = String>) -> Vec<String> {
+    let logical_names: Vec<_> = logical_names.collect();
+    let encoded_names: Vec<_> = logical_names
+        .iter()
+        .map(|name| coreml_names::encode(name).into_owned())
+        .collect();
+    let mut reserved: HashSet<_> = encoded_names.iter().cloned().collect();
+    let mut seen = HashSet::new();
+    logical_names
+        .iter()
+        .zip(encoded_names)
+        .enumerate()
+        .map(|(id, (logical, encoded))| {
+            if seen.insert(logical) {
+                return encoded;
+            }
+            let base = format!("__rustnn_operand_{id}");
+            let mut name = base.clone();
+            let mut suffix = 0usize;
+            while !reserved.insert(name.clone()) {
+                suffix += 1;
+                name = format!("{base}_{suffix}");
+            }
+            name
+        })
+        .collect()
+}
+
+// Logical names remain outside lowering; metadata records the physical bindings.
+fn operand_name(graph: &LoweringGraph<'_>, id: u32) -> String {
+    graph.names[id as usize].clone()
+}
+
+/// Coalesce public copies only when the source graph proves identical values,
+/// shape and dtype. CoreML may elide duplicate copy outputs at prediction time.
+fn equivalent_output_names(graph: &LoweringGraph<'_>) -> HashMap<String, String> {
+    fn root(parents: &[usize], mut id: usize) -> usize {
+        while parents[id] != id {
+            id = parents[id];
+        }
+        id
+    }
+    let mut parents: Vec<_> = (0..graph.operands.len()).collect();
+    let mut producers = HashMap::new();
+    for (order, operation) in graph.operations.iter().enumerate() {
+        for &output in operation.output_operands() {
+            producers.insert(output, order);
+            if let Some(input) = proven_copy_input(graph, operation, output) {
+                parents[output as usize] = root(&parents, input as usize);
+            }
+        }
+    }
+    let mut canonical = HashMap::<usize, u32>::new();
+    for &id in &graph.output_operands {
+        let group = root(&parents, id as usize);
+        canonical
+            .entry(group)
+            .and_modify(|chosen| {
+                if producers.get(&id) < producers.get(chosen) {
+                    *chosen = id;
+                }
+            })
+            .or_insert(id);
+    }
+    graph
+        .output_operands
+        .iter()
+        .filter_map(|&id| {
+            let chosen = canonical[&root(&parents, id as usize)];
+            (id != chosen).then(|| (operand_name(graph, id), operand_name(graph, chosen)))
+        })
+        .collect()
+}
+mod precision;
 
 /// Convert zero_point byte data from a source dtype to a target dtype.
 /// Only Int32 → Uint8 and Int32 → Int8 are supported; all other pairs are returned as-is.
@@ -162,7 +576,7 @@ mod mil_ops {
     pub const ABS: &str = "abs";
     pub const CEIL: &str = "ceil";
     pub const FLOOR: &str = "floor";
-    pub const ROUND_EVEN: &str = "round"; // WebNN roundEven: round to nearest even (MIL "round")
+    pub const ROUND_EVEN: &str = "round"; // Only a mapping; emitted through emit_round_even.
     pub const NEG: &str = "mul"; // Multiply by -1
     pub const IDENTITY: &str = "identity";
     pub const EXP: &str = "exp";
@@ -173,7 +587,6 @@ mod mil_ops {
     pub const COS: &str = "cos";
     pub const TAN: &str = "tan";
     pub const ERF: &str = "erf";
-    pub const RECIPROCAL: &str = "inverse";
 
     // Logic operations
     pub const EQUAL: &str = "equal";
@@ -258,9 +671,6 @@ mod mil_ops {
     pub const UPSAMPLE_BILINEAR: &str = "upsample_bilinear";
 }
 
-// Default epsilon value used by several CoreML operations for numerical stability.
-const DEFAULT_EPSILON: f32 = 1e-45;
-
 /// Converts a graph to a CoreML MLProgram (MIL) model.
 #[derive(Default)]
 pub struct CoremlMlProgramConverter;
@@ -327,7 +737,7 @@ impl CoremlMlProgramConverter {
 
     /// Create a MIL Value for a tensor operand
     fn create_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
     ) -> Result<(String, NamedValueType), GraphError> {
         let operand = graph
@@ -372,7 +782,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn create_value_with_mil_type(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         name: String,
         data_type: i32,
@@ -393,7 +803,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn output_name_for_operand(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> String {
@@ -404,7 +814,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn create_output_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Result<(String, NamedValueType), GraphError> {
@@ -578,7 +988,7 @@ impl CoremlMlProgramConverter {
 
     /// Create a const operation for a constant operand
     fn create_const_operation(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand: &crate::graph::Operand,
         constant_data: &crate::graph::ConstantData,
@@ -1182,7 +1592,7 @@ impl CoremlMlProgramConverter {
     /// Map WebNN operation to MIL operation (with optional operand name overrides)
     fn convert_operation_with_overrides(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Result<MilOperation, GraphError> {
@@ -1247,7 +1657,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn input_names_for_operation(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Vec<String> {
@@ -1264,7 +1674,7 @@ impl CoremlMlProgramConverter {
 
     fn convert_operation_with_input_names_and_outputs(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         input_names: &[String],
         outputs: Vec<NamedValueType>,
@@ -1299,11 +1709,523 @@ impl CoremlMlProgramConverter {
         Self::create_mil_operation(mil_ops::CAST, inputs, vec![output_type])
     }
 
+    fn append_nan_preserving_tanh(
+        graph: &LoweringGraph<'_>,
+        block: &mut Block,
+        input_name: String,
+        output_type: NamedValueType,
+    ) {
+        use crate::protos::coreml::mil_spec::{DataType as MilDataType, value_type};
+
+        let mut reserved: std::collections::HashSet<String> = graph
+            .operands
+            .iter()
+            .enumerate()
+            .map(|(id, _)| operand_name(graph, id as u32))
+            .chain(
+                block
+                    .operations
+                    .iter()
+                    .flat_map(|op| op.outputs.iter().map(|output| output.name.clone())),
+            )
+            .chain([input_name.clone(), output_type.name.clone()])
+            .collect();
+        let mut fresh = |suffix: &str| {
+            let base = format!("{}_tanh_{suffix}", output_type.name);
+            let mut name = base.clone();
+            let mut index = 0usize;
+            while !reserved.insert(name.clone()) {
+                index += 1;
+                name = format!("{base}_{index}");
+            }
+            name
+        };
+        let mut kernel_type = output_type.clone();
+        kernel_type.name = fresh("kernel");
+        let mut condition_type = output_type.clone();
+        condition_type.name = fresh("ordered");
+        if let Some(ValueType {
+            r#type: Some(value_type::Type::TensorType(tensor)),
+        }) = &mut condition_type.r#type
+        {
+            tensor.data_type = MilDataType::Bool as i32;
+        }
+        let mut kernel_inputs = HashMap::new();
+        kernel_inputs.insert("x".into(), Self::create_name_argument(input_name.clone()));
+        block.operations.push(Self::create_mil_operation(
+            mil_ops::TANH,
+            kernel_inputs,
+            vec![kernel_type.clone()],
+        ));
+        let mut condition_inputs = HashMap::new();
+        condition_inputs.insert("x".into(), Self::create_name_argument(input_name.clone()));
+        condition_inputs.insert("y".into(), Self::create_name_argument(input_name.clone()));
+        block.operations.push(Self::create_mil_operation(
+            mil_ops::EQUAL,
+            condition_inputs,
+            vec![condition_type.clone()],
+        ));
+        // Some native tanh kernels return +/-1 for NaN. A represented NaN
+        // must remain NaN; comparison is false only for unordered values.
+        let mut select_inputs = HashMap::new();
+        select_inputs.insert(
+            "cond".into(),
+            Self::create_name_argument(condition_type.name),
+        );
+        select_inputs.insert("a".into(), Self::create_name_argument(kernel_type.name));
+        select_inputs.insert("b".into(), Self::create_name_argument(input_name));
+        block.operations.push(Self::create_mil_operation(
+            "select",
+            select_inputs,
+            vec![output_type],
+        ));
+    }
+
+    /// MIL round uses away-from-zero ties on some GPU kernels. Compute the
+    /// nearest integer explicitly, incrementing a tie only when floor(x) is odd.
+    /// FP32 evaluation also keeps FP16 subnormals visible to the comparisons.
+    fn emit_round_even(
+        graph: &LoweringGraph<'_>,
+        block: &mut Block,
+        input: String,
+        output: NamedValueType,
+    ) {
+        use crate::protos::coreml::mil_spec::{DataType as MilType, value_type};
+        let dtype = match output.r#type.as_ref().and_then(|t| t.r#type.as_ref()) {
+            Some(value_type::Type::TensorType(t)) => t.data_type,
+            _ => unreachable!("roundEven output is a tensor"),
+        };
+        let mut names: std::collections::HashSet<String> = block
+            .operations
+            .iter()
+            .flat_map(|op| op.outputs.iter().map(|v| v.name.clone()))
+            .chain(block.inputs.iter().map(|v| v.name.clone()))
+            .chain(
+                graph
+                    .operands
+                    .iter()
+                    .enumerate()
+                    .map(|(id, _)| operand_name(graph, id as u32)),
+            )
+            .chain([input.clone(), output.name.clone()])
+            .collect();
+        let mut fresh = |suffix: &str| {
+            let base = format!("{}_round_even_{suffix}", output.name);
+            let mut name = base.clone();
+            let mut index = 0;
+            while !names.insert(name.clone()) {
+                index += 1;
+                name = format!("{base}_{index}");
+            }
+            name
+        };
+        let typed = |name: String, dtype: i32| {
+            let mut value = output.clone();
+            value.name = name;
+            let Some(value_type::Type::TensorType(tensor)) =
+                value.r#type.as_mut().and_then(|t| t.r#type.as_mut())
+            else {
+                unreachable!();
+            };
+            tensor.data_type = dtype;
+            value
+        };
+        let fp32 = MilType::Float32 as i32;
+        let x = if dtype == fp32 {
+            input
+        } else {
+            let name = fresh("wide");
+            block.operations.push(Self::create_cast_operation(
+                input,
+                typed(name.clone(), fp32),
+                "fp32",
+            ));
+            name
+        };
+        let mut emit = |block: &mut Block,
+                        op: &str,
+                        suffix: &str,
+                        dtype: i32,
+                        bindings: Vec<(&str, Argument)>| {
+            let name = fresh(suffix);
+            block.operations.push(Self::create_mil_operation(
+                op,
+                bindings.into_iter().map(|(k, v)| (k.into(), v)).collect(),
+                vec![typed(name.clone(), dtype)],
+            ));
+            name
+        };
+        let named = |name: &str| Self::create_name_argument(name.into());
+        let floor = emit(block, "floor", "floor", fp32, vec![("x", named(&x))]);
+        let fraction = emit(
+            block,
+            "sub",
+            "fraction",
+            fp32,
+            vec![("x", named(&x)), ("y", named(&floor))],
+        );
+        let half_floor = emit(
+            block,
+            "mul",
+            "half_floor",
+            fp32,
+            vec![
+                ("x", named(&floor)),
+                ("y", Self::create_immediate_float(0.5)),
+            ],
+        );
+        let pairs = emit(
+            block,
+            "floor",
+            "pairs",
+            fp32,
+            vec![("x", named(&half_floor))],
+        );
+        let paired = emit(
+            block,
+            "mul",
+            "paired",
+            fp32,
+            vec![
+                ("x", named(&pairs)),
+                ("y", Self::create_immediate_float(2.0)),
+            ],
+        );
+        let parity = emit(
+            block,
+            "sub",
+            "parity",
+            fp32,
+            vec![("x", named(&floor)), ("y", named(&paired))],
+        );
+        let boolean = MilType::Bool as i32;
+        let above = emit(
+            block,
+            "greater",
+            "above",
+            boolean,
+            vec![
+                ("x", named(&fraction)),
+                ("y", Self::create_immediate_float(0.5)),
+            ],
+        );
+        let tie = emit(
+            block,
+            "equal",
+            "tie",
+            boolean,
+            vec![
+                ("x", named(&fraction)),
+                ("y", Self::create_immediate_float(0.5)),
+            ],
+        );
+        let odd = emit(
+            block,
+            "equal",
+            "odd",
+            boolean,
+            vec![
+                ("x", named(&parity)),
+                ("y", Self::create_immediate_float(1.0)),
+            ],
+        );
+        let odd_tie = emit(
+            block,
+            "logical_and",
+            "odd_tie",
+            boolean,
+            vec![("x", named(&tie)), ("y", named(&odd))],
+        );
+        let increment = emit(
+            block,
+            "logical_or",
+            "increment",
+            boolean,
+            vec![("x", named(&above)), ("y", named(&odd_tie))],
+        );
+        let next = emit(block, "ceil", "next", fp32, vec![("x", named(&x))]);
+        let rounded = emit(
+            block,
+            "select",
+            "rounded",
+            fp32,
+            vec![
+                ("cond", named(&increment)),
+                ("a", named(&next)),
+                ("b", named(&floor)),
+            ],
+        );
+        block.operations.push(Self::create_cast_operation(
+            rounded,
+            output,
+            if dtype == fp32 { "fp32" } else { "fp16" },
+        ));
+    }
+
+    /// CoreML half movement kernels can flush represented half subnormals.
+    /// Widen transport and qualified kernels, then restore the public type.
+    /// Running after lowering also covers helper and deferred layout operations
+    /// without cloning graph constants or widening the stored weight blob.
+    fn preserve_float16_transport(
+        function: &mut Function,
+        block: &mut Block,
+    ) -> std::collections::HashSet<String> {
+        use crate::protos::coreml::mil_spec::{DataType as MilDataType, value_type};
+
+        fn tensor(value: &NamedValueType) -> Option<&TensorType> {
+            match &value.r#type.as_ref()?.r#type {
+                Some(value_type::Type::TensorType(tensor)) => Some(tensor),
+                _ => None,
+            }
+        }
+
+        fn widen(value: &mut NamedValueType) {
+            if let Some(ValueType {
+                r#type: Some(value_type::Type::TensorType(tensor)),
+            }) = &mut value.r#type
+            {
+                tensor.data_type = MilDataType::Float32 as i32;
+            }
+        }
+
+        let types: HashMap<String, NamedValueType> = function
+            .inputs
+            .iter()
+            .chain(block.operations.iter().flat_map(|op| &op.outputs))
+            .map(|value| (value.name.clone(), value.clone()))
+            .collect();
+        let constants: std::collections::HashSet<_> = block
+            .operations
+            .iter()
+            .filter(|op| op.r#type == "const")
+            .flat_map(|op| op.outputs.iter().map(|output| output.name.clone()))
+            .collect();
+        let mut reserved: std::collections::HashSet<String> = types.keys().cloned().collect();
+        let mut fresh_name = |base: String| {
+            let mut name = base.clone();
+            let mut suffix = 0usize;
+            while !reserved.insert(name.clone()) {
+                suffix += 1;
+                name = format!("{base}_{suffix}");
+            }
+            name
+        };
+        let mut operations = Vec::with_capacity(block.operations.len());
+        let mut promoted_results = std::collections::HashSet::new();
+        for (index, mut operation) in std::mem::take(&mut block.operations)
+            .into_iter()
+            .enumerate()
+        {
+            let source_dtype = operation
+                .inputs
+                .get("x")
+                .and_then(|argument| argument.arguments.first())
+                .and_then(|binding| match &binding.binding {
+                    Some(Binding::Name(name)) => types.get(name),
+                    _ => None,
+                })
+                .and_then(tensor)
+                .map(|tensor| tensor.data_type);
+            if operation.r#type == mil_ops::CAST
+                && operation
+                    .outputs
+                    .iter()
+                    .all(|output| tensor(output).is_some_and(|t| Some(t.data_type) == source_dtype))
+                && source_dtype.is_some_and(|dtype| {
+                    dtype == MilDataType::Float16 as i32 || dtype == MilDataType::Float32 as i32
+                })
+            {
+                // Same-dtype casts transport represented values. Native half
+                // casts flush subnormals; native fp32 casts can narrow via half.
+                // Real narrowing/widening casts keep their typed boundary.
+                operation.r#type = "identity".into();
+                operation.inputs.remove("dtype");
+            }
+            // These operations move/select values without computing them.
+            // Indices, shapes and conditions retain their original integer type.
+            let movement = matches!(
+                operation.r#type.as_str(),
+                "identity"
+                    | "reshape"
+                    | "transpose"
+                    | "slice_by_size"
+                    | "slice_by_index"
+                    | "reverse"
+                    | "concat"
+                    | "split"
+                    | "gather"
+                    | "gather_along_axis"
+                    | "gather_nd"
+                    | "tile"
+                    | "pad"
+                    | "select"
+                    | "squeeze"
+                    | "expand_dims"
+                    | "scatter_along_axis"
+                    | "scatter_nd"
+                    // Half accumulation overflows before sqrt even when the
+                    // final l2Pool2d result is representable in half.
+                    | "l2_pool"
+                    // Half layer normalization and matmul lose small values
+                    // on A12 GPU paths; stored weights remain half precision.
+                    | "layer_norm"
+                    | "matmul"
+                    // Half subtraction can erase represented NaN/infinity
+                    // classes on accelerator-enabled execution paths.
+                    | "sub"
+            );
+            let half = operation.outputs.iter().any(|value| {
+                tensor(value).is_some_and(|t| t.data_type == MilDataType::Float16 as i32)
+            });
+            if !movement || !half {
+                operations.push(operation);
+                continue;
+            }
+            if operation.r#type == "transpose" {
+                use crate::protos::coreml::mil_spec::{tensor_value, value};
+                let permutation = operation
+                    .inputs
+                    .get("perm")
+                    .and_then(|argument| argument.arguments.first())
+                    .and_then(|binding| match &binding.binding {
+                        Some(Binding::Value(value)) => value.value.as_ref(),
+                        _ => None,
+                    })
+                    .and_then(|value| match value {
+                        value::Value::ImmediateValue(value::ImmediateValue {
+                            value: Some(value::immediate_value::Value::Tensor(tensor)),
+                        }) => match &tensor.value {
+                            Some(tensor_value::Value::Ints(values)) => Some(&values.values),
+                            _ => None,
+                        },
+                        _ => None,
+                    });
+                if permutation.is_some_and(|values| {
+                    values
+                        .iter()
+                        .enumerate()
+                        .all(|(i, &value)| value == i as i32)
+                }) {
+                    // A constant no-op transpose plus narrowing is incorrectly
+                    // folded to a data-free BNNS program by the URL loader.
+                    operation.r#type = mil_ops::DIV.into();
+                    operation.inputs.remove("perm");
+                    operation
+                        .inputs
+                        .insert("y".into(), Self::create_immediate_float(1.0));
+                }
+            }
+            // Repeated concat/scatter inputs share one promotion in this op.
+            let mut promoted = HashMap::<String, String>::new();
+            for argument in operation.inputs.values_mut() {
+                for binding in &mut argument.arguments {
+                    if let Some(Binding::Name(name)) = &mut binding.binding
+                        && let Some(value_type) = types.get(name)
+                        && tensor(value_type)
+                            .is_some_and(|t| t.data_type == MilDataType::Float16 as i32)
+                    {
+                        let wide_name = promoted.entry(name.clone()).or_insert_with(|| {
+                            let mut wide_type = value_type.clone();
+                            wide_type.name = fresh_name(format!("{name}_transport_fp32_{index}"));
+                            widen(&mut wide_type);
+                            let cast_type = if constants.contains(name) {
+                                let mut cast_type = wide_type.clone();
+                                cast_type.name =
+                                    fresh_name(format!("{name}_constant_fp32_{index}"));
+                                cast_type
+                            } else {
+                                wide_type.clone()
+                            };
+                            operations.push(Self::create_cast_operation(
+                                name.clone(),
+                                cast_type.clone(),
+                                "fp32",
+                            ));
+                            if constants.contains(name) {
+                                // Materialize constant transport rather than
+                                // allowing its terminal cast/alias to become a
+                                // data-free BNNS program at model load.
+                                let mut inputs = HashMap::new();
+                                inputs
+                                    .insert("x".into(), Self::create_name_argument(cast_type.name));
+                                inputs.insert("y".into(), Self::create_immediate_float(1.0));
+                                operations.push(Self::create_mil_operation(
+                                    mil_ops::DIV,
+                                    inputs,
+                                    vec![wide_type.clone()],
+                                ));
+                            }
+                            wide_type.name
+                        });
+                        *name = wide_name.clone();
+                    }
+                    if let Some(Binding::Value(value)) = &mut binding.binding {
+                        Self::widen_float16_immediate(value);
+                    }
+                }
+            }
+            let mut casts = Vec::new();
+            for output in &mut operation.outputs {
+                if tensor(output).is_some_and(|t| t.data_type == MilDataType::Float16 as i32) {
+                    let original = output.clone();
+                    output.name = fresh_name(format!("{}_transport_fp32_{index}", output.name));
+                    widen(output);
+                    promoted_results.insert(output.name.clone());
+                    casts.push(Self::create_cast_operation(
+                        output.name.clone(),
+                        original,
+                        "fp16",
+                    ));
+                }
+            }
+            operations.push(operation);
+            operations.extend(casts);
+        }
+        block.operations = operations;
+        promoted_results
+    }
+
+    /// Pad's constant value must use the same precision as its widened input.
+    fn widen_float16_immediate(value: &mut crate::protos::coreml::mil_spec::Value) {
+        use crate::protos::coreml::mil_spec::{
+            DataType as MilDataType, tensor_value, value, value_type,
+        };
+        let Some(ValueType {
+            r#type: Some(value_type::Type::TensorType(tensor_type)),
+        }) = &mut value.r#type
+        else {
+            return;
+        };
+        if tensor_type.data_type != MilDataType::Float16 as i32 {
+            return;
+        }
+        let Some(value::Value::ImmediateValue(value::ImmediateValue {
+            value: Some(value::immediate_value::Value::Tensor(tensor)),
+        })) = &mut value.value
+        else {
+            return;
+        };
+        let Some(tensor_value::Value::Bytes(bytes)) = &tensor.value else {
+            return;
+        };
+        let values = bytes
+            .values
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|v| half::f16::from_bits(u16::from_le_bytes([v[0], v[1]])).to_f32())
+            .collect();
+        tensor.value = Some(tensor_value::Value::Floats(tensor_value::RepeatedFloats {
+            values,
+        }));
+        tensor_type.data_type = MilDataType::Float32 as i32;
+    }
+
     /// Map WebNN operation to MIL operation (convenience wrapper without overrides)
     #[allow(dead_code)]
     fn convert_operation(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
         self.convert_operation_with_overrides(graph, op, &HashMap::new())
@@ -1312,7 +2234,7 @@ impl CoremlMlProgramConverter {
     /// Convert split operation (multi-output)
     fn convert_split_operation(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
         let Operation::Split {
@@ -1428,7 +2350,7 @@ impl CoremlMlProgramConverter {
             "cos" => mil_ops::COS,
             "tan" => mil_ops::TAN,
             "erf" => mil_ops::ERF,
-            "reciprocal" => mil_ops::RECIPROCAL,
+            "reciprocal" => mil_ops::DIV,
 
             // Logic operations
             "equal" => mil_ops::EQUAL,
@@ -1526,7 +2448,7 @@ impl CoremlMlProgramConverter {
     /// Returns the adjusted `[Hbegin, Hend', Wbegin, Wend']`, or `None` if shapes are
     /// unavailable (caller falls back to the base padding).
     fn pool_effective_padding(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         kernel: &[u32],
         strides: &[u32],
@@ -1612,7 +2534,7 @@ impl CoremlMlProgramConverter {
     /// Whether a quantize/dequantize op must be lowered to elementwise arithmetic because
     /// CoreML's native op can't express it. int4/uint4 tensors are excluded (they cannot
     /// be materialized at all) and scalar tensors keep the native rank-0 fast path.
-    fn qdq_should_decompose(graph: &GraphInfo, op: &Operation) -> bool {
+    fn qdq_should_decompose(graph: &LoweringGraph<'_>, op: &Operation) -> bool {
         let (quant_id, tensor_shape_id, scale_id, zero_point_id) = match op {
             // dequantize: the quantized tensor is the input; its type/shape drive the check.
             Operation::DequantizeLinear {
@@ -2320,7 +3242,7 @@ impl CoremlMlProgramConverter {
     /// time — minutes of CPU and GBs of RAM for transformer-sized weights.
     /// The constexpr form is CoreML's weight-compression representation and
     /// keeps the weight packed through compilation.
-    fn constexpr_dequantize_supported(graph: &GraphInfo, op: &Operation) -> bool {
+    fn constexpr_dequantize_supported(graph: &LoweringGraph<'_>, op: &Operation) -> bool {
         let Operation::DequantizeLinear {
             input,
             scale,
@@ -2395,7 +3317,7 @@ impl CoremlMlProgramConverter {
     /// file (all non-scalar weight dtypes are), otherwise an immediate tensor
     /// built from the graph's constant bytes.
     fn constexpr_param_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         weight_builder: &super::WeightFileBuilder,
         operand_id: u32,
         dims: &[u32],
@@ -2521,7 +3443,7 @@ impl CoremlMlProgramConverter {
     /// not name-bound inputs; large payloads reuse the blob offsets the const
     /// emission pass already wrote.
     fn emit_constexpr_affine_dequantize(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         weight_builder: &super::WeightFileBuilder,
@@ -2636,7 +3558,7 @@ impl CoremlMlProgramConverter {
     /// large-magnitude WebNN conformance inputs. Keep the reduced axes until
     /// the final step so `max(x)` broadcasts correctly for arbitrary axes.
     fn emit_stable_reduce_log_sum_exp(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -2796,10 +3718,7 @@ impl CoremlMlProgramConverter {
             Self::create_named_value_type(log_name.clone(), dtype, &keep_dims_shape, false);
         let mut log_inputs = HashMap::new();
         log_inputs.insert("x".to_string(), Self::create_name_argument(sum_name));
-        log_inputs.insert(
-            "epsilon".to_string(),
-            Self::create_immediate_float(DEFAULT_EPSILON),
-        );
+        log_inputs.insert("epsilon".to_string(), Self::create_immediate_float(0.0));
         main_block.operations.push(Self::create_mil_operation(
             mil_ops::LOG,
             log_inputs,
@@ -2863,7 +3782,7 @@ impl CoremlMlProgramConverter {
     /// block[i]]` (with `block[i] = input[i]/scale[i]`) and the scale/zeroPoint into
     /// `[scale[i], 1]`, so ordinary broadcasting applies; the result is reshaped back.
     fn emit_dequantize_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -3035,7 +3954,7 @@ impl CoremlMlProgramConverter {
     /// `quantize` cannot: int32 outputs, block-wise scales, and multi-axis scales. Block
     /// quantization uses the same reshape trick as the dequantize decomposition.
     fn emit_quantize_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -3165,13 +4084,7 @@ impl CoremlMlProgramConverter {
         let round_name = format!("{}_q_round", output_name);
         let round_type =
             Self::value_type_for_static_shape(round_name.clone(), float_dtype, &interleaved_input);
-        let mut round_inputs = HashMap::new();
-        round_inputs.insert("x".to_string(), Self::create_name_argument(div_name));
-        main_block.operations.push(Self::create_mil_operation(
-            mil_ops::ROUND_EVEN,
-            round_inputs,
-            vec![round_type],
-        ));
+        Self::emit_round_even(graph, main_block, div_name, round_type);
 
         // 4. add the zero_point (cast to float, reshaped), if present.
         let biased_name = if let Some(zp_id) = zp_id {
@@ -3282,7 +4195,7 @@ impl CoremlMlProgramConverter {
     ///   Hnew = (1 - z) ⊙ n + z ⊙ H = n + z ⊙ (H - n)
     /// Default activations f0=sigmoid, f1=tanh; default layout "zrn".
     fn emit_gru_cell_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3453,7 +4366,7 @@ impl CoremlMlProgramConverter {
     /// Default activations f0=sigmoid, f1=f2=tanh; default gate layout "iofg".
     /// Outputs are [Hnew, Cnew].
     fn emit_lstm_cell_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3705,7 +4618,7 @@ impl CoremlMlProgramConverter {
     /// directions (forward/backward/bidirectional), assembling output[0] = last hidden
     /// [num_dir, b, h] and, when requested, output[1] = all steps [steps, num_dir, b, h].
     fn emit_gru_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3878,7 +4791,7 @@ impl CoremlMlProgramConverter {
     /// directions. Outputs: [0] last hidden [num_dir, b, h], [1] last cell [num_dir, b, h],
     /// and (when requested) [2] all hidden steps [steps, num_dir, b, h].
     fn emit_lstm_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -4108,7 +5021,7 @@ impl CoremlMlProgramConverter {
     /// Create inputs map for MIL operation
     fn create_operation_inputs(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         input_names: &[String],
     ) -> Result<HashMap<String, Argument>, GraphError> {
@@ -4245,12 +5158,13 @@ impl CoremlMlProgramConverter {
 
             Operation::Reciprocal { .. } => {
                 if !input_names.is_empty() {
-                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
+                    inputs.insert("y".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // Reciprocal requires epsilon parameter (default to 1e-45 for numerical stability)
+                // MIL inverse loses the sign of -0 on older CoreML stacks,
+                // even with epsilon=-0. Division implements WebNN's 1/x.
                 inputs.insert(
-                    "epsilon".to_string(),
-                    Self::create_immediate_float(DEFAULT_EPSILON),
+                    "x".to_string(),
+                    Self::create_immediate_float(1.0),
                 );
             }
 
@@ -4259,10 +5173,10 @@ impl CoremlMlProgramConverter {
                 if !input_names.is_empty() {
                     inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
                 }
-                // CoreML log requires epsilon parameter (default to 1e-45 for numerical stability)
+                // WebNN specifies log(x), not log(x + epsilon).
                 inputs.insert(
                     "epsilon".to_string(),
-                    Self::create_immediate_float(DEFAULT_EPSILON),
+                    Self::create_immediate_float(0.0),
                 );
             }
 
@@ -4737,19 +5651,19 @@ impl CoremlMlProgramConverter {
                             Self::create_argument(&operand_name(graph, bias_id)),
                         );
                     }
-                    let use_f16 = op
-                        .input_operands()
-                        .first()
-                        .and_then(|&id| graph.operand(id))
-                        .map(|o| o.descriptor.data_type == DataType::Float16)
-                        .unwrap_or(false);
-                    let eps_arg = if use_f16 {
-                        Self::create_immediate_float16(opts.epsilon as f32)
-                    } else {
-                        Self::create_immediate_float(opts.epsilon as f32)
-                    };
-                    inputs.insert("epsilon".to_string(), eps_arg);
                 }
+                let use_f16 = op
+                    .input_operands()
+                    .first()
+                    .and_then(|&id| graph.operand(id))
+                    .is_some_and(|o| o.descriptor.data_type == DataType::Float16);
+                let epsilon = options.as_ref().map_or(1e-5, |o| o.epsilon as f32);
+                let eps_arg = if use_f16 {
+                    Self::create_immediate_float16(epsilon)
+                } else {
+                    Self::create_immediate_float(epsilon)
+                };
+                inputs.insert("epsilon".to_string(), eps_arg);
 
                 // Add axes parameter (REQUIRED by CoreML, must not be empty;
                 // empty axes are caught before this point).
@@ -5543,30 +6457,51 @@ impl CoremlMlProgramConverter {
     }
 }
 
-impl super::GraphConverter for CoremlMlProgramConverter {
-    fn format(&self) -> &'static str {
-        "coreml"
+impl CoremlMlProgramConverter {
+    fn convert_with_precision_boundaries(
+        &self,
+        graph: &LoweringGraph<'_>,
+        weights: &mut super::WeightFileBuilder,
+    ) -> Result<Model, GraphError> {
+        let mut model = self.convert_program(
+            graph,
+            &graph.input_operands,
+            &graph.output_operands,
+            &graph.operations,
+            weights,
+        )?;
+        Self::fold_constant_half_casts(graph, &mut model, weights)?;
+        let promoted =
+            if let Some(crate::protos::coreml::specification::model::Type::MlProgram(program)) =
+                &mut model.r#type
+            {
+                let function = program.functions.get_mut("main").unwrap();
+                let mut block = function
+                    .block_specializations
+                    .remove(&function.opset)
+                    .unwrap();
+                let promoted = Self::preserve_float16_transport(function, &mut block);
+                function
+                    .block_specializations
+                    .insert(function.opset.clone(), block);
+                promoted
+            } else {
+                std::collections::HashSet::new()
+            };
+        self.materialize_precision_boundaries(graph, model, &promoted)
     }
 
-    fn convert(&self, graph_info: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+    fn convert_program(
+        &self,
+        graph_info: &LoweringGraph<'_>,
+        input_operands: &[u32],
+        output_operands: &[u32],
+        operations: &[Operation],
+        weight_builder: &mut super::WeightFileBuilder,
+    ) -> Result<Model, GraphError> {
         if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
-
-        // Create weight file builder for Float16 constants
-        let mut weight_builder = super::WeightFileBuilder::new();
-        // Upper bound: every constant blob-written, plus a 64-byte metadata
-        // block and up-to-64-byte alignment padding each. Reserved capacity is
-        // virtual until written, so overshooting for immediate-value constants
-        // costs nothing.
-        weight_builder.reserve(
-            graph_info
-                .constant_operand_ids_to_handles
-                .values()
-                .map(|c| c.data.len() + 128)
-                .sum(),
-        );
-
         // Create MLProgram
         let mut program = Program {
             version: 1,
@@ -5582,7 +6517,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         // graph representation inside the main block.
         let mut operand_name_overrides: HashMap<u32, String> = HashMap::new();
 
-        for &output_id in &graph_info.output_operands {
+        for &output_id in output_operands {
             if let Some(operand) = graph_info.operand(output_id) {
                 let graph_mil_type = Self::graph_value_mil_type(&operand.descriptor.data_type)?;
                 // Wide ints (int64/uint32/uint64) are int32 both inside the graph and
@@ -5600,7 +6535,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         // Add function inputs from graph inputs
-        for &input_id in &graph_info.input_operands {
+        for &input_id in input_operands {
             let operand =
                 graph_info
                     .operand(input_id)
@@ -5625,7 +6560,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         let mut int32_proxy_output_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
-        for &input_id in &graph_info.input_operands {
+        for &input_id in input_operands {
             let operand =
                 graph_info
                     .operand(input_id)
@@ -5676,7 +6611,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         let mut scale_ids_to_squeeze: std::collections::HashSet<u32> =
             std::collections::HashSet::new();
         let mut zp_id_to_dtype: HashMap<u32, DataType> = HashMap::new();
-        for op in &graph_info.operations {
+        for op in operations {
             let op_lower = op.op_type().to_lowercase();
             if matches!(op_lower.as_str(), "quantizelinear" | "dequantizelinear") {
                 let input_ids = op.input_operands();
@@ -5766,7 +6701,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
         // Gather/GatherElements: CoreML only accepts int32 (or smaller) for indices.
         // If indices are a constant with uint32 or int64 type, coerce them to int32.
-        for op in &graph_info.operations {
+        for op in operations {
             let op_lower = op.op_type().to_lowercase();
             if (op_lower == "gather" || op_lower == "gatherelements")
                 && let Some(&idx_id) = op.input_operands().get(1)
@@ -5857,7 +6792,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     *operand_id,
                     &modified_operand,
                     final_data_ref,
-                    &mut weight_builder,
+                    weight_builder,
                 )?;
                 main_block.operations.push(const_op);
             } else {
@@ -5866,7 +6801,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     *operand_id,
                     operand,
                     constant_data,
-                    &mut weight_builder,
+                    weight_builder,
                 )?;
                 main_block.operations.push(const_op);
             }
@@ -5880,7 +6815,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
         // First pass: Handle filter layout transformations for conv operations
 
-        for op in &graph_info.operations {
+        for op in operations {
             let op_type_lower = op.op_type().to_lowercase();
 
             if (op_type_lower == "conv2d" || op_type_lower == "convtranspose2d")
@@ -6094,8 +7029,358 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         let mut pad_unfused: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
         // Convert all operations to MIL operations
-        for op in &graph_info.operations {
+        for op in operations {
             let op_type_lower = op.op_type().to_lowercase();
+
+            if let Operation::RoundEven { input, .. } = op {
+                let output_id =
+                    op.output_operand()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".into(),
+                            reason: "roundEven has no output operand".into(),
+                        })?;
+                let (_, output) =
+                    Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
+                Self::emit_round_even(
+                    graph_info,
+                    &mut main_block,
+                    Self::output_name_for_operand(graph_info, *input, &operand_name_overrides),
+                    output,
+                );
+                if let Some((pending_ops, transposed_name)) = deferred_transposes.remove(&output_id)
+                {
+                    main_block.operations.extend(pending_ops);
+                    operand_name_overrides.insert(output_id, transposed_name);
+                }
+                continue;
+            }
+
+            if let Operation::Tanh { input, .. } = op
+                && graph_info
+                    .operand(*input)
+                    .is_some_and(|operand| operand.descriptor.data_type == DataType::Float32)
+            {
+                let output_id =
+                    op.output_operand()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".into(),
+                            reason: "tanh has no output".into(),
+                        })?;
+                let (_, output_type) =
+                    Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
+                Self::append_nan_preserving_tanh(
+                    graph_info,
+                    &mut main_block,
+                    Self::output_name_for_operand(graph_info, *input, &operand_name_overrides),
+                    output_type,
+                );
+                if let Some((pending, name)) = deferred_transposes.remove(&output_id) {
+                    main_block.operations.extend(pending);
+                    operand_name_overrides.insert(output_id, name);
+                }
+                continue;
+            }
+
+            if let Operation::Sign { input, .. } = op
+                && graph_info.operand(*input).is_some_and(|value| {
+                    matches!(
+                        value.descriptor.data_type,
+                        DataType::Float16 | DataType::Float32
+                    )
+                })
+            {
+                // WebNN sign(NaN) is zero; some native CPU sign kernels return NaN.
+                // Widening also makes small half values visible to comparisons.
+                use crate::protos::coreml::mil_spec::DataType as MilType;
+                let output_id =
+                    op.output_operand()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".into(),
+                            reason: "sign has no output".into(),
+                        })?;
+                let (output_name, output_type) =
+                    Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
+                let mut reserved: std::collections::HashSet<String> = graph_info
+                    .operands
+                    .iter()
+                    .enumerate()
+                    .map(|(id, _)| operand_name(graph_info, id as u32))
+                    .chain(
+                        main_block
+                            .operations
+                            .iter()
+                            .flat_map(|op| op.outputs.iter().map(|v| v.name.clone())),
+                    )
+                    .collect();
+                let mut fresh = |suffix: &str| {
+                    let base = format!("{output_name}_sign_{suffix}");
+                    let mut name = base.clone();
+                    let mut n = 0;
+                    while !reserved.insert(name.clone()) {
+                        n += 1;
+                        name = format!("{base}_{n}");
+                    }
+                    name
+                };
+                let wide = fresh("wide");
+                main_block.operations.push(Self::create_cast_operation(
+                    Self::output_name_for_operand(graph_info, *input, &operand_name_overrides),
+                    Self::create_value_with_mil_type(
+                        graph_info,
+                        *input,
+                        wide.clone(),
+                        MilType::Float32 as i32,
+                    )?,
+                    "fp32",
+                ));
+                let mut emit = |kind: &str,
+                                suffix: &str,
+                                dtype: i32,
+                                bindings: Vec<(&str, Argument)>|
+                 -> Result<String, GraphError> {
+                    let name = fresh(suffix);
+                    main_block.operations.push(Self::create_mil_operation(
+                        kind,
+                        bindings.into_iter().map(|(k, v)| (k.into(), v)).collect(),
+                        vec![Self::create_value_with_mil_type(
+                            graph_info,
+                            output_id,
+                            name.clone(),
+                            dtype,
+                        )?],
+                    ));
+                    Ok(name)
+                };
+                let named = |s: &str| Self::create_name_argument(s.into());
+                let negative = emit(
+                    "less",
+                    "negative",
+                    MilType::Bool as i32,
+                    vec![
+                        ("x", named(&wide)),
+                        ("y", Self::create_immediate_float(0.0)),
+                    ],
+                )?;
+                let positive = emit(
+                    "greater",
+                    "positive",
+                    MilType::Bool as i32,
+                    vec![
+                        ("x", named(&wide)),
+                        ("y", Self::create_immediate_float(0.0)),
+                    ],
+                )?;
+                let lower = emit(
+                    "select",
+                    "lower",
+                    MilType::Float32 as i32,
+                    vec![
+                        ("cond", named(&negative)),
+                        ("a", Self::create_immediate_float(-1.0)),
+                        ("b", Self::create_immediate_float(0.0)),
+                    ],
+                )?;
+                let result = emit(
+                    "select",
+                    "result",
+                    MilType::Float32 as i32,
+                    vec![
+                        ("cond", named(&positive)),
+                        ("a", Self::create_immediate_float(1.0)),
+                        ("b", named(&lower)),
+                    ],
+                )?;
+                main_block.operations.push(Self::create_cast_operation(
+                    result,
+                    output_type,
+                    if graph_info
+                        .operand(output_id)
+                        .is_some_and(|v| v.descriptor.data_type == DataType::Float16)
+                    {
+                        "fp16"
+                    } else {
+                        "fp32"
+                    },
+                ));
+                if let Some((pending, name)) = deferred_transposes.remove(&output_id) {
+                    main_block.operations.extend(pending);
+                    operand_name_overrides.insert(output_id, name);
+                }
+                continue;
+            }
+
+            // The half kernels below exceed WebNN's error bounds on older
+            // accelerator paths, including flushing represented subnormals.
+            // Evaluate the entire activation in fp32 and round once at its
+            // fp16 boundary; retain fp16 storage and CoreML device selection.
+            let wide_activation_input = match op {
+                Operation::Gelu { input, .. }
+                | Operation::Sigmoid { input, .. }
+                | Operation::Tanh { input, .. }
+                | Operation::Relu { input, .. }
+                | Operation::LeakyRelu { input, .. }
+                | Operation::Elu { input, .. }
+                | Operation::Exp { input, .. }
+                | Operation::Neg { input, .. }
+                | Operation::Reciprocal { input, .. }
+                | Operation::HardSigmoid { input, .. }
+                | Operation::HardSwish { input, .. } => Some(*input),
+                _ => None,
+            };
+            if let Some(input) = wide_activation_input
+                && graph_info
+                    .operand(input)
+                    .is_some_and(|operand| operand.descriptor.data_type == DataType::Float16)
+            {
+                let output_id =
+                    op.output_operand()
+                        .ok_or_else(|| GraphError::ConversionFailed {
+                            format: "coreml_mlprogram".into(),
+                            reason: format!("{} operation has no output operand", op.op_type()),
+                        })?;
+                let (output_name, output_type) =
+                    Self::create_output_value(graph_info, output_id, &operand_name_overrides)?;
+                let mut reserved_names: std::collections::HashSet<String> = graph_info
+                    .operands
+                    .iter()
+                    .enumerate()
+                    .map(|(id, _)| operand_name(graph_info, id as u32))
+                    .chain(operand_name_overrides.values().cloned())
+                    .chain(main_block.operations.iter().flat_map(|operation| {
+                        operation.outputs.iter().map(|output| output.name.clone())
+                    }))
+                    .collect();
+                let mut fresh_name = |base: String| {
+                    let mut candidate = base.clone();
+                    let mut suffix = 0usize;
+                    while !reserved_names.insert(candidate.clone()) {
+                        suffix += 1;
+                        candidate = format!("{base}_{suffix}");
+                    }
+                    candidate
+                };
+                let wide_input_name = fresh_name(format!(
+                    "{output_name}_{op_type_lower}_input_fp32_{output_id}"
+                ));
+                let wide_result_name = fresh_name(format!(
+                    "{output_name}_{op_type_lower}_result_fp32_{output_id}"
+                ));
+                let wide_input_type = Self::create_value_with_mil_type(
+                    graph_info,
+                    input,
+                    wide_input_name.clone(),
+                    crate::protos::coreml::mil_spec::DataType::Float32 as i32,
+                )?;
+                main_block.operations.push(Self::create_cast_operation(
+                    Self::output_name_for_operand(graph_info, input, &operand_name_overrides),
+                    wide_input_type,
+                    "fp32",
+                ));
+                let wide_result_type = Self::create_value_with_mil_type(
+                    graph_info,
+                    output_id,
+                    wide_result_name.clone(),
+                    crate::protos::coreml::mil_spec::DataType::Float32 as i32,
+                )?;
+                if matches!(op, Operation::Tanh { .. }) {
+                    Self::append_nan_preserving_tanh(
+                        graph_info,
+                        &mut main_block,
+                        wide_input_name,
+                        wide_result_type,
+                    );
+                } else if matches!(op, Operation::Neg { .. }) {
+                    let inputs = HashMap::from([
+                        ("x".into(), Self::create_name_argument(wide_input_name)),
+                        ("y".into(), Self::create_immediate_float(-1.0)),
+                    ]);
+                    main_block.operations.push(Self::create_mil_operation(
+                        mil_ops::DIV,
+                        inputs,
+                        vec![wide_result_type],
+                    ));
+                } else if matches!(op, Operation::HardSwish { .. }) {
+                    // Do not round the sigmoid helper to fp16: hardSwish has
+                    // one WebNN result, not two separately rounded operations.
+                    let sigmoid_name =
+                        fresh_name(format!("{output_name}_hardswish_sigmoid_fp32_{output_id}"));
+                    let sigmoid_type = Self::create_value_with_mil_type(
+                        graph_info,
+                        input,
+                        sigmoid_name.clone(),
+                        crate::protos::coreml::mil_spec::DataType::Float32 as i32,
+                    )?;
+                    let mut sigmoid_inputs = HashMap::new();
+                    sigmoid_inputs.insert(
+                        "x".into(),
+                        Self::create_name_argument(wide_input_name.clone()),
+                    );
+                    sigmoid_inputs.insert("alpha".into(), Self::create_immediate_float(1.0 / 6.0));
+                    sigmoid_inputs.insert("beta".into(), Self::create_immediate_float(0.5));
+                    main_block.operations.push(Self::create_mil_operation(
+                        mil_ops::HARD_SIGMOID,
+                        sigmoid_inputs,
+                        vec![sigmoid_type],
+                    ));
+                    let mut mul_inputs = HashMap::new();
+                    mul_inputs.insert("x".into(), Self::create_name_argument(wide_input_name));
+                    mul_inputs.insert("y".into(), Self::create_name_argument(sigmoid_name));
+                    main_block.operations.push(Self::create_mil_operation(
+                        mil_ops::MUL,
+                        mul_inputs,
+                        vec![wide_result_type],
+                    ));
+                } else {
+                    let mut inputs =
+                        self.create_operation_inputs(graph_info, op, &[wide_input_name])?;
+                    // WebNN casts these parameters to the input type at graph
+                    // construction. Widen the rounded value, not the original.
+                    let rounded = |value: f32| {
+                        Self::create_immediate_float(half::f16::from_f32(value).to_f32())
+                    };
+                    match op {
+                        Operation::LeakyRelu { options, .. } => {
+                            inputs.insert(
+                                "alpha".into(),
+                                rounded(options.as_ref().map_or(0.01, |o| o.alpha as f32)),
+                            );
+                        }
+                        Operation::Elu { options, .. } => {
+                            inputs.insert(
+                                "alpha".into(),
+                                rounded(options.as_ref().map_or(1.0, |o| o.alpha as f32)),
+                            );
+                        }
+                        Operation::HardSigmoid { options, .. } => {
+                            inputs.insert(
+                                "alpha".into(),
+                                rounded(options.as_ref().map_or(0.2, |o| o.alpha as f32)),
+                            );
+                            inputs.insert(
+                                "beta".into(),
+                                rounded(options.as_ref().map_or(0.5, |o| o.beta as f32)),
+                            );
+                        }
+                        _ => {}
+                    }
+                    main_block.operations.push(Self::create_mil_operation(
+                        self.get_mil_op_type(op.op_type())?,
+                        inputs,
+                        vec![wide_result_type],
+                    ));
+                }
+                main_block.operations.push(Self::create_cast_operation(
+                    wide_result_name,
+                    output_type,
+                    "fp16",
+                ));
+                if let Some((pending_ops, transposed_name)) = deferred_transposes.remove(&output_id)
+                {
+                    main_block.operations.extend(pending_ops);
+                    operand_name_overrides.insert(output_id, transposed_name);
+                }
+                continue;
+            }
 
             if matches!(
                 op,
@@ -6240,6 +7525,44 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
                 let mut input_names =
                     Self::input_names_for_operation(graph_info, op, &operand_name_overrides);
+
+                // Inspect represented Half NaN/infinity values in FP32, using
+                // the source operand's shape rather than the uint8 result.
+                if matches!(op_type_lower.as_str(), "isnan" | "isinfinite")
+                    && let Some(&input_id) = op.input_operands().first()
+                    && graph_info
+                        .operand(input_id)
+                        .is_some_and(|operand| operand.descriptor.data_type == DataType::Float16)
+                {
+                    let reserved: std::collections::HashSet<String> = graph_info
+                        .operands
+                        .iter()
+                        .enumerate()
+                        .map(|(id, _)| operand_name(graph_info, id as u32))
+                        .chain(main_block.operations.iter().flat_map(|operation| {
+                            operation.outputs.iter().map(|output| output.name.clone())
+                        }))
+                        .collect();
+                    let base = format!("{}_class_fp32_{output_id}", input_names[0]);
+                    let mut wide_name = base.clone();
+                    let mut suffix = 0usize;
+                    while reserved.contains(&wide_name) {
+                        suffix += 1;
+                        wide_name = format!("{base}_{suffix}");
+                    }
+                    let wide_type = Self::create_value_with_mil_type(
+                        graph_info,
+                        input_id,
+                        wide_name.clone(),
+                        MilDataType::Float32 as i32,
+                    )?;
+                    main_block.operations.push(Self::create_cast_operation(
+                        input_names[0].clone(),
+                        wide_type,
+                        "fp32",
+                    ));
+                    input_names[0] = wide_name;
+                }
 
                 // WebNN allows every operand data type for comparisons, but only requires
                 // float32, float16, and int32 support. CoreML's comparison operations reject
@@ -6393,10 +7716,14 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         .map(|o| &o.descriptor.data_type)
                         .cloned()
                         .unwrap_or(DataType::Float32);
-                    let abs_mil_dtype = Self::mil_data_type(&input_dtype)?;
+                    let abs_mil_dtype = if input_dtype == DataType::Float16 {
+                        MilDataType::Float32 as i32
+                    } else {
+                        Self::mil_data_type(&input_dtype)?
+                    };
                     let abs_type = Self::create_value_with_mil_type(
                         graph_info,
-                        output_id,
+                        op.input_operands()[0],
                         abs_name.clone(),
                         abs_mil_dtype,
                     )?;
@@ -6413,11 +7740,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     } else {
                         f32::MAX
                     };
-                    let max_val_arg = if input_dtype == DataType::Float16 {
-                        Self::create_immediate_float16(max_val)
-                    } else {
-                        Self::create_immediate_float(max_val)
-                    };
+                    let max_val_arg = Self::create_immediate_float(max_val);
                     let mut gt_inputs = HashMap::new();
                     gt_inputs.insert("x".to_string(), Self::create_name_argument(abs_name));
                     gt_inputs.insert("y".to_string(), max_val_arg);
@@ -7625,7 +8948,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     r#type: Some(output_value_type),
                 };
 
-                let mul_op = Self::create_mil_operation("mul", mul_inputs, vec![mul_output_type]);
+                // The floating multiply-by-minus-one kernel canonicalizes +0
+                // on some large-vector plans. Division by exact -1 retains
+                // both zero signs, infinities, and NaN classification.
+                let operation = if input_operand.descriptor.data_type == DataType::Float32 {
+                    mil_ops::DIV
+                } else {
+                    mil_ops::MUL
+                };
+                let mul_op =
+                    Self::create_mil_operation(operation, mul_inputs, vec![mul_output_type]);
 
                 main_block.operations.push(mul_op);
 
@@ -7889,11 +9221,15 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 }
             }
 
-            // layer/instance normalization with a runtime (non-constant) scale or
-            // bias: CoreML's native layer_norm/instance_norm require const
+            // Layer normalization with any affine parameters, and instance
+            // normalization with runtime scale/bias:
+            // CoreML's native layer_norm/instance_norm require const
             // gamma/beta ("Param 'gamma' must be const"), so run the native op
             // without them and apply `y = norm(x) * scale + bias` with explicit
             // mul/add, reshaping scale/bias to a broadcast-compatible shape.
+            // Some native layer_norm plans also omit constant gamma on
+            // nontrailing axes, so keep its affine work explicit for both
+            // constant and runtime parameters.
             // Both params are stripped together: the native op computes
             // `norm * gamma + beta`, so applying one after the fact while the
             // other stays inside would change the result.
@@ -7917,7 +9253,17 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         .map(|o| o.kind != crate::graph::OperandKind::Constant)
                         .unwrap_or(false)
                 };
-                if is_runtime(scale_id) || is_runtime(bias_id) {
+                let layer_norm = matches!(op, Operation::LayerNormalization { .. });
+                let half_layer_norm = layer_norm
+                    && op
+                        .input_operands()
+                        .first()
+                        .and_then(|&id| graph_info.operand(id))
+                        .is_some_and(|operand| operand.descriptor.data_type == DataType::Float16);
+                if is_runtime(scale_id)
+                    || is_runtime(bias_id)
+                    || (layer_norm && (scale_id.is_some() || bias_id.is_some()))
+                {
                     let x_id = *op.input_operands().first().ok_or_else(|| {
                         GraphError::ConversionFailed {
                             format: "coreml_mlprogram".to_string(),
@@ -7933,7 +9279,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                             })?;
                     let x_shape = x_op.descriptor.static_or_max_shape();
                     let rank = x_shape.len();
-                    let mil_dtype = Self::graph_value_mil_type(&x_op.descriptor.data_type)?;
+                    let mil_dtype = if half_layer_norm {
+                        crate::protos::coreml::mil_spec::DataType::Float32 as i32
+                    } else {
+                        Self::graph_value_mil_type(&x_op.descriptor.data_type)?
+                    };
                     let out_id =
                         op.output_operand()
                             .ok_or_else(|| GraphError::ConversionFailed {
@@ -7945,23 +9295,18 @@ impl super::GraphConverter for CoremlMlProgramConverter {
 
                     // Broadcast target: scale/bias expanded to the input rank with
                     // 1s on non-normalized (layer) / non-channel (instance) dims.
-                    let target: Vec<u32> = match op {
-                        Operation::LayerNormalization { options, .. } => {
-                            let axes: Vec<usize> = options
-                                .as_ref()
-                                .and_then(|o| o.axes.as_ref())
-                                .map(|ax| ax.iter().map(|&a| a as usize).collect())
-                                .unwrap_or_else(|| {
-                                    if rank > 1 {
-                                        (1..rank).collect()
-                                    } else {
-                                        vec![0]
-                                    }
-                                });
-                            (0..rank)
-                                .map(|i| if axes.contains(&i) { x_shape[i] } else { 1 })
-                                .collect()
-                        }
+                    let normalized_axes: Vec<usize> = match op {
+                        Operation::LayerNormalization { options, .. } => options
+                            .as_ref()
+                            .and_then(|o| o.axes.as_ref())
+                            .map(|ax| ax.iter().map(|&a| a as usize).collect())
+                            .unwrap_or_else(|| {
+                                if rank > 1 {
+                                    (1..rank).collect()
+                                } else {
+                                    vec![0]
+                                }
+                            }),
                         _ => {
                             let nhwc = match op {
                                 Operation::InstanceNormalization { options, .. } => options
@@ -7971,10 +9316,42 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                                 _ => false,
                             };
                             let c_idx = if nhwc { rank.saturating_sub(1) } else { 1 };
-                            (0..rank)
-                                .map(|i| if i == c_idx { x_shape[i] } else { 1 })
-                                .collect()
+                            vec![c_idx]
                         }
+                    };
+                    let target: Vec<u32> = (0..rank)
+                        .map(|i| {
+                            if normalized_axes.contains(&i) {
+                                x_shape[i]
+                            } else {
+                                1
+                            }
+                        })
+                        .collect();
+                    let mut sorted_axes = normalized_axes.clone();
+                    sorted_axes.sort_unstable();
+                    let parameter_permutation: Vec<u32> = sorted_axes
+                        .iter()
+                        .map(|axis| normalized_axes.iter().position(|a| a == axis).unwrap() as u32)
+                        .collect();
+                    let mut reserved: std::collections::HashSet<String> = graph_info
+                        .operands
+                        .iter()
+                        .enumerate()
+                        .map(|(id, _)| operand_name(graph_info, id as u32))
+                        .chain(main_block.operations.iter().flat_map(|operation| {
+                            operation.outputs.iter().map(|output| output.name.clone())
+                        }))
+                        .collect();
+                    let mut fresh = |suffix: &str| {
+                        let base = format!("{out_name}_{suffix}_{out_id}");
+                        let mut name = base.clone();
+                        let mut index = 0usize;
+                        while !reserved.insert(name.clone()) {
+                            index += 1;
+                            name = format!("{base}_{index}");
+                        }
+                        name
                     };
 
                     let mut stripped = op.clone();
@@ -7993,17 +9370,72 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         }
                         _ => {}
                     }
-                    let norm_name = format!("{out_name}_nogb_{out_id}");
+                    let norm_name = fresh("nogb");
                     let mut norm_overrides = operand_name_overrides.clone();
                     norm_overrides.insert(out_id, norm_name.clone());
-                    let mil = self.convert_operation_with_overrides(
+                    let mut mil = self.convert_operation_with_overrides(
                         graph_info,
                         &stripped,
                         &norm_overrides,
                     )?;
+                    if half_layer_norm {
+                        let wide_name = fresh("normalization_fp32_input");
+                        main_block.operations.push(Self::create_cast_operation(
+                            Self::output_name_for_operand(
+                                graph_info,
+                                x_id,
+                                &operand_name_overrides,
+                            ),
+                            Self::create_value_with_mil_type(
+                                graph_info,
+                                x_id,
+                                wide_name.clone(),
+                                mil_dtype,
+                            )?,
+                            "fp32",
+                        ));
+                        mil.inputs
+                            .insert("x".into(), Self::create_name_argument(wide_name));
+                        let epsilon = match op {
+                            Operation::LayerNormalization { options, .. } => {
+                                options.as_ref().map_or(1e-5, |o| o.epsilon as f32)
+                            }
+                            _ => unreachable!(),
+                        };
+                        mil.inputs.insert(
+                            "epsilon".into(),
+                            Self::create_immediate_float(half::f16::from_f32(epsilon).to_f32()),
+                        );
+                        mil.outputs = vec![Self::create_value_with_mil_type(
+                            graph_info,
+                            out_id,
+                            norm_name.clone(),
+                            mil_dtype,
+                        )?];
+                    }
                     main_block.operations.push(mil);
 
                     let mut cur = norm_name;
+                    if half_layer_norm && scale_id.is_none() && bias_id.is_some() {
+                        // A fused normalization-plus-bias plan can apply the
+                        // broadcast bias only to its first batch. Explicit unit
+                        // scale retains the complete affine composition.
+                        let scaled_name = fresh("unit_gamma");
+                        let mut inputs = HashMap::new();
+                        inputs.insert("x".into(), Self::create_name_argument(cur));
+                        inputs.insert("y".into(), Self::create_immediate_float(1.0));
+                        main_block.operations.push(Self::create_mil_operation(
+                            "mul",
+                            inputs,
+                            vec![Self::create_value_with_mil_type(
+                                graph_info,
+                                out_id,
+                                scaled_name.clone(),
+                                mil_dtype,
+                            )?],
+                        ));
+                        cur = scaled_name;
+                    }
                     let steps: Vec<(&str, u32, &str)> = scale_id
                         .map(|id| ("mul", id, "gamma"))
                         .into_iter()
@@ -8011,22 +9443,61 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         .collect();
                     let last = steps.len().saturating_sub(1);
                     for (i, (mil_op, param_id, tag)) in steps.into_iter().enumerate() {
-                        let param_name = Self::output_name_for_operand(
+                        let mut param_name = Self::output_name_for_operand(
                             graph_info,
                             param_id,
                             &operand_name_overrides,
                         );
+                        if half_layer_norm {
+                            let wide_name = fresh(&format!("{tag}_fp32"));
+                            main_block.operations.push(Self::create_cast_operation(
+                                param_name,
+                                Self::create_value_with_mil_type(
+                                    graph_info,
+                                    param_id,
+                                    wide_name.clone(),
+                                    mil_dtype,
+                                )?,
+                                "fp32",
+                            ));
+                            param_name = wide_name;
+                        }
+                        if parameter_permutation
+                            .iter()
+                            .enumerate()
+                            .any(|(i, &axis)| axis != i as u32)
+                        {
+                            let transposed_name = fresh(&format!("{tag}_axes"));
+                            let mut inputs = HashMap::new();
+                            inputs.insert("x".into(), Self::create_name_argument(param_name));
+                            inputs.insert(
+                                "perm".into(),
+                                Self::create_immediate_int_array(&parameter_permutation),
+                            );
+                            let shape: Vec<_> =
+                                sorted_axes.iter().map(|&axis| x_shape[axis]).collect();
+                            main_block.operations.push(Self::create_mil_operation(
+                                "transpose",
+                                inputs,
+                                vec![Self::value_type_for_static_shape(
+                                    transposed_name.clone(),
+                                    mil_dtype,
+                                    &shape,
+                                )],
+                            ));
+                            param_name = transposed_name;
+                        }
                         let bcast = Self::rnn_reshape(
                             &mut main_block,
                             &param_name,
                             &target,
-                            format!("{out_name}_{tag}_bcast_{out_id}"),
+                            fresh(&format!("{tag}_bcast")),
                             mil_dtype,
                         );
-                        let (step_name, step_type) = if i == last {
+                        let (step_name, step_type) = if i == last && !half_layer_norm {
                             (out_name.clone(), out_type.clone())
                         } else {
-                            let name = format!("{out_name}_{tag}_applied_{out_id}");
+                            let name = fresh(&format!("{tag}_applied"));
                             let ty = Self::create_value_with_mil_type(
                                 graph_info,
                                 out_id,
@@ -8045,7 +9516,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                         ));
                         cur = step_name;
                     }
-                    let _ = cur;
+                    if half_layer_norm {
+                        main_block
+                            .operations
+                            .push(Self::create_cast_operation(cur, out_type, "fp16"));
+                    }
                     continue;
                 }
             }
@@ -8090,9 +9565,14 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // identity over a constant: CoreML's compiler elides `identity`
             // ops, and for a const input the plan builder then fails with
             // "Variable is not associated with a name" (error -5) because the
-            // alias name was dropped. Emit an exact `mul(x, 1)` instead, which
-            // survives compilation. Identity of non-const values is unaffected.
-            if matches!(op, Operation::Identity { .. })
+            // alias name was dropped. Emit an exact floating `real_div(x, 1)`
+            // (integer `mul(x, 1)`) instead, which
+            // survives compilation. A same-type constant Cast needs the same
+            // treatment: the FP32 cast post-pass would otherwise emit identity.
+            // Different-type casts must retain their conversion and rounding.
+            if matches!(op, Operation::Identity { .. } | Operation::Cast { .. })
+                && let Some(out_id) = op.output_operand()
+                && proven_copy_input(graph_info, op, out_id).is_some()
                 && let Some(&id_in) = op.input_operands().first()
                 && let Some(id_in_op) = graph_info.operand(id_in)
                 && id_in_op.kind == crate::graph::OperandKind::Constant
@@ -8104,10 +9584,64 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     id_in_op.descriptor.data_type,
                     DataType::Float32 | DataType::Float16 | DataType::Int32
                 )
-                && let Some(out_id) = op.output_operand()
             {
                 let (_, out_type) =
                     Self::create_output_value(graph_info, out_id, &operand_name_overrides)?;
+                if id_in_op.descriptor.data_type == DataType::Float16 {
+                    let mut reserved: std::collections::HashSet<String> = graph_info
+                        .operands
+                        .iter()
+                        .enumerate()
+                        .map(|(id, _)| operand_name(graph_info, id as u32))
+                        .chain(main_block.operations.iter().flat_map(|operation| {
+                            operation.outputs.iter().map(|output| output.name.clone())
+                        }))
+                        .collect();
+                    let mut fresh = |base: String| {
+                        let mut candidate = base.clone();
+                        let mut suffix = 0usize;
+                        while !reserved.insert(candidate.clone()) {
+                            suffix += 1;
+                            candidate = format!("{base}_{suffix}");
+                        }
+                        candidate
+                    };
+                    let input_name =
+                        Self::output_name_for_operand(graph_info, id_in, &operand_name_overrides);
+                    let wide_input =
+                        fresh(format!("{}_identity_input_fp32_{out_id}", out_type.name));
+                    let wide_output =
+                        fresh(format!("{}_identity_result_fp32_{out_id}", out_type.name));
+                    let input_type = Self::create_value_with_mil_type(
+                        graph_info,
+                        id_in,
+                        wide_input.clone(),
+                        crate::protos::coreml::mil_spec::DataType::Float32 as i32,
+                    )?;
+                    main_block
+                        .operations
+                        .push(Self::create_cast_operation(input_name, input_type, "fp32"));
+                    let mut inputs = HashMap::new();
+                    inputs.insert("x".into(), Self::create_name_argument(wide_input));
+                    inputs.insert("y".into(), Self::create_immediate_float(1.0));
+                    let output_type = Self::create_value_with_mil_type(
+                        graph_info,
+                        out_id,
+                        wide_output.clone(),
+                        crate::protos::coreml::mil_spec::DataType::Float32 as i32,
+                    )?;
+                    main_block.operations.push(Self::create_mil_operation(
+                        mil_ops::DIV,
+                        inputs,
+                        vec![output_type],
+                    ));
+                    main_block.operations.push(Self::create_cast_operation(
+                        wide_output,
+                        out_type,
+                        "fp16",
+                    ));
+                    continue;
+                }
                 let one = match id_in_op.descriptor.data_type {
                     DataType::Float16 => Self::create_immediate_float16(1.0),
                     DataType::Int32 => Self::create_immediate_int(1),
@@ -8124,7 +9658,11 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 );
                 mul_in.insert("y".to_string(), one);
                 main_block.operations.push(Self::create_mil_operation(
-                    mil_ops::MUL,
+                    if id_in_op.descriptor.data_type == DataType::Float32 {
+                        mil_ops::DIV
+                    } else {
+                        mil_ops::MUL
+                    },
                     mul_in,
                     vec![out_type],
                 ));
@@ -8630,7 +10168,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     graph_info,
                     op,
                     &operand_name_overrides,
-                    &weight_builder,
+                    weight_builder,
                     &mut main_block,
                 )?;
                 // A dequantized conv filter carries a deferred layout transpose
@@ -10431,7 +11969,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         // Add block outputs (output operand names)
-        for &output_id in &graph_info.output_operands {
+        for &output_id in output_operands {
             let operand =
                 graph_info
                     .operand(output_id)
@@ -10470,7 +12008,66 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             main_block.outputs.push(output_name);
         }
 
-        // CoreML rejects, at MLModel load time ("Error in declaring input X with
+        let value_types: HashMap<_, _> = main_function
+            .inputs
+            .iter()
+            .chain(
+                main_block
+                    .operations
+                    .iter()
+                    .flat_map(|operation| &operation.outputs),
+            )
+            .map(|value| (value.name.clone(), value.r#type.clone()))
+            .collect();
+        for operation in &mut main_block.operations {
+            let source = operation
+                .inputs
+                .get("x")
+                .and_then(|argument| argument.arguments.first())
+                .and_then(|binding| match &binding.binding {
+                    Some(Binding::Name(name)) => value_types.get(name),
+                    _ => None,
+                });
+            if operation.r#type == "cast"
+                && source.is_some_and(|value| matches!(value,
+                    Some(ValueType { r#type: Some(crate::protos::coreml::mil_spec::value_type::Type::TensorType(tensor)) })
+                    if tensor.data_type == crate::protos::coreml::mil_spec::DataType::Float32 as i32))
+                && operation.outputs.iter().all(|output| source == Some(&output.r#type))
+            {
+                operation.r#type = "identity".into();
+                operation.inputs.remove("dtype");
+            }
+        }
+
+        let equivalent_outputs = equivalent_output_names(graph_info);
+        if !equivalent_outputs.is_empty() {
+            main_block.operations.retain(|operation| {
+                !operation
+                    .outputs
+                    .iter()
+                    .any(|output| equivalent_outputs.contains_key(&output.name))
+            });
+            for operation in &mut main_block.operations {
+                for argument in operation.inputs.values_mut() {
+                    for binding in &mut argument.arguments {
+                        if let Some(Binding::Name(name)) = &mut binding.binding
+                            && let Some(canonical) = equivalent_outputs.get(name)
+                        {
+                            *name = canonical.clone();
+                        }
+                    }
+                }
+            }
+            for name in &mut main_block.outputs {
+                if let Some(canonical) = equivalent_outputs.get(name) {
+                    *name = canonical.clone();
+                }
+            }
+            let mut retained = std::collections::HashSet::new();
+            main_block
+                .outputs
+                .retain(|name| retained.insert(name.clone()));
+        }
         // error -1."), a function input that no operation consumes — e.g.
         // castLike's target_type (only its dtype matters, never its values) or
         // an input whose sole consumer was constant-folded away. Drop such
@@ -10496,6 +12093,7 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                 }
             }
             walk_block_names(&main_block, &mut referenced_names);
+            referenced_names.extend(main_block.outputs.iter().cloned());
         }
         main_function
             .inputs
@@ -10525,10 +12123,12 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         // Single-function MLProgram models must use model-level I/O (not the
         // `functions` field), otherwise CoreML rejects them with
         // "multi-function description syntax" at load time.
-        use crate::protos::coreml::specification::{FeatureDescription, ModelDescription};
+        use crate::protos::coreml::specification::{
+            FeatureDescription, Metadata, ModelDescription,
+        };
 
         let mut input_descriptions = Vec::new();
-        for &input_id in &graph_info.input_operands {
+        for &input_id in input_operands {
             if let Some(operand) = graph_info.operand(input_id) {
                 let input_name = operand_name(graph_info, input_id);
                 // Unused inputs were dropped from the function signature above;
@@ -10545,9 +12145,19 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         }
 
         let mut output_descriptions = Vec::new();
-        for &output_id in &graph_info.output_operands {
+        for &output_id in output_operands {
             if let Some(operand) = graph_info.operand(output_id) {
                 let output_name = operand_name(graph_info, output_id);
+                let output_name = equivalent_outputs
+                    .get(&output_name)
+                    .cloned()
+                    .unwrap_or(output_name);
+                if output_descriptions
+                    .iter()
+                    .any(|description: &FeatureDescription| description.name == output_name)
+                {
+                    continue;
+                }
                 // For int32 proxy outputs (argmin/argmax, or any wide int64/uint32/uint64
                 // output) use Int32 at the model interface to match the function emit type.
                 let feature_type = if int32_proxy_output_names.contains(&output_name)
@@ -10567,14 +12177,108 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
         }
 
+        let aliases: std::collections::BTreeMap<_, _> = graph_info
+            .output_operands
+            .iter()
+            .map(|&id| {
+                let logical = logical_operand_name(graph_info, id);
+                let physical = operand_name(graph_info, id);
+                let physical = equivalent_outputs
+                    .get(&physical)
+                    .cloned()
+                    .unwrap_or(physical);
+                (logical, physical)
+            })
+            .collect();
+        let inputs: std::collections::BTreeMap<_, _> = graph_info
+            .input_operands
+            .iter()
+            .map(|&id| {
+                (
+                    logical_operand_name(graph_info, id),
+                    operand_name(graph_info, id),
+                )
+            })
+            .filter(|(_, physical)| declared_input_names.contains(physical))
+            .collect();
+        let outputs_changed = aliases
+            .iter()
+            .any(|(logical, physical)| logical != physical);
+        let inputs_changed = inputs.iter().any(|(logical, physical)| logical != physical);
+        let passthroughs = input_passthroughs(graph_info);
+        let constant_copies = constant_copies(graph_info, weight_builder);
+        let metadata = Some(Metadata {
+            user_defined: [
+                (OUTPUT_ALIASES_METADATA_KEY, &aliases, outputs_changed),
+                (INPUT_ALIASES_METADATA_KEY, &inputs, inputs_changed),
+            ]
+            .into_iter()
+            .filter(|(_, _, changed)| *changed)
+            .map(|(key, bindings, _)| {
+                serde_json::to_string(bindings)
+                    .map(|value| (key.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize feature aliases: {error}"),
+                    })
+            })
+            .chain((!passthroughs.is_empty()).then(|| {
+                serde_json::to_string(&passthroughs)
+                    .map(|value| (OUTPUT_PASSTHROUGHS_METADATA_KEY.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize proven input copies: {error}"),
+                    })
+            }))
+            .chain((!constant_copies.outputs.is_empty()).then(|| {
+                serde_json::to_string(&constant_copies)
+                    .map(|value| (OUTPUT_CONSTANT_COPIES_METADATA_KEY.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize proven constant copies: {error}"),
+                    })
+            }))
+            .chain(std::iter::once(Ok((
+                coreml_names::METADATA_KEY.into(),
+                coreml_names::METADATA_VALUE.into(),
+            ))))
+            .collect::<Result<_, _>>()?,
+            ..Default::default()
+        });
         model.description = Some(ModelDescription {
             input: input_descriptions,
             output: output_descriptions,
+            metadata,
             ..Default::default()
         });
 
         // Set MLProgram
         model.r#type = Some(crate::protos::coreml::specification::model::Type::MlProgram(program));
+
+        Ok(model)
+    }
+}
+
+impl super::GraphConverter for CoremlMlProgramConverter {
+    fn format(&self) -> &'static str {
+        "coreml"
+    }
+
+    fn convert(&self, graph_info: &GraphInfo) -> Result<super::ConvertedGraph, GraphError> {
+        if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
+            return Err(GraphError::DynamicInputsFeatureDisabled);
+        }
+        let lowering_graph = LoweringGraph::new(graph_info)?;
+        let graph_info = &lowering_graph;
+        let mut weight_builder = super::WeightFileBuilder::new();
+        weight_builder.reserve(
+            graph_info
+                .constant_operand_ids_to_handles
+                .values()
+                .map(|c| c.data.len() + 128)
+                .sum(),
+        );
+        let model = self.convert_with_precision_boundaries(graph_info, &mut weight_builder)?;
 
         // Serialize to bytes
         let mut buffer = Vec::new();
@@ -10647,6 +12351,255 @@ mod tests {
         crate::graph::to_dimension_vector(shape)
     }
 
+    fn constant_copy_asset_graph() -> GraphInfo {
+        let descriptor = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: s(&[2]),
+            pending_permutation: vec![],
+        };
+        GraphInfo {
+            operands: (0..=5)
+                .map(|id| Operand {
+                    kind: match id {
+                        0 => OperandKind::Constant,
+                        5 => OperandKind::Output,
+                        _ => OperandKind::Intermediate,
+                    },
+                    name: Some(format!("copy{id}")),
+                    descriptor: descriptor.clone(),
+                })
+                .collect(),
+            output_operands: vec![5],
+            constant_operand_ids_to_handles: HashMap::from([(
+                0,
+                ConstantData {
+                    data: [1.0003f32, -0.0]
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes)
+                        .collect(),
+                    label: None,
+                },
+            )]),
+            operations: vec![
+                Operation::Identity {
+                    input: 0,
+                    options: None,
+                    outputs: vec![1],
+                },
+                Operation::Transpose {
+                    input: 1,
+                    options: None,
+                    outputs: vec![2],
+                },
+                Operation::Cast {
+                    input: 2,
+                    data_type: MLOperandDataType::Float32,
+                    options: None,
+                    outputs: vec![3],
+                },
+                Operation::Slice {
+                    input: 3,
+                    starts: vec![0],
+                    sizes: vec![MLDimension::Static(2)],
+                    options: None,
+                    outputs: vec![4],
+                },
+                Operation::Reshape {
+                    input: 4,
+                    new_shape: vec![MLDimension::Static(2)],
+                    options: None,
+                    outputs: vec![5],
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn constant_copy_asset_accepts_only_source_proven_public_copies() {
+        let graph = constant_copy_asset_graph();
+        let model = CoremlMlProgramConverter.convert(&graph).unwrap().data;
+        assert!(CoremlMlProgramConverter::constant_copy_asset_eligible(
+            &graph, &model,
+        ));
+
+        let mut no_outputs = graph.clone();
+        no_outputs.output_operands.clear();
+        let mut nonpublic_output = graph.clone();
+        nonpublic_output.operands[5].kind = OperandKind::Intermediate;
+        let mut runtime_input = graph.clone();
+        runtime_input.operands[0].kind = OperandKind::Input;
+        runtime_input.input_operands.push(0);
+        runtime_input.constant_operand_ids_to_handles.clear();
+        let mut malformed_constant = graph.clone();
+        malformed_constant
+            .constant_operand_ids_to_handles
+            .get_mut(&0)
+            .unwrap()
+            .data
+            .pop();
+        let mut out_of_order = graph.clone();
+        out_of_order.operations.swap(0, 1);
+        let mut repeated_producer = graph.clone();
+        repeated_producer
+            .operations
+            .push(repeated_producer.operations[0].clone());
+        let mut invalid_reference = graph.clone();
+        invalid_reference.operations[0] = Operation::Identity {
+            input: u32::MAX,
+            options: None,
+            outputs: vec![1],
+        };
+        for (label, rejected) in [
+            ("empty outputs", no_outputs),
+            ("nonpublic output", nonpublic_output),
+            ("runtime input", runtime_input),
+            ("malformed constant length", malformed_constant),
+            ("out-of-order constant copy", out_of_order),
+            ("repeated constant-copy producer", repeated_producer),
+            ("invalid constant-copy reference", invalid_reference),
+        ] {
+            assert!(
+                !CoremlMlProgramConverter::constant_copy_asset_eligible(&rejected, &model),
+                "{label}",
+            );
+        }
+    }
+
+    #[test]
+    fn shared_program_builder_reuses_original_immediate_constant_record() {
+        let mut graph = constant_copy_asset_graph();
+        graph.operands.truncate(2);
+        graph.operations.truncate(1);
+        graph.output_operands = vec![1];
+        graph.operands[1].kind = OperandKind::Output;
+        for operand in &mut graph.operands {
+            operand.descriptor.data_type = DataType::Int32;
+        }
+        graph
+            .constant_operand_ids_to_handles
+            .get_mut(&0)
+            .unwrap()
+            .data = [16_777_217i32, i32::MIN]
+            .into_iter()
+            .flat_map(i32::to_le_bytes)
+            .collect();
+        let graph = LoweringGraph::new(&graph).unwrap();
+        let mut weights = super::super::WeightFileBuilder::new();
+        let metadata: Vec<_> = (0..2)
+            .map(|_| {
+                let model = CoremlMlProgramConverter
+                    .convert_program(
+                        &graph,
+                        &graph.input_operands,
+                        &graph.output_operands,
+                        &graph.operations,
+                        &mut weights,
+                    )
+                    .unwrap();
+                model.description.unwrap().metadata.unwrap().user_defined
+                    [OUTPUT_CONSTANT_COPIES_METADATA_KEY]
+                    .clone()
+            })
+            .collect();
+        assert_eq!(metadata[0], metadata[1]);
+        let weights = weights.finalize();
+        assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 1);
+        assert_eq!(
+            &weights[128..136],
+            &graph.constant_operand_ids_to_handles[&0].data,
+        );
+    }
+
+    #[test]
+    fn constant_copy_asset_rejects_dead_arithmetic_and_typed_boundaries() {
+        let graph = constant_copy_asset_graph();
+        let model = CoremlMlProgramConverter.convert(&graph).unwrap().data;
+        for narrowing in [false, true] {
+            let mut rejected = graph.clone();
+            let mut dead = rejected.operands[1].clone();
+            dead.name = Some("dead".into());
+            if narrowing {
+                dead.descriptor.data_type = DataType::Float16;
+            }
+            rejected.operands.push(dead);
+            rejected.operations.push(if narrowing {
+                Operation::Cast {
+                    input: 0,
+                    data_type: MLOperandDataType::Float16,
+                    options: None,
+                    outputs: vec![6],
+                }
+            } else {
+                Operation::Neg {
+                    input: 0,
+                    options: None,
+                    outputs: vec![6],
+                }
+            });
+            assert!(
+                !CoremlMlProgramConverter::constant_copy_asset_eligible(&rejected, &model),
+                "dead narrowing={narrowing}",
+            );
+        }
+    }
+
+    #[test]
+    fn constant_copy_asset_rejects_mixed_computed_outputs() {
+        let mut graph = constant_copy_asset_graph();
+        let model = CoremlMlProgramConverter.convert(&graph).unwrap().data;
+        let mut computed = graph.operands[5].clone();
+        computed.name = Some("computed".into());
+        graph.operands.push(computed);
+        graph.output_operands.push(6);
+        graph.operations.push(Operation::Neg {
+            input: 0,
+            options: None,
+            outputs: vec![6],
+        });
+        assert!(!CoremlMlProgramConverter::constant_copy_asset_eligible(
+            &graph, &model,
+        ));
+    }
+
+    #[test]
+    fn constant_copy_asset_requires_decodable_mlprogram() {
+        let graph = constant_copy_asset_graph();
+        let pipeline = Model {
+            r#type: Some(crate::protos::coreml::specification::model::Type::Pipeline(
+                Default::default(),
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        for rejected in [pipeline, Model::default().encode_to_vec(), vec![0xff]] {
+            assert!(!CoremlMlProgramConverter::constant_copy_asset_eligible(
+                &graph, &rejected,
+            ));
+        }
+    }
+
+    #[test]
+    fn physical_names_consume_logical_names_once_and_reserve_later_collisions() {
+        let visits = std::cell::Cell::new(0);
+        let count = 16_384;
+        let names = physical_operand_names((0..count).map(|id| {
+            visits.set(visits.get() + 1);
+            match id {
+                2 => "__rustnn_operand_1".into(),
+                3 => "__rustnn_operand_1_1".into(),
+                _ => "state".into(),
+            }
+        }));
+        assert_eq!(visits.get(), count);
+        assert_eq!(names.len(), count);
+        assert_eq!(names[0], coreml_names::encode("state"));
+        assert_eq!(names[1], "__rustnn_operand_1_2");
+        assert_eq!(names[2], "__rustnn_operand_1");
+        assert_eq!(names[3], "__rustnn_operand_1_1");
+        assert_eq!(names.iter().collect::<HashSet<_>>().len(), count);
+    }
+
     #[test]
     fn triangular_band_widths_are_nonnegative_and_bounded() {
         let shape = s(&[3, 5]);
@@ -10716,12 +12669,32 @@ mod tests {
         for dtype in [DataType::Float16, DataType::Float32] {
             for (upper, diagonal) in [(true, 1), (false, -1)] {
                 let graph = triangular_graph(dtype, s(&[3, 4]), upper, diagonal);
+                let graph = LoweringGraph::new(&graph).unwrap();
+                // Check the triangular lowering itself, before precision
+                // transport introduces casts and native Pipeline interfaces.
+                let lowered = CoremlMlProgramConverter
+                    .convert_program(
+                        &graph,
+                        &graph.input_operands,
+                        &graph.output_operands,
+                        &graph.operations,
+                        &mut super::super::WeightFileBuilder::new(),
+                    )
+                    .unwrap();
+                let Some(crate::protos::coreml::specification::model::Type::MlProgram(program)) =
+                    lowered.r#type
+                else {
+                    panic!("lowered MLProgram")
+                };
+                let block = &program.functions["main"].block_specializations["CoreML7"];
                 assert_eq!(
-                    main_operation_types(&graph),
+                    block
+                        .operations
+                        .iter()
+                        .map(|op| op.r#type.as_str())
+                        .collect::<Vec<_>>(),
                     ["fill_like", "band_part", "equal", "select"]
                 );
-                let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
-                let block = decode_main_block(&converted.data);
                 let select = block.operations.last().unwrap();
                 assert_eq!(
                     select.inputs["a"],
