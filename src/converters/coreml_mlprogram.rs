@@ -138,8 +138,6 @@ mod mil_ops {
     pub const AVG_POOL: &str = "avg_pool";
     pub const MAX_POOL: &str = "max_pool";
     pub const L2_POOL: &str = "l2_pool";
-    pub const GLOBAL_AVG_POOL: &str = "reduce_mean"; // Global pooling via reduction
-    pub const GLOBAL_MAX_POOL: &str = "reduce_max"; // Global pooling via reduction
 
     // Normalization
     pub const BATCH_NORM: &str = "batch_norm";
@@ -1393,8 +1391,6 @@ impl CoremlMlProgramConverter {
             "averagepool2d" => mil_ops::AVG_POOL,
             "maxpool2d" => mil_ops::MAX_POOL,
             "l2pool2d" => mil_ops::L2_POOL,
-            "globalaveragepool" => mil_ops::GLOBAL_AVG_POOL,
-            "globalmaxpool" => mil_ops::GLOBAL_MAX_POOL,
 
             // Normalization
             "batchnormalization" => mil_ops::BATCH_NORM,
@@ -4185,20 +4181,6 @@ impl CoremlMlProgramConverter {
                 // 1. matmul(op(A), op(B))
                 // 2. mul by alpha if != 1.0
                 // 3. add beta * C if C is provided
-            }
-
-            // Global pooling operations (reduce over spatial dimensions)
-            Operation::GlobalAveragePool { .. } | Operation::GlobalMaxPool { .. } => {
-                if !input_names.is_empty() {
-                    inputs.insert("x".to_string(), Self::create_argument(&input_names[0]));
-                }
-                // Global pooling reduces over spatial dimensions (2, 3) for NCHW format
-                inputs.insert(
-                    "axes".to_string(),
-                    Self::create_immediate_int_array(&[2, 3]),
-                );
-                // Keep dimensions to maintain rank
-                inputs.insert("keep_dims".to_string(), Self::create_immediate_bool(true));
             }
 
             // Softmax operation (axis is required by WebNN spec)
