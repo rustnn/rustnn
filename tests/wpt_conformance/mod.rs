@@ -367,13 +367,14 @@ pub fn run_one_test_case_with_audit(
     file_name: &str,
     test_case: &wpt_types::WptTestCase,
     audit: Option<&WptAuditCollector>,
+    execution: &mut Option<wpt_report::CoremlTrialStatistics>,
 ) -> Result<(), String> {
     let graph = &test_case.graph;
     let graph_op_names = graph_operator_names(graph);
     let graph_op_refs: Vec<&str> = graph_op_names.iter().map(String::as_str).collect();
     let strict_tolerance = wpt_config::strict_wpt_tolerance();
 
-    wpt_context_pool::with_context(backend, |context| {
+    let run = |context: &mut rustnn::mlcontext::MLContext<'_>| {
         let needs_intermediates = strict_tolerance && test_case.tolerance.is_none();
         let artifacts = wpt_execute_graph::execute_wpt_graph(context, graph, needs_intermediates)?;
         let mut resolved_case;
@@ -664,5 +665,6 @@ pub fn run_one_test_case_with_audit(
             );
         }
         Ok(())
-    })
+    };
+    wpt_context_pool::with_context(backend, graph.expected_outputs.len(), execution, run)
 }

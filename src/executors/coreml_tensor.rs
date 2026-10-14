@@ -249,6 +249,52 @@ pub(crate) struct CoremlTensorBinding<'a> {
     pub(crate) descriptor: &'a OperandDescriptor,
 }
 
+fn snapshot_tensor_copies(
+    model: &CompiledCoremlModel,
+    inputs: &HashMap<String, CoremlTensorBinding<'_>>,
+    outputs: &HashMap<String, CoremlTensorBinding<'_>>,
+) -> Result<HashMap<String, Vec<u8>>, GraphError> {
+    let mut sources = HashMap::new();
+    for proof in model.aliases.passthroughs.values() {
+        if sources.contains_key(&proof.input) {
+            continue;
+        }
+        let binding = inputs
+            .get(&proof.input)
+            .ok_or_else(|| failed(format!("missing proven input '{}'", proof.input)))?;
+        let length = binding
+            .descriptor
+            .byte_length()
+            .ok_or_else(|| failed("proven input size overflow"))?;
+        let mut bytes = vec![0; length];
+        binding.storage.read(&mut bytes)?;
+        sources.insert(proof.input.clone(), bytes);
+    }
+    let byte_inputs = sources
+        .iter()
+        .map(|(name, bytes)| {
+            (
+                name.clone(),
+                CoremlByteInput {
+                    data: bytes,
+                    descriptor: inputs[name].descriptor,
+                },
+            )
+        })
+        .collect();
+    let descriptors = outputs
+        .iter()
+        .map(|(name, binding)| (name.clone(), binding.descriptor.clone()))
+        .collect();
+    let mut copies =
+        snapshot_byte_passthroughs(&model.aliases.passthroughs, &byte_inputs, &descriptors)?;
+    copies.extend(snapshot_byte_constant_copies(
+        &model.aliases.constant_copies,
+        &descriptors,
+    )?);
+    Ok(copies)
+}
+
 /// Execute with retained input views and optional destination backings. Native
 /// destinations keep exclusive ownership even when CoreML returns aliased views.
 pub(crate) fn run_coreml_tensors(
@@ -264,6 +310,9 @@ pub(crate) fn run_coreml_tensors(
             return Err(failed("duplicate CoreML tensor storage binding"));
         }
     }
+    // Capture source-proven copies before retaining input locks or predicting.
+    // Native output arrays are never used to infer exact-copy provenance.
+    let mut copies = snapshot_tensor_copies(model, inputs, outputs)?;
     autoreleasepool(|| unsafe {
         let model_description: *mut Object = msg_send![model.model, modelDescription];
         let input_descs: *mut Object = msg_send![model_description, inputDescriptionsByName];
@@ -272,8 +321,10 @@ pub(crate) fn run_coreml_tensors(
         let backings: *mut Object = msg_send![class!(NSMutableDictionary), dictionary];
         let mut guards = Vec::new();
         let mut destinations = HashMap::new();
+        let mut backed_features = HashSet::new();
         for (name, binding) in inputs {
-            let key = nsstring_from_str(name)?;
+            let physical = model.aliases.inputs.get(name).unwrap_or(name);
+            let key = nsstring_from_str(physical)?;
             let code = model_input_dtype_code(input_descs, key)
                 .unwrap_or_else(|| map_dtype(binding.descriptor.data_type));
             let logical = binding
@@ -326,9 +377,12 @@ pub(crate) fn run_coreml_tensors(
                     .lock()
                     .map_err(|_| failed("poisoned native tensor"))?;
                 let array = guard.array(binding.descriptor)?;
-                let key = nsstring_from_str(name)?;
+                let physical = model.aliases.outputs.get(name).unwrap_or(name);
+                let key = nsstring_from_str(physical)?;
                 let code = model_input_dtype_code(output_descs, key);
                 if output_backings
+                    && !copies.contains_key(name)
+                    && !backed_features.contains(physical)
                     && code.is_some_and(|code| same_type(binding.descriptor.data_type, code))
                 {
                     let feature: *mut Object =
@@ -351,6 +405,7 @@ pub(crate) fn run_coreml_tensors(
                     };
                     if is_fixed_output_shape(constraint_type, enumerated_count) && allowed {
                         let _: () = msg_send![backings, setObject: array forKey: key];
+                        backed_features.insert(physical);
                         statistics.output_backings_requested += 1;
                         destinations.insert(name, (guards.len(), true));
                     } else {
@@ -362,6 +417,8 @@ pub(crate) fn run_coreml_tensors(
                 guards.push(guard);
             }
         }
+        let _compact_input_owners =
+            input_views::bind(model.model, dict, &model.aliases.compact_input_views)?;
         let mut create_error: *mut Object = ptr::null_mut();
         let provider_alloc: *mut Object = msg_send![class!(MLDictionaryFeatureProvider), alloc];
         let provider: *mut Object =
@@ -392,7 +449,21 @@ pub(crate) fn run_coreml_tensors(
         let _output_guard = ReleaseOnDrop(output_provider);
         let mut result = HashMap::new();
         for (name, binding) in outputs {
-            let key = nsstring_from_str(name)?;
+            let logical = binding
+                .descriptor
+                .byte_length()
+                .ok_or_else(|| failed("output size overflow"))?;
+            if let Some(bytes) = copies.remove(name) {
+                if let Some(&(index, _)) = destinations.get(name) {
+                    guards[index].write(&bytes)?;
+                } else {
+                    result.insert(name.clone(), bytes);
+                }
+                statistics.output_copy_bytes += logical as u64;
+                continue;
+            }
+            let physical = model.aliases.outputs.get(name).unwrap_or(name);
+            let key = nsstring_from_str(physical)?;
             let feature: *mut Object = msg_send![output_provider, featureValueForName: key];
             if feature.is_null() {
                 return Err(failed(format!("missing output '{name}'")));
@@ -409,10 +480,6 @@ pub(crate) fn run_coreml_tensors(
                     "output '{name}': actual shape {actual_shape:?}, expected {expected_shape:?}"
                 )));
             }
-            let logical = binding
-                .descriptor
-                .byte_length()
-                .ok_or_else(|| failed("output size overflow"))?;
             if let Some(&(index, requested)) = destinations.get(name) {
                 let destination = &mut guards[index];
                 if requested && array == destination.view {

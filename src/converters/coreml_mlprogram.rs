@@ -25,7 +25,7 @@
 /// - Better optimization
 ///
 /// This replaces the legacy NeuralNetwork format.
-use crate::converters::operand_name;
+use crate::converters::{coreml_names, operand_name as logical_operand_name};
 use crate::error::GraphError;
 use crate::graph::{DataType, Dimension as GraphDimension, GraphInfo, OperandKind};
 use crate::operator_enums::MLOperandDataType;
@@ -37,7 +37,376 @@ use crate::protos::coreml::mil_spec::{
 };
 use crate::protos::coreml::specification::Model;
 use prost::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
+
+pub(crate) const OUTPUT_ALIASES_METADATA_KEY: &str = "rustnn.webnn.output_aliases";
+pub(crate) const INPUT_ALIASES_METADATA_KEY: &str = "rustnn.webnn.input_aliases";
+pub(crate) const OUTPUT_PASSTHROUGHS_METADATA_KEY: &str = "rustnn.webnn.output_passthroughs";
+pub(crate) const OUTPUT_CONSTANT_COPIES_METADATA_KEY: &str = "rustnn.webnn.output_constant_copies";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CoremlPassthrough {
+    pub(crate) input: String,
+    pub(crate) descriptor: crate::graph::OperandDescriptor,
+}
+
+#[serde_with::serde_as]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CoremlConstantCopies {
+    pub(crate) version: u32,
+    #[serde_as(as = "serde_with::MapPreventDuplicates<_, _>")]
+    pub(crate) sources: std::collections::BTreeMap<u32, CoremlConstantSource>,
+    #[serde_as(as = "serde_with::MapPreventDuplicates<_, _>")]
+    pub(crate) outputs: std::collections::BTreeMap<String, u32>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CoremlConstantSource {
+    pub(crate) descriptor: crate::graph::OperandDescriptor,
+    /// WeightMetadata offset in the existing weights.bin sidecar.
+    pub(crate) offset: u64,
+    /// Detect a mismatched sidecar; this is not an authentication mechanism.
+    pub(crate) checksum: u64,
+}
+
+fn proven_copy_input(graph: &GraphInfo, operation: &Operation, output: u32) -> Option<u32> {
+    let input = match operation {
+        Operation::Identity { input, .. }
+        | Operation::Cast { input, .. }
+        | Operation::Transpose { input, .. }
+        | Operation::Slice { input, .. }
+        | Operation::Reshape { input, .. } => *input,
+        _ => return None,
+    };
+    let source = &graph.operand(input)?.descriptor;
+    let destination = &graph.operand(output)?.descriptor;
+    if source.data_type != destination.data_type
+        || source.shape != destination.shape
+        || source.pending_permutation != destination.pending_permutation
+    {
+        return None;
+    }
+    let is_copy = match operation {
+        Operation::Identity { .. } => true,
+        Operation::Cast { data_type, .. } => DataType::from(*data_type) == source.data_type,
+        Operation::Transpose { options, .. } => {
+            let permutation = options
+                .as_ref()
+                .map(|options| options.permutation.as_slice())
+                .unwrap_or(&[]);
+            if permutation.is_empty() {
+                source.shape.len() <= 1
+            } else {
+                permutation.len() == source.shape.len()
+                    && permutation
+                        .iter()
+                        .enumerate()
+                        .all(|(axis, &value)| value as usize == axis)
+            }
+        }
+        Operation::Reshape { new_shape, .. } => {
+            new_shape
+                .iter()
+                .cloned()
+                .map(GraphDimension::from)
+                .collect::<Vec<_>>()
+                == source.shape
+        }
+        Operation::Slice {
+            starts,
+            sizes,
+            options,
+            ..
+        } => {
+            let strides = options
+                .as_ref()
+                .map(|options| options.strides.as_slice())
+                .unwrap_or(&[]);
+            source.static_shape().is_some()
+                && starts.len() == source.shape.len()
+                && starts.iter().all(|&start| start == 0)
+                && sizes
+                    .iter()
+                    .cloned()
+                    .map(GraphDimension::from)
+                    .collect::<Vec<_>>()
+                    == source.shape
+                && (strides.is_empty()
+                    || (strides.len() == source.shape.len()
+                        && strides.iter().all(|&stride| stride == 1)))
+        }
+        _ => false,
+    };
+    is_copy.then_some(input)
+}
+
+fn copy_origins(graph: &LoweringGraph<'_>) -> Vec<Option<u32>> {
+    let mut origins = vec![None; graph.operands.len()];
+    for &input in &graph.input_operands {
+        origins[input as usize] = Some(input);
+    }
+    for (&id, data) in &graph.constant_operand_ids_to_handles {
+        if graph.operand(id).is_some_and(|operand| {
+            operand.kind == OperandKind::Constant
+                && operand.descriptor.static_shape().is_some()
+                && operand.descriptor.byte_length() == Some(data.data.len())
+        }) {
+            origins[id as usize] = Some(id);
+        }
+    }
+    for operation in &graph.operations {
+        for &output in operation.output_operands() {
+            if let Some(input) = proven_copy_input(graph, operation, output) {
+                origins[output as usize] = origins[input as usize];
+            }
+        }
+    }
+    origins
+}
+
+/// Proven copies of a graph input can be fulfilled from its original binding.
+/// This avoids CoreML eliminating no-op outputs or changing their precision
+/// when another consumer narrows the same input. No runtime value comparison
+/// or output-name heuristic is involved.
+fn input_passthroughs(
+    graph: &LoweringGraph<'_>,
+) -> std::collections::BTreeMap<String, CoremlPassthrough> {
+    let origins = copy_origins(graph);
+    graph
+        .output_operands
+        .iter()
+        .filter_map(|&output| {
+            let operand = graph.operand(output)?;
+            // WebNN build() rejects an original input or constant as an output.
+            if operand.kind != OperandKind::Output {
+                return None;
+            }
+            let input = origins[output as usize]?;
+            if graph.operand(input)?.kind != OperandKind::Input {
+                return None;
+            }
+            Some((
+                logical_operand_name(graph, output),
+                CoremlPassthrough {
+                    input: logical_operand_name(graph, input),
+                    descriptor: operand.descriptor.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn constant_copies(
+    graph: &LoweringGraph<'_>,
+    weights: &mut super::WeightFileBuilder,
+) -> CoremlConstantCopies {
+    let origins = copy_origins(graph);
+    let mut copies = CoremlConstantCopies {
+        version: 2,
+        sources: Default::default(),
+        outputs: Default::default(),
+    };
+    for &output in &graph.output_operands {
+        let Some(operand) = graph
+            .operand(output)
+            .filter(|operand| operand.kind == OperandKind::Output)
+        else {
+            continue;
+        };
+        let Some(origin) = origins[output as usize] else {
+            continue;
+        };
+        let Some(source) = graph
+            .operand(origin)
+            .filter(|source| source.kind == OperandKind::Constant)
+        else {
+            continue;
+        };
+        let Some(data) = graph.constant_operand_ids_to_handles.get(&origin) else {
+            continue;
+        };
+        copies
+            .sources
+            .entry(origin)
+            .or_insert_with(|| CoremlConstantSource {
+                descriptor: source.descriptor.clone(),
+                offset: weights.original_weight(origin, &data.data),
+                checksum: seahash::hash(&data.data),
+            });
+        copies
+            .outputs
+            .insert(logical_operand_name(graph, output), origin);
+        debug_assert_eq!(operand.descriptor.data_type, source.descriptor.data_type);
+    }
+    copies
+}
+
+/// Conversion-local names and the topology prerequisite for copy proofs.
+/// The public converter also accepts GraphInfo values not built by MLGraphBuilder.
+struct LoweringGraph<'a> {
+    graph: &'a GraphInfo,
+    names: Vec<String>,
+}
+
+impl<'a> LoweringGraph<'a> {
+    fn new(graph: &'a GraphInfo) -> Result<Self, GraphError> {
+        if graph.operands.len() >= u32::MAX as usize {
+            return Err(GraphError::TooManyOperands {
+                count: graph.operands.len(),
+            });
+        }
+        let mut ready = vec![false; graph.operands.len()];
+        for &id in graph
+            .input_operands
+            .iter()
+            .chain(graph.constant_operand_ids_to_handles.keys())
+        {
+            *ready
+                .get_mut(id as usize)
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })? = true;
+        }
+        for operation in &graph.operations {
+            for id in operation
+                .input_operands()
+                .into_iter()
+                .chain(operation.option_operands())
+            {
+                match ready.get(id as usize) {
+                    None => {
+                        return Err(GraphError::InvalidOperandReference {
+                            operation: operation.display_name(),
+                            operand: id,
+                        });
+                    }
+                    Some(false) => {
+                        return Err(GraphError::OperandNotReady {
+                            operation: operation.display_name(),
+                            operand: id,
+                        });
+                    }
+                    Some(true) => {}
+                }
+            }
+            for &id in operation.output_operands() {
+                let produced = ready.get_mut(id as usize).ok_or_else(|| {
+                    GraphError::InvalidOperandReference {
+                        operation: operation.display_name(),
+                        operand: id,
+                    }
+                })?;
+                if *produced {
+                    return Err(GraphError::OperandProducedTwice {
+                        operation: operation.display_name(),
+                        operand: id,
+                    });
+                }
+                *produced = true;
+            }
+        }
+        for &id in &graph.output_operands {
+            if !*ready
+                .get(id as usize)
+                .ok_or(GraphError::InvalidConversionOperand { operand: id })?
+            {
+                return Err(GraphError::OutputNotProduced { operand: id });
+            }
+        }
+        Ok(Self {
+            graph,
+            names: physical_operand_names(
+                (0..graph.operands.len()).map(|id| logical_operand_name(graph, id as u32)),
+            ),
+        })
+    }
+}
+
+impl Deref for LoweringGraph<'_> {
+    type Target = GraphInfo;
+
+    fn deref(&self) -> &Self::Target {
+        self.graph
+    }
+}
+
+// Reserve all user-derived identifiers once, including later operands, before
+// assigning unique names to repeated logical names. Lookups during lowering
+// then neither rescan nor re-encode the operand table.
+fn physical_operand_names(logical_names: impl Iterator<Item = String>) -> Vec<String> {
+    let logical_names: Vec<_> = logical_names.collect();
+    let encoded_names: Vec<_> = logical_names
+        .iter()
+        .map(|name| coreml_names::encode(name).into_owned())
+        .collect();
+    let mut reserved: HashSet<_> = encoded_names.iter().cloned().collect();
+    let mut seen = HashSet::new();
+    logical_names
+        .iter()
+        .zip(encoded_names)
+        .enumerate()
+        .map(|(id, (logical, encoded))| {
+            if seen.insert(logical) {
+                return encoded;
+            }
+            let base = format!("__rustnn_operand_{id}");
+            let mut name = base.clone();
+            let mut suffix = 0usize;
+            while !reserved.insert(name.clone()) {
+                suffix += 1;
+                name = format!("{base}_{suffix}");
+            }
+            name
+        })
+        .collect()
+}
+
+// Logical names remain outside lowering; metadata records the physical bindings.
+fn operand_name(graph: &LoweringGraph<'_>, id: u32) -> String {
+    graph.names[id as usize].clone()
+}
+
+/// Coalesce public copies only when the source graph proves identical values,
+/// shape and dtype. CoreML may elide duplicate copy outputs at prediction time.
+fn equivalent_output_names(graph: &LoweringGraph<'_>) -> HashMap<String, String> {
+    fn root(parents: &[usize], mut id: usize) -> usize {
+        while parents[id] != id {
+            id = parents[id];
+        }
+        id
+    }
+    let mut parents: Vec<_> = (0..graph.operands.len()).collect();
+    let mut producers = HashMap::new();
+    for (order, operation) in graph.operations.iter().enumerate() {
+        for &output in operation.output_operands() {
+            producers.insert(output, order);
+            if let Some(input) = proven_copy_input(graph, operation, output) {
+                parents[output as usize] = root(&parents, input as usize);
+            }
+        }
+    }
+    let mut canonical = HashMap::<usize, u32>::new();
+    for &id in &graph.output_operands {
+        let group = root(&parents, id as usize);
+        canonical
+            .entry(group)
+            .and_modify(|chosen| {
+                if producers.get(&id) < producers.get(chosen) {
+                    *chosen = id;
+                }
+            })
+            .or_insert(id);
+    }
+    graph
+        .output_operands
+        .iter()
+        .filter_map(|&id| {
+            let chosen = canonical[&root(&parents, id as usize)];
+            (id != chosen).then(|| (operand_name(graph, id), operand_name(graph, chosen)))
+        })
+        .collect()
+}
 
 /// Convert zero_point byte data from a source dtype to a target dtype.
 /// Only Int32 → Uint8 and Int32 → Int8 are supported; all other pairs are returned as-is.
@@ -327,7 +696,7 @@ impl CoremlMlProgramConverter {
 
     /// Create a MIL Value for a tensor operand
     fn create_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
     ) -> Result<(String, NamedValueType), GraphError> {
         let operand = graph
@@ -372,7 +741,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn create_value_with_mil_type(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         name: String,
         data_type: i32,
@@ -393,7 +762,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn output_name_for_operand(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> String {
@@ -404,7 +773,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn create_output_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Result<(String, NamedValueType), GraphError> {
@@ -578,7 +947,7 @@ impl CoremlMlProgramConverter {
 
     /// Create a const operation for a constant operand
     fn create_const_operation(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         operand_id: u32,
         operand: &crate::graph::Operand,
         constant_data: &crate::graph::ConstantData,
@@ -1182,7 +1551,7 @@ impl CoremlMlProgramConverter {
     /// Map WebNN operation to MIL operation (with optional operand name overrides)
     fn convert_operation_with_overrides(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Result<MilOperation, GraphError> {
@@ -1247,7 +1616,7 @@ impl CoremlMlProgramConverter {
     }
 
     fn input_names_for_operation(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         operand_name_overrides: &HashMap<u32, String>,
     ) -> Vec<String> {
@@ -1264,7 +1633,7 @@ impl CoremlMlProgramConverter {
 
     fn convert_operation_with_input_names_and_outputs(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         input_names: &[String],
         outputs: Vec<NamedValueType>,
@@ -1303,7 +1672,7 @@ impl CoremlMlProgramConverter {
     #[allow(dead_code)]
     fn convert_operation(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
         self.convert_operation_with_overrides(graph, op, &HashMap::new())
@@ -1312,7 +1681,7 @@ impl CoremlMlProgramConverter {
     /// Convert split operation (multi-output)
     fn convert_split_operation(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
     ) -> Result<MilOperation, GraphError> {
         let Operation::Split {
@@ -1526,7 +1895,7 @@ impl CoremlMlProgramConverter {
     /// Returns the adjusted `[Hbegin, Hend', Wbegin, Wend']`, or `None` if shapes are
     /// unavailable (caller falls back to the base padding).
     fn pool_effective_padding(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         kernel: &[u32],
         strides: &[u32],
@@ -1612,7 +1981,7 @@ impl CoremlMlProgramConverter {
     /// Whether a quantize/dequantize op must be lowered to elementwise arithmetic because
     /// CoreML's native op can't express it. int4/uint4 tensors are excluded (they cannot
     /// be materialized at all) and scalar tensors keep the native rank-0 fast path.
-    fn qdq_should_decompose(graph: &GraphInfo, op: &Operation) -> bool {
+    fn qdq_should_decompose(graph: &LoweringGraph<'_>, op: &Operation) -> bool {
         let (quant_id, tensor_shape_id, scale_id, zero_point_id) = match op {
             // dequantize: the quantized tensor is the input; its type/shape drive the check.
             Operation::DequantizeLinear {
@@ -2320,7 +2689,7 @@ impl CoremlMlProgramConverter {
     /// time — minutes of CPU and GBs of RAM for transformer-sized weights.
     /// The constexpr form is CoreML's weight-compression representation and
     /// keeps the weight packed through compilation.
-    fn constexpr_dequantize_supported(graph: &GraphInfo, op: &Operation) -> bool {
+    fn constexpr_dequantize_supported(graph: &LoweringGraph<'_>, op: &Operation) -> bool {
         let Operation::DequantizeLinear {
             input,
             scale,
@@ -2395,7 +2764,7 @@ impl CoremlMlProgramConverter {
     /// file (all non-scalar weight dtypes are), otherwise an immediate tensor
     /// built from the graph's constant bytes.
     fn constexpr_param_value(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         weight_builder: &super::WeightFileBuilder,
         operand_id: u32,
         dims: &[u32],
@@ -2521,7 +2890,7 @@ impl CoremlMlProgramConverter {
     /// not name-bound inputs; large payloads reuse the blob offsets the const
     /// emission pass already wrote.
     fn emit_constexpr_affine_dequantize(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         weight_builder: &super::WeightFileBuilder,
@@ -2636,7 +3005,7 @@ impl CoremlMlProgramConverter {
     /// large-magnitude WebNN conformance inputs. Keep the reduced axes until
     /// the final step so `max(x)` broadcasts correctly for arbitrary axes.
     fn emit_stable_reduce_log_sum_exp(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -2863,7 +3232,7 @@ impl CoremlMlProgramConverter {
     /// block[i]]` (with `block[i] = input[i]/scale[i]`) and the scale/zeroPoint into
     /// `[scale[i], 1]`, so ordinary broadcasting applies; the result is reshaped back.
     fn emit_dequantize_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -3035,7 +3404,7 @@ impl CoremlMlProgramConverter {
     /// `quantize` cannot: int32 outputs, block-wise scales, and multi-axis scales. Block
     /// quantization uses the same reshape trick as the dequantize decomposition.
     fn emit_quantize_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         main_block: &mut Block,
@@ -3282,7 +3651,7 @@ impl CoremlMlProgramConverter {
     ///   Hnew = (1 - z) ⊙ n + z ⊙ H = n + z ⊙ (H - n)
     /// Default activations f0=sigmoid, f1=tanh; default layout "zrn".
     fn emit_gru_cell_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3453,7 +3822,7 @@ impl CoremlMlProgramConverter {
     /// Default activations f0=sigmoid, f1=f2=tanh; default gate layout "iofg".
     /// Outputs are [Hnew, Cnew].
     fn emit_lstm_cell_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3705,7 +4074,7 @@ impl CoremlMlProgramConverter {
     /// directions (forward/backward/bidirectional), assembling output[0] = last hidden
     /// [num_dir, b, h] and, when requested, output[1] = all steps [steps, num_dir, b, h].
     fn emit_gru_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -3878,7 +4247,7 @@ impl CoremlMlProgramConverter {
     /// directions. Outputs: [0] last hidden [num_dir, b, h], [1] last cell [num_dir, b, h],
     /// and (when requested) [2] all hidden steps [steps, num_dir, b, h].
     fn emit_lstm_decomposition(
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         overrides: &HashMap<u32, String>,
         block: &mut Block,
@@ -4108,7 +4477,7 @@ impl CoremlMlProgramConverter {
     /// Create inputs map for MIL operation
     fn create_operation_inputs(
         &self,
-        graph: &GraphInfo,
+        graph: &LoweringGraph<'_>,
         op: &Operation,
         input_names: &[String],
     ) -> Result<HashMap<String, Argument>, GraphError> {
@@ -5552,6 +5921,8 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         if !crate::graph::dynamic_inputs_enabled() && graph_info.has_dynamic_dimensions() {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
+        let lowering_graph = LoweringGraph::new(graph_info)?;
+        let graph_info = &lowering_graph;
 
         // Create weight file builder for Float16 constants
         let mut weight_builder = super::WeightFileBuilder::new();
@@ -8091,8 +8462,12 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             // ops, and for a const input the plan builder then fails with
             // "Variable is not associated with a name" (error -5) because the
             // alias name was dropped. Emit an exact `mul(x, 1)` instead, which
-            // survives compilation. Identity of non-const values is unaffected.
-            if matches!(op, Operation::Identity { .. })
+            // survives compilation. A same-type constant Cast needs the same
+            // treatment: the FP32 cast post-pass would otherwise emit identity.
+            // Different-type casts must retain their conversion and rounding.
+            if matches!(op, Operation::Identity { .. } | Operation::Cast { .. })
+                && let Some(out_id) = op.output_operand()
+                && proven_copy_input(graph_info, op, out_id).is_some()
                 && let Some(&id_in) = op.input_operands().first()
                 && let Some(id_in_op) = graph_info.operand(id_in)
                 && id_in_op.kind == crate::graph::OperandKind::Constant
@@ -8104,7 +8479,6 @@ impl super::GraphConverter for CoremlMlProgramConverter {
                     id_in_op.descriptor.data_type,
                     DataType::Float32 | DataType::Float16 | DataType::Int32
                 )
-                && let Some(out_id) = op.output_operand()
             {
                 let (_, out_type) =
                     Self::create_output_value(graph_info, out_id, &operand_name_overrides)?;
@@ -10470,7 +10844,66 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             main_block.outputs.push(output_name);
         }
 
-        // CoreML rejects, at MLModel load time ("Error in declaring input X with
+        let value_types: HashMap<_, _> = main_function
+            .inputs
+            .iter()
+            .chain(
+                main_block
+                    .operations
+                    .iter()
+                    .flat_map(|operation| &operation.outputs),
+            )
+            .map(|value| (value.name.clone(), value.r#type.clone()))
+            .collect();
+        for operation in &mut main_block.operations {
+            let source = operation
+                .inputs
+                .get("x")
+                .and_then(|argument| argument.arguments.first())
+                .and_then(|binding| match &binding.binding {
+                    Some(Binding::Name(name)) => value_types.get(name),
+                    _ => None,
+                });
+            if operation.r#type == "cast"
+                && source.is_some_and(|value| matches!(value,
+                    Some(ValueType { r#type: Some(crate::protos::coreml::mil_spec::value_type::Type::TensorType(tensor)) })
+                    if tensor.data_type == crate::protos::coreml::mil_spec::DataType::Float32 as i32))
+                && operation.outputs.iter().all(|output| source == Some(&output.r#type))
+            {
+                operation.r#type = "identity".into();
+                operation.inputs.remove("dtype");
+            }
+        }
+
+        let equivalent_outputs = equivalent_output_names(graph_info);
+        if !equivalent_outputs.is_empty() {
+            main_block.operations.retain(|operation| {
+                !operation
+                    .outputs
+                    .iter()
+                    .any(|output| equivalent_outputs.contains_key(&output.name))
+            });
+            for operation in &mut main_block.operations {
+                for argument in operation.inputs.values_mut() {
+                    for binding in &mut argument.arguments {
+                        if let Some(Binding::Name(name)) = &mut binding.binding
+                            && let Some(canonical) = equivalent_outputs.get(name)
+                        {
+                            *name = canonical.clone();
+                        }
+                    }
+                }
+            }
+            for name in &mut main_block.outputs {
+                if let Some(canonical) = equivalent_outputs.get(name) {
+                    *name = canonical.clone();
+                }
+            }
+            let mut retained = std::collections::HashSet::new();
+            main_block
+                .outputs
+                .retain(|name| retained.insert(name.clone()));
+        }
         // error -1."), a function input that no operation consumes — e.g.
         // castLike's target_type (only its dtype matters, never its values) or
         // an input whose sole consumer was constant-folded away. Drop such
@@ -10525,7 +10958,9 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         // Single-function MLProgram models must use model-level I/O (not the
         // `functions` field), otherwise CoreML rejects them with
         // "multi-function description syntax" at load time.
-        use crate::protos::coreml::specification::{FeatureDescription, ModelDescription};
+        use crate::protos::coreml::specification::{
+            FeatureDescription, Metadata, ModelDescription,
+        };
 
         let mut input_descriptions = Vec::new();
         for &input_id in &graph_info.input_operands {
@@ -10548,6 +10983,16 @@ impl super::GraphConverter for CoremlMlProgramConverter {
         for &output_id in &graph_info.output_operands {
             if let Some(operand) = graph_info.operand(output_id) {
                 let output_name = operand_name(graph_info, output_id);
+                let output_name = equivalent_outputs
+                    .get(&output_name)
+                    .cloned()
+                    .unwrap_or(output_name);
+                if output_descriptions
+                    .iter()
+                    .any(|description: &FeatureDescription| description.name == output_name)
+                {
+                    continue;
+                }
                 // For int32 proxy outputs (argmin/argmax, or any wide int64/uint32/uint64
                 // output) use Int32 at the model interface to match the function emit type.
                 let feature_type = if int32_proxy_output_names.contains(&output_name)
@@ -10567,9 +11012,78 @@ impl super::GraphConverter for CoremlMlProgramConverter {
             }
         }
 
+        let aliases: std::collections::BTreeMap<_, _> = graph_info
+            .output_operands
+            .iter()
+            .map(|&id| {
+                let logical = logical_operand_name(graph_info, id);
+                let physical = operand_name(graph_info, id);
+                let physical = equivalent_outputs
+                    .get(&physical)
+                    .cloned()
+                    .unwrap_or(physical);
+                (logical, physical)
+            })
+            .collect();
+        let inputs: std::collections::BTreeMap<_, _> = graph_info
+            .input_operands
+            .iter()
+            .map(|&id| {
+                (
+                    logical_operand_name(graph_info, id),
+                    operand_name(graph_info, id),
+                )
+            })
+            .filter(|(_, physical)| declared_input_names.contains(physical))
+            .collect();
+        let outputs_changed = aliases
+            .iter()
+            .any(|(logical, physical)| logical != physical);
+        let inputs_changed = inputs.iter().any(|(logical, physical)| logical != physical);
+        let passthroughs = input_passthroughs(graph_info);
+        let constant_copies = constant_copies(graph_info, &mut weight_builder);
+        let metadata = Some(Metadata {
+            user_defined: [
+                (OUTPUT_ALIASES_METADATA_KEY, &aliases, outputs_changed),
+                (INPUT_ALIASES_METADATA_KEY, &inputs, inputs_changed),
+            ]
+            .into_iter()
+            .filter(|(_, _, changed)| *changed)
+            .map(|(key, bindings, _)| {
+                serde_json::to_string(bindings)
+                    .map(|value| (key.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize feature aliases: {error}"),
+                    })
+            })
+            .chain((!passthroughs.is_empty()).then(|| {
+                serde_json::to_string(&passthroughs)
+                    .map(|value| (OUTPUT_PASSTHROUGHS_METADATA_KEY.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize proven input copies: {error}"),
+                    })
+            }))
+            .chain((!constant_copies.outputs.is_empty()).then(|| {
+                serde_json::to_string(&constant_copies)
+                    .map(|value| (OUTPUT_CONSTANT_COPIES_METADATA_KEY.into(), value))
+                    .map_err(|error| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("cannot serialize proven constant copies: {error}"),
+                    })
+            }))
+            .chain(std::iter::once(Ok((
+                coreml_names::METADATA_KEY.into(),
+                coreml_names::METADATA_VALUE.into(),
+            ))))
+            .collect::<Result<_, _>>()?,
+            ..Default::default()
+        });
         model.description = Some(ModelDescription {
             input: input_descriptions,
             output: output_descriptions,
+            metadata,
             ..Default::default()
         });
 
@@ -10645,6 +11159,27 @@ mod tests {
 
     fn s(shape: &[u32]) -> Vec<crate::graph::Dimension> {
         crate::graph::to_dimension_vector(shape)
+    }
+
+    #[test]
+    fn physical_names_consume_logical_names_once_and_reserve_later_collisions() {
+        let visits = std::cell::Cell::new(0);
+        let count = 16_384;
+        let names = physical_operand_names((0..count).map(|id| {
+            visits.set(visits.get() + 1);
+            match id {
+                2 => "__rustnn_operand_1".into(),
+                3 => "__rustnn_operand_1_1".into(),
+                _ => "state".into(),
+            }
+        }));
+        assert_eq!(visits.get(), count);
+        assert_eq!(names.len(), count);
+        assert_eq!(names[0], coreml_names::encode("state"));
+        assert_eq!(names[1], "__rustnn_operand_1_2");
+        assert_eq!(names[2], "__rustnn_operand_1");
+        assert_eq!(names[3], "__rustnn_operand_1_1");
+        assert_eq!(names.iter().collect::<HashSet<_>>().len(), count);
     }
 
     #[test]
