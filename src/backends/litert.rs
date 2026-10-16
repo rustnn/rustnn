@@ -310,7 +310,7 @@ impl Drop for LiteRtTensor {
 }
 
 pub(crate) struct LiteRtContext {
-    tensors: Vec<LiteRtTensor>,
+    tensors: Vec<Option<LiteRtTensor>>,
     device_type: DeviceType,
     pub(crate) needs_layout_fix: bool,
 }
@@ -631,7 +631,14 @@ fn modify_graph_for_nhwc(
             crate::graph::Dimension::Static(c),
         ];
         if operand.kind == crate::graph::OperandKind::Constant {
-            if let Some(cd) = graph.constant_operand_ids_to_handles.get_mut(&id) {
+            if let Some(cd) = graph
+                .constant_operand_ids_to_handles
+                .get_mut(&id)
+                .and_then(|c| match c {
+                    crate::graph::ConstantReference::OwnedData(data) => Some(data),
+                    _ => None,
+                })
+            {
                 let esz = cd.data.len() / ((n * c * h * w) as usize);
                 if esz > 0
                     && esz * (n as usize) * (c as usize) * (h as usize) * (w as usize)
@@ -1068,7 +1075,14 @@ fn emulate_float16(graph: &mut GraphInfo) -> bool {
             continue;
         }
         operand.descriptor.data_type = crate::graph::DataType::Float32;
-        if let Some(constant) = graph.constant_operand_ids_to_handles.get_mut(&(id as u32)) {
+        if let Some(constant) = graph
+            .constant_operand_ids_to_handles
+            .get_mut(&(id as u32))
+            .and_then(|c| match c {
+                crate::graph::ConstantReference::OwnedData(data) => Some(data),
+                _ => None,
+            })
+        {
             constant.data = fp16_to_f32(&constant.data);
         }
     }
@@ -1127,7 +1141,7 @@ fn emulate_uint64(graph: &mut GraphInfo) -> bool {
 
 fn build_input_handles(
     sorted_inputs: &[(&str, u32, &MLTensor)],
-    tensors: &mut [LiteRtTensor],
+    tensors: &mut [Option<LiteRtTensor>],
     spatial_ids: &std::collections::HashSet<u32>,
     filter_info: &std::collections::HashMap<u32, (ConvLayout, Vec<i32>, bool)>,
     float16_emulated: bool,
@@ -1137,10 +1151,10 @@ fn build_input_handles(
     for (_name, operand_id, t) in sorted_inputs {
         let fp16 = float16_emulated && t.descriptor().data_type() == MLOperandDataType::Float16;
         // Convert float16 first, so the transpose below works on float32.
-        let model_data = |tensors: &[LiteRtTensor]| {
+        let model_data = |tensors: &[Option<LiteRtTensor>]| {
             let logical = t.descriptor().rustnn_required_bytes();
             let mut raw = vec![0u8; logical];
-            tensors[t.id].read(&mut raw).ok();
+            tensors[t.id].as_ref().unwrap().read(&mut raw).ok();
             if fp16 { fp16_to_f32(&raw) } else { raw }
         };
         if spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4 {
@@ -1184,14 +1198,14 @@ fn build_input_handles(
             in_raw.push(temp_in_tensors.last().unwrap().handle);
             continue;
         }
-        in_raw.push(tensors[t.id].handle);
+        in_raw.push(tensors[t.id].as_ref().unwrap().handle);
     }
     Ok((in_raw, temp_in_tensors))
 }
 
 fn build_output_handles(
     sorted_outputs: &[(&str, u32, &MLTensor)],
-    tensors: &[LiteRtTensor],
+    tensors: &[Option<LiteRtTensor>],
     spatial_ids: &std::collections::HashSet<u32>,
     bool_operand_ids: &std::collections::HashSet<u32>,
     float16_emulated: bool,
@@ -1226,7 +1240,7 @@ fn build_output_handles(
             out_raw.push(temp_out_tensors.last().unwrap().handle);
             continue;
         }
-        out_raw.push(tensors[t.id].handle);
+        out_raw.push(tensors[t.id].as_ref().unwrap().handle);
     }
     Ok((out_raw, temp_out_tensors))
 }
@@ -1235,7 +1249,7 @@ fn readback_outputs(
     sorted_outputs: &[(&str, u32, &MLTensor)],
     out_raw: &[sys::LiteRtTensorBuffer],
     temp_out_tensors: &[LiteRtTensor],
-    tensors: &mut [LiteRtTensor],
+    tensors: &mut [Option<LiteRtTensor>],
     bool_operand_ids: &std::collections::HashSet<u32>,
     spatial_ids: &std::collections::HashSet<u32>,
     float16_emulated: bool,
@@ -1252,14 +1266,18 @@ fn readback_outputs(
                 } else {
                     buf
                 };
-                tensors[t.id].write(&f32_to_fp16(&buf)).ok();
+                tensors[t.id]
+                    .as_ref()
+                    .unwrap()
+                    .write(&f32_to_fp16(&buf))
+                    .ok();
             }
         } else if bool_operand_ids.contains(operand_id) {
             let logical = t.descriptor().rustnn_required_bytes();
             let mut buf = vec![0u8; logical];
             if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
                 temp.read(&mut buf).ok();
-                tensors[t.id].write(&buf).ok();
+                tensors[t.id].as_ref().unwrap().write(&buf).ok();
             }
         } else if spatial_ids.contains(operand_id) && t.descriptor().shape().len() == 4 {
             let shape = t.descriptor().shape();
@@ -1268,7 +1286,7 @@ fn readback_outputs(
             if let Some(temp) = temp_out_tensors.iter().find(|tt| tt.handle == *out_handle) {
                 temp.read(&mut nhwc_buf).ok();
                 let nchw_data = transpose_nhwc_to_nchw(&nhwc_buf, shape);
-                tensors[t.id].write(&nchw_data).ok();
+                tensors[t.id].as_ref().unwrap().write(&nchw_data).ok();
             }
         }
     }
@@ -1335,12 +1353,8 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
         let tensor = LiteRtTensor::new_with_layout(descriptor, self.needs_layout_fix)?;
-        self.tensors.push(tensor);
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        self.tensors.push(Some(tensor));
+        Ok(MLTensor::new(self.tensors.len() - 1, descriptor.clone()))
     }
 
     fn rustnn_resize_tensor(&mut self, _tensor: &mut MLTensor, _new_shape: &[u64]) -> Result<()> {
@@ -1355,19 +1369,11 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
         todo!("Not Implemented yet.")
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        descriptor: &MLTensorDescriptor,
-        input_data: &[u8],
-    ) -> Result<MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
-        Ok(tensor)
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> crate::error::Result<()> {
+        if let Some(slot) = self.tensors.get_mut(tensor.id) {
+            *slot = None;
+        }
+        Ok(())
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()> {
@@ -1383,7 +1389,10 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
                 tensor: tensor.clone(),
             });
         }
-        self.tensors[tensor.id].read(&mut array[..logical])?;
+        self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
+            .read(&mut array[..logical])?;
         Ok(())
     }
 
@@ -1400,7 +1409,10 @@ impl<'context> MLBackendContext<'context> for LiteRtContext {
                 tensor: tensor.clone(),
             });
         }
-        self.tensors[tensor.id].write(&array[..logical])?;
+        self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
+            .write(&array[..logical])?;
         Ok(())
     }
 

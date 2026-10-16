@@ -15,7 +15,7 @@ mod app {
         OnnxInput, OnnxOutputWithData, TensorData, run_onnx_with_inputs_checked,
     };
     use rustnn::protos::onnx::ModelProto;
-    use rustnn::{ContextProperties, ConverterRegistry, GraphValidator, load_graph_from_path};
+    use rustnn::{ContextProperties, ConverterRegistry, GraphValidator};
     use serde_json::Value;
 
     #[derive(Parser, Debug)]
@@ -339,7 +339,11 @@ mod app {
     fn run() -> Result<(), String> {
         let args = Args::parse();
 
-        let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
+        let graph = rustnn::loader::load_graph_from_path_with_options(
+            &args.model,
+            &rustnn::loader::GraphLoadOptions::default(),
+        )
+        .map_err(|e| format!("load graph: {e}"))?;
         let mut context = ContextProperties::default();
         context.tensor_byte_length_limit = args.tensor_limit;
         let artifacts = GraphValidator::new(&graph, context)

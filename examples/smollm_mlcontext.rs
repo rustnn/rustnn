@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use log::{debug, info};
 use rustnn::{
-    ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
+    ContextProperties, GraphValidator, ValidationArtifacts,
     mlcontext::{
         MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
         MLTensor, MLTensorDescriptor,
@@ -476,8 +476,11 @@ fn main() -> anyhow::Result<()> {
     let tokenizer_path = tokenizer_path.ok_or_else(|| anyhow!("No tokenizer path available! Provide via --tokenizer (obtain from https://huggingface.co/tarekziade/SmolLM-135M-webnn)"))?;
 
     info!("Loading graph: {model_path:?}");
-    let graph_info = load_graph_from_path(&model_path)
-        .with_context(|| format!("Failed to load {model_path:?}"))?;
+    let graph_info = rustnn::loader::load_graph_from_path_with_options(
+        &model_path,
+        &rustnn::loader::GraphLoadOptions::default(),
+    )
+    .with_context(|| format!("Failed to load {model_path:?}"))?;
 
     let tokenizer = boxed_result(Tokenizer::from_file(&tokenizer_path))
         .with_context(|| format!("load tokenizer {}", tokenizer_path.display()))?;

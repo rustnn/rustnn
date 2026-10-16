@@ -169,7 +169,7 @@ fn supports_in_memory_asset(graph: &GraphInfo) -> bool {
 #[derive(Debug)]
 pub(crate) struct CoremlContext {
     device_type: DeviceType,
-    tensors: Vec<CoremlTensor>,
+    tensors: Vec<Option<CoremlTensor>>,
     options: CoremlOptions,
     statistics: CoremlTensorStatistics,
 }
@@ -225,7 +225,7 @@ impl CoremlContext {
         fn bind<'a>(
             descriptors: &'a HashMap<String, crate::graph::OperandDescriptor>,
             tensors: &MLNamedTensors,
-            storage: &'a [CoremlTensor],
+            storage: &'a [Option<CoremlTensor>],
         ) -> HashMap<String, CoremlTensorBinding<'a>> {
             descriptors
                 .iter()
@@ -233,7 +233,7 @@ impl CoremlContext {
                     (
                         name.clone(),
                         CoremlTensorBinding {
-                            storage: &storage[tensors[name.as_str()].id].storage,
+                            storage: &storage[tensors[name.as_str()].id].as_ref().unwrap().storage,
                             descriptor,
                         },
                     )
@@ -284,27 +284,15 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             descriptor: descriptor.clone(),
         })?;
         self.statistics.native_allocations += u64::from(storage.is_native());
-        self.tensors.push(CoremlTensor { storage });
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        self.tensors.push(Some(CoremlTensor { storage }));
+        Ok(MLTensor::new(self.tensors.len() - 1, descriptor.clone()))
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        descriptor: &MLTensorDescriptor,
-        input_data: &[u8],
-    ) -> crate::error::Result<MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
-        Ok(tensor)
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> crate::error::Result<()> {
+        if let Some(slot) = self.tensors.get_mut(tensor.id) {
+            *slot = None;
+        }
+        Ok(())
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
@@ -321,6 +309,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
             });
         }
         self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
             .storage
             .read(&mut array[..logical])
             .map_err(|e| Error::TensorReadError {
@@ -333,6 +323,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
 
     fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
         self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
             .storage
             .write(array)
             .map_err(|e| Error::TensorWriteError {
@@ -406,6 +398,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                             source: format!("input '{name}': cannot compute byte length").into(),
                         })?;
                 let full = self.tensors[tensor.id]
+                    .as_ref()
+                    .unwrap()
                     .storage
                     .host()
                     .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
@@ -448,7 +442,12 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         };
 
         for (&name, ml_tensor) in outputs.iter() {
-            if self.tensors[ml_tensor.id].storage.is_native() {
+            if self.tensors[ml_tensor.id]
+                .as_ref()
+                .unwrap()
+                .storage
+                .is_native()
+            {
                 continue;
             }
             let data = out_bytes
@@ -474,6 +473,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                 });
             }
             self.tensors[ml_tensor.id]
+                .as_mut()
+                .unwrap()
                 .storage
                 .write(effective)
                 .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
@@ -493,6 +494,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         new_desc.set_shape(new_shape.to_vec());
         let new_bytes = new_desc.rustnn_required_bytes();
         let allocated = self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
             .storage
             .reserve(new_bytes, true)
             .map_err(|e| Error::GraphDispatchError { source: e.into() })?;
@@ -522,6 +525,8 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
                 source: "rustnn_set_tensor_capacity: byte length overflow".into(),
             })?;
         let allocated = self.tensors[tensor.id]
+            .as_mut()
+            .unwrap()
             .storage
             .reserve(new_bytes.max(1), false)
             .map_err(|e| Error::GraphDispatchError { source: e.into() })?;

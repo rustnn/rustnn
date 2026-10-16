@@ -31,7 +31,15 @@ use crate::backends::litert::LiteRtContext;
 use crate::backends::ort::OrtContext;
 use crate::backends::trtx::TrtxContext;
 use std::collections::BTreeMap;
-use std::{collections::HashMap, fmt::Display, marker::PhantomData};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    marker::PhantomData,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 pub use crate::mlcontextoptions::{
     BackendStatistics, CoremlOptions, CoremlTensorStatistics, LiteRtOptions, MLContextOptions,
@@ -99,6 +107,7 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
     where
         'context: 'builder;
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor>;
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> Result<()>;
     fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()>;
     fn rustnn_set_tensor_capacity(
         &mut self,
@@ -107,9 +116,20 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
     ) -> Result<()>;
     fn create_constant_tensor(
         &mut self,
-        descriptor: &MLTensorDescriptor,
+        descriptor: &MLOperandDescriptor,
         input_data: &[u8],
-    ) -> Result<MLTensor>;
+    ) -> Result<MLTensor> {
+        let tensor_desc = MLTensorDescriptor::from_operand_descriptor(descriptor);
+        let mut tensor = self.create_tensor(&tensor_desc)?;
+        tensor.constant = true;
+        self.write_tensor(&tensor, input_data).map_err(|e| {
+            crate::error::Error::TensorCreationError {
+                source: e.into(),
+                descriptor: tensor_desc.clone(),
+            }
+        })?; // need to free tensor in case of error
+        Ok(tensor)
+    }
     /*async*/
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()>;
     /*async*/
@@ -125,6 +145,10 @@ pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
 pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
     /*async*/
     fn build(&mut self, graph: GraphInfo) -> Result<MLGraph<'context>>;
+
+    fn register_constant(&mut self, graph: &mut GraphInfo, new_id: u32) -> Result<()> {
+        Ok(())
+    }
 }
 
 // can be made a Box<dyn better_any::Tid<'context> + 'context> for dynamic dispatch
@@ -216,14 +240,26 @@ impl Display for MLContextLostInfo {
 #[derive(Debug, Clone)]
 pub struct MLTensor {
     pub(crate) id: usize,
+    pub(crate) context_id: u64,
     pub(crate) constant: bool,
     /// internal slots as per <https://www.w3.org/TR/webnn/#api-mltensor>
     pub(crate) descriptor: MLTensorDescriptor,
-    //context: &'context MLContext, // todo, omit context?
+    destroyed: Arc<AtomicBool>,
     //// pending promises, need to be canceled when tensor is destroyed
 }
 
 impl MLTensor {
+    /// Element data type.
+    pub(crate) fn new(id: usize, descriptor: MLTensorDescriptor) -> Self {
+        Self {
+            id,
+            context_id: 0,
+            constant: false,
+            descriptor,
+            destroyed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// Element data type.
     pub fn data_type(&self) -> MLOperandDataType {
         self.descriptor.data_type
@@ -244,14 +280,22 @@ impl MLTensor {
     pub fn constant(&self) -> bool {
         self.constant
     }
-    /// Not implemented: dropping the tensor releases it. <https://www.w3.org/TR/webnn/#api-mltensor-destroy>
-    // TODO: or replace by Rust's drop?
-    pub fn destroy(&self) {
-        todo!() // destroying needs to cancel pending promises
+    /// Releases this tensor's backend resources.
+    ///
+    /// All clones of this handle become destroyed. Calling `destroy` more than
+    /// once is allowed and has no effect after the first call.
+    pub fn destroy(&self, context: &mut MLContext<'_>) -> Result<()> {
+        context.destroy_tensor(self)
     }
-    /// Not implemented.
+    /// Deprecated spelling of [`Self::destroy`].
+    #[deprecated(note = "use MLTensor::destroy")]
+    pub fn destoy(&self, context: &mut MLContext<'_>) -> Result<()> {
+        self.destroy(context)
+    }
+
+    /// Whether this tensor has released its backend storage.
     pub fn destroyed(&self) -> bool {
-        todo!() // JS has a isDestroyed method
+        self.destroyed.load(Ordering::Acquire)
     }
 
     /// Bytes a host buffer needs for `read_tensor` / `write_tensor` (4-bit types are packed).
@@ -401,8 +445,8 @@ pub struct MLOpSupportLimits {}
 /// Shapes are `u64` here (the specification uses `unsigned long`).
 #[derive(Debug, Eq, PartialEq, Default, Clone)]
 pub struct MLOperandDescriptor {
-    data_type: MLOperandDataType,
-    shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
+    pub(crate) data_type: MLOperandDataType,
+    pub(crate) shape: Vec<u64>, // TODO: this is u64 instead of WebNN's u32. u32 is screaming for problems on desktop
 }
 
 impl From<&MLOperandDescriptor> for OperandDescriptor {
@@ -425,6 +469,7 @@ impl MLOperandDescriptor {
         Self { data_type, shape }
     }
 
+    /// Element data type.
     /// Element data type.
     pub fn data_type(&self) -> MLOperandDataType {
         self.data_type
@@ -599,7 +644,10 @@ impl MLTensorDescriptor {
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
     pub(crate) device: BackendDevice,
+    id: u64,
 }
+
+static NEXT_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 impl<'context> MLContext<'context> {
     /// Select a backend device for `options` and create the context.
@@ -655,7 +703,11 @@ impl<'context> MLContext<'context> {
                 CannContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            id: NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
+        })
     }
 
     /// Not implemented: `ML.createContext(GPUDevice)`.
@@ -670,7 +722,11 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Cann { .. } => todo!(),
             BackendDevice::BurnCpu => todo!(),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            id: NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
+        })
     }
     /// Whether the selected device is a GPU or NPU rather than a CPU.
     pub fn accelerated(&self) -> bool {
@@ -711,9 +767,38 @@ impl<'context> MLContext<'context> {
         )
     )]
     pub fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> Result<MLTensor> {
-        let tensor = self.backend.create_tensor(descriptor)?;
-        tracing::debug!(tensor_id = tensor.id);
+        let mut tensor = self.backend.create_tensor(descriptor)?;
+        tensor.context_id = self.id;
         Ok(tensor)
+    }
+
+    fn validate_tensor(&self, tensor: &MLTensor) -> Result<()> {
+        if tensor.context_id != self.id {
+            return Err(Error::TensorContextMismatch {
+                tensor: tensor.clone(),
+            });
+        }
+        if tensor.destroyed() {
+            return Err(Error::TensorDestroyed {
+                tensor: tensor.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Releases a tensor owned by this context; repeated calls have no effect.
+    pub fn destroy_tensor(&mut self, tensor: &MLTensor) -> Result<()> {
+        if tensor.context_id != self.id {
+            return Err(Error::TensorContextMismatch {
+                tensor: tensor.clone(),
+            });
+        }
+        if tensor.destroyed() {
+            return Ok(());
+        }
+        self.backend.destroy_tensor(tensor)?;
+        tensor.destroyed.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Not implemented: dropping the context releases it. <https://www.w3.org/TR/webnn/#api-mlcontext-destroy>
@@ -767,6 +852,9 @@ impl<'context> MLContext<'context> {
         //https://www.w3.org/TR/webnn/#dom-mlcontext-dispatch
         // spec: 4. If allTensors contains any duplicate items, then throw a TypeError.
         validate_unique_tensor_bindings(inputs, outputs)?;
+        for tensor in inputs.values().chain(outputs.values()) {
+            self.validate_tensor(tensor)?;
+        }
 
         graph.verify_dispatch_bindings(inputs, outputs)?;
         self.backend.dispatch(graph, inputs, outputs)
@@ -797,6 +885,7 @@ impl<'context> MLContext<'context> {
         tensor: &MLTensor,
         array: &mut [T],
     ) -> Result<()> {
+        self.validate_tensor(tensor)?;
         trace!(
             "Read {} bytes from tensor {tensor:?}",
             std::mem::size_of_val(array)
@@ -832,6 +921,7 @@ impl<'context> MLContext<'context> {
         )
     )]
     pub fn write_tensor<T: bytemuck::Pod>(&mut self, tensor: &MLTensor, array: &[T]) -> Result<()> {
+        self.validate_tensor(tensor)?;
         trace!(
             "Write {} bytes to tensor {tensor:?}",
             std::mem::size_of_val(array)
@@ -864,6 +954,7 @@ impl<'context> MLContext<'context> {
         fields(tensor_id = tensor.id, from = ?tensor.shape(), to = ?new_shape)
     )]
     pub fn rustnn_resize_tensor(&mut self, tensor: &mut MLTensor, new_shape: &[u64]) -> Result<()> {
+        self.validate_tensor(tensor)?;
         self.backend.rustnn_resize_tensor(tensor, new_shape)
     }
 
@@ -896,6 +987,7 @@ impl<'context> MLContext<'context> {
                 required_bytes,
             });
         }
+        self.validate_tensor(tensor)?;
         self.backend.rustnn_set_tensor_capacity(tensor, max_shape)
     }
 
@@ -914,17 +1006,17 @@ mod test {
     #[test]
     fn capacity_shrink_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            id: 0,
             // All mutation methods panic, so reaching it would fail this test.
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
             },
         };
-        let mut tensor = MLTensor {
-            id: 0,
-            constant: false,
-            descriptor: MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 3]),
-        };
+        let mut tensor = MLTensor::new(
+            0,
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 3]),
+        );
         let error = context
             .rustnn_set_tensor_capacity(&mut tensor, &[2])
             .unwrap_err();
@@ -966,16 +1058,16 @@ mod test {
     #[test]
     fn capacity_overflow_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            id: 0,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
             },
         };
-        let mut tensor = MLTensor {
-            id: 0,
-            constant: false,
-            descriptor: MLTensorDescriptor::new(MLOperandDataType::Float32, vec![]),
-        };
+        let mut tensor = MLTensor::new(
+            0,
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![]),
+        );
         assert!(matches!(
             context.rustnn_set_tensor_capacity(&mut tensor, &[u64::MAX]),
             Err(Error::GraphDispatchError { .. })
@@ -987,6 +1079,7 @@ mod test {
     fn backend_statistics_are_optional() {
         // This backend uses the default trait method, without a runtime dependency.
         let context = MLContext {
+            id: 0,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
@@ -1110,6 +1203,60 @@ webnn_graph "sample_graph" v1 {
     }
 
     #[test]
+    fn test_destroy_tensor_is_shared_and_idempotent() {
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            return;
+        }
+
+        let mut context = context.unwrap();
+        let desc = rw_tensor_desc(vec![2]);
+        let tensor = context.create_tensor(&desc).unwrap();
+        let clone = tensor.clone();
+
+        assert!(!tensor.destroyed());
+        clone.destroy(&mut context).unwrap();
+        assert!(tensor.destroyed());
+        assert!(clone.destroyed());
+
+        // The WebNN destroy operation is idempotent.
+        tensor.destroy(&mut context).unwrap();
+
+        assert!(matches!(
+            context.write_tensor(&tensor, &[1.0f32, 2.0]),
+            Err(crate::error::Error::TensorDestroyed { .. })
+        ));
+        let mut output = [0.0f32; 2];
+        assert!(matches!(
+            context.read_tensor(&tensor, &mut output),
+            Err(crate::error::Error::TensorDestroyed { .. })
+        ));
+    }
+
+    #[test]
+    fn test_destroy_tensor_rejects_wrong_context() {
+        let first = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        let second = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        if matches!(first, Err(crate::error::Error::NoBackendAvailable { .. }))
+            || matches!(second, Err(crate::error::Error::NoBackendAvailable { .. }))
+        {
+            return;
+        }
+
+        let mut first = first.unwrap();
+        let mut second = second.unwrap();
+        let tensor = first.create_tensor(&rw_tensor_desc(vec![1])).unwrap();
+
+        assert!(matches!(
+            tensor.destroy(&mut second),
+            Err(crate::error::Error::TensorContextMismatch { .. })
+        ));
+        assert!(!tensor.destroyed());
+        tensor.destroy(&mut first).unwrap();
+        assert!(tensor.destroyed());
+    }
+
+    #[test]
     fn test_dispatch() {
         let Some((mut context, mut graph)) = create_add_graph_context_and_graph() else {
             return;
@@ -1139,11 +1286,7 @@ webnn_graph "sample_graph" v1 {
     #[test]
     fn test_dispatch_rejects_tensor_bound_as_input_and_output() {
         let descriptor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
-        let tensor = MLTensor {
-            id: 7,
-            constant: false,
-            descriptor,
-        };
+        let tensor = MLTensor::new(7, descriptor);
         let inputs = MLNamedTensors::from([("lhs", &tensor)]);
         let outputs = MLNamedTensors::from([("sum", &tensor)]);
 
@@ -1161,16 +1304,8 @@ webnn_graph "sample_graph" v1 {
     #[test]
     fn test_dispatch_allows_same_name_for_distinct_input_and_output_tensors() {
         let descriptor = MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]);
-        let input_tensor = MLTensor {
-            id: 7,
-            constant: false,
-            descriptor: descriptor.clone(),
-        };
-        let output_tensor = MLTensor {
-            id: 8,
-            constant: false,
-            descriptor,
-        };
+        let input_tensor = MLTensor::new(7, descriptor.clone());
+        let output_tensor = MLTensor::new(8, descriptor);
         let inputs = MLNamedTensors::from([("value", &input_tensor)]);
         let outputs = MLNamedTensors::from([("value", &output_tensor)]);
 

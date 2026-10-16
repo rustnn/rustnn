@@ -193,26 +193,14 @@ impl<'context> MLBackendContext<'context> for BurnContext {
         self.tensors.push(BurnHostTensor {
             memory: vec![0u8; n.max(1)],
         });
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        Ok(MLTensor::new(self.tensors.len() - 1, descriptor.clone()))
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        descriptor: &MLTensorDescriptor,
-        input_data: &[u8],
-    ) -> crate::error::Result<MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
-        Ok(tensor)
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> crate::error::Result<()> {
+        if let Some(slot) = self.tensors.get_mut(tensor.id) {
+            slot.memory.clear();
+        }
+        Ok(())
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {

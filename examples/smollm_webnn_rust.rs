@@ -16,8 +16,9 @@ mod app {
     use rustnn::executors::onnx::{
         OnnxInput, OnnxOutputWithData, TensorData, run_onnx_with_inputs,
     };
+    use rustnn::loader::GraphLoadOptions;
     use rustnn::protos::onnx::ModelProto;
-    use rustnn::{ContextProperties, ConverterRegistry, GraphValidator, load_graph_from_path};
+    use rustnn::{ContextProperties, ConverterRegistry, GraphValidator};
     use tokenizers::Tokenizer;
 
     #[derive(Parser, Debug)]
@@ -304,7 +305,11 @@ mod app {
         let args = Args::parse();
         let mut trace = TraceLogger::new(&args)?;
 
-        let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
+        let graph = rustnn::loader::load_graph_from_path_with_options(
+            &args.model,
+            &GraphLoadOptions::default(),
+        )
+        .map_err(|e| format!("load graph: {e}"))?;
         let context = ContextProperties {
             tensor_byte_length_limit: args.tensor_limit,
             ..Default::default()
