@@ -89,46 +89,65 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
     }
 }
 
+/// Options controlling resolution of external constant data.
+#[derive(Clone)]
+pub struct GraphLoadOptions {
+    /// Context data type policies used while recording the imported graph.
+    pub context_options: crate::mlcontextoptions::MLContextOptions,
+    /// Whether to load external bytes into the graph during import.
+    pub resolve_external_weights: bool,
+}
+
+impl Default for GraphLoadOptions {
+    fn default() -> Self {
+        Self {
+            resolve_external_weights: true,
+            context_options: crate::mlcontextoptions::MLContextOptions::new(
+                crate::mlcontextoptions::MLPowerPreference::Default,
+                false,
+            ),
+        }
+    }
+}
+
+impl From<&GraphLoadOptions> for GraphLoadOptions {
+    fn from(options: &GraphLoadOptions) -> Self {
+        options.clone()
+    }
+}
+
+impl From<&crate::mlcontextoptions::MLContextOptions> for GraphLoadOptions {
+    fn from(options: &crate::mlcontextoptions::MLContextOptions) -> Self {
+        Self {
+            context_options: options.clone(),
+            ..Self::default()
+        }
+    }
+}
+
 /// Load a graph from a webnn-graph file (.webnn text or .json)
 ///
 /// Supports two formats:
 /// - `.webnn` - Text DSL parsed into the shared `GraphJson` representation
 /// - `.json` - Direct JSON format (webnn-graph-json)
 ///
-/// External constants are resolved once through [`webnn_graph::resolve_external_weights`], which
-/// handles both ordinary and packed-4-bit SafeTensors tensors as well as manifest-backed weights.
-/// The graph recorder validates operations and infers shapes. The returned graph owns the resolved
-/// weights; loading neither compiles a backend graph nor compares numerical outputs. Use
-/// [`crate::mlcontext::MLContext::rustnn_build_graph`] to compile it for execution.
-#[tracing::instrument(
-    name = "load_graph",
-    skip_all,
-    err,
-    level = "info",
-    fields(
-        path = %path.as_ref().display(),
-        format = %graph_format(path.as_ref()),
-    )
-)]
+/// When the graph contains `@weights` / `ConstInit::Weights` references, external tensors are
+/// resolved by [`webnn_graph::external_weights::resolve_external_weights`] (strict I/O
+/// and validation). See that module for file naming and behavior.
 pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
-    load_graph_from_path_with_options(
-        path,
-        &crate::mlcontextoptions::MLContextOptions::new(
-            crate::mlcontextoptions::MLPowerPreference::Default,
-            false,
-        ),
-    )
+    load_graph_from_path_with_options(path, &GraphLoadOptions::default())
 }
 
-/// Load a graph with the context's allowed data type check policy.
+/// Loads a graph with import options or the context's data type policies.
 ///
-/// Only the data type policies are used; no backend is selected or compiled.
-/// Use this for backend extensions such as packed 4-bit quantization whose
-/// operand types are outside the current specification tables.
+/// Passing context options resolves external weights eagerly. `GraphLoadOptions`
+/// can defer resolution and carries the same context data type policies.
+#[tracing::instrument(name = "load_graph", skip_all, err, level = "info", fields(path = %path.as_ref().display(), format = %graph_format(path.as_ref())))]
 pub fn load_graph_from_path_with_options(
     path: impl AsRef<Path>,
-    options: &crate::mlcontextoptions::MLContextOptions,
+    options: impl Into<GraphLoadOptions>,
 ) -> Result<GraphInfo, GraphError> {
+    let options = options.into();
     let path_ref = path.as_ref();
     let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
 
@@ -164,10 +183,18 @@ pub fn load_graph_from_path_with_options(
         });
     };
 
-    webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
+    if options.resolve_external_weights {
+        webnn_graph::external_weights::resolve_external_weights(
+            &mut graph_json,
+            path_ref,
+            None,
+            None,
+        )
         .map_err(map_weight_resolve_error)?;
+    }
 
-    let graph = webnn_json::from_graph_json_owned_with_options(graph_json, options)?;
+    let graph =
+        webnn_json::from_graph_json_owned_with_options(graph_json, &options.context_options)?;
     tracing::info!(
         operands = graph.operands.len(),
         operations = graph.operations.len()
@@ -297,7 +324,11 @@ mod tests {
         fs::write(&json_path, json_content).unwrap();
 
         // Load the graph
-        let graph = load_graph_from_path(&json_path).expect("Failed to load JSON graph");
+        let graph = load_graph_from_path_with_options(
+            &json_path,
+            &crate::loader::GraphLoadOptions::default(),
+        )
+        .expect("Failed to load JSON graph");
         assert!(graph.operands.len() >= 2); // At least input and output
         assert_eq!(graph.input_operands.len(), 1);
         assert_eq!(graph.output_operands.len(), 1);
@@ -310,7 +341,10 @@ mod tests {
 
         fs::write(&no_ext_path, "{}").unwrap();
 
-        let result = load_graph_from_path(&no_ext_path);
+        let result = load_graph_from_path_with_options(
+            &no_ext_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -329,7 +363,10 @@ mod tests {
 
         fs::write(&bad_ext_path, "{}").unwrap();
 
-        let result = load_graph_from_path(&bad_ext_path);
+        let result = load_graph_from_path_with_options(
+            &bad_ext_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -343,7 +380,10 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_file() {
-        let result = load_graph_from_path("/nonexistent/path/to/graph.json");
+        let result = load_graph_from_path_with_options(
+            "/nonexistent/path/to/graph.json",
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(result.is_err());
 
         let err = result.unwrap_err();
@@ -362,7 +402,10 @@ mod tests {
 
         fs::write(&json_path, "{ invalid json ").unwrap();
 
-        let result = load_graph_from_path(&json_path);
+        let result = load_graph_from_path_with_options(
+            &json_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(result.is_err());
     }
 
@@ -385,7 +428,10 @@ mod tests {
         fs::write(&webnn_path, webnn_content).unwrap();
 
         // Load the graph
-        let result = load_graph_from_path(&webnn_path);
+        let result = load_graph_from_path_with_options(
+            &webnn_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
 
         // This should either succeed or fail with a specific parsing error
         // (depending on whether the simple format is fully supported)
@@ -488,7 +534,11 @@ mod tests {
 
         // Load the graph - weights should be inlined automatically
         // The weight constant should have inline bytes instead of a reference
-        let graph = load_graph_from_path(&graph_path).expect("Failed to load graph");
+        let graph = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        )
+        .expect("Failed to load graph");
         assert!(!graph.constant_operand_ids_to_handles.is_empty());
     }
 
@@ -551,7 +601,8 @@ mod tests {
         fs::write(&weights_path, &weights_data).unwrap();
 
         // Should successfully match sanitized name to dotted manifest name
-        load_graph_from_path(&graph_path).expect("Failed to load graph");
+        load_graph_from_path_with_options(&graph_path, &crate::loader::GraphLoadOptions::default())
+            .expect("Failed to load graph");
     }
 
     #[test]
@@ -585,7 +636,10 @@ mod tests {
         fs::write(&graph_path, graph_content).unwrap();
 
         // Should succeed even without manifest/weights
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         result.unwrap();
     }
 
@@ -610,7 +664,10 @@ mod tests {
         fs::write(&weights_path, [0u8; 8]).unwrap();
 
         // Should succeed by falling back to non-inlined weights
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         result.unwrap();
     }
 
@@ -670,7 +727,10 @@ mod tests {
         fs::write(&weights_path, &weights_data).unwrap();
 
         // Should succeed but skip the out-of-bounds weight inlining
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(
             matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "manifest-weights"),
             "expected manifest-weights error, got {:?}",
@@ -705,7 +765,10 @@ mod tests {
             "outputs": { "y": "y" }
         }"#;
         fs::write(&graph_path, graph_content).unwrap();
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(
             matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "weights"),
             "expected weights error, got {:?}",
@@ -748,7 +811,11 @@ mod tests {
         fs::write(&graph_path, graph_content).unwrap();
         write_safetensors_f32(&st_path, "weight", vec![2], &tensor_bytes);
 
-        let graph = load_graph_from_path(&graph_path).expect("load");
+        let graph = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        )
+        .expect("load");
         assert!(!graph.constant_operand_ids_to_handles.is_empty());
     }
 
@@ -785,7 +852,8 @@ mod tests {
         fs::write(&graph_path, graph_content).unwrap();
         write_safetensors_f32(&st_path, "onnx::weight", vec![2], &tensor_bytes);
 
-        load_graph_from_path(&graph_path).expect("load");
+        load_graph_from_path_with_options(&graph_path, &crate::loader::GraphLoadOptions::default())
+            .expect("load");
     }
 
     #[test]
@@ -829,7 +897,8 @@ mod tests {
             &[0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40],
         );
 
-        load_graph_from_path(&graph_path).expect("safetensors should win");
+        load_graph_from_path_with_options(&graph_path, &crate::loader::GraphLoadOptions::default())
+            .expect("safetensors should win");
     }
 
     #[test]
@@ -866,7 +935,10 @@ mod tests {
         fs::write(&manifest_path, "{ invalid json }").unwrap();
         fs::write(&weights_path, [0u8; 8]).unwrap();
 
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         assert!(
             matches!(result, Err(GraphError::ConversionFailed { ref format, .. }) if format == "manifest-weights"),
             "expected manifest parse error, got {:?}",
@@ -931,7 +1003,10 @@ mod tests {
         fs::write(&weights_path, &weights_data).unwrap();
 
         // Should match namespace separator (:: -> __)
-        let result = load_graph_from_path(&graph_path);
+        let result = load_graph_from_path_with_options(
+            &graph_path,
+            &crate::loader::GraphLoadOptions::default(),
+        );
         result.unwrap();
     }
 }

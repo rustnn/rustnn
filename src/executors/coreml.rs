@@ -2923,7 +2923,8 @@ mod checked_attempt_tests {
                         ConstantData {
                             data: expected.clone(),
                             label: None,
-                        },
+                        }
+                        .into(),
                     )]),
                     ..Default::default()
                 };

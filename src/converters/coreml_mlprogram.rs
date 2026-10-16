@@ -156,7 +156,10 @@ fn copy_origins(graph: &LoweringGraph<'_>) -> Vec<Option<u32>> {
     for &input in &graph.input_operands {
         origins[input as usize] = Some(input);
     }
-    for (&id, data) in &graph.constant_operand_ids_to_handles {
+    for (&id, reference) in &graph.constant_operand_ids_to_handles {
+        let Some(data) = reference.as_owned_data() else {
+            continue;
+        };
         if graph.operand(id).is_some_and(|operand| {
             operand.kind == OperandKind::Constant
                 && operand.descriptor.static_shape().is_some()
@@ -233,7 +236,11 @@ fn constant_copies(
         else {
             continue;
         };
-        let Some(data) = graph.constant_operand_ids_to_handles.get(&origin) else {
+        let Some(data) = graph
+            .constant_operand_ids_to_handles
+            .get(&origin)
+            .and_then(|c| c.as_owned_data())
+        else {
             continue;
         };
         copies
@@ -3603,6 +3610,7 @@ impl CoremlMlProgramConverter {
             let constant = graph
                 .constant_operand_ids_to_handles
                 .get(&operand_id)
+                .and_then(|c| c.as_owned_data())
                 .ok_or_else(|| GraphError::ConversionFailed {
                     format: "coreml_mlprogram".to_string(),
                     reason: format!("constexpr operand {} has no constant data", operand_id),
@@ -7160,7 +7168,14 @@ impl CoremlMlProgramConverter {
         // weights blob, which callers hash (the compiled-bundle cache key).
         let mut constants: Vec<_> = graph_info.constant_operand_ids_to_handles.iter().collect();
         constants.sort_unstable_by_key(|&(&operand_id, _)| operand_id);
-        for (operand_id, constant_data) in constants {
+        for (operand_id, constant_ref) in constants {
+            let constant_data =
+                constant_ref
+                    .as_owned_data()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "coreml_mlprogram".into(),
+                        reason: format!("Constant operand {operand_id} has no inline data"),
+                    })?;
             let operand =
                 graph_info
                     .operand(*operand_id)
@@ -12959,13 +12974,22 @@ impl CoremlMlProgramConverter {
         lowering_graph.carried = CarriedStates::new(&lowering_graph, pairs)?;
         let graph_info = &lowering_graph;
         let mut weight_builder = super::WeightFileBuilder::new();
-        weight_builder.reserve(
-            graph_info
-                .constant_operand_ids_to_handles
-                .values()
-                .map(|c| c.data.len() + 128)
-                .sum(),
-        );
+        weight_builder.reserve(graph_info.constant_operand_ids_to_handles.iter().try_fold(
+            0usize,
+            |acc, (id, constant)| -> Result<usize, _> {
+                Ok::<usize, GraphError>(
+                    acc + constant
+                        .as_owned_data()
+                        .ok_or_else(|| GraphError::UnresolvedConstant {
+                            id: *id,
+                            constant_ref: constant.clone(),
+                        })?
+                        .data
+                        .len()
+                        + 128,
+                )
+            },
+        )?);
         let model = self.convert_with_precision_boundaries(graph_info, &mut weight_builder)?;
 
         // Serialize to bytes
@@ -13079,7 +13103,8 @@ mod tests {
                         .flat_map(f32::to_le_bytes)
                         .collect(),
                     label: None,
-                },
+                }
+                .into(),
             )]),
             operations: vec![
                 Operation::Identity {
@@ -13117,6 +13142,24 @@ mod tests {
     }
 
     #[test]
+    fn float16_conversion_rejects_unresolved_constants() {
+        let mut graph = constant_copy_asset_graph();
+        graph
+            .constant_operand_ids_to_handles
+            .insert(0, crate::graph::ConstantReference::Missing);
+        assert!(matches!(
+            CoremlMlProgramConverter.convert_with_float16_precision(
+                &graph,
+                crate::mlcontextoptions::CoremlFloat16Precision::Native,
+            ),
+            Err(GraphError::UnresolvedConstant {
+                id: 0,
+                constant_ref: crate::graph::ConstantReference::Missing,
+            })
+        ));
+    }
+
+    #[test]
     fn constant_copy_asset_accepts_only_source_proven_public_copies() {
         let graph = constant_copy_asset_graph();
         let model = CoremlMlProgramConverter.convert(&graph).unwrap().data;
@@ -13133,12 +13176,17 @@ mod tests {
         runtime_input.input_operands.push(0);
         runtime_input.constant_operand_ids_to_handles.clear();
         let mut malformed_constant = graph.clone();
+        let mut data = malformed_constant
+            .constant_operand_ids_to_handles
+            .get(&0)
+            .unwrap()
+            .as_owned_data()
+            .unwrap()
+            .clone();
+        data.data.pop();
         malformed_constant
             .constant_operand_ids_to_handles
-            .get_mut(&0)
-            .unwrap()
-            .data
-            .pop();
+            .insert(0, data.into());
         let mut out_of_order = graph.clone();
         out_of_order.operations.swap(0, 1);
         let mut repeated_producer = graph.clone();
@@ -13177,14 +13225,17 @@ mod tests {
         for operand in &mut graph.operands {
             operand.descriptor.data_type = DataType::Int32;
         }
-        graph
-            .constant_operand_ids_to_handles
-            .get_mut(&0)
-            .unwrap()
-            .data = [16_777_217i32, i32::MIN]
-            .into_iter()
-            .flat_map(i32::to_le_bytes)
-            .collect();
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            ConstantData {
+                data: [16_777_217i32, i32::MIN]
+                    .into_iter()
+                    .flat_map(i32::to_le_bytes)
+                    .collect(),
+                label: None,
+            }
+            .into(),
+        );
         let graph = LoweringGraph::new(&graph).unwrap();
         let mut weights = super::super::WeightFileBuilder::new();
         let metadata: Vec<_> = (0..2)
@@ -13208,7 +13259,10 @@ mod tests {
         assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 1);
         assert_eq!(
             &weights[128..136],
-            &graph.constant_operand_ids_to_handles[&0].data,
+            &graph.constant_operand_ids_to_handles[&0]
+                .as_owned_data()
+                .unwrap()
+                .data,
         );
     }
 
@@ -13892,9 +13946,10 @@ mod tests {
         });
 
         // Add constant data
-        graph
-            .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            crate::graph::ConstantReference::OwnedData(ConstantData { data, label: None }),
+        );
 
         // Add a simple relu operation
         graph.operations.push(op_from_operator_options(
@@ -14001,7 +14056,8 @@ mod tests {
                 ConstantData {
                     data: vec![255, 127, 5, 0],
                     label: None,
-                },
+                }
+                .into(),
             )]),
             quantized: false,
         };
@@ -14153,10 +14209,10 @@ mod tests {
         });
         graph.constant_operand_ids_to_handles.insert(
             0,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: data1,
                 label: None,
-            },
+            }),
         );
 
         // Operand 1: Second Float16 constant [2]
@@ -14175,7 +14231,8 @@ mod tests {
             ConstantData {
                 data: data2,
                 label: None,
-            },
+            }
+            .into(),
         );
 
         // Operand 2: Output
@@ -14265,7 +14322,7 @@ mod tests {
         });
         graph
             .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+            .insert(0, ConstantData { data, label: None }.into());
 
         // Output
         graph.operands.push(Operand {
@@ -14376,7 +14433,7 @@ mod tests {
         });
         graph
             .constant_operand_ids_to_handles
-            .insert(0, ConstantData { data, label: None });
+            .insert(0, ConstantData { data, label: None }.into());
 
         // Output
         graph.operands.push(Operand {
@@ -14641,7 +14698,8 @@ mod tests {
                         .flat_map(i64::to_le_bytes)
                         .collect(),
                     label: None,
-                },
+                }
+                .into(),
             )]),
             quantized: false,
         };
@@ -14950,7 +15008,8 @@ mod tests {
                     ConstantData {
                         data: (-1i32).to_le_bytes().to_vec(),
                         label: None,
-                    },
+                    }
+                    .into(),
                 );
             }
             let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
@@ -15154,7 +15213,8 @@ mod tests {
             ConstantData {
                 data: vec![1u8; input_len],
                 label: None,
-            },
+            }
+            .into(),
         );
         graph.operands.push(Operand {
             name: Some("scale".to_string()),
@@ -15171,7 +15231,8 @@ mod tests {
             ConstantData {
                 data: 0.5f32.to_le_bytes().repeat(scale_len),
                 label: None,
-            },
+            }
+            .into(),
         );
         graph.operands.push(Operand {
             name: Some("output".to_string()),

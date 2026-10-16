@@ -86,6 +86,7 @@ fn get_constant_data(graph: &GraphInfo, operand_id: u32) -> Result<&[u8]> {
     graph
         .constant_operand_ids_to_handles
         .get(&operand_id)
+        .and_then(|constant| constant.as_owned_data())
         .map(|constant_data| constant_data.data.as_slice())
         .ok_or(WebNNConverterError::IdNotAConstant(operand_id).into())
 }
