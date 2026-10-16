@@ -25,7 +25,7 @@ lines to most of these situations.
 | `ShapeInferenceError::InconsistentDataTypes` or `BroadcastError` | The inputs of a binary operation differ in data type or are not broadcast-compatible; insert `cast`, `reshape` or `expand` |
 | `GraphError::DynamicInputsFeatureDisabled` | The graph file declares a dynamic dimension; build with `--features dynamic-inputs` |
 | `Failed to convert graph: ... Unsupported operation: <name>` | The selected backend's converter has no lowering for that operation; see the [operator support report](../development/backend-operator-support.md) and pick another backend or decompose the operation |
-| `Error::GraphBuildError` from CoreML, LiteRT or TensorRT with a backend message | The backend rejected the converted model. `RUSTNN_DEBUG=2` with `RUSTNN_DEBUG_ONNX_DIR` dumps the ONNX model, `TRTX_JSON_DUMP_PATH` the TensorRT layers; run the WPT case for the operation (`make test-wpt-op OP=<name>`) to compare |
+| `Error::GraphBuildError` from CoreML, LiteRT or TensorRT with a backend message | The backend rejected the converted model. `RUSTNN_ONNX_DUMP_DIR=<dir>` dumps the ONNX model, `TRTX_JSON_DUMP_PATH` the TensorRT layers; run the WPT case for the operation (`make test-wpt-op OP=<name>`) to compare |
 
 ## Dispatch and tensors
 

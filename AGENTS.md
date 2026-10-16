@@ -94,7 +94,7 @@ Feature checks CI runs: `cargo check`, `cargo check --features onnx-runtime`,
 with `webnn-runtime`; `cargo test --lib` and `cargo test --lib --features cann-runtime-mock`.
 
 Environment variables: `ORT_DYLIB_PATH` (ONNX Runtime library), `RUST_LOG` (filters `log`
-records and spans in one stream), `RUSTNN_DEBUG=1|2` with `RUSTNN_DEBUG_ONNX_DIR`,
+records and spans in one stream), `RUSTNN_ONNX_DUMP_DIR`,
 `RUSTNN_TRTX_LOG_VERBOSITY`, `TRTX_JSON_DUMP_PATH`, `WPT_BACKEND`, `WPT_DIR`. The tables in
 `src/lib.rs` are authoritative.
 

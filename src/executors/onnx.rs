@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Once;
 
-use log::{info, warn};
+use log::{debug, info, warn};
 use ndarray::{ArrayD, IxDyn};
 use ort::environment::Environment;
 use ort::session::SessionInputValue;
@@ -339,11 +339,10 @@ fn run_onnx_session_with_inputs(
     // Callers may pass inputs in any order (e.g. alphabetical); matching by name avoids wrong mapping.
     let inputs_by_name: HashMap<String, OnnxInput> =
         inputs.into_iter().map(|i| (i.name.clone(), i)).collect();
-    let debug_onnx = std::env::var("RUSTNN_DEBUG").as_deref() == Ok("1");
-    if debug_onnx {
-        eprintln!("[ONNX] session.inputs() order (feed order to runtime):");
+    if log::log_enabled!(log::Level::Debug) {
+        debug!("[ONNX] session.inputs() order (feed order to runtime):");
         for (idx, input_info) in session.inputs().iter().enumerate() {
-            eprintln!("  {}: {}", idx, input_info.name());
+            debug!("  {}: {}", idx, input_info.name());
         }
     }
     let mut input_session_values: Vec<SessionInputValue> = Vec::new();
@@ -354,7 +353,7 @@ fn run_onnx_session_with_inputs(
             .ok_or_else(|| GraphError::OnnxRuntimeFailed {
                 reason: format!("model expects input '{name}' but it was not provided"),
             })?;
-        if debug_onnx {
+        if log::log_enabled!(log::Level::Debug) {
             let shape_str = format!("{:?}", input.shape);
             let preview = match &input.data {
                 TensorData::Float32(d) if d.len() <= 12 => format!("data={:?}", d),
@@ -363,7 +362,7 @@ fn run_onnx_session_with_inputs(
                 }
                 _ => "".to_string(),
             };
-            eprintln!("  [ONNX] feeding {} shape={} {}", name, shape_str, preview);
+            debug!("  [ONNX] feeding {} shape={} {}", name, shape_str, preview);
         }
         let session_value = match &input.data {
             TensorData::Float32(data) => {
