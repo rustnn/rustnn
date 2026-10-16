@@ -153,6 +153,9 @@ the snapshot diff.
 
 ## Debugging a wrong model
 
+Set `RUST_LOG=rustnn=debug` to include conversion diagnostics in the application's
+configured logger. Conversion failures use error logs and recoverable fallbacks use warnings.
+
 The signature of a converter bug: rustnn's shape inference is right, the emitted model is not,
 and the error surfaces downstream, as a type error at load time or an out-of-bounds axis on the
 next operation. Compare the emitted node with the backend's semantics before touching shape
@@ -160,7 +163,7 @@ inference.
 
 | Backend | Dump | Inspect |
 |---|---|---|
-| ONNX Runtime | `RUSTNN_DEBUG=2 RUSTNN_DEBUG_ONNX_DIR=<dir>` writes every model the backend builds | `python -c "import onnx; print(onnx.load('<file>'))"` or Netron |
+| ONNX Runtime | `RUSTNN_ONNX_DUMP_DIR=<dir>` writes each converted model to `debug_webnn_onnx.onnx` (overwriting the previous dump) | `python -c "import onnx; print(onnx.load('<file>'))"` or Netron |
 | TensorRT-RTX | `TRTX_JSON_DUMP_PATH=<dir>` writes the layer graph of each engine; `RUSTNN_TRTX_LOG_VERBOSITY=verbose` for the builder log | look for the layer that consumes the operand; Myelin-fused layers print as `__myl_...` |
 | CoreML | `--coreml-compiled-output <dir>` in the CLI keeps the `.mlmodelc` | `coremltools` or Xcode |
 | LiteRT | `--convert litert --convert-output model.tflite` | `flatc --json` with `protos/tflite/schema.fbs`, or the TFLite visualizer |

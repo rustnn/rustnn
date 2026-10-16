@@ -57,7 +57,7 @@ loads, validates and converts stored graphs without a context.
 | `src/backends/` | One module per backend implementing the backend traits; `caching.rs` for on-disk caches; `webnn/` with generated browser bindings; `mod.rs` with `DisabledContext` aliases for backends that are compiled out |
 | `src/executors/` | Legacy one-shot execution of converted bytes (ONNX Runtime, TensorRT, CoreML), used by the CLI |
 | `src/protos.rs`, `build.rs`, `protos/` | Protobuf (ONNX, CoreML) and flatbuffer (TFLite) schemas compiled at build time |
-| `src/graphviz.rs`, `src/debug.rs`, `src/tensor.rs` | DOT export, `RUSTNN_DEBUG` helpers, host tensor helpers |
+| `src/graphviz.rs`, `src/tensor.rs` | DOT export, host tensor helpers |
 | `src/main.rs` | The `rustnn` CLI |
 | `tests/run_wpt_conformance.rs`, `tests/wpt_conformance/` | WPT conformance harness, see the [WPT Conformance Guide](../testing/wpt-test-guide.md) |
 | `tests/test_*_execution.rs` | Backend integration tests (TensorRT, LiteRT, CANN on device) |

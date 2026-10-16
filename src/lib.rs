@@ -97,9 +97,8 @@
 //!
 //! | Variable | Effect |
 //! |---|---|
-//! | `RUST_LOG` | Log and span filter; off unless set (`info` prints the selected backend, `rustnn=debug` adds the per-call spans) |
-//! | `RUSTNN_DEBUG` | `1` enables [`debug_print!`] output; `2` also writes the converted ONNX model |
-//! | `RUSTNN_DEBUG_ONNX_DIR` | Directory for the ONNX dump written when `RUSTNN_DEBUG=2` |
+//! | `RUST_LOG` | Log and span filter; off unless set (`info` prints the selected backend, `rustnn=debug` adds conversion diagnostics, tensor feed details and per-call spans) |
+//! | `RUSTNN_ONNX_DUMP_DIR` | When set, writes the converted ONNX model to `debug_webnn_onnx.onnx` in this directory |
 //! | `RUSTNN_TRTX_LOG_VERBOSITY` | TensorRT logger filter: `internal_error`, `error`, `warning`, `info` or `verbose` |
 //! | `TRTX_JSON_DUMP_PATH` | Directory for per-engine TensorRT layer dumps |
 //! | `ORT_DYLIB_PATH` | Path of the ONNX Runtime shared library loaded by `ort` |
@@ -116,7 +115,6 @@ pub mod backends;
 #[cfg(feature = "capi")]
 pub mod capi;
 pub mod converters;
-pub mod debug;
 pub mod error;
 pub mod executors;
 pub mod graph;
