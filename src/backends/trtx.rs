@@ -219,6 +219,30 @@ pub(crate) struct TrtxGraph<'context> {
     inference_count: u64,
 }
 
+// SAFETY: All TensorRT and captured CUDA graph handles are private to this owner.
+// Inference requires exclusive access through dispatch, which binds the CUDA context
+// to the calling thread. No profiler or debug callbacks are installed. The execution
+// context's Rc<RuntimeConfig> is constructed for this graph and moved into it without
+// retaining any other Rc owners. Shared runtime/cache objects retain their existing
+// synchronization. Drop binds the context and finishes outstanding inference before
+// releasing the handles. Moving ownership therefore permits sequential use on another
+// thread; it does not permit concurrent access to the execution context.
+unsafe impl Send for TrtxGraph<'_> {}
+
+impl Drop for TrtxGraph<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.cuda_stream.context().bind_to_thread() {
+            warn!("Failed to bind CUDA context before destroying TensorRT graph: {error}");
+        }
+        if let Err(error) = self.cuda_stream.synchronize() {
+            warn!("Failed to synchronize TensorRT graph before destruction: {error}");
+        }
+        // Captures refer to the execution context's resources. Destroy them before
+        // Rust drops the execution context and then the engine in field order.
+        self.cuda_graphs.clear();
+    }
+}
+
 struct CapturedCudaGraph {
     graph: sys::CUgraph,
     executable: sys::CUgraphExec,

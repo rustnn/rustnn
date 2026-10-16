@@ -9,8 +9,12 @@ use rustnn::mlgraphbuilder::MLGraphBuilder;
 use rustnn::operator_enums::MLOperandDataType;
 
 fn context() -> MLContext<'static> {
+    context_with_cuda_graphs(false)
+}
+
+fn context_with_cuda_graphs(cuda_graphs: bool) -> MLContext<'static> {
     let mut tuning = RustNNOptions::default();
-    tuning.trtx.cuda_graphs = false;
+    tuning.trtx.cuda_graphs = cuda_graphs;
     MLContext::create(
         &MLContextOptions::new(MLPowerPreference::Default, true)
             .with_rustnn_backend_hint(Backend::Trtx)
