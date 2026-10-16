@@ -25,7 +25,6 @@
 //! callers must store as [`ONNX_EXTERNAL_WEIGHTS_FILENAME`] next to the model.
 
 use crate::converters::{ConvertedGraph, ONNX_EXTERNAL_WEIGHTS_FILENAME, operand_name};
-use crate::debug_print;
 use crate::error::GraphError;
 use crate::graph::{
     DataType, Dimension, GraphInfo, get_static_or_max_size, unpack_int4, unpack_uint4,
@@ -43,6 +42,7 @@ use crate::shape_inference::{
     broadcast_shapes, infer_gather_shape, infer_matmul_shape, infer_transpose_shape,
     infer_unsqueeze_shape, infer_where_shape,
 };
+use log::{debug, error, info, warn};
 use prost::Message;
 use webnn_onnx_utils::{
     attributes::AttrBuilder, data_types as utils_data_types, operation_names::mapper,
@@ -288,12 +288,9 @@ impl OnnxConverter {
                             parts.push(shifted_out);
                         }
                     } else {
-                        debug_print!(
+                        debug!(
                             "[ONNX CONVERTER] Could not resolve dynamic dim '{}' (base='{}') for {}; falling back to max_size={}",
-                            dd.name,
-                            base_name,
-                            prefix,
-                            dd.max_size
+                            dd.name, base_name, prefix, dd.max_size
                         );
                         let name = format!("{}_dim{}_fallback", prefix, idx);
                         initializers.push(TensorProto {
@@ -1066,8 +1063,8 @@ impl OnnxConverter {
         op_info: Option<(&Operation, usize)>,
     ) -> GraphError {
         if let Some((op, idx)) = op_info {
-            debug_print!(
-                "[DEBUG] Invalid operand {} at {} (op #{} type={} label={:?} inputs={:?} outputs={:?})",
+            error!(
+                "Invalid operand {} at {} (op #{} type={} label={:?} inputs={:?} outputs={:?})",
                 operand,
                 context,
                 idx,
@@ -1077,25 +1074,25 @@ impl OnnxConverter {
                 op.output_operands()
             );
         } else {
-            debug_print!("[DEBUG] Invalid operand {} at {}", operand, context);
+            error!("Invalid operand {} at {}", operand, context);
         }
         GraphError::InvalidConversionOperand { operand }
     }
 
-    /// Pretty-print the webnn-graph-json style [`webnn_graph::ast::Node`] for `op_index` to stderr (ONNX conversion diagnostics).
-    fn eprintln_failed_operation_webnn_json(graph: &GraphInfo, op_index: usize) {
+    /// Pretty-print the webnn-graph-json style [`webnn_graph::ast::Node`] for `op_index` at error level (ONNX conversion diagnostics).
+    fn log_failed_operation_webnn_json(graph: &GraphInfo, op_index: usize) {
         use crate::webnn_json::graph_operation_to_webnn_node;
         match graph_operation_to_webnn_node(graph, op_index) {
             Ok(node) => match serde_json::to_string_pretty(&node) {
-                Ok(s) => eprintln!(
+                Ok(s) => error!(
                     "[rustnn onnx converter] failing operation index {op_index} (WebNN graph JSON node):\n{s}"
                 ),
-                Err(e) => eprintln!(
+                Err(e) => error!(
                     "[rustnn onnx converter] operation index {op_index}: failed to pretty-print JSON node: {e}"
                 ),
             },
-            Err(e) => eprintln!(
-                "[rustnn onnx converter] operation index {op_index}: could not build WebNN JSON node for stderr: {e}"
+            Err(e) => error!(
+                "[rustnn onnx converter] operation index {op_index}: could not build WebNN JSON node for diagnostics: {e}"
             ),
         }
     }
@@ -2285,14 +2282,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
             return Err(GraphError::DynamicInputsFeatureDisabled);
         }
 
-        debug_print!("[DEBUG] Starting ONNX conversion");
-        debug_print!("  Total operations: {}", graph.operations.len());
+        debug!("Starting ONNX conversion");
+        debug!("  Total operations: {}", graph.operations.len());
         let expand_count = graph
             .operations
             .iter()
             .filter(|op| matches!(op, Operation::Expand { .. }))
             .count();
-        debug_print!("  Expand operations: {}", expand_count);
+        debug!("  Expand operations: {}", expand_count);
 
         let mut initializers = Vec::new();
         let mut inputs_val = Vec::new();
@@ -2317,10 +2314,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
         for &id in &sorted_input_operands {
             let operand = graph.operand(id).ok_or_else(|| {
-                debug_print!(
-                    "[DEBUG] Missing input operand {} while building ONNX graph",
-                    id
-                );
+                error!("Missing input operand {} while building ONNX graph", id);
                 Self::invalid_operand("graph input lookup", id, None)
             })?;
 
@@ -2333,19 +2327,16 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
             // Debug: print all KV input shapes
             if is_kv_input {
-                debug_print!(
+                debug!(
                     "[ONNX CONVERTER] KV input: {} shape={:?} has_empty={}",
-                    input_name,
-                    operand.descriptor.shape,
-                    has_empty_dimension
+                    input_name, operand.descriptor.shape, has_empty_dimension
                 );
             }
 
             if has_empty_dimension && is_kv_input {
-                debug_print!(
-                    "[DEBUG] Skipping empty KV cache input: {} (shape: {:?})",
-                    input_name,
-                    operand.descriptor.shape
+                debug!(
+                    "Skipping empty KV cache input: {} (shape: {:?})",
+                    input_name, operand.descriptor.shape
                 );
                 skipped_inputs.insert(id);
                 continue;
@@ -2371,10 +2362,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
         for &id in &sorted_outputs {
             let operand = graph.operand(id).ok_or_else(|| {
-                debug_print!(
-                    "[DEBUG] Missing output operand {} while building ONNX graph",
-                    id
-                );
+                error!("Missing output operand {} while building ONNX graph", id);
                 Self::invalid_operand("graph output lookup", id, None)
             })?;
 
@@ -2560,8 +2548,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     // Preserve shape from input
                     if let Some(input_shape) = operand_shapes.get(&input_id) {
-                        debug_print!(
-                            "[UNARY DEBUG] {} op {} preserves shape {:?} from input {}",
+                        debug!(
+                            "{} op {} preserves shape {:?} from input {}",
                             op.op_type(),
                             output_name,
                             input_shape,
@@ -2570,8 +2558,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         shape_overrides.insert(output_id, input_shape.clone());
                         operand_shapes.insert(output_id, input_shape.clone());
                     } else {
-                        debug_print!(
-                            "[UNARY WARNING] {} op {} has no input shape for input {}",
+                        warn!(
+                            "{} op {} has no input shape for input {}",
                             op.op_type(),
                             output_name,
                             input_id
@@ -2645,26 +2633,21 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                     if let (Some(lhs), Some(rhs)) = (lhs_shape, rhs_shape) {
                         if let Ok(out_shape) = infer_matmul_shape(lhs, rhs) {
-                            debug_print!(
-                                "[MATMUL DEBUG] Matmul {} tracked output shape {:?} from inputs {:?} @ {:?}",
-                                output_name,
-                                out_shape,
-                                lhs,
-                                rhs
+                            debug!(
+                                "Matmul {} tracked output shape {:?} from inputs {:?} @ {:?}",
+                                output_name, out_shape, lhs, rhs
                             );
                             shape_overrides.insert(output_id, out_shape.clone());
                             operand_shapes.insert(output_id, out_shape);
                         } else {
-                            debug_print!(
-                                "[MATMUL WARNING] Matmul {} failed to infer shape from inputs {:?} @ {:?}",
-                                output_name,
-                                lhs,
-                                rhs
+                            warn!(
+                                "Matmul {} failed to infer shape from inputs {:?} @ {:?}",
+                                output_name, lhs, rhs
                             );
                         }
                     } else {
-                        debug_print!(
-                            "[MATMUL WARNING] Matmul {} missing input shapes: lhs={} rhs={}",
+                        warn!(
+                            "Matmul {} missing input shapes: lhs={} rhs={}",
                             output_name,
                             lhs_shape.is_some(),
                             rhs_shape.is_some()
@@ -2724,16 +2707,15 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         for shape in &input_shapes[1..] {
                             out_shape[concat_axis] += shape[concat_axis];
                         }
-                        debug_print!(
-                            "[CONCAT DEBUG] Concat {} tracked output shape {:?}",
-                            output_name,
-                            out_shape
+                        debug!(
+                            "Concat {} tracked output shape {:?}",
+                            output_name, out_shape
                         );
                         shape_overrides.insert(output_id, out_shape.clone());
                         operand_shapes.insert(output_id, out_shape);
                     } else {
-                        debug_print!(
-                            "[CONCAT WARNING] Concat {} missing input shapes: have {}/{} inputs",
+                        warn!(
+                            "Concat {} missing input shapes: have {}/{} inputs",
                             output_name,
                             input_shapes.len(),
                             op.input_operands().len()
@@ -2858,8 +2840,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
         for (id, data) in &graph.constant_operand_ids_to_handles {
             let operand = graph.operand(*id).ok_or_else(|| {
-                debug_print!(
-                    "[DEBUG] Missing constant operand {} while building initializers",
+                error!(
+                    "Missing constant operand {} while building initializers",
                     id
                 );
                 Self::invalid_operand("initializer lookup", *id, None)
@@ -3025,8 +3007,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .get(input_id as usize)
                         .and_then(|opd| opd.name.clone())
                         .unwrap_or_else(|| format!("<unnamed:{}>", input_id));
-                    debug_print!(
-                        "[DEBUG] Missing operand id {} name '{}' for op {} ({}) at index {}. Inputs: {:?}",
+                    error!(
+                        "Missing operand id {} name '{}' for op {} ({}) at index {}. Inputs: {:?}",
                         input_id,
                         input_name,
                         op.display_name(),
@@ -3034,13 +3016,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         idx,
                         op.input_operands()
                     );
-                    debug_print!(
-                        "[DEBUG] operands.len()={} valid ids 0..{}",
+                    debug!(
+                        "operands.len()={} valid ids 0..{}",
                         graph.operands.len(),
                         graph.operands.len().saturating_sub(1)
                     );
-                    debug_print!(
-                        "[DEBUG] Failing op detail: idx={} type={} label={} inputs={:?}",
+                    error!(
+                        "Failing op detail: idx={} type={} label={} inputs={:?}",
                         idx,
                         op.op_type(),
                         op.label(),
@@ -3065,7 +3047,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     concat_inputs.iter().any(|&id| skipped_inputs.contains(&id));
 
                 // Debug: print all concat ops
-                debug_print!(
+                debug!(
                     "[ONNX CONVERTER] Concat op idx={} has {} inputs, has_skipped={}",
                     idx,
                     concat_inputs.len(),
@@ -3080,7 +3062,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .copied()
                         .collect();
 
-                    debug_print!(
+                    debug!(
                         "[ONNX CONVERTER]   Remaining inputs: {}",
                         remaining_inputs.len()
                     );
@@ -3099,10 +3081,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         let input_name = operand_name(graph, resolved_input_id);
                         let output_name = operand_name(graph, output_id);
 
-                        debug_print!(
+                        debug!(
                             "[ONNX CONVERTER]   Creating Identity node: {} -> {}",
-                            input_name,
-                            output_name
+                            input_name, output_name
                         );
 
                         // Create an Identity node: output = Identity(input)
@@ -3755,10 +3736,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .unwrap_or(*input_id);
 
                     let operand = graph.operand(resolved_id).ok_or_else(|| {
-                        debug_print!(
-                            "[DEBUG] Missing operand {} in concat at op idx {}",
-                            resolved_id,
-                            idx
+                        error!(
+                            "Missing operand {} in concat at op idx {}",
+                            resolved_id, idx
                         );
                         Self::invalid_operand("concat input lookup", resolved_id, Some((op, idx)))
                     })?;
@@ -3826,14 +3806,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                 // Debug: trace concat operations to find rank mismatches
                 if op_name.contains("concat") {
-                    debug_print!(
-                        "[RUST DEBUG] Concat {} has {} inputs:",
+                    debug!(
+                        "Concat {} has {} inputs:",
                         op_name,
                         op.input_operands().len()
                     );
                     for (input_idx, input_id) in op.input_operands().iter().enumerate() {
                         if let Some(operand) = graph.operand(*input_id) {
-                            debug_print!(
+                            debug!(
                                 "  Input {}: operand_{} shape={:?} rank={}",
                                 input_idx,
                                 input_id,
@@ -4793,29 +4773,32 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                 }
             } else if matches!(&op, Operation::Triangular { .. }) {
-                // Triangular operation: Cast integer inputs to float32
+                // ORT CPU Trilu supports signed integers. Widen unsigned inputs
+                // losslessly, leaving native int32 and int64 inputs unchanged.
                 let input_id = op.input_operands()[0];
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
                     Self::invalid_operand("triangular input", input_id, Some((op, idx)))
                 })?;
+                let input_dtype = input_operand.descriptor.data_type;
+                let cast_dtype = match input_dtype {
+                    DataType::Uint32 => Some(ProtoDataType::Int64),
+                    DataType::Uint8 => Some(ProtoDataType::Int32),
+                    _ => None,
+                };
 
-                let needs_cast = matches!(
-                    input_operand.descriptor.data_type,
-                    DataType::Int32 | DataType::Int64 | DataType::Uint32 | DataType::Uint8
-                );
-
-                let input_name = if needs_cast {
-                    let cast_output = format!("{}_input_float", op_name);
-                    debug_print!(
-                        "[FIX] Triangular op {} has {:?} input, casting to Float32",
-                        op_name,
-                        input_operand.descriptor.data_type
+                if let Some(cast_dtype) = cast_dtype {
+                    warn!(
+                        "[FIX] Triangular op {op_name:?} has {input_dtype:?} input, casting to {cast_dtype:?}"
                     );
+                }
+
+                let input_name = if let Some(dtype) = cast_dtype {
+                    let cast_output = format!("{}_input_signed", op_name);
                     nodes.push(Self::create_cast_node(
                         &format!("{}_pre_cast", op_name),
                         operand_name(graph, input_id),
                         cast_output.clone(),
-                        ProtoDataType::Float,
+                        dtype,
                     ));
                     cast_output
                 } else {
@@ -4849,17 +4832,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
                 inputs.push(k_name);
 
-                // ONNX Trilu outputs float32 when input was cast from int32.
-                // Cast back to int32 if the WebNN output expects int32.
                 let output_id = op
                     .output_operand()
                     .expect("Single-output operation expected");
-                let output_operand = graph.operand(output_id).expect("triangular output operand");
-                let output_needs_cast =
-                    needs_cast && output_operand.descriptor.data_type == DataType::Int32;
-
-                let trilu_output = if output_needs_cast {
-                    format!("{}_trilu_float", op_name)
+                let trilu_output = if cast_dtype.is_some() {
+                    format!("{}_trilu_signed", op_name)
                 } else {
                     operand_name(graph, output_id)
                 };
@@ -4873,13 +4850,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                // Cast Trilu output back to int32 if original input was int32
-                if output_needs_cast {
+                // Restore the original integer type after the lossless widening.
+                if cast_dtype.is_some() {
                     nodes.push(Self::create_cast_node(
                         &format!("{}_post_cast", op_name),
                         trilu_output,
                         operand_name(graph, output_id),
-                        ProtoDataType::Int32,
+                        Self::data_type_code(input_dtype),
                     ));
                 }
             } else if let Operation::Where {
@@ -7594,9 +7571,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
             } else if let Operation::Expand { new_shape, .. } = &op {
-                debug_print!("[DEBUG] Processing WebNN expand operation:");
-                debug_print!("  Op name: {}", op_name);
-                debug_print!("  new_shape: {:?}", new_shape);
+                debug!("Processing WebNN expand operation:");
+                debug!("  Op name: {}", op_name);
+                debug!("  new_shape: {:?}", new_shape);
 
                 // newShape: [] means expand to 0D (scalar). ONNX Expand requires a 1D shape
                 // tensor as the second input, so we can't emit Expand with an empty shape.
@@ -7665,11 +7642,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         let input_rank = input_shape.len();
                         let target_rank = shape_values.len();
 
-                        debug_print!("[DEBUG] Expand operation:");
-                        debug_print!("  Op name: {}", op_name);
-                        debug_print!("  Input operand ID: {}", input_id);
-                        debug_print!("  Input shape: {:?} (rank={})", input_shape, input_rank);
-                        debug_print!("  Target shape: {:?} (rank={})", shape_values, target_rank);
+                        debug!("Expand operation:");
+                        debug!("  Op name: {}", op_name);
+                        debug!("  Input operand ID: {}", input_id);
+                        debug!("  Input shape: {:?} (rank={})", input_shape, input_rank);
+                        debug!("  Target shape: {:?} (rank={})", shape_values, target_rank);
 
                         // Only apply scalar handling to actual constant operands
                         // Runtime computed values may have different shapes than static descriptors
@@ -7680,7 +7657,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         // Scalars (rank 0) need special handling regardless of whether they're constants:
                         // Reshape to target rank with all 1s, then expand will broadcast properly
                         if input_rank == 0 {
-                            debug_print!(
+                            debug!(
                                 "  Scalar input (constant={}) - will reshape to match target rank with all 1s",
                                 is_constant
                             );
@@ -7723,11 +7700,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
                                 // Dimensions are compatible if they're equal or either is 1
                                 if input_dim != target_dim && input_dim != 1 && target_dim != 1 {
-                                    debug_print!(
+                                    debug!(
                                         "  Incompatible at dim {}: {} vs {}",
-                                        i,
-                                        input_dim,
-                                        target_dim
+                                        i, input_dim, target_dim
                                     );
                                     compatible = false;
                                     break;
@@ -7735,7 +7710,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             }
                         }
 
-                        debug_print!("  Broadcasting compatible: {}", compatible);
+                        debug!("  Broadcasting compatible: {}", compatible);
                         compatible
                     };
 
@@ -7745,10 +7720,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     let op_type = if has_dynamic_shape || is_broadcast_compatible {
                         "Expand"
                     } else {
-                        debug_print!(
+                        debug!(
                             "[FIX] Using Reshape instead of Expand for {} -> {:?}",
-                            op_name,
-                            shape_values
+                            op_name, shape_values
                         );
                         "Reshape"
                     };
@@ -8670,7 +8644,7 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let input_shape = input_operand.descriptor.static_or_max_shape();
                 let rank = input_shape.len();
                 if axis >= rank {
-                    Self::eprintln_failed_operation_webnn_json(graph, idx);
+                    Self::log_failed_operation_webnn_json(graph, idx);
                     return Err(GraphError::ConversionFailed {
                         format: "onnx".to_string(),
                         reason: format!("split axis {} out of bounds for rank {}", axis_attr, rank),
@@ -9271,16 +9245,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 let mut inputs: Vec<String> = Vec::new();
 
                 // Debug: print shapes of all inputs
-                debug_print!("[SCATTERND DEBUG] Operation: {}", op_name);
+                debug!("Operation: {}", op_name);
                 for (i, input_id) in [*data_id, *indices_id, *updates_id].iter().enumerate() {
                     let shape = operand_shapes.get(input_id);
                     let desc_shape = graph.operand(*input_id).map(|o| &o.descriptor.shape);
-                    debug_print!(
+                    debug!(
                         "  Input {}: operand_id={}, tracked_shape={:?}, descriptor_shape={:?}",
-                        i,
-                        input_id,
-                        shape,
-                        desc_shape
+                        i, input_id, shape, desc_shape
                     );
                 }
 
@@ -9431,8 +9402,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             _ => DataType::Float32,
                         };
                         type_overrides.insert(output_operand_id, dtype);
-                        debug_print!(
-                            "[DEBUG] ScatterND type_override: output_operand_id={} output_name={:?} dtype={:?}",
+                        debug!(
+                            "ScatterND type_override: output_operand_id={} output_name={:?} dtype={:?}",
                             output_operand_id,
                             operand_name(graph, output_operand_id),
                             dtype
@@ -10058,14 +10029,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     && let Some(TypeProtoValue::TensorType(tt)) = tp.value.as_mut()
                 {
                     tt.elem_type = elem_type;
-                    debug_print!(
-                        "[DEBUG] output type propagation: i={} id={} name={:?} desired_type={:?} elem_type={} source={}",
-                        i,
-                        id,
-                        out_name,
-                        desired_type,
-                        elem_type,
-                        source
+                    debug!(
+                        "output type propagation: i={} id={} name={:?} desired_type={:?} elem_type={} source={}",
+                        i, id, out_name, desired_type, elem_type, source
                     );
                 }
             }
@@ -10126,16 +10092,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
 
         let data = model.encode_to_vec();
 
-        let rustnn_debug = std::env::var("RUSTNN_DEBUG").unwrap_or_default();
-        if rustnn_debug == "2" {
-            let out_dir = std::env::var("RUSTNN_DEBUG_ONNX_DIR")
-                .ok()
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        if let Some(out_dir) = std::env::var_os("RUSTNN_ONNX_DUMP_DIR") {
+            let out_dir = std::path::PathBuf::from(out_dir);
             let out_path = out_dir.join("debug_webnn_onnx.onnx");
-            let _ = std::fs::create_dir_all(&out_dir);
-            let _ = std::fs::write(&out_path, &data);
-            eprintln!("[DEBUG] Wrote ONNX model to {}", out_path.display());
+            match std::fs::create_dir_all(&out_dir).and_then(|()| std::fs::write(&out_path, &data))
+            {
+                Ok(()) => info!("Wrote ONNX model to {}", out_path.display()),
+                Err(e) => warn!("Failed to write ONNX model to {}: {e}", out_path.display()),
+            }
         }
 
         Ok(ConvertedGraph {
