@@ -309,6 +309,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "bindgen"
+version = "0.73.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "787ef8ef523575546b106a58213d6e6b06198a05c2f757258c68a74273670cfa"
+dependencies = [
+ "bitflags 2.13.2",
+ "cexpr",
+ "clang-sys",
+ "log",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "rustc-hash",
+ "shlex 2.0.1",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -646,15 +665,6 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "typenum",
-]
-
-[[package]]
-name = "cudarc"
-version = "0.11.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a5bd4d1eee570c3b2ac64ed114125517dd1e541d88dd28fc259f1de4dba8d60"
-dependencies = [
- "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1300,7 +1310,7 @@ version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50d9e8096e1e9e61e6180952fc1bbc811a1579ed1e24c98602ea235189661472"
 dependencies = [
- "bindgen",
+ "bindgen 0.72.1",
  "cc",
 ]
 
@@ -2986,7 +2996,7 @@ dependencies = [
  "bytes",
  "cc",
  "clap",
- "cudarc 0.19.9",
+ "cudarc",
  "dirs 7.0.0",
  "flatbuffers",
  "futures-util",
@@ -3702,14 +3712,12 @@ dependencies = [
 
 [[package]]
 name = "trtx"
-version = "0.8.1+rtx1.6"
+version = "0.9.0+rtx1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75ecf9d27c8ba1246dbbec0b06922f7d06e7bc7617e11283d87c69a5805352ef"
+checksum = "ed94c984dd9738b2c7eec54f8a635981e9649073f5416697798505e240810c1c"
 dependencies = [
  "autocxx",
- "cudarc 0.11.9",
  "cxx",
- "libc",
  "libloading 0.9.0",
  "log",
  "thiserror 2.0.21",
@@ -3718,13 +3726,13 @@ dependencies = [
 
 [[package]]
 name = "trtx-sys"
-version = "0.8.1+rtx1.6"
+version = "0.9.0+rtx1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce855124c15c6b89050129b779ced096ed451fb99b00adab81a1d7dfab765aa3"
+checksum = "9cbd3a7fb8da820b30b46e1c5221c29661eff34e24d02ecf552df14d6403d0f4"
 dependencies = [
  "autocxx",
  "autocxx-build",
- "bindgen",
+ "bindgen 0.73.2",
  "bitflags 2.13.2",
  "cc",
  "cxx",
