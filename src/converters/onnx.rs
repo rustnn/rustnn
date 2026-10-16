@@ -43,6 +43,7 @@ use crate::shape_inference::{
     broadcast_shapes, infer_gather_shape, infer_matmul_shape, infer_transpose_shape,
     infer_unsqueeze_shape, infer_where_shape,
 };
+use log::warn;
 use prost::Message;
 use webnn_onnx_utils::{
     attributes::AttrBuilder, data_types as utils_data_types, operation_names::mapper,
@@ -4793,29 +4794,32 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ));
                 }
             } else if matches!(&op, Operation::Triangular { .. }) {
-                // Triangular operation: Cast integer inputs to float32
+                // ORT CPU Trilu supports signed integers. Widen unsigned inputs
+                // losslessly, leaving native int32 and int64 inputs unchanged.
                 let input_id = op.input_operands()[0];
                 let input_operand = graph.operand(input_id).ok_or_else(|| {
                     Self::invalid_operand("triangular input", input_id, Some((op, idx)))
                 })?;
+                let input_dtype = input_operand.descriptor.data_type;
+                let cast_dtype = match input_dtype {
+                    DataType::Uint32 => Some(ProtoDataType::Int64),
+                    DataType::Uint8 => Some(ProtoDataType::Int32),
+                    _ => None,
+                };
 
-                let needs_cast = matches!(
-                    input_operand.descriptor.data_type,
-                    DataType::Int32 | DataType::Int64 | DataType::Uint32 | DataType::Uint8
-                );
-
-                let input_name = if needs_cast {
-                    let cast_output = format!("{}_input_float", op_name);
-                    debug_print!(
-                        "[FIX] Triangular op {} has {:?} input, casting to Float32",
-                        op_name,
-                        input_operand.descriptor.data_type
+                if let Some(cast_dtype) = cast_dtype {
+                    warn!(
+                        "[FIX] Triangular op {op_name:?} has {input_dtype:?} input, casting to {cast_dtype:?}"
                     );
+                }
+
+                let input_name = if let Some(dtype) = cast_dtype {
+                    let cast_output = format!("{}_input_signed", op_name);
                     nodes.push(Self::create_cast_node(
                         &format!("{}_pre_cast", op_name),
                         operand_name(graph, input_id),
                         cast_output.clone(),
-                        ProtoDataType::Float,
+                        dtype,
                     ));
                     cast_output
                 } else {
@@ -4849,17 +4853,11 @@ impl crate::converters::GraphConverter for OnnxConverter {
                 });
                 inputs.push(k_name);
 
-                // ONNX Trilu outputs float32 when input was cast from int32.
-                // Cast back to int32 if the WebNN output expects int32.
                 let output_id = op
                     .output_operand()
                     .expect("Single-output operation expected");
-                let output_operand = graph.operand(output_id).expect("triangular output operand");
-                let output_needs_cast =
-                    needs_cast && output_operand.descriptor.data_type == DataType::Int32;
-
-                let trilu_output = if output_needs_cast {
-                    format!("{}_trilu_float", op_name)
+                let trilu_output = if cast_dtype.is_some() {
+                    format!("{}_trilu_signed", op_name)
                 } else {
                     operand_name(graph, output_id)
                 };
@@ -4873,13 +4871,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
                     ..Default::default()
                 });
 
-                // Cast Trilu output back to int32 if original input was int32
-                if output_needs_cast {
+                // Restore the original integer type after the lossless widening.
+                if cast_dtype.is_some() {
                     nodes.push(Self::create_cast_node(
                         &format!("{}_post_cast", op_name),
                         trilu_output,
                         operand_name(graph, output_id),
-                        ProtoDataType::Int32,
+                        Self::data_type_code(input_dtype),
                     ));
                 }
             } else if let Operation::Where {
