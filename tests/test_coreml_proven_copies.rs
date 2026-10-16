@@ -97,7 +97,8 @@ fn copy_graph(constant: bool, operations: &[CopyOp]) -> GraphInfo {
             ConstantData {
                 data: exact_bytes(),
                 label: None,
-            },
+            }
+            .into(),
         );
     }
     for (index, &kind) in operations.iter().enumerate() {
@@ -194,11 +195,14 @@ fn multi_megabyte_constant_fanout_reuses_the_existing_mil_weight_record() {
         let source = (0..length)
             .map(|index| (index % 251) as u8)
             .collect::<Vec<_>>();
-        graph
-            .constant_operand_ids_to_handles
-            .get_mut(&0)
-            .unwrap()
-            .data = source.clone();
+        graph.constant_operand_ids_to_handles.insert(
+            0,
+            ConstantData {
+                data: source.clone(),
+                label: None,
+            }
+            .into(),
+        );
         let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
         drop(graph);
         let model = specification::Model::decode(converted.data.as_slice()).unwrap();

@@ -111,7 +111,16 @@ pub(crate) fn write_webnn_and_safetensors(
             .constant_operand_ids_to_handles
             .get(&(idx as u32))
         {
-            const_bytes.insert(operand_export_name(operand, idx), constant.data.as_slice());
+            const_bytes.insert(
+                operand_export_name(operand, idx),
+                constant
+                    .as_owned_data()
+                    .ok_or_else(|| Error::GraphSaveError {
+                        source: format!("Constant {idx} has no inline data").into(),
+                    })?
+                    .data
+                    .as_slice(),
+            );
         }
     }
 
