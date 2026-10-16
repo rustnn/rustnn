@@ -29,10 +29,10 @@ The default build needs no native runtime beyond the prerequisites above.
 | `cann-runtime` | An OHOS/Ascend HiAI environment and `libcann_shim.so` (or `CANN_SHIM_PATH`) |
 | `webnn-runtime` with `webnn-wpt-tests` | The `wasm32-unknown-unknown` target; browser tests additionally need `wasm-pack`, Node.js, Chrome/Chromium, `curl`, and `unzip` |
 
-The optional features `dynamic-inputs`, `native-examples`, `pollster`, and
+The optional features `dynamic-inputs`, `native-examples`, `native-benches`, `pollster`, and
 `zstd-cache-compression` do not add external runtime prerequisites.
 
-Defaults enable `onnx-converter` and `burn-cpu-runtime`. Each runtime includes its
+Defaults enable `onnx-converter`, `burn-cpu-runtime`, and `coreml-runtime`. Each runtime includes its
 converter. For serialization alone, disable defaults and enable `<backend>-converter`.
 See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-features).
 
@@ -45,6 +45,9 @@ The CLI is disabled on wasm32: its entry point is empty and its dependencies are
 
 Use the Makefile targets; they set feature flags and environment variables consistently.
 `make help` prints the same list.
+
+Native benchmarks are opt-in so wasm32 all-targets checks skip them. Run them with
+`cargo bench --features native-benches --bench weights_io`.
 
 | Target | Effect |
 |---|---|

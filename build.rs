@@ -233,7 +233,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "src/converters/trtx_gru.rs",
         "src/converters/trtx_lstm.rs",
         "src/converters/trtx_rnn.rs",
-        "src/backends/trtx.rs",
+        "src/backends/trtx/mod.rs",
+        "src/backends/trtx/trtx_io_playground.rs",
     ]);
     Ok(())
 }

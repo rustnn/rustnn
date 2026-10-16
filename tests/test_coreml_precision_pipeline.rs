@@ -226,7 +226,8 @@ fn constant_transpose_uses_asset_without_policy_fallback() {
             ConstantData {
                 data: bytes.clone(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into(),
         ..Default::default()
@@ -608,7 +609,8 @@ fn precision_pipeline_dynamic_prelu_retains_binary_broadcast_provenance() {
                     .flat_map(|&value| reference_half(value).to_bits().to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),
@@ -1435,7 +1437,8 @@ fn weighted() -> GraphInfo {
                     .flat_map(|x| x.to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),
@@ -1487,7 +1490,8 @@ fn masked() -> GraphInfo {
             ConstantData {
                 data: 0f32.to_le_bytes().to_vec(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),
@@ -1620,7 +1624,8 @@ fn half_where_constant_condition(shared: bool) -> GraphInfo {
         ConstantData {
             data: vec![1, 0, 1, 0],
             label: None,
-        },
+        }
+        .into(),
     );
     graph
 }
@@ -1645,7 +1650,8 @@ fn half_where_computed_condition(shape: &[Dimension]) -> GraphInfo {
         ConstantData {
             data: 0f32.to_le_bytes().to_vec(),
             label: None,
-        },
+        }
+        .into(),
     );
     for operation in &mut graph.operations {
         let Operation::Where { condition, .. } = operation else {
@@ -1854,7 +1860,8 @@ fn half_add_then_widen() -> GraphInfo {
                 .flat_map(|&x| reference_half(x).to_bits().to_le_bytes())
                 .collect(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),
@@ -2159,7 +2166,8 @@ fn precision_pipeline_rematerializes_half_weight_cast_closures_without_features(
                 .flat_map(|x| x.to_le_bytes())
                 .collect(),
             label: None,
-        },
+        }
+        .into(),
     );
     graph
         .operations
@@ -2205,7 +2213,10 @@ fn precision_pipeline_rematerializes_half_weight_cast_closures_without_features(
             .iter()
             .any(|op| op.r#type == "cast" && op.outputs.iter().any(|x| x.name == "wide_weight"))
     );
-    let original = &graph.constant_operand_ids_to_handles[&3].data;
+    let original = &graph.constant_operand_ids_to_handles[&3]
+        .as_owned_data()
+        .unwrap()
+        .data;
     let weights = converted.weights_data.as_ref().unwrap();
     assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 1);
     assert_eq!(&weights[128..128 + original.len()], original);
@@ -2240,7 +2251,8 @@ fn precision_pipeline_rematerializes_constant_transpose_transport_closures() {
                     .flat_map(|x| x.to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }
+            .into(),
         );
         graph.operations = vec![
             Operation::Transpose {
@@ -2310,7 +2322,8 @@ fn transposed_constant_narrowing() -> GraphInfo {
                 .flat_map(|x| x.to_le_bytes())
                 .collect(),
             label: None,
-        },
+        }
+        .into(),
     );
     graph.operations = vec![
         Operation::Transpose {
@@ -2601,7 +2614,8 @@ fn precision_pipeline_rounds_constant_casts_without_runtime_inputs() {
                     .flat_map(|value| value.to_le_bytes())
                     .collect(),
                 label: None,
-            },
+            }
+            .into(),
         );
         let converted = CoremlMlProgramConverter
             .convert_with_float16_precision(&graph, EXACT)
@@ -2779,7 +2793,8 @@ fn precision_pipeline_dynamic_bounds_do_not_guess_graph_suffix_names() {
             ConstantData {
                 data: reference_half(0.0007).to_bits().to_le_bytes().to_vec(),
                 label: None,
-            },
+            }
+            .into(),
         )]
         .into_iter()
         .collect(),

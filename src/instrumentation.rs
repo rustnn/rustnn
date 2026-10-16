@@ -211,11 +211,10 @@ mod tests {
         use crate::mlcontext::{MLNamedTensors, MLTensor, MLTensorDescriptor};
         use crate::operator_enums::MLOperandDataType;
 
-        let tensor = MLTensor {
-            id: 7,
-            constant: false,
-            descriptor: MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]),
-        };
+        let tensor = MLTensor::new(
+            7,
+            MLTensorDescriptor::new(MLOperandDataType::Float32, vec![2, 2]),
+        );
         let bindings = MLNamedTensors::from([("lhs", &tensor)]);
 
         assert_eq!(

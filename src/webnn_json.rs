@@ -24,8 +24,8 @@
 
 use crate::error::GraphError;
 use crate::graph::{
-    ConstantData, DataType, Dimension, DynamicDimension, GraphInfo, Operand, OperandDescriptor,
-    OperandKind, to_dimension_vector,
+    ConstantData, ConstantReference, DataType, Dimension, DynamicDimension, GraphInfo, Operand,
+    OperandDescriptor, OperandKind, StringRef, to_dimension_vector,
 };
 use crate::graph_recorder::GraphRecorder;
 use crate::operators::Operation;
@@ -338,7 +338,14 @@ pub(crate) fn to_graph_json_with_consts(
                             })?;
                     let init = match const_export {
                         ConstExport::Inline => ConstInit::InlineBytes {
-                            bytes: constant.data.clone(),
+                            bytes: constant
+                                .as_owned_data()
+                                .ok_or_else(|| GraphError::ConversionFailed {
+                                    format: "webnn-graph-json".into(),
+                                    reason: format!("Constant {name} has no inline data"),
+                                })?
+                                .data
+                                .clone(),
                         },
                         ConstExport::ExternalWeights => ConstInit::Weights {
                             r#ref: name.clone(),
@@ -461,9 +468,14 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
     for (name, const_decl) in consts {
         ensure_new_name(&operand_map, &name, "constant")?;
         let data = match const_decl.init {
-            ConstInit::InlineBytes { bytes } => bytes,
+            ConstInit::InlineBytes { bytes } => ConstantReference::OwnedData(ConstantData {
+                data: bytes,
+                label: None,
+            }),
             // External tensor data is populated by the safetensors loader after parsing.
-            ConstInit::Weights { r#ref: _ } => Vec::new(),
+            ConstInit::Weights { r#ref } => {
+                ConstantReference::StringRef(StringRef { label: r#ref })
+            }
             ConstInit::Scalar { value } => {
                 let element_count: usize =
                     const_decl.shape.iter().map(|&size| size as usize).product();
@@ -497,7 +509,10 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                         DataType::Uint8 => bytes.push(scalar as u8),
                     }
                 }
-                bytes
+                ConstantReference::OwnedData(ConstantData {
+                    data: bytes,
+                    label: None,
+                })
             }
         };
         let id = recorder.add_constant(
@@ -507,7 +522,7 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                 shape: to_dimension_vector(&const_decl.shape),
                 pending_permutation: Vec::new(),
             },
-            ConstantData { data, label: None },
+            data,
         );
         operand_map.insert(name.clone(), id);
     }
@@ -883,10 +898,10 @@ mod tests {
         let mut constant_map = HashMap::new();
         constant_map.insert(
             1u32,
-            ConstantData {
+            ConstantReference::OwnedData(ConstantData {
                 data: constant_data.clone(),
                 label: None,
-            },
+            }),
         );
 
         let graph = GraphInfo {
@@ -1068,7 +1083,7 @@ mod tests {
 
         // Scalar constant should be created
         assert_eq!(graph_info.operands.len(), 1);
-        assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
+        std::assert_matches!(graph_info.operands[0].kind, OperandKind::Constant);
         let empty_shape: Vec<Dimension> = vec![];
         assert_eq!(graph_info.operands[0].descriptor.shape, empty_shape);
     }
@@ -1337,9 +1352,11 @@ mod tests {
         let graph_info = from_graph_json(&graph_json).expect("from_graph_json");
         assert_eq!(graph_info.operands.len(), 1);
         assert!(matches!(graph_info.operands[0].kind, OperandKind::Constant));
-        // Weight references should create empty data (to be filled by loader)
-        let const_data = graph_info.constant_operand_ids_to_handles.get(&0).unwrap();
-        assert_eq!(const_data.data.len(), 0);
+        // Weight references should create UnresolvedConstant errror
+        std::assert_matches!(
+            graph_info.constant_data(0),
+            Err(crate::error::Error::GraphBuilderError { .. })
+        );
     }
 
     #[test]
@@ -1861,10 +1878,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             0u32,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: vec![0u8; 4],
                 label: None,
-            },
+            }),
         );
 
         let graph = GraphInfo {
@@ -2182,11 +2199,21 @@ mod tests {
         assert_eq!(borrowed.operands.len(), owned.operands.len());
         assert_eq!(borrowed.operations.len(), owned.operations.len());
         assert_eq!(
-            borrowed.constant_operand_ids_to_handles[&0].data,
-            owned.constant_operand_ids_to_handles[&0].data
+            borrowed.constant_operand_ids_to_handles[&0]
+                .as_owned_data()
+                .unwrap()
+                .data,
+            owned.constant_operand_ids_to_handles[&0]
+                .as_owned_data()
+                .unwrap()
+                .data
         );
         assert_eq!(
-            owned.constant_operand_ids_to_handles[&0].data.as_ptr(),
+            owned.constant_operand_ids_to_handles[&0]
+                .as_owned_data()
+                .unwrap()
+                .data
+                .as_ptr(),
             original_pointer
         );
     }

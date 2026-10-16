@@ -1113,9 +1113,16 @@ impl CoremlMlProgramConverter {
                         .unwrap()
                         .clone()
                 } else {
-                    let data = &graph.constant_operand_ids_to_handles[&root].data;
+                    let constant_ref = &graph.constant_operand_ids_to_handles[&root];
+                    let constant_vec = constant_ref.as_owned_data().ok_or_else(|| {
+                        GraphError::UnresolvedConstant {
+                            id: root,
+                            constant_ref: constant_ref.clone(),
+                        }
+                    })?;
                     let constant = crate::graph::ConstantData {
-                        data: data
+                        data: constant_vec
+                            .data
                             .as_chunks::<4>()
                             .0
                             .iter()

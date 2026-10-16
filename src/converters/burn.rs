@@ -120,7 +120,13 @@ fn descriptor_shape_to_i64(shape: &[Dimension]) -> Vec<i64> {
 
 fn collect_constants(graph: &GraphInfo) -> Result<Vec<ConstantSlot>, GraphError> {
     let mut constants = Vec::new();
-    for (operand_id, constant) in &graph.constant_operand_ids_to_handles {
+    for (operand_id, reference) in &graph.constant_operand_ids_to_handles {
+        let constant = reference
+            .as_owned_data()
+            .ok_or_else(|| GraphError::ConversionFailed {
+                format: "burn".to_string(),
+                reason: format!("constant operand {operand_id} has no inline data"),
+            })?;
         let operand = graph
             .operand(*operand_id)
             .ok_or(GraphError::InvalidConversionOperand {
@@ -200,7 +206,8 @@ mod tests {
                 crate::graph::ConstantData {
                     data: vec![0u8; 16],
                     label: None,
-                },
+                }
+                .into(),
             )]),
             quantized: false,
         }

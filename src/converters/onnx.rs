@@ -2832,7 +2832,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
             }
         }
 
-        for (id, data) in &graph.constant_operand_ids_to_handles {
+        for (id, constant_ref) in &graph.constant_operand_ids_to_handles {
+            let data =
+                constant_ref
+                    .as_owned_data()
+                    .ok_or_else(|| GraphError::ConversionFailed {
+                        format: "onnx".to_string(),
+                        reason: format!("Constant operand {} has no inline data", id),
+                    })?;
             let operand = graph.operand(*id).ok_or_else(|| {
                 error!(
                     "Missing constant operand {} while building initializers",
@@ -3754,7 +3761,9 @@ impl crate::converters::GraphConverter for OnnxConverter {
                         .unwrap_or_else(|| operand.descriptor.static_or_max_shape());
 
                     if input_shape.is_empty() {
-                        if let Some(data) = graph.constant_operand_ids_to_handles.get(&resolved_id)
+                        if let Some(constant_ref) =
+                            graph.constant_operand_ids_to_handles.get(&resolved_id)
+                            && let Some(data) = constant_ref.as_owned_data()
                         {
                             // Expand scalar constant to shape [1]
                             let expanded_name = format!("{}_scalar{}_expanded", op_name, input_idx);
@@ -11928,38 +11937,38 @@ webnn_graph "t" v1 {{
         let mut constant_operand_ids_to_handles = HashMap::new();
         constant_operand_ids_to_handles.insert(
             1,
-            crate::graph::ConstantData {
+            crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
                 data: weight_data,
                 label: None,
-            },
+            }),
         );
         constant_operand_ids_to_handles.insert(
             2,
-            crate::graph::ConstantData {
+            crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
                 data: f32_le_bytes(&[0.1f32; 16]),
                 label: None,
-            },
+            }),
         );
         constant_operand_ids_to_handles.insert(
             5,
-            crate::graph::ConstantData {
+            crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
                 data: f32_le_bytes(&[1., 2., 1., 2., 1., 2., 1., 2.]),
                 label: None,
-            },
+            }),
         );
         constant_operand_ids_to_handles.insert(
             6,
-            crate::graph::ConstantData {
+            crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
                 data: f32_le_bytes(&[0., 0., 0., 0., 1., 1.]),
                 label: None,
-            },
+            }),
         );
         constant_operand_ids_to_handles.insert(
             7,
-            crate::graph::ConstantData {
+            crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
                 data: f32_le_bytes(&[1., 2., 1., 2., 1., 2., 1., 2.]),
                 label: None,
-            },
+            }),
         );
 
         let attrs = serde_json::json!({
@@ -12217,8 +12226,13 @@ webnn_graph "t" v1 {{
             (6, peephole_data),
             (7, bias_data),
         ] {
-            constant_operand_ids_to_handles
-                .insert(id, crate::graph::ConstantData { data, label: None });
+            constant_operand_ids_to_handles.insert(
+                id,
+                crate::graph::ConstantReference::OwnedData(crate::graph::ConstantData {
+                    data,
+                    label: None,
+                }),
+            );
         }
 
         let attrs = serde_json::json!({

@@ -557,7 +557,7 @@ fn copy_dyn_value_to_buffer(
 fn write_outputs_from_session<'s>(
     session_outputs: &SessionOutputs<'s>,
     outputs: &MLNamedTensors,
-    tensors: &mut [OrtTensor],
+    tensors: &mut [Option<OrtTensor>],
 ) -> crate::error::Result<()> {
     for (&name, ml_tensor) in outputs.iter() {
         let Some(value) = session_outputs.get(name) else {
@@ -565,7 +565,12 @@ fn write_outputs_from_session<'s>(
                 source: format!("model did not produce output '{name}'").into(),
             });
         };
-        let buf = &mut tensors[ml_tensor.id].memory;
+        let buf = &mut tensors[ml_tensor.id]
+            .as_mut()
+            .ok_or_else(|| Error::TensorDestroyed {
+                tensor: (*ml_tensor).clone(),
+            })?
+            .memory;
         let logical = tensor_byte_len(&ml_tensor.descriptor)?;
         debug!(
             target: "rustnn::backends::ort",
@@ -584,7 +589,7 @@ fn write_outputs_from_session<'s>(
 pub(crate) struct OrtContext {
     env: Arc<Environment>,
     device_idx: usize,
-    tensors: Vec<OrtTensor>,
+    tensors: Vec<Option<OrtTensor>>,
 }
 
 impl OrtContext {
@@ -699,31 +704,19 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> crate::error::Result<MLTensor> {
         let n = tensor_byte_len(descriptor)?;
         let memory = vec![0u8; n.max(1)];
-        self.tensors.push(OrtTensor { memory });
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        self.tensors.push(Some(OrtTensor { memory }));
+        Ok(MLTensor::new(self.tensors.len() - 1, descriptor.clone()))
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        descriptor: &MLTensorDescriptor,
-        input_data: &[u8],
-    ) -> crate::error::Result<MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data)
-            .map_err(|e| Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            })?;
-        Ok(tensor)
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> crate::error::Result<()> {
+        if let Some(slot) = self.tensors.get_mut(tensor.id) {
+            *slot = None;
+        }
+        Ok(())
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> crate::error::Result<()> {
-        let host = &self.tensors[tensor.id].memory;
+        let host = &self.tensors[tensor.id].as_ref().unwrap().memory;
         let logical = tensor_byte_len(tensor.descriptor())?;
         if host.len() > logical {
             debug!(
@@ -755,7 +748,7 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     }
 
     fn write_tensor(&mut self, tensor: &MLTensor, array: &[u8]) -> crate::error::Result<()> {
-        let host = &mut self.tensors[tensor.id].memory;
+        let host = &mut self.tensors[tensor.id].as_mut().unwrap().memory;
         if array.len() > host.len() {
             return Err(Error::TensorWriteError {
                 source: format!(
@@ -792,7 +785,7 @@ impl<'context> MLBackendContext<'context> for OrtContext {
             let tensor = inputs.get(name).ok_or_else(|| Error::GraphDispatchError {
                 source: format!("missing input '{name}' for ONNX dispatch").into(),
             })?;
-            let full = &self.tensors[tensor.id].memory;
+            let full = &self.tensors[tensor.id].as_ref().unwrap().memory;
             let logical = tensor_byte_len(tensor.descriptor())?;
             let bytes = full
                 .get(..logical)
@@ -838,13 +831,13 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     ) -> crate::error::Result<()> {
         let id = tensor.id;
         let old_shape = tensor.descriptor().shape().to_vec();
-        let old_cap = self.tensors[tensor.id].memory.len();
+        let old_cap = self.tensors[tensor.id].as_ref().unwrap().memory.len();
 
         let mut new_desc = tensor.descriptor().clone();
         new_desc.set_shape(new_shape.to_vec());
 
         let new_bytes = tensor_byte_len(&new_desc)?;
-        let host = &mut self.tensors[tensor.id].memory;
+        let host = &mut self.tensors[tensor.id].as_mut().unwrap().memory;
         let grew = new_bytes > host.len();
         if grew {
             host.resize(new_bytes, 0u8);
@@ -881,7 +874,7 @@ impl<'context> MLBackendContext<'context> for OrtContext {
                 })?,
         );
         let alloc = new_bytes.max(1);
-        self.tensors[tensor.id].memory = vec![0u8; alloc];
+        self.tensors[tensor.id].as_mut().unwrap().memory = vec![0u8; alloc];
         debug!(
             target: "rustnn::backends::ort",
             "rustnn_set_tensor_capacity tensor_id={} max_shape={:?} alloc_bytes={} (logical descriptor unchanged: {:?})",
