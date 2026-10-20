@@ -7038,7 +7038,7 @@ impl TrtxConverter {
         let sum_input = if input_dtype == DataType::Float16 {
             Self::cast_to_float32(network, input)?
         } else {
-            input.clone()
+            *input
         };
 
         let sum_layer = network
@@ -13985,10 +13985,10 @@ impl TrtxConverter {
             };
             vec![
                 (input_shape[axes[0]].max(1) as f64 * f64::from(s0))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
                 (input_shape[axes[1]].max(1) as f64 * f64::from(s1))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
             ]
         };

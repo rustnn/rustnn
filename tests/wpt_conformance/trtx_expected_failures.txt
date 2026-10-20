@@ -1,2 +1,0 @@
-trtx::resample2d_nearest_half_pixel::resample2d_float16_nearest_noninteger_upscaling_with_scales
-trtx::resample2d_nearest_half_pixel::resample2d_float32_nearest_noninteger_upscaling_with_scales
