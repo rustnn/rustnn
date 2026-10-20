@@ -166,7 +166,12 @@ if (allBackends.size > 0) {
 // already accounts for the entries this sync adds or removes.
 const { totals, notes } = passTotals();
 if (totals.length > 0 || notes.length > 0) {
-  out.push('## Stats');
+  // Every backend runs the same corpus, so the total is same.
+  const total =
+    Number(totals[0]?.passed ?? 0) +
+    Number(totals[0]?.skipped ?? 0) +
+    Number(totals[0]?.failed ?? 0);
+  out.push(totals.length > 0 ? `## Stats (Total: ${total})` : '## Stats');
   out.push('');
   if (totals.length > 0) {
     out.push('| Backend | Passed | Skipped | Failed |');
