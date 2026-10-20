@@ -1015,7 +1015,7 @@ impl TrtxConverter {
                     let i32_bytes: Vec<u8> = match operand.descriptor.data_type {
                         DataType::Int4 => unpack_int4(data, element_count)
                             .into_iter()
-                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .flat_map(|v| v.to_le_bytes())
                             .collect(),
                         DataType::Uint4 => unpack_uint4(data, element_count)
                             .into_iter()
@@ -6212,12 +6212,12 @@ impl TrtxConverter {
 
         let scale_broadcast_shape: Vec<i64> = if layout == "nchw" && !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
-            s[1] = input_dims[1] as i64;
+            s[1] = input_dims[1];
             s
         } else if !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
             let last = input_dims.len() - 1;
-            s[last] = input_dims[last] as i64;
+            s[last] = input_dims[last];
             s
         } else {
             vec![1]
