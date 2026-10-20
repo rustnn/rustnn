@@ -2193,7 +2193,7 @@ pub fn infer_resample2d_shape(
                     .max(1.0) as u32,
             ),
             Dimension::Dynamic(d) => {
-                if (*scale - 1.0).abs() < f32::EPSILON {
+                if *scale == 1.0 {
                     Dimension::Dynamic(d.clone())
                 } else {
                     Dimension::Dynamic(DynamicDimension {
@@ -3791,6 +3791,41 @@ mod tests {
 
         let out = infer_resample2d_shape(&input, [2, 3], None, &[]).unwrap();
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_resample2d_fractional_scales_floor_in_double_precision() {
+        for (size, scale, expected) in [
+            (3, 1.5, 4),
+            (3, 0.5, 1),
+            (19, 1.9473684, 36),
+            (16_777_217, 1.0, 16_777_217),
+            (3, f32::from_bits(1.0_f32.to_bits() - 1), 2),
+        ] {
+            let input = vec![Dimension::Static(1), Dimension::Static(size)];
+            assert_eq!(
+                infer_resample2d_shape(&input, [0, 1], None, &[1.0, scale]).unwrap(),
+                vec![Dimension::Static(1), Dimension::Static(expected)],
+            );
+
+            let input = vec![
+                Dimension::Static(1),
+                Dimension::Dynamic(DynamicDimension {
+                    name: "width".to_string(),
+                    max_size: size,
+                }),
+            ];
+            assert_eq!(
+                infer_resample2d_shape(&input, [0, 1], None, &[1.0, scale]).unwrap(),
+                vec![
+                    Dimension::Static(1),
+                    Dimension::Dynamic(DynamicDimension {
+                        name: "width".to_string(),
+                        max_size: expected,
+                    }),
+                ],
+            );
+        }
     }
 
     // ScatterND tests

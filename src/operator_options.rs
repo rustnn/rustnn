@@ -978,6 +978,7 @@ pub struct MLResample2dOptions {
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
     /// Scale factor per resampled axis; empty means `[1.0, 1.0]`. Ignored when `sizes` is set.
+    /// Output dimensions are `floor(input_dimension * scale)`, computed in double precision.
     #[serde(default)]
     pub scales: Vec<f32>,
     /// Explicit output size per resampled axis.
