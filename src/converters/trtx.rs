@@ -1309,7 +1309,7 @@ impl TrtxConverter {
             )?,
             "reduceL1" => Self::add_reduce_l1_op(network, tensor_map, operation)?,
             "reduceL2" => Self::add_reduce_l2_op(graph, network, tensor_map, operation)?,
-            "reduceLogSum" => Self::add_reduce_log_sum_op(network, tensor_map, operation)?,
+            "reduceLogSum" => Self::add_reduce_log_sum_op(graph, network, tensor_map, operation)?,
             "reduceLogSumExp" => Self::add_reduce_log_sum_exp_op(network, tensor_map, operation)?,
             "reduceSumSquare" => Self::add_reduce_sum_square_op(network, tensor_map, operation)?,
 
@@ -6977,7 +6977,9 @@ impl TrtxConverter {
     }
 
     /// Add reduceLogSum operation: log(sum(x)). Axes optional; empty axes -> output = log(x).
+    /// Keep float16 sums and logarithms in float32 so the intermediate sum cannot overflow.
     fn add_reduce_log_sum_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7029,9 +7031,19 @@ impl TrtxConverter {
 
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
+        let input_dtype = graph
+            .operand(operation.input_operands()[0])
+            .map(|o| o.descriptor.data_type)
+            .unwrap_or(DataType::Float32);
+        let sum_input = if input_dtype == DataType::Float16 {
+            Self::cast_to_float32(network, input)?
+        } else {
+            input.clone()
+        };
+
         let sum_layer = network
             .add_reduce(
-                input,
+                &sum_input,
                 ReduceOperation::kSUM,
                 Axes::from_bits(axes_mask),
                 keep_dims,
@@ -7063,6 +7075,12 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
             })?;
+
+        let output = if input_dtype == DataType::Float16 {
+            Self::cast_to_float16(network, &output)?
+        } else {
+            output
+        };
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];

@@ -97,6 +97,9 @@ Rules that hold for every converter:
   edits invalidate cached engines. This source hash does not invalidate the separate TensorRT
   JIT runtime cache. See the [cache guide](https://rustnn.github.io/rustnn/integration/tensorrt/#caches).
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+- Float16 `reduceLogSum` promotes the input to float32 for the sum and logarithm,
+  then casts the result back to float16. This avoids overflow when the sum exceeds
+  float16's range but its logarithm remains finite.
 - `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
   a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
