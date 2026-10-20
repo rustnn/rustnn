@@ -354,9 +354,6 @@ pub struct GraphInfo {
     /// Constant data by operand index.
     #[serde(default)]
     pub constant_operand_ids_to_handles: HashMap<u32, ConstantData>,
-    /// Constant operand index to the tensor name used by converters.
-    #[serde(default)]
-    pub id_to_constant_tensor_operand_map: HashMap<u32, String>,
     /// Whether the graph carries quantized constants (affects the `.webnn` export).
     #[serde(default)]
     pub quantized: bool,
@@ -674,7 +671,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
         let json = serde_json::to_string(&graph).unwrap();
@@ -699,7 +695,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -733,7 +728,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -773,7 +767,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }

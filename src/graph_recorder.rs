@@ -46,13 +46,12 @@ impl GraphRecorder {
         id
     }
 
-    /// Appends a constant and optionally associates its external tensor name.
+    /// Appends a constant and its data.
     pub(crate) fn add_constant(
         &mut self,
         name: Option<String>,
         descriptor: OperandDescriptor,
         data: ConstantData,
-        tensor_name: Option<String>,
     ) -> u32 {
         let id = self.graph.operands.len() as u32;
         self.graph.operands.push(Operand {
@@ -61,11 +60,6 @@ impl GraphRecorder {
             name,
         });
         self.graph.constant_operand_ids_to_handles.insert(id, data);
-        if let Some(tensor_name) = tensor_name {
-            self.graph
-                .id_to_constant_tensor_operand_map
-                .insert(id, tensor_name);
-        }
         id
     }
 
@@ -215,7 +209,6 @@ mod tests {
                 data: 1.0f32.to_le_bytes().to_vec(),
                 label: None,
             },
-            None,
         );
         let output_id = recorder.next_output_ids(1)[0];
         let outputs = recorder

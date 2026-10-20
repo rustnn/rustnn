@@ -58,7 +58,6 @@ fn graph(
             .expect("gather operation"),
         ],
         constant_operand_ids_to_handles: HashMap::new(),
-        id_to_constant_tensor_operand_map: HashMap::new(),
         quantized: false,
     }
 }

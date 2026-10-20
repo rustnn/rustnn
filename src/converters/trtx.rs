@@ -15058,7 +15058,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![],
             constant_operand_ids_to_handles: Default::default(),
-            id_to_constant_tensor_operand_map: Default::default(),
             quantized: false,
         };
         let m = TrtxConverter::engine_io_binding_names(&graph);
@@ -15102,7 +15101,6 @@ mod tests {
                 outputs: vec![3],
             }],
             constant_operand_ids_to_handles: Default::default(),
-            id_to_constant_tensor_operand_map: Default::default(),
             quantized: false,
         };
         let unused = TrtxConverter::unused_constant_operand_ids(&graph);
@@ -15137,7 +15135,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: Default::default(),
-            id_to_constant_tensor_operand_map: Default::default(),
             quantized: false,
         };
         let m = TrtxConverter::engine_io_binding_names(&graph);

@@ -2325,7 +2325,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
                 data: bytemuck::cast_slice(values.as_slice()).to_vec(),
                 label: None,
             },
-            Some(id.to_string()),
         );
         Ok(MLOperand { id: id as usize })
     }
@@ -2371,7 +2370,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
             None,
             descriptor.into(),
             crate::ConstantData { data, label: None },
-            Some(id.to_string()),
         );
         Ok(MLOperand { id: id as usize })
     }

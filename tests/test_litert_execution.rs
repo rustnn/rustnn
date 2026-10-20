@@ -56,7 +56,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![operation(op_type, &[0], &[1], serde_json::Value::Null)],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -90,7 +89,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![operation(op_type, &[0, 1], &[2], serde_json::Value::Null)],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -166,7 +164,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![operation("conv2d", &[0, 1], &[2], serde_json::Value::Null)],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -210,7 +207,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![operation("reshape", &[0], &[1], serde_json::Value::Null)],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         let converter = LiteRtConverter::new();
@@ -254,7 +250,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![operation("matmul", &[0, 1], &[2], serde_json::Value::Null)],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         let converter = LiteRtConverter::new();

@@ -10324,7 +10324,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![op],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         let converted = OnnxConverter.convert(&graph).expect("convert");
@@ -10449,7 +10448,6 @@ mod tests {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -10535,7 +10533,6 @@ mod tests {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -10619,7 +10616,6 @@ mod tests {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -10661,7 +10657,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -10688,7 +10683,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -10756,7 +10750,6 @@ mod tests {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -10822,7 +10815,6 @@ mod tests {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -10889,7 +10881,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -10948,7 +10939,6 @@ mod tests {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11021,7 +11011,6 @@ mod tests {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11180,7 +11169,6 @@ webnn_graph "t" v1 {
             output_operands: vec![6],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11282,7 +11270,6 @@ webnn_graph "t" v1 {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11352,7 +11339,6 @@ webnn_graph "t" v1 {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11473,7 +11459,6 @@ webnn_graph "t" v1 {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11538,7 +11523,6 @@ webnn_graph "t" v1 {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11682,7 +11666,6 @@ webnn_graph "t" v1 {
             output_operands: vec![4],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11781,7 +11764,6 @@ webnn_graph "t" v1 {
             output_operands: vec![3],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -11854,7 +11836,6 @@ webnn_graph "t" v1 {
             output_operands: vec![1],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -12001,7 +11982,6 @@ webnn_graph "t" v1 {
             output_operands: vec![8, 9],
             operations: vec![op],
             constant_operand_ids_to_handles,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -12130,7 +12110,6 @@ webnn_graph "t" v1 {
             output_operands: vec![5, 6, 7],
             operations,
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -12262,7 +12241,6 @@ webnn_graph "t" v1 {
             output_operands: vec![8, 9],
             operations: vec![op],
             constant_operand_ids_to_handles,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 

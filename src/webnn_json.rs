@@ -508,7 +508,6 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                 pending_permutation: Vec::new(),
             },
             ConstantData { data, label: None },
-            None,
         );
         operand_map.insert(name.clone(), id);
     }
@@ -733,7 +732,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         }
     }
@@ -784,7 +782,6 @@ mod tests {
                 output_operands: vec![1],
                 operations: vec![operation],
                 constant_operand_ids_to_handles: HashMap::new(),
-                id_to_constant_tensor_operand_map: HashMap::new(),
                 quantized: false,
             };
 
@@ -926,7 +923,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![],
             constant_operand_ids_to_handles: constant_map,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -982,7 +978,6 @@ mod tests {
                 }
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1106,7 +1101,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1846,7 +1840,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1891,7 +1884,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 

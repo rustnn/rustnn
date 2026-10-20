@@ -418,7 +418,6 @@ pub(crate) struct TrtxBuilder<'builder> {
     runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
     device_cache_id: String,
     operands: HashMap<String, MLOperand>,
-    strings: Vec<String>, //_parser: Option<OnnxParser<'builder>>,
     caching_enabled: bool,
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
@@ -732,7 +731,6 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             device_cache_id: self.device_cache_id.clone(),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
-            strings: vec![],
             caching_enabled: self.options.engine_caching,
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,

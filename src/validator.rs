@@ -117,7 +117,6 @@ impl<'a> GraphValidator<'a> {
         // lookups detects map entries with no matching Constant operand.
         let constant_handles = &self.graph.constant_operand_ids_to_handles;
         let mut seen_constants = 0usize;
-        let tensor_constants = &self.graph.id_to_constant_tensor_operand_map;
         for (idx, operand) in self.graph.operands.iter().enumerate() {
             let operand_id = idx as u32;
             let descriptor = &operand.descriptor;
@@ -200,7 +199,7 @@ impl<'a> GraphValidator<'a> {
                                 actual: data.data.len(),
                             });
                         }
-                    } else if !tensor_constants.contains_key(&operand_id) {
+                    } else {
                         return Err(GraphError::MissingConstantData {
                             operand: operand_id,
                         });
@@ -602,7 +601,6 @@ mod tests {
             output_operands: vec![3],
             operations: vec![operation],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -645,7 +643,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -819,7 +816,6 @@ mod tests {
             output_operands: vec![4],
             operations: vec![relu, quantize],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: true,
         };
 
@@ -855,7 +851,6 @@ mod tests {
             output_operands: vec![],
             operations: vec![],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -895,7 +890,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -935,7 +929,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -985,7 +978,6 @@ mod tests {
                 outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1041,7 +1033,6 @@ mod tests {
                 },
             ],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1091,7 +1082,6 @@ mod tests {
                 outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(), // Missing constant data
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1152,7 +1142,6 @@ mod tests {
                 outputs: vec![2],
             }],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1197,7 +1186,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1237,7 +1225,6 @@ mod tests {
                 outputs: vec![1],
             }], // Invalid operand ID
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1284,7 +1271,6 @@ mod tests {
                 }, // Same output produced twice
             ],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1333,7 +1319,6 @@ mod tests {
                 outputs: vec![2],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 
@@ -1381,7 +1366,6 @@ mod tests {
                 outputs: vec![1],
             }],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
 

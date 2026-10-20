@@ -8013,7 +8013,6 @@ mod tests {
             output_operands: vec![1],
             operations: vec![op(op_type, &[0], &[1])],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -8046,7 +8045,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![op(op_type, &[0, 1], &[2])],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         }
     }
@@ -8128,7 +8126,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![op("matmul", &[0, 1], &[2])],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         convert_ok(&graph);
@@ -8181,7 +8178,6 @@ mod tests {
             output_operands: vec![2],
             operations: vec![op("conv2d", &[0, 1], &[2])],
             constant_operand_ids_to_handles: constants,
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         convert_ok(&graph);
@@ -8284,7 +8280,6 @@ mod tests {
             output_operands: vec![3],
             operations: vec![op("scatterND", &[0, 1, 2], &[3])],
             constant_operand_ids_to_handles: HashMap::new(),
-            id_to_constant_tensor_operand_map: HashMap::new(),
             quantized: false,
         };
         if constant_indices {
