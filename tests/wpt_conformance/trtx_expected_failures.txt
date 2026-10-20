@@ -1,4 +1,4 @@
-# TensorRT expected WPT failures, one `trtx::<operation>::<test>` entry per line.
-# These trials are still executed; a failing result is made non-fatal.
-# Regenerate with `make wpt-sync-trtx` on a machine with an NVIDIA GPU; the TensorRT
-# WPT suite does not run in CI.
+trtx::reduce_log_sum_small_values::reduceLogSum_float16_constant_finite_result_after_large_sum
+trtx::reduce_log_sum_small_values::reduceLogSum_float16_runtime_finite_result_after_large_sum
+trtx::resample2d_nearest_half_pixel::resample2d_float16_nearest_noninteger_upscaling_with_scales
+trtx::resample2d_nearest_half_pixel::resample2d_float32_nearest_noninteger_upscaling_with_scales
