@@ -7024,11 +7024,6 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        let mut axes_mask: u32 = 0;
-        for &axis in &axes {
-            axes_mask |= 1 << axis;
-        }
-
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
 
         let input_dtype = graph
@@ -7045,7 +7040,7 @@ impl TrtxConverter {
             .add_reduce(
                 &sum_input,
                 ReduceOperation::kSUM,
-                Axes::from_bits(axes_mask),
+                Axes::from_slice(&axes),
                 keep_dims,
             )
             .map_err(|e| GraphError::ConversionFailed {
