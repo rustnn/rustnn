@@ -37,9 +37,12 @@ it under `/api/`) and in [Backends](https://rustnn.github.io/rustnn/api/rustnn/b
 ## Provide ONNX Runtime
 
 The `onnx-runtime` feature loads the ONNX Runtime shared library at run time from the path in
-`ORT_DYLIB_PATH`. The `ort` crate rustnn is built against requires ONNX Runtime 1.29; the
-library in Windows `System32` is older (1.17) and the process aborts with a `BadVersion` panic
-from `ort` when it is picked up, so set the variable before every run.
+`ORT_DYLIB_PATH`. The `ort` crate rustnn is built against requires ONNX Runtime 1.29 or newer.
+Set the variable to select the intended library; otherwise the platform loader searches for
+`libonnxruntime.so`, `libonnxruntime.dylib`, or `onnxruntime.dll`. rustnn loads it explicitly
+with `ort::init_from`, so missing or incompatible libraries return an initialization error
+and backend discovery skips ONNX Runtime. The environment or its initialization failure is
+cached for the process lifetime; restart after changing the library path.
 
 Download the pinned release. From the repository root with `make` installed:
 

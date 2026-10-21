@@ -95,8 +95,7 @@ The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DY
 from the repository root, `make onnxruntime-download` fetches a matching release into
 `target/onnxruntime/`.
 Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
-`$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
-system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).
+`$env:ORT_DYLIB_PATH = "..."` in PowerShell). See [Getting Started](docs/user-guide/getting-started.md).
 
 **For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
 

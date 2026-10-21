@@ -6,10 +6,9 @@
 
 #![cfg(feature = "onnx-runtime")]
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Once;
+use std::sync::{Arc, OnceLock};
 
 use log::{debug, info, warn};
 use ndarray::{ArrayD, IxDyn};
@@ -26,29 +25,48 @@ use crate::error::GraphError;
 use crate::graph::OperandDescriptor;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
-static INIT: Once = Once::new();
+// Keep both the environment and any initialization failure for the process lifetime.
+static ENVIRONMENT: OnceLock<Result<Arc<Environment>, String>> = OnceLock::new();
 
-pub(crate) fn ensure_ort_initialized() -> Result<(), GraphError> {
-    let mut result = Ok(());
-    INIT.call_once(|| {
-        info!("Loading onnxruntime");
-        let _is_initial_load = ort::init()
-            .with_name("rustnn")
-            .with_execution_providers([ort::ep::CPU::default().build()])
-            .with_telemetry(false)
-            .commit();
-
-        let env = Environment::current().map_err(|e| {
-            warn!("Error loading onnxruntime: {e}");
-            GraphError::OnnxRuntimeUnavailable
-        });
-        if let Err(e) = env {
-            result = Err(e);
-            return;
-        }
-        info!("Loaded ONNX runtime");
-    });
-    result
+pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
+    ENVIRONMENT
+        .get_or_init(|| {
+            info!("Loading onnxruntime");
+            let path = std::env::var_os("ORT_DYLIB_PATH")
+                .filter(|path| !path.is_empty())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}onnxruntime{}",
+                        std::env::consts::DLL_PREFIX,
+                        std::env::consts::DLL_SUFFIX
+                    )
+                    .into()
+                });
+            // Load explicitly before any other ort API: implicit loading can panic.
+            let result = (|| {
+                ort::init_from(path)
+                    .map_err(|error| error.to_string())?
+                    .with_name("rustnn")
+                    .with_execution_providers([ort::ep::CPU::default().build()])
+                    .with_telemetry(false)
+                    .build()
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })();
+            match result {
+                Ok(env) => {
+                    info!("Loaded ONNX runtime");
+                    Ok(env)
+                }
+                Err(error) => {
+                    warn!("Error loading onnxruntime: {error}");
+                    Err(error)
+                }
+            }
+        })
+        .clone()
+        .map_err(|reason| GraphError::OnnxRuntimeFailed { reason })
 }
 
 /// Output metadata reported by [`run_onnx_zeroed`].
@@ -131,9 +149,9 @@ pub fn run_onnx_zeroed(
     _inputs: &HashMap<String, OperandDescriptor>,
 ) -> Result<Vec<OnnxOutput>, GraphError> {
     // Initialize ort global environment (only once per process)
-    ensure_ort_initialized()?;
+    let env = ensure_ort_initialized()?;
 
-    let mut session = Session::builder()
+    let mut session = Session::builder(&env)
         .map_err(|e| GraphError::OnnxRuntimeFailed {
             reason: format!("session builder failed: {e}"),
         })?
@@ -233,8 +251,8 @@ pub fn run_onnx_path_with_inputs(
     model_path: impl AsRef<Path>,
     inputs: Vec<OnnxInput>,
 ) -> Result<Vec<OnnxOutputWithData>, GraphError> {
-    ensure_ort_initialized()?;
-    let session = Session::builder()
+    let env = ensure_ort_initialized()?;
+    let session = Session::builder(&env)
         .map_err(|e| GraphError::OnnxRuntimeFailed {
             reason: format!("session builder failed: {e}"),
         })?
@@ -278,9 +296,9 @@ fn run_onnx_with_inputs_impl(
     output_descriptors: Option<&HashMap<String, OperandDescriptor>>,
 ) -> Result<Vec<OnnxOutputWithData>, GraphError> {
     // Initialize ort global environment (only once per process)
-    ensure_ort_initialized()?;
+    let env = ensure_ort_initialized()?;
 
-    let mut builder = Session::builder()
+    let mut builder = Session::builder(&env)
         .map_err(|e| GraphError::OnnxRuntimeFailed {
             reason: format!("session builder failed: {e}"),
         })?
@@ -292,7 +310,7 @@ fn run_onnx_with_inputs_impl(
         builder = builder
             .with_external_initializer_file_in_memory(
                 ONNX_EXTERNAL_WEIGHTS_FILENAME,
-                Cow::Owned(weights.to_vec()),
+                Arc::from(weights),
             )
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("set external initializer failed: {e}"),
@@ -796,13 +814,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ort_device_tensor_lifecycle() {
-        // This test requires ONNX Runtime to be initialized
-        // Skip if initialization fails
-        if ensure_ort_initialized().is_err() {}
+    fn test_missing_runtime_returns_consistent_errors() {
+        const CHILD: &str = "RUSTNN_TEST_MISSING_ORT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let first = ensure_ort_initialized().expect_err("missing library");
+            let second = ensure_ort_initialized().expect_err("cached failure");
+            assert_eq!(first.to_string(), second.to_string());
+            assert!(first.to_string().contains("missing-onnxruntime"));
+            use crate::mlcontext::ListDevices;
+            assert!(crate::backends::ort::OrtContext::list_devices().is_empty());
+            return;
+        }
 
-        // Create a simple ONNX model (add operation: y = x + 1)
-        // For now, we'll skip this test as it requires a real ONNX model
-        // Will be added when we have a test model available
+        // Isolate process-global ort state and avoid mutating this process's environment.
+        let dir = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "executors::onnx::tests::test_missing_runtime_returns_consistent_errors",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("ORT_DYLIB_PATH", dir.path().join("missing-onnxruntime"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "child failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
