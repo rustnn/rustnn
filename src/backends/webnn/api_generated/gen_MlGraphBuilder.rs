@@ -30,7 +30,7 @@ extern "C" {
     pub fn new(context: &MlContext) -> Result<MlGraphBuilder, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = abs)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = abs)]
     #[doc = "The `abs()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/abs)"]
@@ -39,10 +39,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn abs(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn abs(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = abs)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = abs)]
     #[doc = "The `abs()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/abs)"]
@@ -55,10 +55,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = add)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = add)]
     #[doc = "The `add()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/add)"]
@@ -67,10 +67,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn add(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn add(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = add)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = add)]
     #[doc = "The `add()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/add)"]
@@ -84,10 +84,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = argMax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = argMax)]
     #[doc = "The `argMax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/argMax)"]
@@ -96,10 +96,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn arg_max(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> MlOperand;
+    pub fn arg_max(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlArgMinMaxOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = argMax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = argMax)]
     #[doc = "The `argMax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/argMax)"]
@@ -113,10 +113,10 @@ extern "C" {
         input: &MlOperand,
         axis: u32,
         options: &MlArgMinMaxOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = argMin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = argMin)]
     #[doc = "The `argMin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/argMin)"]
@@ -125,10 +125,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn arg_min(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> MlOperand;
+    pub fn arg_min(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlArgMinMaxOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = argMin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = argMin)]
     #[doc = "The `argMin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/argMin)"]
@@ -142,10 +142,10 @@ extern "C" {
         input: &MlOperand,
         axis: u32,
         options: &MlArgMinMaxOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = averagePool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = averagePool2d)]
     #[doc = "The `averagePool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/averagePool2d)"]
@@ -154,10 +154,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn average_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn average_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlPool2dOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = averagePool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = averagePool2d)]
     #[doc = "The `averagePool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/averagePool2d)"]
@@ -170,10 +170,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlPool2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = batchNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = batchNormalization)]
     #[doc = "The `batchNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/batchNormalization)"]
@@ -187,10 +187,10 @@ extern "C" {
         input: &MlOperand,
         mean: &MlOperand,
         variance: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlBatchNormalizationOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = batchNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = batchNormalization)]
     #[doc = "The `batchNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/batchNormalization)"]
@@ -205,7 +205,7 @@ extern "C" {
         mean: &MlOperand,
         variance: &MlOperand,
         options: &MlBatchNormalizationOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGraph", feature = "MlOperand",))]
     # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = build)]
@@ -223,7 +223,7 @@ extern "C" {
     ) -> ::js_sys::Promise<MlGraph>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDataType",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cast)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cast)]
     #[doc = "The `cast()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cast)"]
@@ -236,14 +236,14 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         data_type: MlOperandDataType,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(
         feature = "MlOperand",
         feature = "MlOperandDataType",
         feature = "MlOperatorOptions",
     ))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cast)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cast)]
     #[doc = "The `cast()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cast)"]
@@ -257,10 +257,10 @@ extern "C" {
         input: &MlOperand,
         data_type: MlOperandDataType,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = ceil)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = ceil)]
     #[doc = "The `ceil()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/ceil)"]
@@ -269,10 +269,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn ceil(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn ceil(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = ceil)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = ceil)]
     #[doc = "The `ceil()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/ceil)"]
@@ -285,10 +285,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = clamp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = clamp)]
     #[doc = "The `clamp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/clamp)"]
@@ -297,10 +297,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn clamp(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn clamp(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlClampOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = clamp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = clamp)]
     #[doc = "The `clamp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/clamp)"]
@@ -313,10 +313,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlClampOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = concat)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = concat)]
     #[doc = "The `concat()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/concat)"]
@@ -325,10 +325,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn concat(this: &MlGraphBuilder, inputs: &[MlOperand], axis: u32) -> MlOperand;
+    pub fn concat(this: &MlGraphBuilder, inputs: &[MlOperand], axis: u32) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = concat)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = concat)]
     #[doc = "The `concat()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/concat)"]
@@ -342,10 +342,10 @@ extern "C" {
         inputs: &[MlOperand],
         axis: u32,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDescriptor",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -358,10 +358,10 @@ extern "C" {
         this: &MlGraphBuilder,
         descriptor: &MlOperandDescriptor,
         buffer: &::js_sys::Object,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDescriptor",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -374,10 +374,10 @@ extern "C" {
         this: &MlGraphBuilder,
         descriptor: &MlOperandDescriptor,
         buffer: &mut [u8],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDescriptor",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -390,10 +390,10 @@ extern "C" {
         this: &MlGraphBuilder,
         descriptor: &MlOperandDescriptor,
         buffer: &::js_sys::Uint8Array,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDataType",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -406,10 +406,10 @@ extern "C" {
         this: &MlGraphBuilder,
         data_type: MlOperandDataType,
         value: &::js_sys::BigInt,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDataType",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -422,10 +422,10 @@ extern "C" {
         this: &MlGraphBuilder,
         data_type: MlOperandDataType,
         value: f64,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlTensor",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = constant)]
     #[doc = "The `constant()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/constant)"]
@@ -434,10 +434,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn constant_with_tensor(this: &MlGraphBuilder, tensor: &MlTensor) -> MlOperand;
+    pub fn constant_with_tensor(this: &MlGraphBuilder, tensor: &MlTensor) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = conv2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = conv2d)]
     #[doc = "The `conv2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/conv2d)"]
@@ -446,10 +446,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn conv2d(this: &MlGraphBuilder, input: &MlOperand, filter: &MlOperand) -> MlOperand;
+    pub fn conv2d(this: &MlGraphBuilder, input: &MlOperand, filter: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlConv2dOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = conv2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = conv2d)]
     #[doc = "The `conv2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/conv2d)"]
@@ -463,10 +463,10 @@ extern "C" {
         input: &MlOperand,
         filter: &MlOperand,
         options: &MlConv2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = convTranspose2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = convTranspose2d)]
     #[doc = "The `convTranspose2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/convTranspose2d)"]
@@ -479,10 +479,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         filter: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlConvTranspose2dOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = convTranspose2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = convTranspose2d)]
     #[doc = "The `convTranspose2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/convTranspose2d)"]
@@ -496,10 +496,10 @@ extern "C" {
         input: &MlOperand,
         filter: &MlOperand,
         options: &MlConvTranspose2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cos)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cos)]
     #[doc = "The `cos()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cos)"]
@@ -508,10 +508,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn cos(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn cos(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cos)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cos)]
     #[doc = "The `cos()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cos)"]
@@ -524,10 +524,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cumulativeSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cumulativeSum)]
     #[doc = "The `cumulativeSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cumulativeSum)"]
@@ -536,10 +536,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn cumulative_sum(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> MlOperand;
+    pub fn cumulative_sum(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlCumulativeSumOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = cumulativeSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = cumulativeSum)]
     #[doc = "The `cumulativeSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/cumulativeSum)"]
@@ -553,10 +553,10 @@ extern "C" {
         input: &MlOperand,
         axis: u32,
         options: &MlCumulativeSumOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = dequantizeLinear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = dequantizeLinear)]
     #[doc = "The `dequantizeLinear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/dequantizeLinear)"]
@@ -570,10 +570,10 @@ extern "C" {
         input: &MlOperand,
         scale: &MlOperand,
         zero_point: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = dequantizeLinear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = dequantizeLinear)]
     #[doc = "The `dequantizeLinear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/dequantizeLinear)"]
@@ -588,10 +588,10 @@ extern "C" {
         scale: &MlOperand,
         zero_point: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = div)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = div)]
     #[doc = "The `div()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/div)"]
@@ -600,10 +600,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn div(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn div(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = div)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = div)]
     #[doc = "The `div()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/div)"]
@@ -617,10 +617,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = elu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = elu)]
     #[doc = "The `elu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/elu)"]
@@ -629,10 +629,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn elu(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn elu(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlEluOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = elu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = elu)]
     #[doc = "The `elu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/elu)"]
@@ -645,10 +645,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlEluOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = equal)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = equal)]
     #[doc = "The `equal()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/equal)"]
@@ -657,10 +657,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = equal)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = equal)]
     #[doc = "The `equal()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/equal)"]
@@ -674,10 +674,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = erf)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = erf)]
     #[doc = "The `erf()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/erf)"]
@@ -686,10 +686,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn erf(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn erf(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = erf)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = erf)]
     #[doc = "The `erf()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/erf)"]
@@ -702,10 +702,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = exp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = exp)]
     #[doc = "The `exp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/exp)"]
@@ -714,10 +714,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn exp(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn exp(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = exp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = exp)]
     #[doc = "The `exp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/exp)"]
@@ -730,10 +730,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = expand)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = expand)]
     #[doc = "The `expand()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/expand)"]
@@ -746,10 +746,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         new_shape: &[::js_sys::Number],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = expand)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = expand)]
     #[doc = "The `expand()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/expand)"]
@@ -763,10 +763,10 @@ extern "C" {
         input: &MlOperand,
         new_shape: &[::js_sys::Number],
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = floor)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = floor)]
     #[doc = "The `floor()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/floor)"]
@@ -775,10 +775,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn floor(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn floor(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = floor)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = floor)]
     #[doc = "The `floor()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/floor)"]
@@ -791,10 +791,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gather)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gather)]
     #[doc = "The `gather()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gather)"]
@@ -803,10 +803,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn gather(this: &MlGraphBuilder, input: &MlOperand, indices: &MlOperand) -> MlOperand;
+    pub fn gather(this: &MlGraphBuilder, input: &MlOperand, indices: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGatherOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gather)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gather)]
     #[doc = "The `gather()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gather)"]
@@ -820,10 +820,10 @@ extern "C" {
         input: &MlOperand,
         indices: &MlOperand,
         options: &MlGatherOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gatherElements)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gatherElements)]
     #[doc = "The `gatherElements()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gatherElements)"]
@@ -836,10 +836,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         indices: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGatherOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gatherElements)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gatherElements)]
     #[doc = "The `gatherElements()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gatherElements)"]
@@ -853,10 +853,10 @@ extern "C" {
         input: &MlOperand,
         indices: &MlOperand,
         options: &MlGatherOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gatherND)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gatherND)]
     #[doc = "The `gatherND()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gatherND)"]
@@ -865,10 +865,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn gather_nd(this: &MlGraphBuilder, input: &MlOperand, indices: &MlOperand) -> MlOperand;
+    pub fn gather_nd(this: &MlGraphBuilder, input: &MlOperand, indices: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gatherND)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gatherND)]
     #[doc = "The `gatherND()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gatherND)"]
@@ -882,10 +882,10 @@ extern "C" {
         input: &MlOperand,
         indices: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gelu)]
     #[doc = "The `gelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gelu)"]
@@ -894,10 +894,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn gelu(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn gelu(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gelu)]
     #[doc = "The `gelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gelu)"]
@@ -910,10 +910,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gemm)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gemm)]
     #[doc = "The `gemm()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gemm)"]
@@ -922,10 +922,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn gemm(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn gemm(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGemmOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gemm)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gemm)]
     #[doc = "The `gemm()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gemm)"]
@@ -939,10 +939,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlGemmOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = greater)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = greater)]
     #[doc = "The `greater()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/greater)"]
@@ -951,10 +951,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn greater(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn greater(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = greater)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = greater)]
     #[doc = "The `greater()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/greater)"]
@@ -968,10 +968,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = greaterOrEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = greaterOrEqual)]
     #[doc = "The `greaterOrEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/greaterOrEqual)"]
@@ -980,10 +980,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn greater_or_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn greater_or_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = greaterOrEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = greaterOrEqual)]
     #[doc = "The `greaterOrEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/greaterOrEqual)"]
@@ -997,10 +997,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gru)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gru)]
     #[doc = "The `gru()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gru)"]
@@ -1016,10 +1016,10 @@ extern "C" {
         recurrent_weight: &MlOperand,
         steps: u32,
         hidden_size: u32,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGruOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gru)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gru)]
     #[doc = "The `gru()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gru)"]
@@ -1036,10 +1036,10 @@ extern "C" {
         steps: u32,
         hidden_size: u32,
         options: &MlGruOptions,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gruCell)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gruCell)]
     #[doc = "The `gruCell()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gruCell)"]
@@ -1055,10 +1055,10 @@ extern "C" {
         recurrent_weight: &MlOperand,
         hidden_state: &MlOperand,
         hidden_size: u32,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlGruCellOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = gruCell)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = gruCell)]
     #[doc = "The `gruCell()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/gruCell)"]
@@ -1075,10 +1075,10 @@ extern "C" {
         hidden_state: &MlOperand,
         hidden_size: u32,
         options: &MlGruCellOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = hardSigmoid)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = hardSigmoid)]
     #[doc = "The `hardSigmoid()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/hardSigmoid)"]
@@ -1087,10 +1087,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn hard_sigmoid(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn hard_sigmoid(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlHardSigmoidOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = hardSigmoid)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = hardSigmoid)]
     #[doc = "The `hardSigmoid()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/hardSigmoid)"]
@@ -1103,10 +1103,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlHardSigmoidOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = hardSwish)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = hardSwish)]
     #[doc = "The `hardSwish()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/hardSwish)"]
@@ -1115,10 +1115,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn hard_swish(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn hard_swish(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = hardSwish)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = hardSwish)]
     #[doc = "The `hardSwish()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/hardSwish)"]
@@ -1131,10 +1131,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = identity)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = identity)]
     #[doc = "The `identity()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/identity)"]
@@ -1143,10 +1143,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn identity(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn identity(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = identity)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = identity)]
     #[doc = "The `identity()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/identity)"]
@@ -1159,10 +1159,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperandDescriptor",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = input)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = input)]
     #[doc = "The `input()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/input)"]
@@ -1171,10 +1171,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn input(this: &MlGraphBuilder, name: &str, descriptor: &MlOperandDescriptor) -> MlOperand;
+    pub fn input(this: &MlGraphBuilder, name: &str, descriptor: &MlOperandDescriptor) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = instanceNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = instanceNormalization)]
     #[doc = "The `instanceNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/instanceNormalization)"]
@@ -1183,10 +1183,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn instance_normalization(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn instance_normalization(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlInstanceNormalizationOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = instanceNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = instanceNormalization)]
     #[doc = "The `instanceNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/instanceNormalization)"]
@@ -1199,10 +1199,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlInstanceNormalizationOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = isInfinite)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = isInfinite)]
     #[doc = "The `isInfinite()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/isInfinite)"]
@@ -1211,10 +1211,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn is_infinite(this: &MlGraphBuilder, a: &MlOperand) -> MlOperand;
+    pub fn is_infinite(this: &MlGraphBuilder, a: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = isInfinite)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = isInfinite)]
     #[doc = "The `isInfinite()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/isInfinite)"]
@@ -1227,10 +1227,10 @@ extern "C" {
         this: &MlGraphBuilder,
         a: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = isNaN)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = isNaN)]
     #[doc = "The `isNaN()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/isNaN)"]
@@ -1239,10 +1239,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn is_na_n(this: &MlGraphBuilder, a: &MlOperand) -> MlOperand;
+    pub fn is_na_n(this: &MlGraphBuilder, a: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = isNaN)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = isNaN)]
     #[doc = "The `isNaN()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/isNaN)"]
@@ -1255,10 +1255,10 @@ extern "C" {
         this: &MlGraphBuilder,
         a: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = l2Pool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = l2Pool2d)]
     #[doc = "The `l2Pool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/l2Pool2d)"]
@@ -1267,10 +1267,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn l2_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn l2_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlPool2dOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = l2Pool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = l2Pool2d)]
     #[doc = "The `l2Pool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/l2Pool2d)"]
@@ -1283,10 +1283,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlPool2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = layerNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = layerNormalization)]
     #[doc = "The `layerNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/layerNormalization)"]
@@ -1295,10 +1295,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn layer_normalization(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn layer_normalization(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlLayerNormalizationOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = layerNormalization)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = layerNormalization)]
     #[doc = "The `layerNormalization()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/layerNormalization)"]
@@ -1311,10 +1311,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlLayerNormalizationOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = leakyRelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = leakyRelu)]
     #[doc = "The `leakyRelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/leakyRelu)"]
@@ -1323,10 +1323,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn leaky_relu(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn leaky_relu(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlLeakyReluOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = leakyRelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = leakyRelu)]
     #[doc = "The `leakyRelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/leakyRelu)"]
@@ -1339,10 +1339,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlLeakyReluOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lesser)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lesser)]
     #[doc = "The `lesser()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lesser)"]
@@ -1351,10 +1351,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn lesser(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn lesser(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lesser)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lesser)]
     #[doc = "The `lesser()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lesser)"]
@@ -1368,10 +1368,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lesserOrEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lesserOrEqual)]
     #[doc = "The `lesserOrEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lesserOrEqual)"]
@@ -1380,10 +1380,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn lesser_or_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn lesser_or_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lesserOrEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lesserOrEqual)]
     #[doc = "The `lesserOrEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lesserOrEqual)"]
@@ -1397,10 +1397,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = linear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = linear)]
     #[doc = "The `linear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/linear)"]
@@ -1409,10 +1409,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn linear(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn linear(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlLinearOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = linear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = linear)]
     #[doc = "The `linear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/linear)"]
@@ -1425,10 +1425,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlLinearOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = log)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = log)]
     #[doc = "The `log()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/log)"]
@@ -1437,10 +1437,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn log(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn log(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = log)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = log)]
     #[doc = "The `log()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/log)"]
@@ -1453,10 +1453,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalAnd)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalAnd)]
     #[doc = "The `logicalAnd()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalAnd)"]
@@ -1465,10 +1465,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn logical_and(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn logical_and(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalAnd)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalAnd)]
     #[doc = "The `logicalAnd()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalAnd)"]
@@ -1482,10 +1482,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalNot)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalNot)]
     #[doc = "The `logicalNot()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalNot)"]
@@ -1494,10 +1494,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn logical_not(this: &MlGraphBuilder, a: &MlOperand) -> MlOperand;
+    pub fn logical_not(this: &MlGraphBuilder, a: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalNot)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalNot)]
     #[doc = "The `logicalNot()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalNot)"]
@@ -1510,10 +1510,10 @@ extern "C" {
         this: &MlGraphBuilder,
         a: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalOr)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalOr)]
     #[doc = "The `logicalOr()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalOr)"]
@@ -1522,10 +1522,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn logical_or(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn logical_or(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalOr)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalOr)]
     #[doc = "The `logicalOr()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalOr)"]
@@ -1539,10 +1539,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalXor)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalXor)]
     #[doc = "The `logicalXor()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalXor)"]
@@ -1551,10 +1551,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn logical_xor(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn logical_xor(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = logicalXor)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = logicalXor)]
     #[doc = "The `logicalXor()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/logicalXor)"]
@@ -1568,10 +1568,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lstm)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lstm)]
     #[doc = "The `lstm()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lstm)"]
@@ -1587,10 +1587,10 @@ extern "C" {
         recurrent_weight: &MlOperand,
         steps: u32,
         hidden_size: u32,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlLstmOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lstm)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lstm)]
     #[doc = "The `lstm()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lstm)"]
@@ -1607,10 +1607,10 @@ extern "C" {
         steps: u32,
         hidden_size: u32,
         options: &MlLstmOptions,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lstmCell)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lstmCell)]
     #[doc = "The `lstmCell()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lstmCell)"]
@@ -1627,10 +1627,10 @@ extern "C" {
         hidden_state: &MlOperand,
         cell_state: &MlOperand,
         hidden_size: u32,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlLstmCellOptions", feature = "MlOperand",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = lstmCell)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = lstmCell)]
     #[doc = "The `lstmCell()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/lstmCell)"]
@@ -1648,10 +1648,10 @@ extern "C" {
         cell_state: &MlOperand,
         hidden_size: u32,
         options: &MlLstmCellOptions,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = matmul)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = matmul)]
     #[doc = "The `matmul()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/matmul)"]
@@ -1660,10 +1660,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn matmul(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn matmul(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = matmul)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = matmul)]
     #[doc = "The `matmul()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/matmul)"]
@@ -1677,10 +1677,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = max)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = max)]
     #[doc = "The `max()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/max)"]
@@ -1689,10 +1689,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn max(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn max(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = max)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = max)]
     #[doc = "The `max()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/max)"]
@@ -1706,10 +1706,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = maxPool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = maxPool2d)]
     #[doc = "The `maxPool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/maxPool2d)"]
@@ -1718,10 +1718,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn max_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn max_pool2d(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlPool2dOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = maxPool2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = maxPool2d)]
     #[doc = "The `maxPool2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/maxPool2d)"]
@@ -1734,10 +1734,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlPool2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = min)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = min)]
     #[doc = "The `min()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/min)"]
@@ -1746,10 +1746,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn min(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn min(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = min)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = min)]
     #[doc = "The `min()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/min)"]
@@ -1763,10 +1763,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = mul)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = mul)]
     #[doc = "The `mul()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/mul)"]
@@ -1775,10 +1775,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn mul(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn mul(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = mul)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = mul)]
     #[doc = "The `mul()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/mul)"]
@@ -1792,10 +1792,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = neg)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = neg)]
     #[doc = "The `neg()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/neg)"]
@@ -1804,10 +1804,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn neg(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn neg(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = neg)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = neg)]
     #[doc = "The `neg()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/neg)"]
@@ -1820,10 +1820,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = notEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = notEqual)]
     #[doc = "The `notEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/notEqual)"]
@@ -1832,10 +1832,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn not_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn not_equal(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = notEqual)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = notEqual)]
     #[doc = "The `notEqual()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/notEqual)"]
@@ -1849,10 +1849,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = pad)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = pad)]
     #[doc = "The `pad()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/pad)"]
@@ -1866,10 +1866,10 @@ extern "C" {
         input: &MlOperand,
         beginning_padding: &[::js_sys::Number],
         ending_padding: &[::js_sys::Number],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlPadOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = pad)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = pad)]
     #[doc = "The `pad()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/pad)"]
@@ -1884,10 +1884,10 @@ extern "C" {
         beginning_padding: &[::js_sys::Number],
         ending_padding: &[::js_sys::Number],
         options: &MlPadOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = pow)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = pow)]
     #[doc = "The `pow()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/pow)"]
@@ -1896,10 +1896,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn pow(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn pow(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = pow)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = pow)]
     #[doc = "The `pow()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/pow)"]
@@ -1913,10 +1913,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = prelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = prelu)]
     #[doc = "The `prelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/prelu)"]
@@ -1925,10 +1925,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn prelu(this: &MlGraphBuilder, input: &MlOperand, slope: &MlOperand) -> MlOperand;
+    pub fn prelu(this: &MlGraphBuilder, input: &MlOperand, slope: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = prelu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = prelu)]
     #[doc = "The `prelu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/prelu)"]
@@ -1942,10 +1942,10 @@ extern "C" {
         input: &MlOperand,
         slope: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = quantizeLinear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = quantizeLinear)]
     #[doc = "The `quantizeLinear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/quantizeLinear)"]
@@ -1959,10 +1959,10 @@ extern "C" {
         input: &MlOperand,
         scale: &MlOperand,
         zero_point: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = quantizeLinear)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = quantizeLinear)]
     #[doc = "The `quantizeLinear()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/quantizeLinear)"]
@@ -1977,10 +1977,10 @@ extern "C" {
         scale: &MlOperand,
         zero_point: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reciprocal)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reciprocal)]
     #[doc = "The `reciprocal()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reciprocal)"]
@@ -1989,10 +1989,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reciprocal(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reciprocal(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reciprocal)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reciprocal)]
     #[doc = "The `reciprocal()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reciprocal)"]
@@ -2005,10 +2005,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceL1)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceL1)]
     #[doc = "The `reduceL1()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceL1)"]
@@ -2017,10 +2017,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_l1(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_l1(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceL1)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceL1)]
     #[doc = "The `reduceL1()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceL1)"]
@@ -2033,10 +2033,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceL2)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceL2)]
     #[doc = "The `reduceL2()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceL2)"]
@@ -2045,10 +2045,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_l2(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_l2(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceL2)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceL2)]
     #[doc = "The `reduceL2()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceL2)"]
@@ -2061,10 +2061,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSum)]
     #[doc = "The `reduceLogSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceLogSum)"]
@@ -2073,10 +2073,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_log_sum(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_log_sum(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSum)]
     #[doc = "The `reduceLogSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceLogSum)"]
@@ -2089,10 +2089,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSumExp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSumExp)]
     #[doc = "The `reduceLogSumExp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceLogSumExp)"]
@@ -2101,10 +2101,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_log_sum_exp(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_log_sum_exp(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSumExp)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceLogSumExp)]
     #[doc = "The `reduceLogSumExp()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceLogSumExp)"]
@@ -2117,10 +2117,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMax)]
     #[doc = "The `reduceMax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMax)"]
@@ -2129,10 +2129,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_max(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_max(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMax)]
     #[doc = "The `reduceMax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMax)"]
@@ -2145,10 +2145,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMean)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMean)]
     #[doc = "The `reduceMean()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMean)"]
@@ -2157,10 +2157,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_mean(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_mean(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMean)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMean)]
     #[doc = "The `reduceMean()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMean)"]
@@ -2173,10 +2173,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMin)]
     #[doc = "The `reduceMin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMin)"]
@@ -2185,10 +2185,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_min(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_min(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceMin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceMin)]
     #[doc = "The `reduceMin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceMin)"]
@@ -2201,10 +2201,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceProduct)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceProduct)]
     #[doc = "The `reduceProduct()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceProduct)"]
@@ -2213,10 +2213,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_product(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_product(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceProduct)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceProduct)]
     #[doc = "The `reduceProduct()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceProduct)"]
@@ -2229,10 +2229,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceSum)]
     #[doc = "The `reduceSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceSum)"]
@@ -2241,10 +2241,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_sum(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_sum(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceSum)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceSum)]
     #[doc = "The `reduceSum()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceSum)"]
@@ -2257,10 +2257,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceSumSquare)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceSumSquare)]
     #[doc = "The `reduceSumSquare()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceSumSquare)"]
@@ -2269,10 +2269,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reduce_sum_square(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reduce_sum_square(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReduceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reduceSumSquare)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reduceSumSquare)]
     #[doc = "The `reduceSumSquare()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reduceSumSquare)"]
@@ -2285,10 +2285,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReduceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = relu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = relu)]
     #[doc = "The `relu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/relu)"]
@@ -2297,10 +2297,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn relu(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn relu(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = relu)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = relu)]
     #[doc = "The `relu()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/relu)"]
@@ -2313,10 +2313,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = resample2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = resample2d)]
     #[doc = "The `resample2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/resample2d)"]
@@ -2325,10 +2325,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn resample2d(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn resample2d(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlResample2dOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = resample2d)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = resample2d)]
     #[doc = "The `resample2d()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/resample2d)"]
@@ -2341,10 +2341,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlResample2dOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reshape)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reshape)]
     #[doc = "The `reshape()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reshape)"]
@@ -2357,10 +2357,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         new_shape: &[::js_sys::Number],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reshape)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reshape)]
     #[doc = "The `reshape()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reshape)"]
@@ -2374,10 +2374,10 @@ extern "C" {
         input: &MlOperand,
         new_shape: &[::js_sys::Number],
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reverse)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reverse)]
     #[doc = "The `reverse()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reverse)"]
@@ -2386,10 +2386,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn reverse(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn reverse(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlReverseOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = reverse)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = reverse)]
     #[doc = "The `reverse()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/reverse)"]
@@ -2402,10 +2402,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlReverseOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = roundEven)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = roundEven)]
     #[doc = "The `roundEven()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/roundEven)"]
@@ -2414,10 +2414,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn round_even(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn round_even(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = roundEven)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = roundEven)]
     #[doc = "The `roundEven()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/roundEven)"]
@@ -2430,10 +2430,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = scatterElements)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = scatterElements)]
     #[doc = "The `scatterElements()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/scatterElements)"]
@@ -2447,10 +2447,10 @@ extern "C" {
         input: &MlOperand,
         indices: &MlOperand,
         updates: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlScatterOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = scatterElements)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = scatterElements)]
     #[doc = "The `scatterElements()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/scatterElements)"]
@@ -2465,10 +2465,10 @@ extern "C" {
         indices: &MlOperand,
         updates: &MlOperand,
         options: &MlScatterOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = scatterND)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = scatterND)]
     #[doc = "The `scatterND()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/scatterND)"]
@@ -2482,10 +2482,10 @@ extern "C" {
         input: &MlOperand,
         indices: &MlOperand,
         updates: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = scatterND)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = scatterND)]
     #[doc = "The `scatterND()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/scatterND)"]
@@ -2500,10 +2500,10 @@ extern "C" {
         indices: &MlOperand,
         updates: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sigmoid)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sigmoid)]
     #[doc = "The `sigmoid()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sigmoid)"]
@@ -2512,10 +2512,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn sigmoid(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn sigmoid(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sigmoid)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sigmoid)]
     #[doc = "The `sigmoid()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sigmoid)"]
@@ -2528,10 +2528,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sign)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sign)]
     #[doc = "The `sign()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sign)"]
@@ -2540,10 +2540,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn sign(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn sign(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sign)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sign)]
     #[doc = "The `sign()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sign)"]
@@ -2556,10 +2556,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sin)]
     #[doc = "The `sin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sin)"]
@@ -2568,10 +2568,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn sin(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn sin(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sin)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sin)]
     #[doc = "The `sin()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sin)"]
@@ -2584,10 +2584,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = slice)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = slice)]
     #[doc = "The `slice()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/slice)"]
@@ -2601,10 +2601,10 @@ extern "C" {
         input: &MlOperand,
         starts: &[::js_sys::Number],
         sizes: &[::js_sys::Number],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlSliceOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = slice)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = slice)]
     #[doc = "The `slice()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/slice)"]
@@ -2619,10 +2619,10 @@ extern "C" {
         starts: &[::js_sys::Number],
         sizes: &[::js_sys::Number],
         options: &MlSliceOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softmax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softmax)]
     #[doc = "The `softmax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softmax)"]
@@ -2631,10 +2631,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn softmax(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> MlOperand;
+    pub fn softmax(this: &MlGraphBuilder, input: &MlOperand, axis: u32) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softmax)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softmax)]
     #[doc = "The `softmax()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softmax)"]
@@ -2648,10 +2648,10 @@ extern "C" {
         input: &MlOperand,
         axis: u32,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softplus)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softplus)]
     #[doc = "The `softplus()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softplus)"]
@@ -2660,10 +2660,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn softplus(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn softplus(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softplus)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softplus)]
     #[doc = "The `softplus()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softplus)"]
@@ -2676,10 +2676,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softsign)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softsign)]
     #[doc = "The `softsign()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softsign)"]
@@ -2688,10 +2688,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn softsign(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn softsign(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = softsign)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = softsign)]
     #[doc = "The `softsign()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/softsign)"]
@@ -2704,10 +2704,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = split)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = split)]
     #[doc = "The `split()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/split)"]
@@ -2720,10 +2720,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         splits: u32,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = split)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = split)]
     #[doc = "The `split()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/split)"]
@@ -2736,10 +2736,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         splits: &[::js_sys::Number],
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlSplitOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = split)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = split)]
     #[doc = "The `split()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/split)"]
@@ -2753,10 +2753,10 @@ extern "C" {
         input: &MlOperand,
         splits: u32,
         options: &MlSplitOptions,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlSplitOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = split)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = split)]
     #[doc = "The `split()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/split)"]
@@ -2770,10 +2770,10 @@ extern "C" {
         input: &MlOperand,
         splits: &[::js_sys::Number],
         options: &MlSplitOptions,
-    ) -> ::js_sys::Array<MlOperand>;
+    ) -> Result<::js_sys::Array<MlOperand>, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sqrt)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sqrt)]
     #[doc = "The `sqrt()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sqrt)"]
@@ -2782,10 +2782,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn sqrt(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn sqrt(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sqrt)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sqrt)]
     #[doc = "The `sqrt()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sqrt)"]
@@ -2798,10 +2798,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sub)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sub)]
     #[doc = "The `sub()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sub)"]
@@ -2810,10 +2810,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn sub(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> MlOperand;
+    pub fn sub(this: &MlGraphBuilder, a: &MlOperand, b: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = sub)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = sub)]
     #[doc = "The `sub()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/sub)"]
@@ -2827,10 +2827,10 @@ extern "C" {
         a: &MlOperand,
         b: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tan)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tan)]
     #[doc = "The `tan()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tan)"]
@@ -2839,10 +2839,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn tan(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn tan(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tan)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tan)]
     #[doc = "The `tan()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tan)"]
@@ -2855,10 +2855,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tanh)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tanh)]
     #[doc = "The `tanh()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tanh)"]
@@ -2867,10 +2867,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn tanh(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn tanh(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tanh)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tanh)]
     #[doc = "The `tanh()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tanh)"]
@@ -2883,10 +2883,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tile)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tile)]
     #[doc = "The `tile()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tile)"]
@@ -2899,10 +2899,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         repetitions: &[::js_sys::Number],
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = tile)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = tile)]
     #[doc = "The `tile()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/tile)"]
@@ -2916,10 +2916,10 @@ extern "C" {
         input: &MlOperand,
         repetitions: &[::js_sys::Number],
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = transpose)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = transpose)]
     #[doc = "The `transpose()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/transpose)"]
@@ -2928,10 +2928,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn transpose(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn transpose(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlTransposeOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = transpose)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = transpose)]
     #[doc = "The `transpose()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/transpose)"]
@@ -2944,10 +2944,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlTransposeOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = triangular)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = triangular)]
     #[doc = "The `triangular()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/triangular)"]
@@ -2956,10 +2956,10 @@ extern "C" {
     #[doc = ""]
     #[doc = "*This API is unstable and requires `--cfg=web_sys_unstable_apis` to be activated, as"]
     #[doc = "[described in the `wasm-bindgen` guide](https://wasm-bindgen.github.io/wasm-bindgen/web-sys/unstable-apis.html)*"]
-    pub fn triangular(this: &MlGraphBuilder, input: &MlOperand) -> MlOperand;
+    pub fn triangular(this: &MlGraphBuilder, input: &MlOperand) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlTriangularOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = triangular)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = triangular)]
     #[doc = "The `triangular()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/triangular)"]
@@ -2972,10 +2972,10 @@ extern "C" {
         this: &MlGraphBuilder,
         input: &MlOperand,
         options: &MlTriangularOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(feature = "MlOperand")]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = where)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = where)]
     #[doc = "The `where()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/where)"]
@@ -2989,10 +2989,10 @@ extern "C" {
         condition: &MlOperand,
         true_value: &MlOperand,
         false_value: &MlOperand,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
     #[cfg(web_sys_unstable_apis)]
     #[cfg(all(feature = "MlOperand", feature = "MlOperatorOptions",))]
-    # [wasm_bindgen (method , structural , js_class = "MLGraphBuilder" , js_name = where)]
+    # [wasm_bindgen (catch , method , structural , js_class = "MLGraphBuilder" , js_name = where)]
     #[doc = "The `where()` method."]
     #[doc = ""]
     #[doc = "[MDN Documentation](https://developer.mozilla.org/en-US/docs/Web/API/MLGraphBuilder/where)"]
@@ -3007,5 +3007,5 @@ extern "C" {
         true_value: &MlOperand,
         false_value: &MlOperand,
         options: &MlOperatorOptions,
-    ) -> MlOperand;
+    ) -> Result<MlOperand, JsValue>;
 }

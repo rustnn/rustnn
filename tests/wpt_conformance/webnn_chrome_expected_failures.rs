@@ -1,8 +1,4 @@
-//! Browser WebNN cases skipped during graph construction.
-//!
-//! Generated bindings currently do not mark builder operations as `catch`, so a browser
-//! validation error traps the Wasm test. Keep Chrome validation failures skipped until bindings
-//! become fallible.
+//! Browser WebNN cases Chrome is expected to reject during graph construction; they are skipped.
 
 const EXPECTED_FAILURES: &[(&str, &str)] = &[
     (

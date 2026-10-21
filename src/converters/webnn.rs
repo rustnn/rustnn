@@ -47,6 +47,7 @@ enum WebNNConverterError {
     UnsupportedDataType(DataType),
     FailedToCreateMlBuilder,
     FailedToBuildGraph(JsValue),
+    BuilderOperationFailed(JsValue),
     FailedRepresentAsF64(serde_json::Number),
 }
 
@@ -69,6 +70,9 @@ impl From<WebNNConverterError> for GraphError {
                 }
                 WebNNConverterError::FailedToBuildGraph(err) => {
                     format!("Failed to build graph using browser's MlGraphBuilder.build: {err:?}")
+                }
+                WebNNConverterError::BuilderOperationFailed(err) => {
+                    format!("Browser's MLGraphBuilder rejected an operation: {err:?}")
                 }
                 WebNNConverterError::FailedRepresentAsF64(number) => {
                     format!("Failed to respresent as f64: {number:?}")
@@ -106,15 +110,19 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
             let desc = MlOperandDescriptor::new(dtype, &shape);
 
             Ok(match o.kind {
-                crate::OperandKind::Input => {
-                    Some(builder.input(o.name.as_deref().unwrap_or(""), &desc))
-                }
-                crate::OperandKind::Constant => {
-                    Some(builder.constant_with_ml_operand_descriptor_and_u8_array(
-                        &desc,
-                        &Uint8Array::new_from_slice(get_constant_data(graph_info, i as u32)?),
-                    ))
-                }
+                crate::OperandKind::Input => Some(
+                    builder
+                        .input(o.name.as_deref().unwrap_or(""), &desc)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ),
+                crate::OperandKind::Constant => Some(
+                    builder
+                        .constant_with_ml_operand_descriptor_and_u8_array(
+                            &desc,
+                            &Uint8Array::new_from_slice(get_constant_data(graph_info, i as u32)?),
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ),
                 crate::OperandKind::Output | crate::OperandKind::Intermediate => None,
             })
         })
@@ -138,262 +146,398 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.add_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .add_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Sub {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.sub_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .sub_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Mul {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.mul_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .mul_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Div {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.div_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .div_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Pow {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.pow_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .pow_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Max {
                 a,
                 b,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.max_with_options(
-                    get_operand(&operands, *a),
-                    get_operand(&operands, *b),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .max_with_options(
+                            get_operand(&operands, *a),
+                            get_operand(&operands, *b),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Min {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.min_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .min_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Matmul {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.matmul_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .matmul_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Equal {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.equal_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .equal_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Greater {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.greater_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .greater_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::GreaterOrEqual {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.greater_or_equal_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .greater_or_equal_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Lesser {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.lesser_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .lesser_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::LesserOrEqual {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.lesser_or_equal_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .lesser_or_equal_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::NotEqual {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.not_equal_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .not_equal_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Abs {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.abs_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .abs_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Ceil {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.ceil_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .ceil_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Cos {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.cos_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .cos_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Exp {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.exp_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .exp_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Floor {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.floor_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .floor_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Log {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.log_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .log_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Neg {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.neg_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .neg_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Relu {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.relu_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .relu_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Sigmoid {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.sigmoid_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .sigmoid_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Sin {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.sin_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .sin_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Sqrt {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.sqrt_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .sqrt_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Tan {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.tan_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .tan_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Tanh {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.tanh_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .tanh_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Erf {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.erf_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .erf_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Reciprocal {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.reciprocal_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .reciprocal_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Sign {
                 input,
                 options: _,
                 outputs: _,
-            } => vec![builder.sign_with_options(get_operand(&operands, *input), &ml_opts)],
+            } => vec![
+                builder
+                    .sign_with_options(get_operand(&operands, *input), &ml_opts)
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::LogicalAnd {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.logical_and_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .logical_and_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::LogicalOr {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.logical_or_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .logical_or_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::LogicalNot {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.logical_not_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .logical_not_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::LogicalXor {
                 a,
                 b,
                 options: _,
                 outputs: _,
-            } => vec![builder.logical_xor_with_options(
-                get_operand(&operands, *a),
-                get_operand(&operands, *b),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .logical_xor_with_options(
+                        get_operand(&operands, *a),
+                        get_operand(&operands, *b),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Where {
                 condition,
                 true_value,
@@ -401,138 +545,183 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.where_with_options(
-                    get_operand(&operands, *condition),
-                    get_operand(&operands, *true_value),
-                    get_operand(&operands, *false_value),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .where_with_options(
+                            get_operand(&operands, *condition),
+                            get_operand(&operands, *true_value),
+                            get_operand(&operands, *false_value),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Identity {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.identity_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .identity_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ArgMin {
                 input,
                 axis,
                 options,
                 outputs: _,
-            } => vec![builder.arg_min_with_options(
-                get_operand(&operands, *input),
-                *axis,
-                &to_min_max_options(options)?,
-            )],
+            } => vec![
+                builder
+                    .arg_min_with_options(
+                        get_operand(&operands, *input),
+                        *axis,
+                        &to_min_max_options(options)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::ArgMax {
                 input,
                 axis,
                 options,
                 outputs: _,
-            } => vec![builder.arg_max_with_options(
-                get_operand(&operands, *input),
-                *axis,
-                &to_min_max_options(options)?,
-            )],
+            } => vec![
+                builder
+                    .arg_max_with_options(
+                        get_operand(&operands, *input),
+                        *axis,
+                        &to_min_max_options(options)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::BatchNormalization {
                 input,
                 mean,
                 variance,
                 options,
                 outputs: _,
-            } => vec![builder.batch_normalization_with_options(
-                get_operand(&operands, *input),
-                get_operand(&operands, *mean),
-                get_operand(&operands, *variance),
-                &to_batch_norm_options(options, &operands)?,
-            )],
+            } => vec![
+                builder
+                    .batch_normalization_with_options(
+                        get_operand(&operands, *input),
+                        get_operand(&operands, *mean),
+                        get_operand(&operands, *variance),
+                        &to_batch_norm_options(options, &operands)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Cast {
                 input,
                 data_type,
                 options: _,
                 outputs: _,
-            } => vec![builder.cast_with_options(
-                get_operand(&operands, *input),
-                operand_dtype_to_dtype(*data_type)?,
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .cast_with_options(
+                        get_operand(&operands, *input),
+                        operand_dtype_to_dtype(*data_type)?,
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Clamp {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.clamp_with_options(
-                    get_operand(&operands, *input),
-                    &to_clamp_options(options)?,
-                )]
+                vec![
+                    builder
+                        .clamp_with_options(
+                            get_operand(&operands, *input),
+                            &to_clamp_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Conv2d {
                 input,
                 filter,
                 options,
                 outputs: _,
-            } => vec![builder.conv2d_with_options(
-                get_operand(&operands, *input),
-                get_operand(&operands, *filter),
-                &to_conv2d_options(options, &operands)?,
-            )],
+            } => vec![
+                builder
+                    .conv2d_with_options(
+                        get_operand(&operands, *input),
+                        get_operand(&operands, *filter),
+                        &to_conv2d_options(options, &operands)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::ConvTranspose2d {
                 input,
                 filter,
                 options,
                 outputs: _,
-            } => vec![builder.conv_transpose2d_with_options(
-                get_operand(&operands, *input),
-                get_operand(&operands, *filter),
-                &to_conv_transpose2d_options(options, &operands)?,
-            )],
+            } => vec![
+                builder
+                    .conv_transpose2d_with_options(
+                        get_operand(&operands, *input),
+                        get_operand(&operands, *filter),
+                        &to_conv_transpose2d_options(options, &operands)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Concat {
                 inputs,
                 axis,
                 options: _,
                 outputs: _,
             } => vec![
-                builder.concat_with_options(
-                    inputs
-                        .iter()
-                        .map(|i| get_operand(&operands, *i).clone())
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                    *axis,
-                    &ml_opts,
-                ),
+                builder
+                    .concat_with_options(
+                        inputs
+                            .iter()
+                            .map(|i| get_operand(&operands, *i).clone())
+                            .collect::<Vec<_>>()
+                            .as_slice(),
+                        *axis,
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
             ],
             crate::Operation::CumulativeSum {
                 input,
                 axis,
                 options,
                 outputs: _,
-            } => vec![builder.cumulative_sum_with_options(
-                get_operand(&operands, *input),
-                *axis,
-                &to_cumulative_sum_options(options)?,
-            )],
+            } => vec![
+                builder
+                    .cumulative_sum_with_options(
+                        get_operand(&operands, *input),
+                        *axis,
+                        &to_cumulative_sum_options(options)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Expand {
                 input,
                 new_shape,
                 options: _,
                 outputs: _,
-            } => vec![builder.expand_with_options(
-                get_operand(&operands, *input),
-                &shape_to_mlshape(new_shape),
-                &ml_opts,
-            )],
+            } => vec![
+                builder
+                    .expand_with_options(
+                        get_operand(&operands, *input),
+                        &shape_to_mlshape(new_shape),
+                        &ml_opts,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?,
+            ],
             crate::Operation::Elu {
                 input,
                 options,
                 outputs: _,
             } => {
                 vec![
-                    builder.elu_with_options(
-                        get_operand(&operands, *input),
-                        &to_elu_options(options)?,
-                    ),
+                    builder
+                        .elu_with_options(get_operand(&operands, *input), &to_elu_options(options)?)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
                 ]
             }
             crate::Operation::Gather {
@@ -542,11 +731,15 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.gather_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *indices),
-                    &to_gather_options(options)?,
-                )]
+                vec![
+                    builder
+                        .gather_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *indices),
+                            &to_gather_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::GatherElements {
                 input,
@@ -555,11 +748,15 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.gather_elements_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *indices),
-                    &to_gather_options(options)?,
-                )]
+                vec![
+                    builder
+                        .gather_elements_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *indices),
+                            &to_gather_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Gemm {
                 a,
@@ -567,11 +764,15 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.gemm_with_options(
-                    get_operand(&operands, *a),
-                    get_operand(&operands, *b),
-                    &to_gemm_options(options)?,
-                )]
+                vec![
+                    builder
+                        .gemm_with_options(
+                            get_operand(&operands, *a),
+                            get_operand(&operands, *b),
+                            &to_gemm_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Gru {
                 input,
@@ -590,6 +791,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                     *hidden_size,
                     &to_gru_options(options, &operands)?,
                 )
+                .map_err(WebNNConverterError::BuilderOperationFailed)?
                 .to_vec(),
             crate::Operation::GruCell {
                 input,
@@ -600,71 +802,99 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.gru_cell_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *weight),
-                    get_operand(&operands, *recurrence),
-                    get_operand(&operands, *hidden_state),
-                    *hidden_size,
-                    &to_gru_cell_options(options, &operands)?,
-                )]
+                vec![
+                    builder
+                        .gru_cell_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *weight),
+                            get_operand(&operands, *recurrence),
+                            get_operand(&operands, *hidden_state),
+                            *hidden_size,
+                            &to_gru_cell_options(options, &operands)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::HardSigmoid {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.hard_sigmoid_with_options(
-                    get_operand(&operands, *input),
-                    &to_hard_sigmoid_options(options)?,
-                )]
+                vec![
+                    builder
+                        .hard_sigmoid_with_options(
+                            get_operand(&operands, *input),
+                            &to_hard_sigmoid_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::HardSwish {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.hard_swish_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .hard_swish_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::InstanceNormalization {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.instance_normalization_with_options(
-                    get_operand(&operands, *input),
-                    &to_instance_normalization_options(options, &operands)?,
-                )]
+                vec![
+                    builder
+                        .instance_normalization_with_options(
+                            get_operand(&operands, *input),
+                            &to_instance_normalization_options(options, &operands)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::LayerNormalization {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.layer_normalization_with_options(
-                    get_operand(&operands, *input),
-                    &to_layer_normalization_options(options, &operands)?,
-                )]
+                vec![
+                    builder
+                        .layer_normalization_with_options(
+                            get_operand(&operands, *input),
+                            &to_layer_normalization_options(options, &operands)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::LeakyRelu {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.leaky_relu_with_options(
-                    get_operand(&operands, *input),
-                    &to_leaky_relu_options(options)?,
-                )]
+                vec![
+                    builder
+                        .leaky_relu_with_options(
+                            get_operand(&operands, *input),
+                            &to_leaky_relu_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Linear {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.linear_with_options(
-                    get_operand(&operands, *input),
-                    &to_linear_options(options)?,
-                )]
+                vec![
+                    builder
+                        .linear_with_options(
+                            get_operand(&operands, *input),
+                            &to_linear_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Lstm {
                 input,
@@ -683,6 +913,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                     *hidden_size,
                     &to_lstm_options(options, &operands)?,
                 )
+                .map_err(WebNNConverterError::BuilderOperationFailed)?
                 .to_vec(),
             crate::Operation::LstmCell {
                 input,
@@ -703,6 +934,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                     *hidden_size,
                     &to_lstm_cell_options(options, &operands)?,
                 )
+                .map_err(WebNNConverterError::BuilderOperationFailed)?
                 .to_vec(),
             crate::Operation::Pad {
                 input,
@@ -711,42 +943,58 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.pad_with_options(
-                    get_operand(&operands, *input),
-                    &u32_slice_to_js(beginning_padding),
-                    &u32_slice_to_js(ending_padding),
-                    &to_pad_options(options)?,
-                )]
+                vec![
+                    builder
+                        .pad_with_options(
+                            get_operand(&operands, *input),
+                            &u32_slice_to_js(beginning_padding),
+                            &u32_slice_to_js(ending_padding),
+                            &to_pad_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::AveragePool2d {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.average_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .average_pool2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_pool2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::MaxPool2d {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.max_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .max_pool2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_pool2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::L2Pool2d {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.l2_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .l2_pool2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_pool2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             // halluzination?
             crate::Operation::GlobalAveragePool {
@@ -754,10 +1002,14 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.average_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .average_pool2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_pool2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             // halluzination?
             crate::Operation::GlobalMaxPool {
@@ -765,110 +1017,154 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.max_pool2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_pool2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .max_pool2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_pool2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceSum {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_sum_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_sum_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceMean {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_mean_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_mean_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceMax {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_max_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_max_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceMin {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_min_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_min_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceProduct {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_product_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_product_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceL1 {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_l1_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_l1_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceL2 {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_l2_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_l2_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceLogSum {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_log_sum_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_log_sum_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceLogSumExp {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_log_sum_exp_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_log_sum_exp_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ReduceSumSquare {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reduce_sum_square_with_options(
-                    get_operand(&operands, *input),
-                    &to_reduce_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reduce_sum_square_with_options(
+                            get_operand(&operands, *input),
+                            &to_reduce_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Reshape {
                 input,
@@ -876,31 +1172,43 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.reshape_with_options(
-                    get_operand(&operands, *input),
-                    &shape_to_mlshape(new_shape),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .reshape_with_options(
+                            get_operand(&operands, *input),
+                            &shape_to_mlshape(new_shape),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Resample2d {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.resample2d_with_options(
-                    get_operand(&operands, *input),
-                    &to_resample2d_options(options)?,
-                )]
+                vec![
+                    builder
+                        .resample2d_with_options(
+                            get_operand(&operands, *input),
+                            &to_resample2d_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Reverse {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.reverse_with_options(
-                    get_operand(&operands, *input),
-                    &to_reverse_options(options)?,
-                )]
+                vec![
+                    builder
+                        .reverse_with_options(
+                            get_operand(&operands, *input),
+                            &to_reverse_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::ScatterElements {
                 input,
@@ -909,12 +1217,16 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.scatter_elements_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *indices),
-                    get_operand(&operands, *updates),
-                    &to_scatter_options(options)?,
-                )]
+                vec![
+                    builder
+                        .scatter_elements_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *indices),
+                            get_operand(&operands, *updates),
+                            &to_scatter_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Softmax {
                 input,
@@ -922,7 +1234,11 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.softmax_with_options(get_operand(&operands, *input), *axis, &ml_opts)]
+                vec![
+                    builder
+                        .softmax_with_options(get_operand(&operands, *input), *axis, &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Slice {
                 input,
@@ -931,12 +1247,16 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.slice_with_options(
-                    get_operand(&operands, *input),
-                    &u32_slice_to_js(starts),
-                    &shape_to_mlshape(sizes),
-                    &to_slice_options(options)?,
-                )]
+                vec![
+                    builder
+                        .slice_with_options(
+                            get_operand(&operands, *input),
+                            &u32_slice_to_js(starts),
+                            &shape_to_mlshape(sizes),
+                            &to_slice_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Split {
                 input,
@@ -945,17 +1265,21 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => if let Some(split_equal_parts) = split_equal_parts {
-                builder.split_with_u32_and_options(
-                    get_operand(&operands, *input),
-                    *split_equal_parts,
-                    &to_split_options(options)?,
-                )
+                builder
+                    .split_with_u32_and_options(
+                        get_operand(&operands, *input),
+                        *split_equal_parts,
+                        &to_split_options(options)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?
             } else {
-                builder.split_with_u32_sequence_and_options(
-                    get_operand(&operands, *input),
-                    &u32_slice_to_js(splits),
-                    &to_split_options(options)?,
-                )
+                builder
+                    .split_with_u32_sequence_and_options(
+                        get_operand(&operands, *input),
+                        &u32_slice_to_js(splits),
+                        &to_split_options(options)?,
+                    )
+                    .map_err(WebNNConverterError::BuilderOperationFailed)?
             }
             .to_vec(),
             crate::Operation::Transpose {
@@ -963,44 +1287,70 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options,
                 outputs: _,
             } => {
-                vec![builder.transpose_with_options(
-                    get_operand(&operands, *input),
-                    &to_transpose_options(options)?,
-                )]
+                vec![
+                    builder
+                        .transpose_with_options(
+                            get_operand(&operands, *input),
+                            &to_transpose_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
+            // Not WebNN operations: emulated with reshape as the specification describes
+            // (https://www.w3.org/TR/webnn/#emulation-squeeze, #emulation-unsqueeze), using the
+            // output shape shape inference already computed from the axes.
             crate::Operation::Squeeze {
-                input: _,
+                input,
                 options: _,
-                outputs: _,
-            } => {
-                todo!("not a webnn op")
+                outputs,
             }
-            crate::Operation::Unsqueeze {
-                input: _,
+            | crate::Operation::Unsqueeze {
+                input,
                 options: _,
-                outputs: _,
-            } => todo!("not a webnn op"),
+                outputs,
+            } => {
+                let output = graph_info
+                    .operand(outputs[0])
+                    .ok_or(WebNNConverterError::InvalidId(outputs[0]))?;
+                vec![
+                    builder
+                        .reshape_with_options(
+                            get_operand(&operands, *input),
+                            &shape_to_shape(&output.descriptor.shape),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
+            }
             crate::Operation::Tile {
                 input,
                 repetitions,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.tile_with_options(
-                    get_operand(&operands, *input),
-                    &u32_slice_to_js(repetitions),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .tile_with_options(
+                            get_operand(&operands, *input),
+                            &u32_slice_to_js(repetitions),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Triangular {
                 input,
                 options,
                 outputs: _,
             } => {
-                vec![builder.triangular_with_options(
-                    get_operand(&operands, *input),
-                    &to_triangular_options(options)?,
-                )]
+                vec![
+                    builder
+                        .triangular_with_options(
+                            get_operand(&operands, *input),
+                            &to_triangular_options(options)?,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Prelu {
                 input,
@@ -1008,11 +1358,15 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.prelu_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *slope),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .prelu_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *slope),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::QuantizeLinear {
                 input,
@@ -1021,15 +1375,19 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.quantize_linear_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *scale),
-                    get_operand(
-                        &operands,
-                        zero_point.expect("WebNN always expects a zero point!"),
-                    ),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .quantize_linear_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *scale),
+                            get_operand(
+                                &operands,
+                                zero_point.expect("WebNN always expects a zero point!"),
+                            ),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::DequantizeLinear {
                 input,
@@ -1038,36 +1396,52 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.dequantize_linear_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *scale),
-                    get_operand(
-                        &operands,
-                        zero_point.expect("WebNN always expects a zero point!"),
-                    ),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .dequantize_linear_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *scale),
+                            get_operand(
+                                &operands,
+                                zero_point.expect("WebNN always expects a zero point!"),
+                            ),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Softplus {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.softplus_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .softplus_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Softsign {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.softsign_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .softsign_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Gelu {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.gelu_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .gelu_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::Shape {
                 input: _,
@@ -1081,12 +1455,16 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.scatter_nd_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *indices),
-                    get_operand(&operands, *updates),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .scatter_nd_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *indices),
+                            get_operand(&operands, *updates),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::GatherND {
                 input,
@@ -1094,32 +1472,48 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.gather_nd_with_options(
-                    get_operand(&operands, *input),
-                    get_operand(&operands, *indices),
-                    &ml_opts,
-                )]
+                vec![
+                    builder
+                        .gather_nd_with_options(
+                            get_operand(&operands, *input),
+                            get_operand(&operands, *indices),
+                            &ml_opts,
+                        )
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::IsNaN {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.is_na_n_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .is_na_n_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::IsInfinite {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.is_infinite_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .is_infinite_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
             crate::Operation::RoundEven {
                 input,
                 options: _,
                 outputs: _,
             } => {
-                vec![builder.round_even_with_options(get_operand(&operands, *input), &ml_opts)]
+                vec![
+                    builder
+                        .round_even_with_options(get_operand(&operands, *input), &ml_opts)
+                        .map_err(WebNNConverterError::BuilderOperationFailed)?,
+                ]
             }
         };
         for (&k, v) in op.output_operands_slice().iter().zip(out.iter()) {

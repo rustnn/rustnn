@@ -18,9 +18,12 @@ starting point for running the same Rust application natively and in a web page.
   `tests/wpt_conformance/webnn_chrome_expected_failures.rs` lists the cases Chrome rejects.
 
 Not there yet: a `BackendDevice`/`MLBackendContext` for the browser, so `MLContext::create`
-cannot select this backend and tensors and dispatch are not wired. The generated methods are
-not marked `catch`, so a browser exception traps out of WebAssembly instead of returning an
-error.
+cannot select this backend and tensors and dispatch are not wired.
+
+The `MLGraphBuilder` operation methods in `gen_MlGraphBuilder.rs` are marked `catch` by hand,
+because the specification's IDL does not declare that they throw: a browser validation error
+(unsupported rank or data type, for example) comes back as a `GraphError` from `convert_async`
+instead of trapping out of WebAssembly. Reapply this after regenerating the bindings.
 
 ## Building
 
@@ -45,3 +48,5 @@ make test-webnn-wpt-chrome        # or test-webnn-wpt-chrome-headless
 The targets need `wasm-pack`, Node.js, `curl` and `unzip`. `webdriver.json` enables Chrome's
 WebNN flag (`--enable-features=WebMachineLearningNeuralNetwork`). Results are logged to the
 browser console as `[WEBNN-WPT PASS|FAIL|SKIP] operation::case` lines followed by a summary.
+The whole corpus runs in one test, so the targets raise wasm-bindgen-test's timeout through
+`WEBNN_WPT_TIMEOUT` (seconds, default 600).

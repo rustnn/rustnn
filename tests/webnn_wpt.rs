@@ -26,7 +26,7 @@ fn embedded_wpt_cases_compile_to_graph_info() {
         serde_json::from_str(WPT_CORPUS).expect("embedded WPT corpus is JSON");
 
     assert!(!corpus.cases.is_empty(), "embedded WPT corpus has no cases");
-    assert_eq!(corpus.cases.len(), 2482, "embedded WPT corpus case count");
+    assert_eq!(corpus.cases.len(), 2623, "embedded WPT corpus case count");
 
     let failures: Vec<String> = corpus
         .cases
@@ -66,8 +66,6 @@ async fn embedded_wpt_cases_build_in_browser_webnn() {
             log_result("SKIP", &case_id, reason);
             continue;
         }
-        // Log before calling a generated WebNN method: current upstream bindings do
-        // not mark those methods `catch`, so a browser exception traps out of Wasm.
         log_result("RUN", &case_id, "");
         let result = match wpt_execute_graph::compile_wpt_graph(&case.graph) {
             Ok(graph) => rustnn::converters::webnn::convert_async(&context, &graph)
