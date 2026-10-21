@@ -12,7 +12,8 @@
 //! 3. `accelerated` with `LowPower`: CoreML (Neural Engine), then LiteRT (NPU), then ONNX
 //!    Runtime (NPU).
 //! 4. Not accelerated: CoreML (CPU), then LiteRT (CPU), then ONNX Runtime (CPU).
-//! 5. CANN is only selected when requested with a backend hint.
+//! 5. CANN and Burn CPU are only selected when requested with a backend or device hint.
+//!    Burn CPU requires `burn-runtime-cpu` and runs on the host even for accelerated hints.
 //!
 //! ONNX Runtime CPU also serves as the last resort for accelerated requests. When nothing
 //! matches, creation fails with [`crate::error::Error::NoBackendAvailable`] (or the
@@ -63,6 +64,8 @@ pub enum Backend {
     Litert,
     /// Huawei CANN on OpenHarmony (`cann-runtime`).
     Cann,
+    /// Burn NdArray CPU (`burn-runtime-cpu`).
+    BurnCpu,
 }
 
 /// A concrete device of a [`Backend`], as returned by
@@ -100,6 +103,8 @@ pub enum BackendDevice {
         /// Always `Npu`.
         device_type: DeviceType,
     },
+    /// Burn NdArray on the host CPU.
+    BurnCpu,
     //WebNN {
     //options: MLContextOptions,
     //},
@@ -115,6 +120,7 @@ impl BackendDevice {
             BackendDevice::Coreml { .. } => Backend::Coreml,
             BackendDevice::LiteRt { .. } => Backend::Litert,
             BackendDevice::Cann { .. } => Backend::Cann,
+            BackendDevice::BurnCpu => Backend::BurnCpu,
         }
     }
 
@@ -122,6 +128,7 @@ impl BackendDevice {
     pub fn device_type(&self) -> DeviceType {
         match self {
             BackendDevice::Trtx { .. } => DeviceType::Gpu,
+            BackendDevice::BurnCpu => DeviceType::Cpu,
             BackendDevice::Onnx { device_type, .. }
             | BackendDevice::Coreml { device_type }
             | BackendDevice::LiteRt { device_type }
@@ -253,6 +260,9 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             *first
         }
+        // Burn CPU is explicitly selected, preserving the existing fallback order.
+        #[cfg(feature = "burn-runtime-cpu")]
+        (_, _) if options.backend_hint == Some(Backend::BurnCpu) => BackendDevice::BurnCpu,
         // ORT
         #[cfg(feature = "onnx-runtime")]
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)

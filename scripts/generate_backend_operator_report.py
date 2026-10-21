@@ -14,6 +14,7 @@ operation counts as supported when:
 - CoreML: as above, plus operation names the converter compares against its lower-cased
   op type (`get_mil_op_type` keys, `op_type_lower == "..."`, `matches!(op_type_lower...)`).
 - TensorRT: the operation name is a key of the converter's `match op_type { ... }` table.
+- Burn CPU: the runtime interpreter handles the `Operation::<Variant>`.
 - CANN: the variant is listed in `is_supported_op` in src/converters/cann.rs.
 """
 
@@ -31,6 +32,7 @@ ONNX_SRC = ROOT / "src/converters/onnx.rs"
 COREML_SRC = ROOT / "src/converters/coreml_mlprogram.rs"
 TRTX_SRC = ROOT / "src/converters/trtx.rs"
 LITERT_SRC = ROOT / "src/converters/litert.rs"
+BURN_SRC = ROOT / "src/executors/burn/execute.rs"
 CANN_SRC = ROOT / "src/converters/cann.rs"
 OUTPUT = ROOT / "docs/development/backend-operator-support.md"
 
@@ -158,7 +160,15 @@ def parse_coreml_ops(text: str, variants: dict[str, str]) -> set[str]:
 
 
 def build_backends(variants: dict[str, str]) -> list[Backend]:
+    burn_sources = (BURN_SRC, BURN_SRC.with_name("typed.rs"), BURN_SRC.parent / "typed/movement.rs")
+    burn_runtime = "\n".join(path.read_text(encoding="utf-8") for path in burn_sources)
     return [
+        Backend(
+            name="Burn CPU",
+            source=BURN_SRC,
+            rule="`Operation` variants handled by the runtime interpreter (type constraints apply)",
+            supported=parse_variant_references(burn_runtime, variants),
+        ),
         Backend(
             name="ONNX Runtime",
             source=ONNX_SRC,
@@ -287,7 +297,7 @@ def main() -> int:
         return 0
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(generated, encoding="utf-8")
+    output_path.write_text(generated, encoding="utf-8", newline="\n")
     print(f"Wrote {output_path}")
     return 0
 

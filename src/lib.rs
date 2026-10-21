@@ -89,6 +89,7 @@
 //! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features are compiled out (validation only) |
 //! | `coreml-runtime` | Apple CoreML backend; executes on macOS/iOS; failing shims on other targets |
 //! | `litert-runtime` | LiteRT (TensorFlow Lite) backend through `litert-sys`; needs `flatc` at build time |
+//! | `burn-runtime-cpu` | Burn NdArray CPU backend; explicitly select `Backend::BurnCpu`; no native runtime library required |
 //! | `cann-runtime` | Huawei CANN/HiAI backend on OpenHarmony; `cann-runtime-mock` validates without a device |
 //! | `webnn-runtime` | Browser WebNN backend for `wasm32-unknown-unknown` (`webnn-wpt-tests` embeds the WPT corpus) |
 //! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
@@ -114,6 +115,8 @@
 
 pub mod backend_selection;
 pub mod backends;
+#[cfg(feature = "burn-runtime-cpu")]
+pub mod burn;
 #[cfg(feature = "capi")]
 pub mod capi;
 pub mod converters;

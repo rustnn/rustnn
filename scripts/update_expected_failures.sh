@@ -14,7 +14,7 @@ usage() {
     cat >&2 <<'EOF'
 Usage: scripts/update_expected_failures.sh <backend>
 
-  <backend>    onnx | trtx | litert | coreml | cann
+  <backend>    onnx | trtx | litert | coreml | cann | burn-cpu
 
 EOF
     exit 2
@@ -24,6 +24,7 @@ BACKEND="${1:-}"
 [ -z "$BACKEND" ] && usage
 
 case "$BACKEND" in
+    burn-cpu) MAKE_TARGET="test-wpt-burn-cpu" ;;
     onnx)   MAKE_TARGET="test-wpt"       ;;
     trtx)   MAKE_TARGET="test-wpt-trtx"  ;;
     litert) MAKE_TARGET="test-wpt-litert" ;;

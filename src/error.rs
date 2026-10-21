@@ -551,6 +551,9 @@ pub enum GraphError {
         "tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled"
     )]
     TrtxRuntimeUnavailable,
+    /// Burn CPU execution failed.
+    #[error("burn runtime failed: {reason}")]
+    BurnRuntimeFailed { reason: String },
     /// Tensorrt runtime failed: `reason`.
     #[error("tensorrt runtime failed: {reason}")]
     TrtxRuntimeFailed { reason: String },

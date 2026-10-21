@@ -197,3 +197,73 @@ inference.
 
 Then write the regression test first, fix the lowering, and run the WPT cases for the operation
 on every backend you have.
+
+## Burn CPU
+
+With `burn-runtime-cpu`, `BurnConverter` lowers typed operations and embedded constants
+into an in-memory execution plan when the graph is built. The CPU runtime prepares and
+replays it using Burn NdArray and host kernels. Conversion and execution are enabled
+together by this single feature.
+The MLContext builder passes its validated graph to Burn preparation, which checks only
+backend tensor representation limits and initializes constants and lifetimes. Operation
+arity, datatype and graph structure rules belong to the builder and are not revalidated
+by Burn preparation. Dispatch does not serialize or deserialize the graph. Prepared
+execution retains graph outputs and constants, releases intermediate tensors after their final consumer, and
+clears temporary state after failed runs. Serialized standalone execution validates plan
+structure and metadata at its external entry point and prepares a fresh runtime per call.
+Both paths retain tensor payload validation and kernel-result publication checks.
+Constant dimensions must be static; runtime inputs may use bounded dynamic dimensions.
+Resampling shape inference floors scaled dimensions and dynamic bounds. Burn float
+resampling uses the same flooring rule as its integer path; explicit sizes override
+scales, and sampling coordinates use the actual output-to-input size ratio.
+Packed int4/uint4 constants and tensors use the shared nibble codecs from `graph.rs`.
+Decoding uses the logical shape's element count, so the unused high nibble of odd-length
+buffers is ignored. Quantization computes logical values, clamps to the target 4-bit range,
+and packs outputs with zero padding. The typed host interpreter handles integer arithmetic,
+comparisons, casts, reductions, tensor movement and integer indices using exact integer
+payloads. Broadcast and block quantization parameters preserve integer zero points;
+dequantization subtracts them before converting to floating point. Integer arithmetic wraps
+to the operand width, integer casts reinterpret the low bits, and float-to-integer casts
+truncate and saturate (NaN becomes zero). Strided slices use WebNN input-window
+extents, with output sizes computed as `ceil(size / stride)`, for floating-point and integer
+tensors. Integer clamp and padding bounds are parsed without
+passing through floating point. An operation involving integers must have an explicit typed
+implementation; dispatch rejects it rather than falling back to a float kernel.
+The runtime stores each operand in one opaque, validated value containing a Burn float
+tensor, signed integers, or unsigned integers. Its private storage variants and restricted
+integer kinds determine the datatype. Constructors check shape, length and integer range;
+only the environment owns its value map. Integer kernels use borrowed exact views and
+apply wrapping or cast conversion before constructing results. Import rejects out-of-range
+exact integers and fractional or non-finite narrow integers supplied as floats. Integer operands
+never acquire persistent float mirrors. The public serialized-plan executor generates its
+legacy float output view only when collecting results. Device outputs declared as float16
+are rounded at every operation boundary, as are host outputs. Accumulation inside
+a float16 operation can still use float32. See
+[Burn CPU](https://rustnn.github.io/rustnn/integration/burn-cpu/) for setup and precision limits.
+
+
+Burn runtime maintenance keeps datatype-independent movement in `typed/movement.rs`,
+integer arithmetic and conversion in `typed.rs`, recurrent kernels in `rnn.rs`, and floating
+host kernels in `float_ops.rs` and `host_array.rs`. `value.rs` owns operand storage and output
+conversion; `tensor_env.rs` owns the operand map and exposes read-only inputs to kernels.
+`execute.rs` explicitly routes operations to shared movement, typed arithmetic or float
+execution. Every kernel writes through `outputs.rs`, which requires datatype metadata,
+checks output ownership and exactly-once completeness, and stages all results until the
+operation succeeds. Checked value construction enforces storage shape, length and datatype;
+graph output binding shapes are checked before publication, including dynamic dimensions.
+Float16 rounding occurs at this shared output boundary.
+`shape.rs` owns validated slice and reduction descriptors, broadcasting and axis helpers.
+Slice windows and reduction output shapes reuse the main shape-inference functions with
+resolved input dimensions; coordinate mapping is independent of datatype. Intermediate
+shapes are computed from runtime inputs, without adding serialized plan metadata.
+`runtime_tensor.rs` adapts runtime ranks to Burn const generics. Its local macros expand
+mechanical read, map, matching-rank binary and construction dispatch; scalar rank remains
+explicit, and numerical formulas stay in ordinary Rust functions. Adapter rank coverage is
+separate from backend capability: NdArray's native reshape and kernels that depend on it
+are limited to six ranks. Shared movement can use the plan's eight-rank limit for float
+and exact integer values. Layout and activation choices
+use the existing WebNN enums. Shared options that still contain strings are parsed at kernel
+entry by `options.rs`; empty strings retain their documented defaults and other invalid
+values return errors. Keep string conversion at serialization and API boundaries, not in
+numeric loops. The operator report scans both numeric dispatchers and the shared movement
+module, so moving an operation between them does not remove it from the report.

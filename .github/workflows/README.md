@@ -3,7 +3,7 @@
 | Workflow | Trigger | What it does |
 |---|---|---|
 | `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (ONNX Runtime, TensorRT, LiteRT, CANN, CoreML on macOS, wasm32 with `webnn-runtime`), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with warnings denied (`make docs-api`), operator report drift check (`make docs-backend-ops-check`) with the generator's unit tests, MkDocs strict build |
-| `wpt-conformance.yml` | push, pull request | WPT conformance suites: ONNX Runtime and LiteRT on Linux (LiteRT non-blocking), CoreML on macOS; uploads JSON and HTML reports |
+| `wpt-conformance.yml` | push, pull request | WPT conformance suites: ONNX Runtime, Burn CPU and LiteRT on Linux (LiteRT non-blocking), CoreML on macOS; uploads JSON and HTML reports |
 | `wpt-conformance-nightly.yml` | schedule, manual | Full WPT run with reports, then builds the documentation site with rustdoc under `/api/` and the conformance dashboard under `/wpt-conformance/`, and deploys to GitHub Pages |
 | `wpt-sync.yml` | weekly (Monday 03:00 UTC), manual | Bumps `WPT_REVISION` to the current upstream WPT revision, regenerates the expected-failure lists for LiteRT, ONNX Runtime and CoreML against it and opens a pull request with the diff |
 | `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn revision and enforces a minimum pass rate |
@@ -56,3 +56,7 @@ dashboard rather than a placeholder. Cache entries are immutable: never reuse a 
 because the save would fail on every later run and each docs deploy would republish the first
 report forever. Entries that are not restored for seven days are evicted; a docs deploy then
 falls back to the placeholder page until the next successful nightly run.
+
+Burn CPU also runs full release-mode WPT conformance in `wpt-conformance.yml` on Linux.
+The job is blocking, checks the pinned WPT revision, and uploads JSON and HTML reports.
+It enables only `burn-runtime-cpu` and requires no external backend runtime library.

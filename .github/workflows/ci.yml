@@ -101,6 +101,12 @@ jobs:
       - name: Run cargo check (TensorRT)
         run: cargo check -F trtx-runtime --all-targets
 
+      - name: Run cargo check (Burn CPU)
+        run: cargo check --features burn-runtime-cpu --all-targets
+
+      - name: Run cargo test (Burn CPU)
+        run: cargo test --features burn-runtime-cpu --lib --test test_burn_precision
+
       - name: Run cargo check (LiteRT)
         run: cargo check --features litert-runtime --all-targets
 

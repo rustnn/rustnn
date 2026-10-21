@@ -2,7 +2,7 @@
 
 rustnn is a Rust implementation of the W3C WebNN API: a WebNN-style graph builder, shape
 inference and validation, and execution on pluggable backends (ONNX Runtime, NVIDIA
-TensorRT-RTX, Apple CoreML, LiteRT, Huawei CANN). Python bindings live in the separate
+TensorRT-RTX, Apple CoreML, LiteRT, Huawei CANN, Burn CPU). Python bindings live in the separate
 [pywebnn](https://github.com/rustnn/pywebnn) repository; this repository contains no Python API.
 
 Documentation map:
@@ -68,7 +68,9 @@ Backend selection from the WebNN hints: accelerated with Default or HighPerforma
 TensorRT-RTX, CoreML GPU, LiteRT GPU, ONNX Runtime GPU then NPU; accelerated with LowPower ->
 CoreML NPU, LiteRT NPU, ONNX Runtime NPU; not accelerated -> CoreML CPU, LiteRT CPU, ONNX
 Runtime CPU. ONNX Runtime CPU is the last resort. CANN is only selected through
-`with_rustnn_backend_hint(Backend::Cann)`.
+`with_rustnn_backend_hint(Backend::Cann)`. Burn CPU (`burn-runtime-cpu`) is also opt-in through
+`with_rustnn_backend_hint(Backend::BurnCpu)`; its interpreter lives in `src/executors/burn/`
+and its MLContext adapter in `src/backends/burn.rs`.
 
 
 ## Development commands
@@ -80,7 +82,7 @@ make build                      # cargo build
 make test                       # fmt, clippy -D warnings, cargo test, operator report drift check
 make test-wpt                   # WPT conformance on ONNX Runtime CPU (needs Node.js; fetches the corpus)
 make test-wpt-op OP=relu        # one operation; WPT_BACKEND=onnx|trtx|litert|coreml selects a backend
-make test-wpt-trtx              # also test-wpt-litert, test-wpt-coreml
+make test-wpt-trtx              # also test-wpt-litert, test-wpt-coreml, test-wpt-burn-cpu
 make wpt-sync-onnx              # also wpt-sync-litert, wpt-sync-coreml, wpt-sync-trtx: regenerate baselines
 make docs-backend-ops           # regenerate the operator support report
 make docs-api                   # rustdoc with -D warnings

@@ -9,6 +9,7 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 
 | Backend | Converter source | Detection rule | Supported |
 |---|---|---|---|
+| Burn CPU | `src/executors/burn/execute.rs` | `Operation` variants handled by the runtime interpreter (type constraints apply) | 100 of 100 |
 | ONNX Runtime | `src/converters/onnx.rs` | `Operation` variants referenced by the converter | 100 of 100 |
 | CoreML | `src/converters/coreml_mlprogram.rs` | `Operation` variants referenced by the converter, plus names in its op-type dispatch | 100 of 100 |
 | TensorRT | `src/converters/trtx.rs` | keys of the `match op_type` dispatch table | 99 of 100 |
@@ -16,111 +17,112 @@ Operation names are the WebNN builder names returned by `Operation::op_type()` i
 
 ## Operation matrix
 
-| Operation | ONNX Runtime | CoreML | TensorRT | LiteRT |
-|---|:-:|:-:|:-:|:-:|
-| `abs` | yes | yes | yes | yes |
-| `add` | yes | yes | yes | yes |
-| `argMax` | yes | yes | yes | yes |
-| `argMin` | yes | yes | yes | yes |
-| `averagePool2d` | yes | yes | yes | yes |
-| `batchNormalization` | yes | yes | yes | yes |
-| `cast` | yes | yes | yes | yes |
-| `ceil` | yes | yes | yes | yes |
-| `clamp` | yes | yes | yes | yes |
-| `concat` | yes | yes | yes | yes |
-| `conv2d` | yes | yes | yes | yes |
-| `convTranspose2d` | yes | yes | yes | yes |
-| `cos` | yes | yes | yes | yes |
-| `cumulativeSum` | yes | yes | yes | yes |
-| `dequantizeLinear` | yes | yes | yes | yes |
-| `div` | yes | yes | yes | yes |
-| `elu` | yes | yes | yes | yes |
-| `equal` | yes | yes | yes | yes |
-| `erf` | yes | yes | yes | yes |
-| `exp` | yes | yes | yes | yes |
-| `expand` | yes | yes | yes | yes |
-| `floor` | yes | yes | yes | yes |
-| `gather` | yes | yes | yes | yes |
-| `gatherElements` | yes | yes | yes | yes |
-| `gatherND` | yes | yes | yes | yes |
-| `gelu` | yes | yes | yes | yes |
-| `gemm` | yes | yes | yes | yes |
-| `globalAveragePool` | yes | yes | yes | - |
-| `globalMaxPool` | yes | yes | yes | - |
-| `greater` | yes | yes | yes | yes |
-| `greaterOrEqual` | yes | yes | yes | yes |
-| `gru` | yes | yes | yes | - |
-| `gruCell` | yes | yes | yes | - |
-| `hardSigmoid` | yes | yes | yes | yes |
-| `hardSwish` | yes | yes | yes | yes |
-| `identity` | yes | yes | yes | yes |
-| `instanceNormalization` | yes | yes | yes | yes |
-| `isInfinite` | yes | yes | yes | yes |
-| `isNaN` | yes | yes | yes | yes |
-| `l2Pool2d` | yes | yes | yes | yes |
-| `layerNormalization` | yes | yes | yes | yes |
-| `leakyRelu` | yes | yes | yes | yes |
-| `lesser` | yes | yes | yes | yes |
-| `lesserOrEqual` | yes | yes | yes | yes |
-| `linear` | yes | yes | yes | yes |
-| `log` | yes | yes | yes | yes |
-| `logicalAnd` | yes | yes | yes | yes |
-| `logicalNot` | yes | yes | yes | yes |
-| `logicalOr` | yes | yes | yes | yes |
-| `logicalXor` | yes | yes | yes | yes |
-| `lstm` | yes | yes | yes | - |
-| `lstmCell` | yes | yes | yes | - |
-| `matmul` | yes | yes | yes | yes |
-| `max` | yes | yes | yes | yes |
-| `maxPool2d` | yes | yes | yes | yes |
-| `min` | yes | yes | yes | yes |
-| `mul` | yes | yes | yes | yes |
-| `neg` | yes | yes | yes | yes |
-| `notEqual` | yes | yes | yes | yes |
-| `pad` | yes | yes | yes | yes |
-| `pow` | yes | yes | yes | yes |
-| `prelu` | yes | yes | yes | yes |
-| `quantizeLinear` | yes | yes | yes | yes |
-| `reciprocal` | yes | yes | yes | yes |
-| `reduceL1` | yes | yes | yes | yes |
-| `reduceL2` | yes | yes | yes | yes |
-| `reduceLogSum` | yes | yes | yes | yes |
-| `reduceLogSumExp` | yes | yes | yes | yes |
-| `reduceMax` | yes | yes | yes | yes |
-| `reduceMean` | yes | yes | yes | yes |
-| `reduceMin` | yes | yes | yes | yes |
-| `reduceProduct` | yes | yes | yes | yes |
-| `reduceSum` | yes | yes | yes | yes |
-| `reduceSumSquare` | yes | yes | yes | yes |
-| `relu` | yes | yes | yes | yes |
-| `resample2d` | yes | yes | yes | yes |
-| `reshape` | yes | yes | yes | yes |
-| `reverse` | yes | yes | yes | yes |
-| `roundEven` | yes | yes | yes | yes |
-| `scatterElements` | yes | yes | yes | yes |
-| `scatterND` | yes | yes | yes | yes |
-| `shape` | yes | yes | - | - |
-| `sigmoid` | yes | yes | yes | yes |
-| `sign` | yes | yes | yes | yes |
-| `sin` | yes | yes | yes | yes |
-| `slice` | yes | yes | yes | yes |
-| `softmax` | yes | yes | yes | yes |
-| `softplus` | yes | yes | yes | yes |
-| `softsign` | yes | yes | yes | yes |
-| `split` | yes | yes | yes | yes |
-| `sqrt` | yes | yes | yes | yes |
-| `squeeze` | yes | yes | yes | yes |
-| `sub` | yes | yes | yes | yes |
-| `tan` | yes | yes | yes | yes |
-| `tanh` | yes | yes | yes | yes |
-| `tile` | yes | yes | yes | yes |
-| `transpose` | yes | yes | yes | yes |
-| `triangular` | yes | yes | yes | yes |
-| `unsqueeze` | yes | yes | yes | - |
-| `where` | yes | yes | yes | yes |
+| Operation | Burn CPU | ONNX Runtime | CoreML | TensorRT | LiteRT |
+|---|:-:|:-:|:-:|:-:|:-:|
+| `abs` | yes | yes | yes | yes | yes |
+| `add` | yes | yes | yes | yes | yes |
+| `argMax` | yes | yes | yes | yes | yes |
+| `argMin` | yes | yes | yes | yes | yes |
+| `averagePool2d` | yes | yes | yes | yes | yes |
+| `batchNormalization` | yes | yes | yes | yes | yes |
+| `cast` | yes | yes | yes | yes | yes |
+| `ceil` | yes | yes | yes | yes | yes |
+| `clamp` | yes | yes | yes | yes | yes |
+| `concat` | yes | yes | yes | yes | yes |
+| `conv2d` | yes | yes | yes | yes | yes |
+| `convTranspose2d` | yes | yes | yes | yes | yes |
+| `cos` | yes | yes | yes | yes | yes |
+| `cumulativeSum` | yes | yes | yes | yes | yes |
+| `dequantizeLinear` | yes | yes | yes | yes | yes |
+| `div` | yes | yes | yes | yes | yes |
+| `elu` | yes | yes | yes | yes | yes |
+| `equal` | yes | yes | yes | yes | yes |
+| `erf` | yes | yes | yes | yes | yes |
+| `exp` | yes | yes | yes | yes | yes |
+| `expand` | yes | yes | yes | yes | yes |
+| `floor` | yes | yes | yes | yes | yes |
+| `gather` | yes | yes | yes | yes | yes |
+| `gatherElements` | yes | yes | yes | yes | yes |
+| `gatherND` | yes | yes | yes | yes | yes |
+| `gelu` | yes | yes | yes | yes | yes |
+| `gemm` | yes | yes | yes | yes | yes |
+| `globalAveragePool` | yes | yes | yes | yes | - |
+| `globalMaxPool` | yes | yes | yes | yes | - |
+| `greater` | yes | yes | yes | yes | yes |
+| `greaterOrEqual` | yes | yes | yes | yes | yes |
+| `gru` | yes | yes | yes | yes | - |
+| `gruCell` | yes | yes | yes | yes | - |
+| `hardSigmoid` | yes | yes | yes | yes | yes |
+| `hardSwish` | yes | yes | yes | yes | yes |
+| `identity` | yes | yes | yes | yes | yes |
+| `instanceNormalization` | yes | yes | yes | yes | yes |
+| `isInfinite` | yes | yes | yes | yes | yes |
+| `isNaN` | yes | yes | yes | yes | yes |
+| `l2Pool2d` | yes | yes | yes | yes | yes |
+| `layerNormalization` | yes | yes | yes | yes | yes |
+| `leakyRelu` | yes | yes | yes | yes | yes |
+| `lesser` | yes | yes | yes | yes | yes |
+| `lesserOrEqual` | yes | yes | yes | yes | yes |
+| `linear` | yes | yes | yes | yes | yes |
+| `log` | yes | yes | yes | yes | yes |
+| `logicalAnd` | yes | yes | yes | yes | yes |
+| `logicalNot` | yes | yes | yes | yes | yes |
+| `logicalOr` | yes | yes | yes | yes | yes |
+| `logicalXor` | yes | yes | yes | yes | yes |
+| `lstm` | yes | yes | yes | yes | - |
+| `lstmCell` | yes | yes | yes | yes | - |
+| `matmul` | yes | yes | yes | yes | yes |
+| `max` | yes | yes | yes | yes | yes |
+| `maxPool2d` | yes | yes | yes | yes | yes |
+| `min` | yes | yes | yes | yes | yes |
+| `mul` | yes | yes | yes | yes | yes |
+| `neg` | yes | yes | yes | yes | yes |
+| `notEqual` | yes | yes | yes | yes | yes |
+| `pad` | yes | yes | yes | yes | yes |
+| `pow` | yes | yes | yes | yes | yes |
+| `prelu` | yes | yes | yes | yes | yes |
+| `quantizeLinear` | yes | yes | yes | yes | yes |
+| `reciprocal` | yes | yes | yes | yes | yes |
+| `reduceL1` | yes | yes | yes | yes | yes |
+| `reduceL2` | yes | yes | yes | yes | yes |
+| `reduceLogSum` | yes | yes | yes | yes | yes |
+| `reduceLogSumExp` | yes | yes | yes | yes | yes |
+| `reduceMax` | yes | yes | yes | yes | yes |
+| `reduceMean` | yes | yes | yes | yes | yes |
+| `reduceMin` | yes | yes | yes | yes | yes |
+| `reduceProduct` | yes | yes | yes | yes | yes |
+| `reduceSum` | yes | yes | yes | yes | yes |
+| `reduceSumSquare` | yes | yes | yes | yes | yes |
+| `relu` | yes | yes | yes | yes | yes |
+| `resample2d` | yes | yes | yes | yes | yes |
+| `reshape` | yes | yes | yes | yes | yes |
+| `reverse` | yes | yes | yes | yes | yes |
+| `roundEven` | yes | yes | yes | yes | yes |
+| `scatterElements` | yes | yes | yes | yes | yes |
+| `scatterND` | yes | yes | yes | yes | yes |
+| `shape` | yes | yes | yes | - | - |
+| `sigmoid` | yes | yes | yes | yes | yes |
+| `sign` | yes | yes | yes | yes | yes |
+| `sin` | yes | yes | yes | yes | yes |
+| `slice` | yes | yes | yes | yes | yes |
+| `softmax` | yes | yes | yes | yes | yes |
+| `softplus` | yes | yes | yes | yes | yes |
+| `softsign` | yes | yes | yes | yes | yes |
+| `split` | yes | yes | yes | yes | yes |
+| `sqrt` | yes | yes | yes | yes | yes |
+| `squeeze` | yes | yes | yes | yes | yes |
+| `sub` | yes | yes | yes | yes | yes |
+| `tan` | yes | yes | yes | yes | yes |
+| `tanh` | yes | yes | yes | yes | yes |
+| `tile` | yes | yes | yes | yes | yes |
+| `transpose` | yes | yes | yes | yes | yes |
+| `triangular` | yes | yes | yes | yes | yes |
+| `unsqueeze` | yes | yes | yes | yes | - |
+| `where` | yes | yes | yes | yes | yes |
 
 ## Unsupported operations per backend
 
+- Burn CPU: none
 - ONNX Runtime: none
 - CoreML: none
 - TensorRT: `shape`

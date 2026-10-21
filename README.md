@@ -149,6 +149,7 @@ ownership rules, package layout, and exact build and run commands.
 | `onnx-runtime` | ONNX Runtime (CPU, GPU, NPU execution providers), all platforms |
 | `trtx-runtime` | NVIDIA TensorRT-RTX (Linux, Windows); `trtx-runtime-mock` builds without a GPU |
 | `coreml-runtime` | Apple CoreML (macOS) |
+| `burn-runtime-cpu` | [Burn NdArray CPU](docs/integration/burn-cpu.md); select `Backend::BurnCpu`, no native runtime library required |
 | `litert-runtime` | LiteRT / TensorFlow Lite; needs `flatc` at build time |
 | `cann-runtime` | Huawei CANN on OpenHarmony; `cann-runtime-mock` for validation |
 | `dynamic-inputs` | Dynamic dimensions bounded by a maximum size |

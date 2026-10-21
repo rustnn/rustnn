@@ -153,7 +153,7 @@ Then:
 | Workflow | Trigger | Content |
 |---|---|---|
 | `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (including wasm32, and CoreML on macOS), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with `-D warnings`, operator report drift check and generator tests, MkDocs strict build |
-| `wpt-conformance.yml` | push, pull request | WPT suites for ONNX Runtime (Linux), LiteRT (Linux, non-blocking) and CoreML (macOS) |
+| `wpt-conformance.yml` | push, pull request | WPT suites for ONNX Runtime and Burn CPU (Linux), LiteRT (Linux, non-blocking) and CoreML (macOS) |
 | `wpt-conformance-nightly.yml` | schedule | Full WPT run with JSON and HTML reports; publishes the dashboard together with the docs site |
 | `wpt-sync.yml` | weekly, manual | Regenerates snapshots and expected failures against the pinned WPT revision and opens a pull request |
 | `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn and enforces a minimum pass rate |
@@ -186,3 +186,11 @@ from the extracted package as well when changing shared documentation.
   warnings. A new module gets a `//!` header saying what the module owns. Enum variants that
   are only operand indices (`Operation`) and error fields described by their message carry an
   explicit `#[allow(missing_docs)]`.
+
+### Burn CPU development
+
+Use `cargo check --features burn-runtime-cpu --all-targets` and
+`cargo test --features burn-runtime-cpu --lib --test test_burn_precision` for the CPU
+interpreter and its public-executor datatype regressions. No native runtime
+installation is needed. Run `make test-wpt-burn-cpu` and regenerate its expected failures
+with `make wpt-sync-burn-cpu`. See [Burn CPU](../integration/burn-cpu.md).

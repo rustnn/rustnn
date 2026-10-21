@@ -12,11 +12,14 @@
 //! | `trtx` | `trtx-runtime`, `trtx-runtime-mock` | TensorRT-RTX engines with refittable weights, engine and runtime caches, CUDA graphs |
 //! | `coreml` | `coreml-runtime` | CoreML MLProgram compiled on macOS; failing shims elsewhere |
 //! | `litert` | `litert-runtime` | LiteRT interpreter over a TFLite flatbuffer |
+//! | `burn` | `burn-runtime-cpu` | Burn NdArray CPU interpreter with host tensor storage |
 //! | `cann` | `cann-runtime`, `cann-runtime-mock` | Huawei HiAI/CANN on OpenHarmony |
 //! | `webnn` | `webnn-runtime` | Browser WebNN through generated bindings (`wasm32`) |
 
 use crate::mlcontext::{self, RustNNOptions};
 
+#[cfg(feature = "burn-runtime-cpu")]
+pub(crate) mod burn;
 pub mod caching;
 
 #[cfg(feature = "coreml-runtime")]

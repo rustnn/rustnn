@@ -29,6 +29,7 @@ export function createWptHarnessStubs() {
     TypeError,
     AssertionError: Error,
     URLSearchParams,
+    // Pinned affine-normalization fixtures clone graph definitions before registration.
     structuredClone,
     location: { search: '' },
     navigator: { ml: { createContext: asyncNoop } },

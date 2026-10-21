@@ -2148,6 +2148,7 @@ pub fn infer_scatter_elements_shape(
 ///
 /// Resizes the two spatial axes given by `axes` (default last two). `sizes` takes precedence
 /// over `scales` when both are set (WebNN semantics).
+/// Scaled dimensions and dynamic upper bounds use floor(input size * scale).
 pub fn infer_resample2d_shape(
     input_shape: &[Dimension],
     axes: [usize; 2],
@@ -2186,16 +2187,20 @@ pub fn infer_resample2d_shape(
     for (axis_idx, scale) in scale_pair.iter().enumerate() {
         let axis = axes[axis_idx];
         output[axis] = match &input_shape[axis] {
-            Dimension::Static(in_dim) => {
-                Dimension::Static(((*in_dim).max(1) as f32 * scale).round().max(1.0) as u32)
-            }
+            Dimension::Static(in_dim) => Dimension::Static(
+                (f64::from((*in_dim).max(1)) * f64::from(*scale))
+                    .floor()
+                    .max(1.0) as u32,
+            ),
             Dimension::Dynamic(d) => {
                 if (*scale - 1.0).abs() < f32::EPSILON {
                     Dimension::Dynamic(d.clone())
                 } else {
                     Dimension::Dynamic(DynamicDimension {
                         name: d.name.clone(),
-                        max_size: ((d.max_size.max(1) as f32) * scale).round().max(1.0) as u32,
+                        max_size: (f64::from(d.max_size.max(1)) * f64::from(*scale))
+                            .floor()
+                            .max(1.0) as u32,
                     })
                 }
             }
@@ -3709,6 +3714,49 @@ mod tests {
 
         // Axis out of bounds
         assert!(infer_scatter_elements_shape(&[3, 4], &[2, 4], &[2, 4], 2).is_err());
+    }
+
+    #[test]
+    fn resample2d_floors_noninteger_scaled_dimensions_and_bounds() {
+        let input = to_dimension_vector(&[1, 1, 3, 7]);
+        assert_eq!(
+            infer_resample2d_shape(&input, [2, 3], None, &[1.5, 0.5]).unwrap(),
+            to_dimension_vector(&[1, 1, 4, 3]),
+        );
+        let input = vec![
+            Dimension::Dynamic(DynamicDimension {
+                name: "height".into(),
+                max_size: 3,
+            }),
+            Dimension::Dynamic(DynamicDimension {
+                name: "width".into(),
+                max_size: 7,
+            }),
+        ];
+        assert_eq!(
+            infer_resample2d_shape(&input, [0, 1], None, &[1.5, 0.5]).unwrap(),
+            vec![
+                Dimension::Dynamic(DynamicDimension {
+                    name: "height".into(),
+                    max_size: 4
+                }),
+                Dimension::Dynamic(DynamicDimension {
+                    name: "width".into(),
+                    max_size: 3
+                }),
+            ],
+        );
+        // Integer dimensions must not be rounded to f32 before scaling.
+        assert_eq!(
+            infer_resample2d_shape(
+                &to_dimension_vector(&[16_777_217, 3]),
+                [0, 1],
+                None,
+                &[1.0, 1.5]
+            )
+            .unwrap(),
+            to_dimension_vector(&[16_777_217, 4]),
+        );
     }
 
     #[test]

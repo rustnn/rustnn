@@ -26,7 +26,7 @@ exclude = [
 
 # docs.rs builds with the backends that compile on Linux so their APIs appear in the docs.
 [package.metadata.docs.rs]
-features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "dynamic-inputs"]
+features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "burn-runtime-cpu", "dynamic-inputs"]
 
 # The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to `cfg(feature = "cargo-clippy")`,
 # which rustc flags as an unexpected cfg. A file-level `#![allow(unexpected_cfgs)]` does not
@@ -54,6 +54,7 @@ zstd-cache-compression = ["dep:zstd"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
 cann-runtime = ["dep:hiai-rs"]
 cann-runtime-mock = []
+burn-runtime-cpu = ["dep:postcard", "dep:burn-tensor", "dep:burn-ndarray"]
 native-examples = []
 wpt-embed-corpus = []
 webnn-wpt-tests = ["wpt-embed-corpus"]
@@ -192,6 +193,9 @@ MlTriangularOptions = []
 MlWhereSupportLimits = []
 
 [dependencies]
+postcard = { version = "1", optional = true, features = ["alloc"] }
+burn-tensor = { version = "0.21", optional = true, default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.21", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
