@@ -213,8 +213,26 @@ fn parse_integer_for_tensor(v: &serde_json::Value) -> Option<i32> {
 /// a direct f64 to f16 conversion with IEEE ties-to-even (no f32 intermediate).
 /// Strict packing and comparison use the same helper; compatibility mode keeps
 /// the f32 to f16 conversion.
+///
+/// `half::f16::from_f64` is not used: on x86 with F16C it rounds through f32,
+/// and its software fallback drops the low mantissa bits before rounding.
 pub(crate) fn wpt_half_bits(value: f64) -> u16 {
-    half::f16::from_f64(value).to_bits()
+    let sign = if value.is_sign_negative() { 0x8000 } else { 0 };
+    let magnitude = value.abs();
+    if magnitude.is_nan() {
+        return sign | 0x7e00;
+    }
+    // 65520 is the midpoint between f16::MAX and 2^16; ties-to-even overflows.
+    if magnitude >= 65520.0 {
+        return sign | 0x7c00;
+    }
+    // Scale by the f16 quantum of this binade (subnormal quantum below 2^-14);
+    // power-of-two scaling is exact, so only round_ties_even rounds.
+    let exponent = ((magnitude.to_bits() >> 52) & 0x7ff) as i32 - 1023;
+    let quantum = 2.0f64.powi(exponent.max(-14) - 10);
+    let rounded = (magnitude / quantum).round_ties_even() * quantum;
+    // `rounded` is exactly representable, so any f16 conversion is exact.
+    sign | half::f16::from_f64(rounded).to_bits()
 }
 
 fn float16_bits(value: f64, strict: bool) -> u16 {
