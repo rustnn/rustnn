@@ -175,18 +175,23 @@ fn parse_number(v: &serde_json::Value) -> Option<f64> {
 
 /// Parse a float from WPT JSON for tensor data (handles "Infinity", "-Infinity", "NaN" strings and null).
 pub(crate) fn parse_float_for_tensor(v: &serde_json::Value) -> Option<f32> {
+    parse_f64_for_tensor(v).map(|f| f as f32)
+}
+
+/// [`parse_float_for_tensor`] at the source (JS Number) precision.
+fn parse_f64_for_tensor(v: &serde_json::Value) -> Option<f64> {
     if v.is_null() {
-        return Some(f32::NAN);
+        return Some(f64::NAN);
     }
     if let Some(s) = v.as_str() {
         return match s {
-            "Infinity" => Some(f32::INFINITY),
-            "-Infinity" => Some(f32::NEG_INFINITY),
-            "NaN" => Some(f32::NAN),
-            _ => parse_number(v).map(|f| f as f32),
+            "Infinity" => Some(f64::INFINITY),
+            "-Infinity" => Some(f64::NEG_INFINITY),
+            "NaN" => Some(f64::NAN),
+            _ => parse_number(v),
         };
     }
-    parse_number(v).or_else(|| v.as_f64()).map(|f| f as f32)
+    parse_number(v).or_else(|| v.as_f64())
 }
 
 fn parse_integer_for_tensor(v: &serde_json::Value) -> Option<i32> {
@@ -204,33 +209,19 @@ fn parse_integer_for_tensor(v: &serde_json::Value) -> Option<i32> {
         .map(|x| x as i32)
 }
 
-/// Port of webnn/resources/utils.js toHalf, including its halfway rounding.
+/// Port of webnn/resources/utils.js toHalf, which uses `Float16Array.of(value)`:
+/// a direct f64 to f16 conversion with IEEE ties-to-even (no f32 intermediate).
 /// Strict packing and comparison use the same helper; compatibility mode keeps
-/// the historical IEEE ties-to-even conversion.
+/// the f32 to f16 conversion.
 pub(crate) fn wpt_half_bits(value: f64) -> u16 {
-    let bits = (value as f32).to_bits();
-    let sign = (bits >> 16) & 0x8000;
-    let mut mantissa = (bits >> 12) & 0x07ff;
-    let exponent = (bits >> 23) & 0xff;
-    if exponent < 103 {
-        return sign as u16;
-    }
-    if exponent > 142 {
-        return (sign | 0x7c00 | u32::from(exponent == 255 && bits & 0x007f_ffff != 0)) as u16;
-    }
-    if exponent < 113 {
-        mantissa |= 0x0800;
-        return (sign | ((mantissa >> (114 - exponent)) + ((mantissa >> (113 - exponent)) & 1)))
-            as u16;
-    }
-    ((sign | ((exponent - 112) << 10) | (mantissa >> 1)) + (mantissa & 1)) as u16
+    half::f16::from_f64(value).to_bits()
 }
 
-fn float16_bits(value: f32, strict: bool) -> u16 {
+fn float16_bits(value: f64, strict: bool) -> u16 {
     if strict {
-        wpt_half_bits(value as f64)
+        wpt_half_bits(value)
     } else {
-        half::f16::from_f32(value).to_bits()
+        half::f16::from_f32(value as f32).to_bits()
     }
 }
 
@@ -325,10 +316,10 @@ pub(crate) fn tensor_spec_to_bytes_with_mode(
             let mut buf = vec![0u16; n];
             if let Some(arr) = arr_opt {
                 for (i, v) in arr.iter().enumerate().take(n) {
-                    let f = parse_float_for_tensor(v).unwrap_or(0.0);
+                    let f = parse_f64_for_tensor(v).unwrap_or(0.0);
                     buf[i] = float16_bits(f, strict);
                 }
-            } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+            } else if let Some(f) = parse_f64_for_tensor(&spec.data) {
                 let h = float16_bits(f, strict);
                 buf.fill(h);
             }
@@ -500,21 +491,29 @@ fn fit_len<T: Clone>(mut buf: Vec<T>, n: usize, fill: T) -> Vec<T> {
 
 /// Float32 payload for runtime I/O and builder constants (scalar-fill when JSON has one value).
 pub fn tensor_f32_values(spec: &WptTensorSpec) -> Vec<f32> {
+    tensor_f64_values(spec)
+        .into_iter()
+        .map(|f| f as f32)
+        .collect()
+}
+
+/// [`tensor_f32_values`] at the source (JS Number) precision.
+fn tensor_f64_values(spec: &WptTensorSpec) -> Vec<f64> {
     let n = element_count(spec);
-    let mut buf = vec![0.0f32; n];
+    let mut buf = vec![0.0f64; n];
     if let Some(arr) = spec.data.as_array() {
         if arr.len() == 1 && n > 1 {
-            if let Some(v) = parse_float_for_tensor(&arr[0]) {
+            if let Some(v) = parse_f64_for_tensor(&arr[0]) {
                 buf.fill(v);
             }
         } else {
             for (i, v) in arr.iter().enumerate().take(n) {
-                if let Some(f) = parse_float_for_tensor(v) {
+                if let Some(f) = parse_f64_for_tensor(v) {
                     buf[i] = f;
                 }
             }
         }
-    } else if let Some(f) = parse_float_for_tensor(&spec.data) {
+    } else if let Some(f) = parse_f64_for_tensor(&spec.data) {
         buf.fill(f);
     }
     buf
@@ -526,7 +525,7 @@ pub fn tensor_f16_bits(spec: &WptTensorSpec) -> Vec<u16> {
 }
 
 pub(crate) fn tensor_f16_bits_with_mode(spec: &WptTensorSpec, strict: bool) -> Vec<u16> {
-    tensor_f32_values(spec)
+    tensor_f64_values(spec)
         .into_iter()
         .map(|f| float16_bits(f, strict))
         .collect()

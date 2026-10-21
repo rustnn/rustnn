@@ -149,16 +149,18 @@ Callbacks that require intermediate operands are reevaluated with shapes and
 types from the Rust builder, using Node.js and the fetched source file. No
 tolerance formula is reimplemented. An upstream callback that still returns
 an undefined or nonfinite budget remains a test failure.
-The strict finite-value comparator follows the upstream helpers: raw half-bit
-distance except signed zero, the helper's FP16 halfway rounding, and unrounded
+The strict finite-value comparator follows the upstream helpers: signed-magnitude
+bit distance for FP32 and FP16 (signed zeros are equal), expected values rounded
+directly to FP16 with ties-to-even as `Float16Array` does, and unrounded
 JavaScript-number expected values for ATOL. Its audit uses the same comparator
 and applied budget. Nonfinite values use classification rules instead of the
 upstream bit-distance helper: NaN matches NaN regardless of payload, and
 infinities must match in sign. A large budget cannot hide a class mismatch.
 ULP classification uses the expected value after conversion to the output
 dtype; ATOL retains the original source number, including at overflow boundaries.
-Strict FP16 runtime inputs and constants also use
-the upstream halfway-rounding helper; compatibility packing is unchanged.
+Strict FP16 runtime inputs and constants are also rounded directly from the
+source number, as upstream `toHalf` does; compatibility packing rounds through FP32
+and is unchanged.
 The JavaScript fixture bridge preserves negative zero in tensor data and floating-point
 options rather than losing its sign during JSON serialization. This source fidelity is
 separate from the ULP comparator, which continues to treat signed zeros as equal.
