@@ -308,24 +308,25 @@ pub fn ulp_distance_f16(a: f32, b: f32) -> u32 {
     f16_bits_to_ordered(a_bits).abs_diff(f16_bits_to_ordered(b_bits))
 }
 
-/// The upstream ULP metric, including raw FP16 bits across opposite signs and
-/// the signed-zero exception. Expected values retain their original JS precision.
+/// The upstream ULP metric: signed-magnitude bit ordering for both float32 and
+/// float16, so signed zeros compare equal. Expected values retain their original
+/// JS precision and are rounded directly to the comparison type.
 pub fn upstream_ulp_distance(actual: f32, expected: f64, float16: bool) -> u32 {
-    if float16 {
-        let actual = half::f16::from_f32(actual).to_bits();
-        let expected = super::wpt_tensor::wpt_half_bits(expected);
-        if actual & 0x7fff == 0 && expected & 0x7fff == 0 {
-            0
+    let signed_bits = |value: f64| {
+        let magnitude = if float16 {
+            i64::from(super::wpt_tensor::wpt_half_bits(value.abs()))
         } else {
-            u32::from(actual.abs_diff(expected))
-        }
-    } else {
-        let signed_bits = |value: f64| {
-            let magnitude = i64::from((value.abs() as f32).to_bits());
-            if value < 0.0 { -magnitude } else { magnitude }
+            i64::from((value.abs() as f32).to_bits())
         };
-        signed_bits(actual as f64).abs_diff(signed_bits(expected)) as u32
-    }
+        if value < 0.0 { -magnitude } else { magnitude }
+    };
+    // Float16 readback is f16 storage; decode it before applying the ordering.
+    let actual = if float16 {
+        half::f16::from_f32(actual).to_f64()
+    } else {
+        actual as f64
+    };
+    signed_bits(actual).abs_diff(signed_bits(expected)) as u32
 }
 
 fn nonfinite_mismatch(actual: f64, expected: f64) -> bool {

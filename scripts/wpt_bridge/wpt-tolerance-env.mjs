@@ -29,6 +29,7 @@ export function createWptHarnessStubs() {
     TypeError,
     AssertionError: Error,
     URLSearchParams,
+    structuredClone,
     location: { search: '' },
     navigator: { ml: { createContext: asyncNoop } },
     fetch: asyncNoop,
