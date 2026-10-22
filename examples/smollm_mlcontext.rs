@@ -287,7 +287,7 @@ fn compact_kv(
 }
 
 // Stores the last token's KV slice from the present output into the padded CPU cache at
-// current_pos. Mirrors smollm_webnn_rust's update_kv_cache logic.
+// current_pos.
 fn store_present(
     state: &mut StepState,
     layout: &Layout,
