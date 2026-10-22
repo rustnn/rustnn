@@ -210,7 +210,7 @@ ort = { version = "=2.0.0-rc.13", optional = true, features = [
     "api-27",
 ] }
 half = "2.4"
-trtx = { version = "0.9.1", optional = true }
+trtx = { version = "0.9.2", optional = true }
 litert = { version = "0.2.1", optional = true }
 litert-sys = { version = "0.2.1", optional = true }
 flatbuffers = { version = "25.12", optional = true }
