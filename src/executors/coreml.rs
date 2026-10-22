@@ -1555,6 +1555,7 @@ fn collect_named_outputs(
         .collect()
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
 #[serde_with::serde_as]
 #[derive(serde::Deserialize)]
 #[serde(bound(deserialize = "T: serde::Deserialize<'de>"))]
@@ -1756,6 +1757,7 @@ unsafe fn model_constant_copies<'a>(
     }
 }
 
+#[cfg(any(target_os = "macos", target_os = "ios", test))]
 fn parse_passthroughs(
     json: &str,
     inputs: &HashMap<String, String>,

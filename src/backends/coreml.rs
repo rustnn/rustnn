@@ -578,11 +578,16 @@ mod test {
         assert!(super::supports_output_backings(&graph));
     }
 
+    // TODO: Remove when Trtx implements Send.
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
     use crate::executors::coreml::CoremlLoadRoute;
     use crate::mlcontext::{
-        Backend, LoadDiagnostics, MLContext, MLContextOptions, MLGraph, MLNamedOperands,
-        MLNamedTensors, MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
+        Backend, MLContext, MLContextOptions, MLNamedOperands, MLNamedTensors, MLOperandDescriptor,
+        MLPowerPreference, MLTensorDescriptor,
     };
+    // TODO: Remove when Trtx implements Send.
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
+    use crate::mlcontext::{LoadDiagnostics, MLGraph};
     use crate::mlgraphbuilder::MLGraphBuilder;
     use crate::operator_enums::MLOperandDataType;
 
@@ -951,6 +956,11 @@ mod test {
         assert_eq!(result, &[1.0f32, 3., 1., 5.]);
     }
 
+    // Moving the graph to another thread needs `MLGraph: Send`, which only holds
+    // while every enabled backend's graph is `Send`. TensorRT's is not (CUDA
+    // engine/stream affinity), so these lifecycle tests are CoreML-only.
+    // TODO: Remove when Trtx implements Send.
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
     fn load_route(graph: &MLGraph<'_>) -> CoremlLoadRoute {
         let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() else {
             panic!("CoreML graph did not report load diagnostics");
@@ -958,6 +968,8 @@ mod test {
         diagnostics.route
     }
 
+    // TODO: Remove when Trtx implements Send.
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
     #[test]
     fn coreml_in_memory_model_dispatch_and_drop_on_another_thread() {
         let _ = pretty_env_logger::try_init();
@@ -1007,6 +1019,8 @@ mod test {
 
     /// Same lifecycle for the compiled-URL route (int32 neg selects it),
     /// including the temporary `.mlmodelc` cleanup on the receiving thread.
+    // TODO: Remove when Trtx implements Send.
+    #[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
     #[test]
     fn coreml_url_model_dispatch_and_drop_on_another_thread() {
         let _ = pretty_env_logger::try_init();

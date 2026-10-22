@@ -95,23 +95,11 @@ jobs:
       - name: Run cargo check (explicitly without dynamic-inputs)
         run: cargo check --no-default-features
 
-      - name: Run cargo check (onnx-runtime without dynamic-inputs)
-        run: cargo check --no-default-features --features onnx-runtime
-
-      - name: Run cargo check (TensorRT)
-        run: cargo check -F trtx-runtime --all-targets
-
-      - name: Run cargo check (LiteRT)
-        run: cargo check --features litert-runtime --all-targets
-
       - name: Build wasm32
         run: |
           make fetch-wpt # browser wasm32 can't read files, therefore wpt spec is baked into test wasm32
           RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown -F webnn-runtime,webnn-wpt-tests --all-targets
           RUSTFLAGS="-C target-feature=+reference-types --cfg=web_sys_unstable_apis" cargo check --target wasm32-unknown-unknown --no-default-features -F webnn-runtime
-
-      - name: Run cargo check (CANN runtime)
-        run: cargo check --features cann-runtime
 
       - name: Build all targets (CoreML without dynamic-inputs)
         if: runner.os == 'macOS'
@@ -171,6 +159,113 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           python3 -m unittest scripts/test_generate_backend_operator_report.py
+
+  backend-checks:
+    name: Backend Check (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: &backends [coreml-runtime, onnx-runtime, trtx-runtime, litert-runtime, cann-runtime]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep the pinned Rust version in sync with rust-toolchain.toml.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/${FLATC_VERSION}/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          mkdir -p "$HOME/.local/bin"
+          unzip -o /tmp/flatc.zip flatc -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/flatc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          flatc --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo check
+        run: cargo check --features "${{ matrix.features }}" --all-targets
+
+  backend-combinations:
+    name: Backend Pairs (${{ matrix.a }} + ${{ matrix.b }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        a: *backends
+        b: *backends
+        exclude:
+          - {a: coreml-runtime, b: coreml-runtime}
+          - {a: onnx-runtime, b: onnx-runtime}
+          - {a: trtx-runtime, b: trtx-runtime}
+          - {a: litert-runtime, b: litert-runtime}
+          - {a: cann-runtime, b: cann-runtime}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep the pinned Rust version in sync with rust-toolchain.toml.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+          protoc --version
+
+      - name: Install flatc
+        run: |
+          curl -sSL "https://github.com/google/flatbuffers/releases/download/${FLATC_VERSION}/Linux.flatc.binary.clang++-18.zip" -o /tmp/flatc.zip
+          mkdir -p "$HOME/.local/bin"
+          unzip -o /tmp/flatc.zip flatc -d "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/flatc"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          flatc --version
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-${{ matrix.a }}-${{ matrix.b }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run cargo check
+        run: cargo check --features "${{ matrix.a }},${{ matrix.b }}" --all-targets
 
   docs-test:
     name: Test Documentation Build
