@@ -1,6 +1,7 @@
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "cann-runtime",
+    feature = "burn-runtime-cpu",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use std::io::Write;
@@ -12,6 +13,7 @@ use rustnn::graph::get_static_or_max_size;
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "cann-runtime",
+    feature = "burn-runtime-cpu",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 use rustnn::{ContextProperties, GraphError, GraphValidator, graph_to_dot, load_graph_from_path};
@@ -50,6 +52,7 @@ struct Cli {
 #[cfg(any(
     feature = "onnx-runtime",
     feature = "cann-runtime",
+    feature = "burn-runtime-cpu",
     all(target_os = "macos", feature = "coreml-runtime")
 ))]
 fn run() -> Result<(), GraphError> {
@@ -236,6 +239,7 @@ fn main() {
     #[cfg(any(
         feature = "onnx-runtime",
         feature = "cann-runtime",
+        feature = "burn-runtime-cpu",
         all(target_os = "macos", feature = "coreml-runtime")
     ))]
     {
@@ -247,6 +251,7 @@ fn main() {
     #[cfg(not(any(
         feature = "onnx-runtime",
         feature = "cann-runtime",
+        feature = "burn-runtime-cpu",
         all(target_os = "macos", feature = "coreml-runtime")
     )))]
     {

@@ -4291,6 +4291,7 @@ dependencies = [
  "dirs 7.0.0",
  "flatbuffers",
  "futures-util",
+ "getrandom 0.4.3",
  "half",
  "hiai-rs",
  "image",

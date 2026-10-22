@@ -76,8 +76,10 @@
 //!
 //! # Cargo features
 //!
-//! Backends are opt-in. Without a runtime feature the crate still validates graphs and
-//! converts them to CoreML protobufs (and ONNX with the default `onnx` feature), but [`mlcontext::MLContext::create`] fails
+//! Burn CPU is enabled by default and selected after every other eligible backend.
+//! Other runtime backends are opt-in. Without a runtime feature, the crate still validates
+//! graphs and converts them to CoreML protobufs (and ONNX with the `onnx` feature), but
+//! [`mlcontext::MLContext::create`] fails
 //! with [`error::Error::NoBackendAvailable`].
 //!
 //! | Feature | Effect |
@@ -89,7 +91,7 @@
 //! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features are compiled out (validation only) |
 //! | `coreml-runtime` | Apple CoreML backend; executes on macOS/iOS; failing shims on other targets |
 //! | `litert-runtime` | LiteRT (TensorFlow Lite) backend through `litert-sys`; needs `flatc` at build time |
-//! | `burn-runtime-cpu` | Burn NdArray CPU backend; explicitly select `Backend::BurnCpu`; no native runtime library required |
+//! | `burn-runtime-cpu` | Burn NdArray CPU backend, enabled by default as the lowest-priority fallback; no native runtime library required |
 //! | `cann-runtime` | Huawei CANN/HiAI backend on OpenHarmony; `cann-runtime-mock` validates without a device |
 //! | `webnn-runtime` | Browser WebNN backend for `wasm32-unknown-unknown` (`webnn-wpt-tests` embeds the WPT corpus) |
 //! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |

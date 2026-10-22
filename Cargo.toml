@@ -39,7 +39,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [features]
-default = ["cli", "onnx"]
+default = ["cli", "onnx", "burn-runtime-cpu"]
 cli = ["dep:clap", "dep:tracing-subscriber", "onnx"]
 onnx = ["dep:webnn-onnx-utils"]
 capi = ["dep:pretty_env_logger"]
@@ -54,7 +54,7 @@ zstd-cache-compression = ["dep:zstd"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
 cann-runtime = ["dep:hiai-rs"]
 cann-runtime-mock = []
-burn-runtime-cpu = ["dep:postcard", "dep:burn-tensor", "dep:burn-ndarray"]
+burn-runtime-cpu = ["dep:postcard", "dep:burn-tensor", "dep:burn-ndarray", "dep:getrandom"]
 native-examples = []
 wpt-embed-corpus = []
 webnn-wpt-tests = ["wpt-embed-corpus"]
@@ -375,3 +375,7 @@ asset = [
     { from = "cmake/rustnnConfig.cmake", to = "rustnn/cmake" },
     { from = "cmake/rustnnConfigVersion.cmake", to = "rustnn/cmake" },
 ]
+
+# Burn uses rand on browser wasm targets, where entropy comes from Web Crypto.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }

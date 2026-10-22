@@ -7,7 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 
 Build with `--features burn-runtime-cpu` to execute graphs on the host using Burn's
 NdArray backend. No ONNX Runtime, GPU, or external native runtime library is required.
-Burn CPU is selected explicitly; the automatic backend selection order is unchanged.
+Automatic selection tries Burn CPU last, after every other eligible backend, including
+ONNX Runtime CPU. It can also serve accelerated requests when no preferred backend is
+available. An explicit hint for another backend does not fall back to Burn CPU.
 
 ```rust,ignore
 use rustnn::mlcontext::{Backend, MLContext, MLContextOptions, MLPowerPreference};
