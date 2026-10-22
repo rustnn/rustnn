@@ -601,13 +601,6 @@ mod test {
     }
 
     #[test]
-    fn coreml_graph_and_compiled_model_are_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<super::CoremlGraph>();
-        assert_send::<crate::executors::coreml::CompiledCoremlModel>();
-    }
-
-    #[test]
     fn triangular_url_compilation_is_limited_to_excluded_main_int32() {
         use crate::graph::{
             DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,

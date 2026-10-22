@@ -14,7 +14,6 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
-use std::rc::Rc;
 use std::sync::LazyLock;
 
 use cudarc::driver::CudaSlice;
@@ -266,6 +265,21 @@ impl std::fmt::Debug for TrtxGraph<'_> {
             .field("cuda_graph_count", &self.cuda_graphs.len())
             .field("inference_count", &self.inference_count)
             .finish()
+    }
+}
+
+// SAFETY: `TrtxGraph` exclusively owns its TensorRT/CUDA handles and is `!Sync`,
+// so moving it can never permit concurrent use. Every CUDA entry point binds the
+// context to the calling thread, and TensorRT callbacks are `Send + Sync`.
+unsafe impl Send for TrtxGraph<'_> {}
+
+impl Drop for TrtxGraph<'_> {
+    fn drop(&mut self) {
+        // TensorRT and CUDA release device resources in their destructors, so the
+        // context must be current on whichever thread drops the graph.
+        if let Err(error) = self.cuda_stream.context().bind_to_thread() {
+            warn!("Failed to bind the CUDA context while dropping a TensorRT graph: {error}");
+        }
     }
 }
 
@@ -679,7 +693,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         }
         let exec = engine
-            .create_execution_context_with_config(Rc::new(runtime_config))
+            .create_execution_context_with_config(Arc::new(runtime_config))
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
         MLGraph::new(
