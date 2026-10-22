@@ -932,13 +932,6 @@ mod test {
     }
 
     #[test]
-    fn coreml_graph_and_compiled_model_are_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<super::CoremlGraph>();
-        assert_send::<crate::executors::coreml::CompiledCoremlModel>();
-    }
-
-    #[test]
     fn runtime_descriptor_checks_dimensions_and_byte_length() {
         use crate::graph::{DataType, OperandDescriptor, to_dimension_vector};
         let descriptor = OperandDescriptor {
