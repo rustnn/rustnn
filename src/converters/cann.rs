@@ -2665,8 +2665,20 @@ mod adapter {
                 }
 
                 // hiai::op::PoolingD: mode(0=max,1=avg,2=l2), window(2), stride(2), pad(4).
-                let mut window_h: i64 = 1;
-                let mut window_w: i64 = 1;
+                // A missing window pools over the whole spatial extent: NCHW
+                // `[.., H, W]` at dims 2,3 and NHWC `[.., H, W, C]` at dims 1,2.
+                let pool_in_dims = descriptor_dims(&graph.operands[input as usize].descriptor);
+                let (default_h, default_w) = if pool_in_dims.len() == 4 {
+                    if is_nhwc {
+                        (pool_in_dims[1], pool_in_dims[2])
+                    } else {
+                        (pool_in_dims[2], pool_in_dims[3])
+                    }
+                } else {
+                    (1, 1)
+                };
+                let mut window_h: i64 = default_h;
+                let mut window_w: i64 = default_w;
                 let mut stride_h: i64 = 1;
                 let mut stride_w: i64 = 1;
                 let mut padding_top: i64 = 0;
