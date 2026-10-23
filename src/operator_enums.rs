@@ -6,6 +6,8 @@ use strum::{AsRefStr, EnumString, IntoStaticStr};
 
 /// Operand data type of the WebNN API. <https://www.w3.org/TR/webnn/#enumdef-mloperanddatatype>
 ///
+/// `bfloat16` and `float8e4m3` use raw 16-bit and 8-bit storage respectively.
+/// Backend execution support is separate from type representation.
 /// `int4` and `uint4` are rustnn extensions that follow the WPT test data.
 #[derive(
     Default,
@@ -45,6 +47,14 @@ pub enum MLOperandDataType {
     Int4,
     /// Unsigned 4-bit integer (rustnn extension).
     Uint4,
+    /// Brain floating point: one sign bit, eight exponent bits and seven fraction bits.
+    #[serde(rename = "bfloat16")]
+    #[strum(serialize = "bfloat16")]
+    Bfloat16,
+    /// Finite E4M3 floating point (ONNX FLOAT8E4M3FN), including signed zero and NaN.
+    #[serde(rename = "float8e4m3")]
+    #[strum(serialize = "float8e4m3")]
+    Float8e4m3,
 }
 
 impl TryFrom<DataType> for MLOperandDataType {
@@ -53,6 +63,8 @@ impl TryFrom<DataType> for MLOperandDataType {
         Ok(match value {
             DataType::Float32 => Self::Float32,
             DataType::Float16 => Self::Float16,
+            DataType::Bfloat16 => Self::Bfloat16,
+            DataType::Float8e4m3 => Self::Float8e4m3,
             DataType::Int32 => Self::Int32,
             DataType::Uint32 => Self::Uint32,
             DataType::Int64 => Self::Int64,
@@ -70,6 +82,8 @@ impl From<MLOperandDataType> for DataType {
         match val {
             MLOperandDataType::Float32 => DataType::Float32,
             MLOperandDataType::Float16 => DataType::Float16,
+            MLOperandDataType::Bfloat16 => DataType::Bfloat16,
+            MLOperandDataType::Float8e4m3 => DataType::Float8e4m3,
             MLOperandDataType::Int32 => DataType::Int32,
             MLOperandDataType::Uint32 => DataType::Uint32,
             MLOperandDataType::Int64 => DataType::Int64,
@@ -87,9 +101,9 @@ impl MLOperandDataType {
     pub const fn rustnn_element_size_bits(self) -> usize {
         match self {
             MLOperandDataType::Float32 | MLOperandDataType::Int32 | MLOperandDataType::Uint32 => 32,
-            MLOperandDataType::Float16 => 16,
+            MLOperandDataType::Float16 | MLOperandDataType::Bfloat16 => 16,
             MLOperandDataType::Int64 | MLOperandDataType::Uint64 => 64,
-            MLOperandDataType::Int8 | MLOperandDataType::Uint8 => 8,
+            MLOperandDataType::Int8 | MLOperandDataType::Uint8 | MLOperandDataType::Float8e4m3 => 8,
             MLOperandDataType::Int4 | MLOperandDataType::Uint4 => 4,
         }
     }
@@ -469,7 +483,8 @@ mod test {
         }
 
         check_strings!(MLOperandDataType {
-            Float32 => "float32", Float16 => "float16", Int32 => "int32",
+            Float32 => "float32", Float16 => "float16",
+            Bfloat16 => "bfloat16", Float8e4m3 => "float8e4m3", Int32 => "int32",
             Uint32 => "uint32", Int64 => "int64", Uint64 => "uint64",
             Int8 => "int8", Uint8 => "uint8", Int4 => "int4", Uint4 => "uint4",
         });

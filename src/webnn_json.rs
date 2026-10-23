@@ -64,8 +64,14 @@ fn operand_export_name_with_overrides(
 }
 
 /// Convert our DataType to webnn-graph DataType
-fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
-    match dt {
+fn to_webnn_datatype(dt: &DataType) -> Result<webnn_graph::ast::DataType, GraphError> {
+    Ok(match dt {
+        DataType::Bfloat16 | DataType::Float8e4m3 => {
+            return Err(GraphError::ConversionFailed {
+                format: "webnn-graph-json".into(),
+                reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+            });
+        }
         DataType::Int4 => webnn_graph::ast::DataType::Int4,
         DataType::Uint4 => webnn_graph::ast::DataType::Uint4,
         DataType::Float32 => webnn_graph::ast::DataType::Float32,
@@ -76,7 +82,7 @@ fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
         DataType::Uint64 => webnn_graph::ast::DataType::Uint64,
         DataType::Int8 => webnn_graph::ast::DataType::Int8,
         DataType::Uint8 => webnn_graph::ast::DataType::Uint8,
-    }
+    })
 }
 
 /// Convert webnn-graph DataType to our DataType
@@ -305,6 +311,7 @@ pub(crate) fn to_graph_json_with_consts(
 
     // Process operands - separate inputs and constants
     for (idx, operand) in graph.operands.iter().enumerate() {
+        to_webnn_datatype(&operand.descriptor.data_type)?;
         let name = operand_export_name(operand, idx);
 
         match &operand.kind {
@@ -312,7 +319,7 @@ pub(crate) fn to_graph_json_with_consts(
                 inputs.insert(
                     name,
                     OperandDesc {
-                        data_type: to_webnn_datatype(&operand.descriptor.data_type),
+                        data_type: to_webnn_datatype(&operand.descriptor.data_type)?,
                         shape: operand
                             .descriptor
                             .shape
@@ -348,7 +355,7 @@ pub(crate) fn to_graph_json_with_consts(
                     consts.insert(
                         name,
                         ConstDecl {
-                            data_type: to_webnn_datatype(&operand.descriptor.data_type),
+                            data_type: to_webnn_datatype(&operand.descriptor.data_type)?,
                             shape: const_shape,
                             init,
                         },
@@ -480,9 +487,12 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                 let mut bytes = Vec::new();
                 for _ in 0..element_count {
                     match data_type {
-                        DataType::Int4 | DataType::Uint4 => {
+                        DataType::Bfloat16
+                        | DataType::Float8e4m3
+                        | DataType::Int4
+                        | DataType::Uint4 => {
                             return Err(conversion_error(
-                                "int4/uint4 constants are not supported in scalar export",
+                                "bfloat16/float8e4m3 and int4/uint4 constants are not supported in scalar export",
                             ));
                         }
                         DataType::Float32 => bytes.extend_from_slice(&scalar.to_le_bytes()),
@@ -624,6 +634,13 @@ mod tests {
     }
 
     #[test]
+    fn low_precision_float_export_returns_error() {
+        for data_type in [DataType::Bfloat16, DataType::Float8e4m3] {
+            assert!(to_webnn_datatype(&data_type).is_err());
+        }
+    }
+
+    #[test]
     fn loader_layer_normalization_preserves_input_shape() {
         let text = r#"
         webnn_graph "ln_test" v1 {
@@ -699,7 +716,7 @@ mod tests {
         ];
 
         for dt in types {
-            let webnn_dt = to_webnn_datatype(&dt);
+            let webnn_dt = to_webnn_datatype(&dt).unwrap();
             let back = from_webnn_datatype(&webnn_dt);
             assert_eq!(dt, back);
         }

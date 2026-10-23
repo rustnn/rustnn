@@ -130,6 +130,12 @@ pub enum DataType {
     Int64,
     /// Unsigned 64-bit integer.
     Uint64,
+    /// Brain floating point: one sign bit, eight exponent bits and seven fraction bits.
+    #[serde(rename = "bfloat16")]
+    Bfloat16,
+    /// Finite E4M3 floating point (ONNX FLOAT8E4M3FN), including signed zero and NaN.
+    #[serde(rename = "float8e4m3")]
+    Float8e4m3,
 }
 
 impl DataType {
@@ -137,8 +143,8 @@ impl DataType {
     pub const fn bits_per_element(self) -> usize {
         match self {
             DataType::Int4 | DataType::Uint4 => 4,
-            DataType::Int8 | DataType::Uint8 => 8,
-            DataType::Float16 => 16,
+            DataType::Int8 | DataType::Uint8 | DataType::Float8e4m3 => 8,
+            DataType::Float16 | DataType::Bfloat16 => 16,
             DataType::Float32 | DataType::Int32 | DataType::Uint32 => 32,
             DataType::Int64 | DataType::Uint64 => 64,
         }
