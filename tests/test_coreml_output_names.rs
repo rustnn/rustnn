@@ -236,26 +236,37 @@ fn alias_metadata_preserves_names_dtypes_shapes_and_unique_ssa_values() {
             let passthroughs = passthroughs.as_object().unwrap();
             assert_eq!(passthroughs.len(), if half_output { 1 } else { 3 });
             assert_eq!(passthroughs["copy"]["input"], "shared");
-            let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
-                panic!("expected MLProgram")
+            let children = match model.r#type.as_ref().unwrap() {
+                specification::model::Type::MlProgram(_) => vec![&model],
+                specification::model::Type::Pipeline(pipeline) => pipeline.models.iter().collect(),
+                _ => panic!("expected MIL container"),
             };
-            let function = &program.functions["main"];
-            let block = &function.block_specializations["CoreML7"];
-            assert_eq!(block.outputs.len(), description.output.len());
-            assert!(
-                block
-                    .operations
+            for child in children {
+                let specification::model::Type::MlProgram(program) = child.r#type.as_ref().unwrap()
+                else {
+                    panic!("expected MLProgram child");
+                };
+                let function = &program.functions["main"];
+                let block = &function.block_specializations["CoreML7"];
+                assert_eq!(
+                    block.outputs.len(),
+                    child.description.as_ref().unwrap().output.len()
+                );
+                assert!(
+                    block
+                        .operations
+                        .iter()
+                        .all(|operation| operation.r#type != "mul")
+                );
+                let mut names: std::collections::HashSet<_> = function
+                    .inputs
                     .iter()
-                    .all(|operation| operation.r#type != "mul")
-            );
-            let mut names: std::collections::HashSet<_> = function
-                .inputs
-                .iter()
-                .map(|input| input.name.as_str())
-                .collect();
-            for operation in &function.block_specializations["CoreML7"].operations {
-                for output in &operation.outputs {
-                    assert!(names.insert(&output.name));
+                    .map(|input| input.name.as_str())
+                    .collect();
+                for operation in &block.operations {
+                    for output in &operation.outputs {
+                        assert!(names.insert(&output.name));
+                    }
                 }
             }
             assert_eq!(graph.operands[0].name.as_deref(), Some("shared"));

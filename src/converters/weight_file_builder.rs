@@ -39,6 +39,7 @@ pub mod blob_data_type {
 pub struct WeightFileBuilder {
     data: Vec<u8>,
     offsets: HashMap<u32, u64>,
+    original_offsets: HashMap<u32, Vec<u64>>,
     entry_count: u32,
 }
 
@@ -47,6 +48,7 @@ impl WeightFileBuilder {
         let mut builder = Self {
             data: Vec::new(),
             offsets: HashMap::new(),
+            original_offsets: HashMap::new(),
             entry_count: 0,
         };
         // Write the 64-byte file header (count = 0 for now; patched at finalize)
@@ -79,7 +81,12 @@ impl WeightFileBuilder {
     /// Reuse an unchanged MIL weight, or retain one raw original record when
     /// lowering has coerced the value or stored it as a MIL immediate.
     pub(crate) fn original_weight(&mut self, operand_id: u32, bytes: &[u8]) -> u64 {
-        if let Some(&offset) = self.offsets.get(&operand_id) {
+        for &offset in self
+            .offsets
+            .get(&operand_id)
+            .into_iter()
+            .chain(self.original_offsets.get(&operand_id).into_iter().flatten())
+        {
             let start = offset as usize + ALIGNMENT;
             let length = u64::from_le_bytes(
                 self.data[offset as usize + 8..offset as usize + 16]
@@ -90,7 +97,12 @@ impl WeightFileBuilder {
                 return offset;
             }
         }
-        self.append_weight(blob_data_type::UINT8, bytes)
+        let offset = self.append_weight(blob_data_type::UINT8, bytes);
+        self.original_offsets
+            .entry(operand_id)
+            .or_default()
+            .push(offset);
+        offset
     }
 
     fn append_weight(&mut self, mil_data_type: u32, data: &[u8]) -> u64 {
@@ -310,12 +322,25 @@ mod tests {
         assert_eq!(builder.original_weight(7, &[1, 2]), offset);
         let original = builder.original_weight(7, &[1, 0, 2, 0]);
         assert_ne!(original, offset);
+        assert_eq!(builder.original_weight(7, &[1, 0, 2, 0]), original);
         let weights = builder.finalize();
         assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 2);
         assert_eq!(
             &weights[original as usize + 64..original as usize + 68],
             &[1, 0, 2, 0]
         );
+    }
+
+    #[test]
+    fn original_weight_checks_bytes_when_reusing_an_operand_id() {
+        let mut builder = WeightFileBuilder::new();
+        let first = builder.original_weight(7, &[1, 0, 2, 0]);
+        let changed = builder.original_weight(7, &[1, 0, 3, 0]);
+        assert_ne!(first, changed);
+        assert_eq!(builder.original_weight(7, &[1, 0, 2, 0]), first);
+        assert_eq!(builder.original_weight(7, &[1, 0, 3, 0]), changed);
+        let weights = builder.finalize();
+        assert_eq!(u32::from_le_bytes(weights[..4].try_into().unwrap()), 2);
     }
 
     #[test]

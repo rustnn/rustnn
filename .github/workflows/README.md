@@ -19,6 +19,8 @@
 - TensorRT-RTX has no GPU runner. CI compiles the backend (`cargo check -F trtx-runtime
   --all-targets`); its WPT snapshots are regenerated locally with `make wpt-sync-trtx`.
 - macOS CI explicitly runs `make test-coreml-dtypes` with and without dynamic inputs.
+  `make test-coreml-gelu` covers exact GELU precision, shapes, and compositions under
+  both feature configurations, including all FP16 encodings under CPU/GPU/NPU requests.
   `make test-coreml-tensor-reuse` also runs in both configurations to check retained
   storage ownership, conversion, aliasing and resizing.
   It also builds and tests CoreML with and without dynamic inputs using `make build-coreml`
@@ -26,6 +28,9 @@
   execute the CoreML binary. CLI tests are excluded when `cli` is disabled.
   `make test-coreml-gather` also runs the focused gather bounds and
   scalar-index shape regressions; numerical checks remain strict.
+- `make test-coreml-precision` qualifies explicit float16 rounding in native Pipeline
+  stages, including scalar/dynamic interfaces, fanout, masks, shared weights and special values.
+  These ordinary integration tests also run through `make test-coreml`.
 - The documentation site combines three generated parts: MkDocs pages from `docs/`, rustdoc from
   `make docs-api`, and the WPT dashboard cached by the nightly workflow. Test a docs change
 - The documentation site combines four generated parts: MkDocs pages from `docs/`, the C/C++

@@ -140,6 +140,54 @@ Rules that hold for every converter:
   or compacts only the required ranges, then supplies independently owned results. Standalone
   compiled models require the original weights sidecar. The valid native graph still
   runs; arithmetic-derived outputs are not reconstructed from inputs or constants.
+- Float16 lowering follows `CoremlOptions::float16_precision`
+  (`CoremlMlProgramConverter::convert_with_float16_precision`; `GraphConverter::convert` uses
+  `Native`). WebNN leaves float16 accumulation precision open (webmachinelearning/webnn#948),
+  so both lowerings conform; they differ in which compute units reproduce the CPU's values.
+  - `Native` (default): float16 operations lower to native float16 MIL kernels. One MIL
+    program, no added operations, eligible for the Neural Engine.
+  - `Exact`: compute is float32 and storage stays float16; each WebNN float16 result is
+    rounded once. The rules below apply only to float16 operands.
+    - `gelu` (MIL `mode="EXACT"`), `sigmoid`, `tanh` (NaN preserved), `relu`, `leakyRelu`,
+      `elu`, `exp`, `neg` (division by -1), `reciprocal`, `hardSigmoid` and `hardSwish` (its
+      sigmoid helper is not rounded separately) evaluate in float32. Parameters such as
+      `alpha` are rounded to float16 first, as WebNN casts them at graph construction.
+    - `matmul`, `layer_norm`, `sub` and `l2_pool`, and data movement (`identity`,
+      `reshape`, `transpose`, `slice_by_size`, `slice_by_index`, `reverse`, `concat`,
+      `split`, `gather`, `gather_along_axis`, `gather_nd`, `tile`, `pad`, `select`,
+      `squeeze`, `expand_dims`, `scatter_along_axis`, `scatter_nd`) take float32 operands
+      and are cast back after the operation, because accelerator kernels can flush
+      represented subnormals or lose small values.
+    - `layerNormalization` normalizes and applies scale and bias in float32. `sign`,
+      `roundEven`, `isNaN`, `isInfinite` and identity copies of constants also evaluate in
+      float32. Constant float32-to-float16 casts are folded on the host with
+      round-to-nearest-even, and public float16 constant outputs are materialized.
+    - Explicit float16 rounding boundaries become native Pipeline children when Core ML
+      could otherwise eliminate a narrowing or fuse a widened kernel back into float16.
+      Child interfaces carry live results only; constants are rematerialized from the
+      shared weight blob. Public descriptors and the backend-independent graph are
+      unchanged; private scalar and Boolean interfaces use explicit rank and type adapters.
+    - Affected float16 widening layouts use compact private features. Original high-rank
+      inputs declare `rustnn.webnn.compact_input_views`; contiguous storage is viewed with
+      its owner retained, padded storage is copied as raw float16 bytes, and dynamic
+      restoration uses the actual input shape.
+- Rules for both lowerings and every float type:
+  - `reciprocal` lowers to `real_div(1, x)`: MIL `inverse` loses the sign of -0 on older
+    Core ML stacks. `log` passes `epsilon = 0`: WebNN specifies `log(x)`.
+  - `roundEven` computes ties-to-even explicitly (MIL `round` ties away from zero on GPU
+    and Neural Engine kernels), in the input type for `Native` and in float32 for `Exact`.
+  - Float32 `tanh` keeps NaN, float32 `sign` returns 0 for NaN, float32 `neg` divides by
+    -1 (both zero signs survive) and float32 identity copies of constants use
+    `real_div(x, 1)`.
+  - `layerNormalization` with constant scale and bias on trailing, ascending axes keeps the
+    fused native `layer_norm(gamma, beta)`. Nontrailing or permuted axes and runtime scale or
+    bias apply the affine work with explicit `mul`/`add` in the declared axis order; for
+    nontrailing or permuted axes that work is placed in its own Pipeline child, because a
+    native plan that fuses it back can omit or reorder the parameters. A missing epsilon
+    defaults to 1e-5.
+  - Pipeline boundaries take shape bounds through every shape-preserving MIL operation
+    (casts and copies, unary arithmetic, activations, normalization, `softmax`), so a
+    bounded dynamic dimension keeps its provenance across a cut.
 - The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
   inside CoreML and widening the public int64 result at readback. Imported shape tensors
   retain their type and rank through the shared `unsqueeze` inference path.

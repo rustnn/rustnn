@@ -7,12 +7,15 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 ## [Unreleased]
 
 ### Added
+- CoreML: `CoremlOptions::float16_precision` selects the float16 lowering (rustnn extension). `Native`, the default, keeps native float16 MIL kernels and one MIL program; `Exact` evaluates float16 arithmetic, activations, normalization and data movement in float32 with float16 storage and materializes explicit float16 rounding boundaries as Pipeline children (#279). `CoremlMlProgramConverter::convert_with_float16_precision` exposes the same choice; `WPT_COREML_FLOAT16` selects it for WPT.
 
 ### Changed
 - `clap` and `tracing-subscriber` are now optional, behind a new default `cli` feature that also gates the `rustnn` binary; build with `default-features = false` to use the library without them.
 - The ONNX converter, `protos::onnx` and the `webnn-onnx-utils` dependency are behind a new default `onnx` feature (implied by `onnx-runtime`); `webnn-graph` is used without its `onnx` feature. Builds with `default-features = false` and a non-ONNX backend no longer compile the ONNX schema.
 
 ### Fixed
+- CoreML: `reciprocal` keeps the sign of -0, `log` no longer adds an epsilon, `roundEven` rounds ties to even on GPU and Neural Engine requests, float32 `tanh`, `sign` and `neg` keep NaN and zero signs, and `layerNormalization` applies scale and bias in the declared order on nontrailing or permuted axes (#279).
+- CoreML: `convTranspose2d` and zero-epsilon `instanceNormalization` compile from a URL, where Core ML matches WebNN for the reproduced cases (#279).
 
 ## [0.6.0] - 2026-10-14
 

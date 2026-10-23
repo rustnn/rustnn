@@ -372,13 +372,25 @@ fn constant_float32_no_op_cast_uses_the_constant_identity_lowering() {
         options: None,
         outputs: vec![1],
     };
-    let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
-    let model = specification::Model::decode(converted.data.as_slice()).unwrap();
-    let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
-        panic!("expected MLProgram")
+    let lowering = |graph: &GraphInfo| {
+        let converted = CoremlMlProgramConverter.convert(graph).unwrap();
+        let model = specification::Model::decode(converted.data.as_slice()).unwrap();
+        let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
+            panic!("expected MLProgram")
+        };
+        program.functions["main"].block_specializations["CoreML7"]
+            .operations
+            .clone()
     };
-    let operations = &program.functions["main"].block_specializations["CoreML7"].operations;
-    assert!(operations.iter().any(|operation| operation.r#type == "mul"));
+    let operations = lowering(&graph);
+    graph.operations[0] = Operation::Identity {
+        input: 0,
+        options: None,
+        outputs: vec![1],
+    };
+    // Precision lowering may use real_div instead of mul for floating-point
+    // constant transport; a same-type Cast must inherit that exact lowering.
+    assert_eq!(operations, lowering(&graph));
     assert!(
         !operations
             .iter()

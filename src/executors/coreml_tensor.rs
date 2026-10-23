@@ -381,6 +381,7 @@ pub(crate) fn run_coreml_tensors(
                 let key = nsstring_from_str(physical)?;
                 let code = model_input_dtype_code(output_descs, key);
                 if output_backings
+                    && model.has_single_program_output_scope
                     && !copies.contains_key(name)
                     && !backed_features.contains(physical)
                     && code.is_some_and(|code| same_type(binding.descriptor.data_type, code))
