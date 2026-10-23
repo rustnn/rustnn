@@ -46,7 +46,9 @@ devices found and `Backend selected: Trtx { cuda_device_idx: 0 }`.
    engine (for example scalars cast to another type) and constants without a consumer.
 2. The engine is built with `kREFIT_INDIVIDUAL` and `kSTRIP_PLAN`, and with TF32 disabled so
    that float32 graphs compute in full float32 precision (the WPT references are strict IEEE
-   float32). Float16 graphs run in float16.
+   float32). Float16 operations can promote intermediate values to float32 for numerical
+   stability; `reduceLogSum` keeps its sum and logarithm in float32 before casting the result
+   back to float16.
 3. The stripped engine is stored in the engine cache and then refitted with the actual weights.
    Loading a cached engine skips the build entirely. Engines are cached only when every constant
    is refittable, so weight data never ends up in the cache.

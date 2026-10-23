@@ -1015,7 +1015,7 @@ impl TrtxConverter {
                     let i32_bytes: Vec<u8> = match operand.descriptor.data_type {
                         DataType::Int4 => unpack_int4(data, element_count)
                             .into_iter()
-                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .flat_map(|v| v.to_le_bytes())
                             .collect(),
                         DataType::Uint4 => unpack_uint4(data, element_count)
                             .into_iter()
@@ -1309,7 +1309,7 @@ impl TrtxConverter {
             )?,
             "reduceL1" => Self::add_reduce_l1_op(network, tensor_map, operation)?,
             "reduceL2" => Self::add_reduce_l2_op(graph, network, tensor_map, operation)?,
-            "reduceLogSum" => Self::add_reduce_log_sum_op(network, tensor_map, operation)?,
+            "reduceLogSum" => Self::add_reduce_log_sum_op(graph, network, tensor_map, operation)?,
             "reduceLogSumExp" => Self::add_reduce_log_sum_exp_op(network, tensor_map, operation)?,
             "reduceSumSquare" => Self::add_reduce_sum_square_op(network, tensor_map, operation)?,
 
@@ -6212,12 +6212,12 @@ impl TrtxConverter {
 
         let scale_broadcast_shape: Vec<i64> = if layout == "nchw" && !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
-            s[1] = input_dims[1] as i64;
+            s[1] = input_dims[1];
             s
         } else if !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
             let last = input_dims.len() - 1;
-            s[last] = input_dims[last] as i64;
+            s[last] = input_dims[last];
             s
         } else {
             vec![1]
@@ -6977,7 +6977,9 @@ impl TrtxConverter {
     }
 
     /// Add reduceLogSum operation: log(sum(x)). Axes optional; empty axes -> output = log(x).
+    /// Keep float16 sums and logarithms in float32 so the intermediate sum cannot overflow.
     fn add_reduce_log_sum_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7022,18 +7024,23 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        let mut axes_mask: u32 = 0;
-        for &axis in &axes {
-            axes_mask |= 1 << axis;
-        }
-
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
+
+        let input_dtype = graph
+            .operand(operation.input_operands()[0])
+            .map(|o| o.descriptor.data_type)
+            .unwrap_or(DataType::Float32);
+        let sum_input = if input_dtype == DataType::Float16 {
+            Self::cast_to_float32(network, input)?
+        } else {
+            *input
+        };
 
         let sum_layer = network
             .add_reduce(
-                input,
+                &sum_input,
                 ReduceOperation::kSUM,
-                Axes::from_bits(axes_mask),
+                Axes::from_slice(&axes),
                 keep_dims,
             )
             .map_err(|e| GraphError::ConversionFailed {
@@ -7063,6 +7070,12 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
             })?;
+
+        let output = if input_dtype == DataType::Float16 {
+            Self::cast_to_float16(network, &output)?
+        } else {
+            output
+        };
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -13967,10 +13980,10 @@ impl TrtxConverter {
             };
             vec![
                 (input_shape[axes[0]].max(1) as f64 * f64::from(s0))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
                 (input_shape[axes[1]].max(1) as f64 * f64::from(s1))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
             ]
         };

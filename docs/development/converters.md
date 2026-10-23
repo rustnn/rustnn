@@ -81,6 +81,8 @@ Rules that hold for every converter:
   direction is `both` and the first dimension is 1; outputs are wired by name with a positional
   fallback in spec order.
 - Large initializers go to `rustnn_external_weights.data` (`ONNX_EXTERNAL_WEIGHTS_FILENAME`).
+- `resample2d` emits exact integer sizes, computed as `floor(input_size * scale)` in
+  double precision when explicit sizes are absent.
 
 ### TensorRT-RTX
 
@@ -97,6 +99,11 @@ Rules that hold for every converter:
   edits invalidate cached engines. This source hash does not invalidate the separate TensorRT
   JIT runtime cache. See the [cache guide](https://rustnn.github.io/rustnn/integration/tensorrt/#caches).
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+  Output dimensions use `floor(input_size * scale)` in double precision, matching shared
+  shape inference; explicit sizes take precedence over scales.
+- Float16 `reduceLogSum` promotes the input to float32 for the sum and logarithm,
+  then casts the result back to float16. This avoids overflow when the sum exceeds
+  float16's range but its logarithm remains finite.
 - `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
   a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
