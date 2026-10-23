@@ -553,7 +553,7 @@ fn argminmax_shape(
         infer_reduce_shape_dimensions(&operand.descriptor.shape, &reduce_opts),
     )?;
     Ok(OperandDescriptor {
-        data_type: opts.output_data_type.into(),
+        data_type: opts.output_data_type,
         shape,
         pending_permutation: vec![],
     })
@@ -990,7 +990,7 @@ fn cast_shape(
 ) -> Result<OperandDescriptor> {
     let operand = get_operand(input, graph)?;
     Ok(OperandDescriptor {
-        data_type: data_type.into(),
+        data_type,
         shape: operand.descriptor.shape.clone(),
         pending_permutation: vec![],
     })

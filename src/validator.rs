@@ -29,6 +29,8 @@ impl Default for ContextProperties {
             DataType::Uint4,
             DataType::Float32,
             DataType::Float16,
+            DataType::Bfloat16,
+            DataType::Float8e4m3,
             DataType::Int32,
             DataType::Uint32,
             DataType::Int8,
@@ -1332,7 +1334,13 @@ mod tests {
         assert_eq!(context.tensor_byte_length_limit, 256 * 1024 * 1024);
         assert!(context.allowed_io_data_types.contains(&DataType::Float32));
         assert!(context.allowed_io_data_types.contains(&DataType::Int8));
-        assert_eq!(context.allowed_io_data_types.len(), 10);
+        assert!(context.allowed_io_data_types.contains(&DataType::Bfloat16));
+        assert!(
+            context
+                .allowed_io_data_types
+                .contains(&DataType::Float8e4m3)
+        );
+        assert_eq!(context.allowed_io_data_types.len(), 12);
     }
 
     #[test]
