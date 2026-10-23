@@ -492,6 +492,8 @@ impl<'a> TfliteContext<'a> {
                 quantization: None,
                 is_variable: false,
                 sparsity: None,
+                // rustnn executes LiteRT graphs at their max-sized shapes and has no resize
+                // path (`rustnn_resize_tensor` is unimplemented), so the model is static.
                 shape_signature: None,
                 has_rank: true,
                 variant_tensors: None,
@@ -6766,13 +6768,16 @@ fn parse_mlnumber(value: Option<&serde_json::Value>) -> Option<f64> {
     }
 }
 
+/// Concrete TFLite dimensions for a WebNN shape: dynamic dimensions use their `max_size`.
+///
+/// TFLite multiplies tensor dims for `NumElements`, so a `-1` in a tensor's `shape` makes the
+/// count wrong (`[1, 64, -1, -1]` has 64 elements, not the max-sized 33600) and a reshape to
+/// the max-sized target fails to prepare. The LiteRT backend executes at these max sizes and
+/// cannot resize tensors, so the graph is serialized as fully static.
 fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
     shape
         .iter()
-        .map(|d| match d {
-            Dimension::Static(n) => *n as i32,
-            Dimension::Dynamic(_) => -1,
-        })
+        .map(|d| d.get_static_or_max_size() as i32)
         .collect()
 }
 
@@ -8165,6 +8170,82 @@ mod tests {
             constant_operand_ids_to_handles: HashMap::new(),
             quantized: false,
         }
+    }
+
+    /// A dynamic dimension is stored at its `max_size` in the TFLite tensor `shape` (TFLite
+    /// multiplies dims to count elements) and no `shape_signature` is emitted, because the
+    /// backend executes at max sizes and cannot resize tensors. Regression for a rank-4
+    /// `[1, 4, -1, -1]` input counted as 4 elements against a reshape target of `[1, 4, 4]`
+    /// (16): the model failed to prepare with `num_input_elements != num_output_elements`.
+    #[test]
+    fn dynamic_dimensions_are_max_sized_in_tensor_shapes() {
+        let dynamic = |name: &str, max_size| {
+            Dimension::Dynamic(crate::graph::DynamicDimension {
+                name: name.into(),
+                max_size,
+            })
+        };
+        let input_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: vec![
+                Dimension::Static(1),
+                Dimension::Static(4),
+                dynamic("h", 2),
+                dynamic("w", 2),
+            ],
+            pending_permutation: vec![],
+        };
+        let output_desc = OperandDescriptor {
+            data_type: DataType::Float32,
+            shape: s(&[1, 4, 4]),
+            pending_permutation: vec![],
+        };
+        let graph = GraphInfo {
+            operands: vec![
+                Operand {
+                    kind: OperandKind::Input,
+                    descriptor: input_desc,
+                    name: Some("x".into()),
+                },
+                Operand {
+                    kind: OperandKind::Output,
+                    descriptor: output_desc,
+                    name: Some("y".into()),
+                },
+            ],
+            input_operands: vec![0],
+            output_operands: vec![1],
+            operations: vec![Operation::Reshape {
+                input: 0,
+                new_shape: vec![
+                    crate::operator_options::MLDimension::Static(1),
+                    crate::operator_options::MLDimension::Static(4),
+                    crate::operator_options::MLDimension::Static(4),
+                ],
+                options: None,
+                outputs: vec![1],
+            }],
+            constant_operand_ids_to_handles: HashMap::new(),
+            id_to_constant_tensor_operand_map: HashMap::new(),
+            quantized: false,
+        };
+
+        let bytes = convert_ok(&graph);
+        let model = tflite::root_as_model(&bytes).expect("valid TFLite model");
+        let subgraph = model.subgraphs().expect("subgraph").get(0);
+        let input = subgraph
+            .tensors()
+            .expect("tensors")
+            .iter()
+            .find(|tensor| tensor.name() == Some("x"))
+            .expect("input tensor");
+
+        let shape: Vec<i32> = input.shape().expect("shape").iter().collect();
+        assert_eq!(shape, vec![1, 4, 2, 2]);
+        assert!(
+            input.shape_signature().is_none(),
+            "the LiteRT graph is static at max sizes, so it must not advertise dynamic dims"
+        );
     }
 
     fn convert_ok(graph: &GraphInfo) -> Vec<u8> {
