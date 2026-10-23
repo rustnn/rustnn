@@ -106,6 +106,18 @@ impl fmt::Debug for OrtBuilder<'_> {
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'context> {
     fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
+        for operand in &graph_info.operands {
+            if matches!(
+                operand.descriptor.data_type,
+                crate::graph::DataType::Bfloat16 | crate::graph::DataType::Float8e4m3
+            ) {
+                return Err(GraphError::UnsupportedDataType {
+                    data_type: operand.descriptor.data_type,
+                    backend: crate::backend_selection::Backend::Onnx,
+                }
+                .into());
+            }
+        }
         let converted = OnnxConverter.convert(&graph_info)?;
 
         let env =
@@ -330,6 +342,12 @@ fn copy_dyn_value_to_buffer(
     }
     let dst = &mut buf[..expected];
     match descriptor.data_type() {
+        crate::operator_enums::MLOperandDataType::Bfloat16
+        | crate::operator_enums::MLOperandDataType::Float8e4m3 => {
+            return Err(Error::GraphDispatchError {
+                source: "BF16 and FP8 tensor I/O is not supported yet".into(),
+            });
+        }
         crate::operator_enums::MLOperandDataType::Float32 => {
             let (_, sl) =
                 value

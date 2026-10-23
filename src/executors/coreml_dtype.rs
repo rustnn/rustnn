@@ -78,6 +78,11 @@ enum StorageType {
 
 fn byte_length(dtype: StorageType, count: usize) -> Result<usize, GraphError> {
     let length = match dtype {
+        StorageType::Webnn(DataType::Bfloat16 | DataType::Float8e4m3) => {
+            return Err(boundary_error(
+                "CoreML boundary does not support BF16 or FP8 storage",
+            ));
+        }
         StorageType::Webnn(DataType::Int4 | DataType::Uint4) => Some(count.div_ceil(2)),
         StorageType::Webnn(dtype) => count.checked_mul(dtype.bytes_per_element()),
         StorageType::Double => count.checked_mul(8),
@@ -180,6 +185,11 @@ fn convert(
             ($value:expr) => {{
                 let value = $value;
                 match target {
+                    StorageType::Webnn(DataType::Bfloat16 | DataType::Float8e4m3) => {
+                        return Err(boundary_error(
+                            "CoreML boundary does not support BF16 or FP8 storage",
+                        ));
+                    }
                     StorageType::Double => output.extend_from_slice(&(value as f64).to_ne_bytes()),
                     StorageType::Webnn(DataType::Float32) => {
                         output.extend_from_slice(&(value as f32).to_ne_bytes())
@@ -220,6 +230,11 @@ fn convert(
             };
         }
         match source {
+            StorageType::Webnn(DataType::Bfloat16 | DataType::Float8e4m3) => {
+                return Err(boundary_error(
+                    "CoreML boundary does not support BF16 or FP8 storage",
+                ));
+            }
             StorageType::Double => write_value!(read_value!(f64, 8)),
             StorageType::Webnn(DataType::Float32) => write_value!(read_value!(f32, 4)),
             StorageType::Webnn(DataType::Float16) => {
@@ -351,6 +366,19 @@ mod tests {
             .iter()
             .flat_map(|value| value.to_ne_bytes())
             .collect()
+    }
+
+    #[test]
+    fn coreml_dtypes_reject_bf16_and_fp8_storage() {
+        for dtype in [DataType::Bfloat16, DataType::Float8e4m3] {
+            for count in [0, 1] {
+                let bytes = vec![0; dtype.storage_byte_length(count).unwrap()];
+                assert!(to_native(&bytes, dtype, NativeType::Float32, count).is_err());
+                assert!(
+                    from_native(&vec![0; count * 4], NativeType::Float32, dtype, count).is_err()
+                );
+            }
+        }
     }
 
     #[test]

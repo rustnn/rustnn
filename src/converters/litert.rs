@@ -6624,10 +6624,12 @@ fn datatype_to_tflite(dt: DataType) -> Result<tflite::TensorType, GraphError> {
         DataType::Int8 => tflite::TensorType::INT8,
         DataType::Uint8 => tflite::TensorType::UINT8,
         DataType::Int4 => tflite::TensorType::INT4,
-        DataType::Uint4 => Err(GraphError::UnsupportedDataType {
-            data_type: DataType::Uint4,
-            backend: Backend::Litert,
-        })?,
+        DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Uint4 => {
+            Err(GraphError::UnsupportedDataType {
+                data_type: dt,
+                backend: Backend::Litert,
+            })?
+        }
     })
 }
 

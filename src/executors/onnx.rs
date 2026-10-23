@@ -86,6 +86,10 @@ pub enum TensorData {
     Float32(Vec<f32>),
     /// 16-bit floats as raw bits.
     Float16(Vec<u16>), // f16 stored as u16 bits
+    /// Brain 16-bit floats as raw bits.
+    Bfloat16(Vec<u16>),
+    /// Finite E4M3 floats as raw bytes (ONNX FLOAT8E4M3FN).
+    Float8e4m3(Vec<u8>),
     /// Signed 8-bit integers.
     Int8(Vec<i8>),
     /// Unsigned 8-bit integers.
@@ -104,7 +108,8 @@ impl TensorData {
     fn len(&self) -> usize {
         match self {
             TensorData::Float32(v) => v.len(),
-            TensorData::Float16(v) => v.len(),
+            TensorData::Float16(v) | TensorData::Bfloat16(v) => v.len(),
+            TensorData::Float8e4m3(v) => v.len(),
             TensorData::Int8(v) => v.len(),
             TensorData::Uint8(v) => v.len(),
             TensorData::Int32(v) => v.len(),
@@ -413,6 +418,11 @@ fn run_onnx_session_with_inputs(
                         })?
                     };
                 SessionInputValue::from(value)
+            }
+            TensorData::Bfloat16(_) | TensorData::Float8e4m3(_) => {
+                return Err(GraphError::OnnxRuntimeFailed {
+                    reason: "BF16 and FP8 tensor I/O is not supported yet".into(),
+                });
             }
             TensorData::Float16(data) => {
                 // Convert u16 bits to half::f16

@@ -166,11 +166,13 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
-// Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
-// them to FLOAT would reinterpret packed nibbles as float.
+// These storage formats have no supported lowering in this adapter.
 #[cfg(feature = "cann-runtime")]
 fn is_supported_dtype(data_type: DataType) -> bool {
-    !matches!(data_type, DataType::Int4 | DataType::Uint4)
+    !matches!(
+        data_type,
+        DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3
+    )
 }
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
@@ -410,7 +412,9 @@ mod adapter {
             DataType::Uint64 => C::CANN_DT_UINT64,
             // Int4/Uint4 are rejected by `is_supported_dtype` before reaching an
             // emitted op; this arm only keeps the match exhaustive.
-            DataType::Int4 | DataType::Uint4 => C::CANN_DT_FLOAT,
+            DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3 => {
+                unreachable!("unsupported types are rejected before lowering")
+            }
         }
     }
 
