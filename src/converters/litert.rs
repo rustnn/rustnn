@@ -6366,7 +6366,10 @@ fn build_spatial_inputs<'a>(
         _ => None,
     };
     if let Some((padding, _is_pool)) = pad_opts {
-        if padding.len() >= 4 {
+        // A zero padding is a no-op. Emitting the PAD anyway inserts a node between the
+        // producer and the convolution, which delegate partitioners handle poorly (and the
+        // node is dead weight in every model).
+        if padding.len() >= 4 && padding.iter().any(|&p| p != 0) {
             // WebNN padding order is (beginH, endH, beginW, endW); the PAD op
             // takes a (begin, end) pair per axis of the NHWC operand.
             let (bh, eh, bw, ew) = (
