@@ -999,10 +999,13 @@ fn cast_shape(
 /// WebNN: output descriptor uses zeroPoint's dataType and input's shape.
 fn quantize_linear_shape(
     input: MLOperand,
+    scale: MLOperand,
     zero_point: Option<u32>,
+    operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let input_op = get_operand(input, graph)?;
+    validate_quantization_parameters(input, scale, zero_point, operation, graph, true)?;
     let data_type = match zero_point {
         Some(zp) => {
             get_operand(MLOperand { id: zp as usize }, graph)?
@@ -1022,14 +1025,52 @@ fn quantize_linear_shape(
 fn dequantize_linear_shape(
     input: MLOperand,
     scale: MLOperand,
+    zero_point: Option<u32>,
+    operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let input_op = get_operand(input, graph)?;
     let scale_op = get_operand(scale, graph)?;
+    validate_quantization_parameters(input, scale, zero_point, operation, graph, false)?;
     Ok(OperandDescriptor {
         data_type: scale_op.descriptor.data_type,
         shape: input_op.descriptor.shape.clone(),
         pending_permutation: vec![],
+    })
+}
+
+fn validate_quantization_parameters(
+    input: MLOperand,
+    scale: MLOperand,
+    zero_point: Option<u32>,
+    operation: &Operation,
+    graph: &GraphInfo,
+    is_quantize: bool,
+) -> Result<()> {
+    let input = &get_operand(input, graph)?.descriptor;
+    let scale = &get_operand(scale, graph)?.descriptor;
+    let zero_point = zero_point
+        .map(|id| get_operand(MLOperand { id: id as usize }, graph))
+        .transpose()?
+        .map(|operand| &operand.descriptor);
+    crate::validator::validate_quantization_parameters(
+        &operation.display_name(),
+        is_quantize,
+        input,
+        scale,
+        zero_point,
+    )
+    .map_err(|source| {
+        Box::new(ShapeInferenceError::InferError {
+            op_name: if is_quantize {
+                "quantizeLinear"
+            } else {
+                "dequantizeLinear"
+            },
+            operation: operation.clone(),
+            source,
+        })
+        .into()
     })
 }
 
@@ -1962,21 +2003,35 @@ fn shape_inference_single_output(
             graph,
         ),
         Operation::QuantizeLinear {
-            input, zero_point, ..
+            input,
+            scale,
+            zero_point,
+            ..
         } => quantize_linear_shape(
-            MLOperand {
-                id: *input as usize,
-            },
-            *zero_point,
-            graph,
-        ),
-        Operation::DequantizeLinear { input, scale, .. } => dequantize_linear_shape(
             MLOperand {
                 id: *input as usize,
             },
             MLOperand {
                 id: *scale as usize,
             },
+            *zero_point,
+            operation,
+            graph,
+        ),
+        Operation::DequantizeLinear {
+            input,
+            scale,
+            zero_point,
+            ..
+        } => dequantize_linear_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *scale as usize,
+            },
+            *zero_point,
+            operation,
             graph,
         ),
         Operation::Shape { input, .. } => shape_op_shape(
@@ -3672,17 +3727,21 @@ mod test {
             crate::operator_enums::MLOperandDataType::Uint8,
             [2, 3].to_vec(),
         );
-        let scalar_f32 = MLOperandDescriptor::new(
+        let scale_desc = MLOperandDescriptor::new(
             crate::operator_enums::MLOperandDataType::Float32,
-            [].to_vec(),
+            [1, 1].to_vec(),
         );
-        let scalar_u8 =
-            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Uint8, [].to_vec());
+        let zero_point_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Uint8,
+            [1, 1].to_vec(),
+        );
 
         let mut builder = MLGraphBuilder::new(&mut context).unwrap();
         let x = builder.input("x", &float_desc).unwrap();
-        let scale = builder.constant_from_slice(&scalar_f32, &[0.5f32]).unwrap();
-        let zero_point = builder.constant_from_slice(&scalar_u8, &[128u8]).unwrap();
+        let scale = builder.constant_from_slice(&scale_desc, &[0.5f32]).unwrap();
+        let zero_point = builder
+            .constant_from_slice(&zero_point_desc, &[128u8])
+            .unwrap();
         let q = builder
             .quantize_linear_with_zeropoint(x, scale, zero_point)
             .unwrap();

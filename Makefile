@@ -296,6 +296,10 @@ fmt-check:
 lint:
 	$(CARGO) clippy --all-targets -- -D warnings
 
+.PHONY: test-quantization-validation
+test-quantization-validation:
+	$(CARGO) test --test test_quantization_validation
+
 # ==============================================================================
 # Code Coverage Targets
 # ==============================================================================
