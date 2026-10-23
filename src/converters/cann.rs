@@ -23,11 +23,11 @@
 //! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
 //! without the DDK. Enabling `cann-converter` also enables real conversion.
 
+#![cfg(feature = "cann-converter")]
+
 use crate::error::GraphError;
-#[cfg(feature = "cann-converter")]
 use crate::graph::DataType;
 use crate::graph::GraphInfo;
-#[cfg(any(feature = "cann-converter", test))]
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -35,7 +35,6 @@ use super::{ConvertedGraph, GraphConverter};
 // Maps a WebNN op to the DDK operator type registered for it, or `None` if it has no
 // lowering (`None` also covers ops an earlier block lowers itself). The name is not a
 // label: it goes to `cann_operator_create_registered`, so a typo emits a wrong model.
-#[cfg(any(feature = "cann-converter", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
         // ── Element-wise binary ──────────────────────────────────────
@@ -166,16 +165,16 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
-// Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
-// them to FLOAT would reinterpret packed nibbles as float.
-#[cfg(feature = "cann-converter")]
+// These storage formats have no supported lowering in this adapter.
 fn is_supported_dtype(data_type: DataType) -> bool {
-    !matches!(data_type, DataType::Int4 | DataType::Uint4)
+    !matches!(
+        data_type,
+        DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3
+    )
 }
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
 // not lower. Orphaned operands left behind by a rewrite are not counted.
-#[cfg(feature = "cann-converter")]
 fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
     graph
         .operands
@@ -194,7 +193,6 @@ fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
 // Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
 // instead of panicking in a `CString`/`bytemuck` call. These checks also cover
 // GraphInfo supplied directly to the converter, bypassing the builder.
-#[cfg(feature = "cann-converter")]
 fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         if !is_supported_dtype(operand.descriptor.data_type) {
@@ -247,7 +245,6 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
 // Transpose a 4-D f32 filter into the target layout: `perm[target] = source`,
 // so `dst_dims[k] = src_dims[perm[k]]`. Host-side (const-input Permute can't
 // infershape).
-#[cfg(any(feature = "cann-converter", test))]
 fn transpose_filter_f32(
     data: &[f32],
     src_dims: [usize; 4],
@@ -302,7 +299,6 @@ fn transpose_filter_f32(
     )
 }
 
-#[cfg(feature = "cann-converter")]
 mod adapter {
     use super::*;
     use crate::graph::{DataType, OperandDescriptor};
@@ -388,7 +384,9 @@ mod adapter {
             DataType::Uint64 => C::CANN_DT_UINT64,
             // Int4/Uint4 are rejected by `is_supported_dtype` before reaching an
             // emitted op; this arm only keeps the match exhaustive.
-            DataType::Int4 | DataType::Uint4 => C::CANN_DT_FLOAT,
+            DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3 => {
+                unreachable!("unsupported types are rejected before lowering")
+            }
         }
     }
 

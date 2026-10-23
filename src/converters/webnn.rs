@@ -2032,7 +2032,7 @@ fn dtype_to_dtype(dtype: DataType) -> Result<MlOperandDataType> {
         DataType::Uint8 => MlOperandDataType::Uint8,
         DataType::Int64 => MlOperandDataType::Int64,
         DataType::Uint64 => MlOperandDataType::Uint64,
-        DataType::Int4 | DataType::Uint4 => {
+        DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
             return Err(WebNNConverterError::UnsupportedDataType(dtype))?;
         }
     })
@@ -2048,13 +2048,11 @@ fn operand_dtype_to_dtype(dtype: MLOperandDataType) -> Result<MlOperandDataType>
         MLOperandDataType::Uint8 => MlOperandDataType::Uint8,
         MLOperandDataType::Int64 => MlOperandDataType::Int64,
         MLOperandDataType::Uint64 => MlOperandDataType::Uint64,
-        MLOperandDataType::Int4 | MLOperandDataType::Uint4 => {
-            return Err(WebNNConverterError::UnsupportedDataType(match dtype {
-                MLOperandDataType::Int4 => DataType::Int4,
-                MLOperandDataType::Uint4 => DataType::Uint4,
-                _ => unreachable!(),
-            })
-            .into());
+        MLOperandDataType::Bfloat16
+        | MLOperandDataType::Float8e4m3
+        | MLOperandDataType::Int4
+        | MLOperandDataType::Uint4 => {
+            return Err(WebNNConverterError::UnsupportedDataType(dtype.into()).into());
         }
     })
 }

@@ -230,7 +230,7 @@ ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, fea
     "api-29",
     "tracing",
 ] }
-half = "2.4"
+half = { version = "2.4", features = ["bytemuck"] }
 trtx = { version = "0.9.1", optional = true }
 litert = { version = "0.2.1", optional = true }
 litert-sys = { version = "0.2.1", optional = true }
