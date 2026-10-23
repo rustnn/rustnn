@@ -194,7 +194,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
             data.clone()
         }
         Operation::Cast { data_type, .. } => {
-            if DataType::from(*data_type) != destination_type || source_shape != destination_shape {
+            if *data_type != destination_type || source_shape != destination_shape {
                 return None;
             }
             cast_bytes(data, source_type, destination_type)?
@@ -640,7 +640,7 @@ mod tests {
     }
 
     fn cast_graph(from: DataType, to: MLOperandDataType, data: Vec<u8>) -> GraphInfo {
-        let to_type = DataType::from(to);
+        let to_type = to;
         let mut graph = GraphInfo {
             operands: vec![
                 operand(OperandKind::Input, to_type, &[4], "x"),

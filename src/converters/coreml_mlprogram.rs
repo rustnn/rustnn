@@ -91,7 +91,7 @@ fn proven_copy_input(graph: &GraphInfo, operation: &Operation, output: u32) -> O
     }
     let is_copy = match operation {
         Operation::Identity { .. } => true,
-        Operation::Cast { data_type, .. } => DataType::from(*data_type) == source.data_type,
+        Operation::Cast { data_type, .. } => *data_type == source.data_type,
         Operation::Transpose { options, .. } => {
             let permutation = options
                 .as_ref()
@@ -12890,7 +12890,7 @@ mod tests {
                 output_operands: vec![1],
                 operations: vec![Operation::Cast {
                     input: 0,
-                    data_type: MLOperandDataType::try_from(output_type).unwrap(),
+                    data_type: output_type,
                     options: None,
                     outputs: vec![1],
                 }],
