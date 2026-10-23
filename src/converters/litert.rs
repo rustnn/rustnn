@@ -4231,6 +4231,7 @@ impl<'a> TfliteContext<'a> {
             let indices_data = graph
                 .constant_operand_ids_to_handles
                 .get(indices_op_id)
+                .and_then(|c| c.as_owned_data())
                 .map(|cd| cd.data.clone());
             let indices_data = match indices_data {
                 Some(d) => d,
@@ -4635,6 +4636,7 @@ impl<'a> TfliteContext<'a> {
             let indices_data = graph
                 .constant_operand_ids_to_handles
                 .get(indices_op_id)
+                .and_then(|c| c.as_owned_data())
                 .map(|cd| cd.data.clone());
             let indices_data = match indices_data {
                 Some(d) => d,
@@ -4916,7 +4918,10 @@ impl<'a> TfliteContext<'a> {
 
             // Indices: constant (negative-clamped at build time) or runtime
             // (transformed/clamped in-graph).
-            let indices_tensor: i32 = match graph.constant_operand_ids_to_handles.get(indices_op_id)
+            let indices_tensor: i32 = match graph
+                .constant_operand_ids_to_handles
+                .get(indices_op_id)
+                .and_then(|c| c.as_owned_data())
             {
                 Some(cd) => {
                     let indices_data = &cd.data;
@@ -6999,7 +7004,10 @@ fn pre_scan_native(
             if filter_layout != TransposeLayout::Ohwi
                 && let Some(fid) = op.inputs().get(1).copied()
                 && let (Some(cd), Some(fop)) = (
-                    graph.constant_operand_ids_to_handles.get(&fid),
+                    graph
+                        .constant_operand_ids_to_handles
+                        .get(&fid)
+                        .and_then(|c| c.as_owned_data()),
                     graph.operand(fid),
                 )
             {
@@ -7040,7 +7048,10 @@ fn pre_scan_native(
             let filter_id = op.inputs().get(1).copied();
             if let Some(fid) = filter_id {
                 if let (Some(cd), Some(fop)) = (
-                    graph.constant_operand_ids_to_handles.get(&fid),
+                    graph
+                        .constant_operand_ids_to_handles
+                        .get(&fid)
+                        .and_then(|c| c.as_owned_data()),
                     graph.operand(fid),
                 ) {
                     let dims: Vec<usize> = fop
@@ -7225,7 +7236,11 @@ fn register_native_tensors(
         let tensor_idx: u32 = if operand.kind == OperandKind::Constant {
             let data: &[u8] = if let Some(td) = weight_transpose.get(&id) {
                 td.as_slice()
-            } else if let Some(cd) = graph.constant_operand_ids_to_handles.get(&id) {
+            } else if let Some(cd) = graph
+                .constant_operand_ids_to_handles
+                .get(&id)
+                .and_then(|c| c.as_owned_data())
+            {
                 cd.data.as_slice()
             } else {
                 &[]
@@ -7857,7 +7872,7 @@ fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
             &tflite::BufferArgs {
                 data: Some(data_vec),
                 offset: 0,
-                size: 0,
+                size_: 0,
             },
         );
         buffer_offsets.push(buf);
@@ -7871,7 +7886,7 @@ fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
         &tflite::BufferArgs {
             data: Some(meta_data_vec),
             offset: 0,
-            size: 0,
+            size_: 0,
         },
     );
     let meta_buf_idx = buffer_offsets.len() as u32;
@@ -8138,10 +8153,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             1,
-            ConstantData {
+            crate::graph::ConstantReference::OwnedData(ConstantData {
                 data: filter_bytes,
                 label: Some("w".into()),
-            },
+            }),
         );
 
         let graph = GraphInfo {
@@ -8288,7 +8303,8 @@ mod tests {
                 ConstantData {
                     data: vec![0u8; num_idx * 4],
                     label: None,
-                },
+                }
+                .into(),
             );
         }
         graph

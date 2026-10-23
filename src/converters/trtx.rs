@@ -161,12 +161,10 @@ impl TrtxConverter {
     /// Get constant data as bytes
     fn get_constant_data(graph: &GraphInfo, operand_id: u32) -> Result<&[u8], GraphError> {
         graph
-            .constant_operand_ids_to_handles
-            .get(&operand_id)
-            .map(|constant_data| constant_data.data.as_slice())
-            .ok_or_else(|| GraphError::ConversionFailed {
+            .constant_data(operand_id)
+            .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
-                reason: format!("Operand {} is not a constant", operand_id),
+                reason: e.to_string(),
             })
     }
 
@@ -869,9 +867,26 @@ impl TrtxConverter {
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
+        Self::build_network_impl(graph, network, false)
+    }
+
+    /// Builds a stripped, individually refittable network without source weight buffers.
+    pub(crate) fn build_network_with_placeholders<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+    ) -> Result<(), GraphError> {
+        Self::build_network_impl(graph, network, true)
+    }
+
+    fn build_network_impl<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        placeholders: bool,
+    ) -> Result<(), GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph);
         let io_binding_names = Self::engine_io_binding_names(graph);
+        let unused_constants = Self::unused_constant_operand_ids(graph);
 
         // Step 1: Add inputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
@@ -919,6 +934,32 @@ impl TrtxConverter {
                     .iter()
                     .map(|d| get_static_or_max_size(d) as i32)
                     .collect();
+                if unused_constants.contains(&(operand_id as u32)) {
+                    continue;
+                }
+                if placeholders && !non_refittable_constants.contains(&(operand_id as u32)) {
+                    let dims: Vec<i64> = dims.iter().map(|&d| i64::from(d)).collect();
+                    let layer = network
+                        .add_constant_placeholder(
+                            &dims,
+                            Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
+                            &Self::constant_weight_name(operand_id as u32),
+                        )
+                        .map_err(|e| GraphError::ConversionFailed {
+                            format: "trtx".into(),
+                            reason: format!("Constant placeholder {operand_id}: {e}"),
+                        })?;
+                    tensor_map.insert(
+                        operand_id as u32,
+                        layer
+                            .output(network, 0)
+                            .map_err(|e| GraphError::ConversionFailed {
+                                format: "trtx".into(),
+                                reason: format!("Constant placeholder output {operand_id}: {e}"),
+                            })?,
+                    );
+                    continue;
+                }
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
                 // Validate that data size matches expected packed byte length
@@ -1015,11 +1056,11 @@ impl TrtxConverter {
                     let i32_bytes: Vec<u8> = match operand.descriptor.data_type {
                         DataType::Int4 => unpack_int4(data, element_count)
                             .into_iter()
-                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .flat_map(|v| v.to_le_bytes())
                             .collect(),
                         DataType::Uint4 => unpack_uint4(data, element_count)
                             .into_iter()
-                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .flat_map(|v| i32::from(v).to_le_bytes())
                             .collect(),
                         _ => Self::int8_uint8_bytes_to_int32_le(
                             data,
@@ -6212,12 +6253,12 @@ impl TrtxConverter {
 
         let scale_broadcast_shape: Vec<i64> = if layout == "nchw" && !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
-            s[1] = input_dims[1] as i64;
+            s[1] = input_dims[1];
             s
         } else if !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
             let last = input_dims.len() - 1;
-            s[last] = input_dims[last] as i64;
+            s[last] = input_dims[last];
             s
         } else {
             vec![1]

@@ -20,7 +20,7 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
 
 - An NVIDIA RTX GPU with a current driver. The CUDA driver API is loaded at run time through
   `cudarc`; the CUDA toolkit is not required.
-- The TensorRT-RTX 1.6 library. The `trtx` crate loads it by name (`tensorrt_rtx_1_6`), so the
+- The TensorRT-RTX 1.7 library (or a compatible newer runtime). The `trtx` crate loads it by name (`tensorrt_rtx_1_7`), so the
   SDK's `lib` directory (Linux) or `bin` directory (Windows) must be on `LD_LIBRARY_PATH` or
   `PATH`, or the application calls `rustnn::backends::trtx::dynamically_load_tensorrt(Some(path))`
   before creating a context. When the library cannot be loaded, backend selection skips
@@ -41,15 +41,19 @@ devices found and `Backend selected: Trtx { cuda_device_idx: 0 }`.
 
 ## How a graph runs
 
-1. `TrtxConverter::build_network` translates the `GraphInfo` into a TensorRT network. Constants
-   become weights and are marked refittable, except constants that TensorRT bakes into the
-   engine (for example scalars cast to another type) and constants without a consumer.
+1. The backend translates `GraphInfo` into a TensorRT network using named constant
+   placeholders for refittable weights. Constants that TensorRT bakes into the engine
+   (for example scalars cast to another type) retain their actual bytes. Unused constants
+   are omitted.
 2. The engine is built with `kREFIT_INDIVIDUAL` and `kSTRIP_PLAN`, and with TF32 disabled so
    that float32 graphs compute in full float32 precision (the WPT references are strict IEEE
    float32). Float16 graphs run in float16.
 3. The stripped engine is stored in the engine cache and then refitted with the actual weights.
-   Loading a cached engine skips the build entirely. Engines are cached only when every constant
-   is refittable, so weight data never ends up in the cache.
+   Loading a cached engine skips the build entirely. Baked constant values are included in
+   the cache key. Refitting seeds one weight and supplies its missing dependencies until
+   the group is complete, then commits that group and unsets its source pointers. Refit
+   sources reside on the GPU; temporary uploads are released after the group commits.
+   Caller-owned tensors remain usable.
 4. Tensors are CUDA device buffers. `dispatch` binds them by name, captures a CUDA graph per
    distinct binding set and replays it on later calls. `write_tensor` synchronizes the stream
    before it returns.

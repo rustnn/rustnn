@@ -89,11 +89,12 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
         let label = folded
             .constant_operand_ids_to_handles
             .get(&input)
+            .and_then(|constant| constant.as_owned_data())
             .and_then(|constant| constant.label.clone());
         folded.operands[output as usize].kind = OperandKind::Constant;
         folded
             .constant_operand_ids_to_handles
-            .insert(output, ConstantData { data, label });
+            .insert(output, ConstantData { data, label }.into());
         let remaining = use_count.entry(input).or_default();
         *remaining = remaining.saturating_sub(1);
         if *remaining == 0 {
@@ -143,7 +144,11 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
     if is_packed(source_type) || is_packed(destination_type) {
         return None;
     }
-    let data = &graph.constant_operand_ids_to_handles.get(&input)?.data;
+    let data = &graph
+        .constant_operand_ids_to_handles
+        .get(&input)?
+        .as_owned_data()?
+        .data;
     let element_count = source.descriptor.element_count()?;
     if data.len() != element_count.checked_mul(source_type.bytes_per_element())?
         || destination.descriptor.element_count()? != element_count
@@ -462,7 +467,8 @@ mod tests {
             ConstantData {
                 data: vec![1, 2, 3, 4, 5, 6, 7, 8],
                 label: Some("w".into()),
-            },
+            }
+            .into(),
         );
         assert!(fold_constant_views(&graph).is_none());
     }
@@ -505,7 +511,8 @@ mod tests {
             ConstantData {
                 data,
                 label: Some("w".into()),
-            },
+            }
+            .into(),
         );
         graph
     }
@@ -535,8 +542,15 @@ mod tests {
         assert_eq!(folded.output_operands, graph.output_operands);
         assert_eq!(folded.operands.len(), graph.operands.len());
 
-        let source = f16_values(&graph.constant_operand_ids_to_handles[&1].data);
-        let result = &folded.constant_operand_ids_to_handles[&2];
+        let source = f16_values(
+            &graph.constant_operand_ids_to_handles[&1]
+                .as_owned_data()
+                .unwrap()
+                .data,
+        );
+        let result = &folded.constant_operand_ids_to_handles[&2]
+            .as_owned_data()
+            .unwrap();
         assert_eq!(result.label.as_deref(), Some("w"));
         let transposed = f16_values(&result.data);
         assert_eq!(transposed.len(), 256 * 256);
@@ -617,7 +631,8 @@ mod tests {
             ConstantData {
                 data: data.clone(),
                 label: None,
-            },
+            }
+            .into(),
         );
         let folded = fold_constant_views(&graph).expect("reshape of a constant folds");
         assert_eq!(folded.operations.len(), 1);
@@ -628,7 +643,13 @@ mod tests {
             folded.operands[2].descriptor.shape,
             descriptor(DataType::Int32, &[3, 2]).shape
         );
-        assert_eq!(folded.constant_operand_ids_to_handles[&2].data, data);
+        assert_eq!(
+            folded.constant_operand_ids_to_handles[&2]
+                .as_owned_data()
+                .unwrap()
+                .data,
+            data
+        );
         assert!(!folded.constant_operand_ids_to_handles.contains_key(&1));
     }
 
@@ -661,7 +682,7 @@ mod tests {
         };
         graph
             .constant_operand_ids_to_handles
-            .insert(1, ConstantData { data, label: None });
+            .insert(1, ConstantData { data, label: None }.into());
         graph
     }
 
@@ -677,6 +698,8 @@ mod tests {
         assert_eq!(folded.operations.len(), 1);
         assert_eq!(folded.operands[2].kind, OperandKind::Constant);
         let result: Vec<f32> = folded.constant_operand_ids_to_handles[&2]
+            .as_owned_data()
+            .unwrap()
             .data
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -763,7 +786,10 @@ mod tests {
         );
         let folded = fold_constant_views(&graph).unwrap();
         assert_eq!(
-            folded.constant_operand_ids_to_handles[&2].data,
+            folded.constant_operand_ids_to_handles[&2]
+                .as_owned_data()
+                .unwrap()
+                .data,
             vec![255, 1, 2, 0]
         );
     }
@@ -821,8 +847,14 @@ mod tests {
                 .all(|op| matches!(op, Operation::Matmul { .. }))
         );
         assert_eq!(
-            folded.constant_operand_ids_to_handles[&1].data,
-            graph.constant_operand_ids_to_handles[&1].data
+            folded.constant_operand_ids_to_handles[&1]
+                .as_owned_data()
+                .unwrap()
+                .data,
+            graph.constant_operand_ids_to_handles[&1]
+                .as_owned_data()
+                .unwrap()
+                .data
         );
         assert_eq!(folded.operands[1].kind, OperandKind::Constant);
         assert!(folded.constant_operand_ids_to_handles.contains_key(&2));
@@ -874,7 +906,7 @@ mod tests {
         };
         graph
             .constant_operand_ids_to_handles
-            .insert(1, ConstantData { data, label: None });
+            .insert(1, ConstantData { data, label: None }.into());
         let folded = fold_constant_views(&graph).unwrap();
         assert_eq!(folded.operations.len(), 1);
         assert!(matches!(folded.operations[0], Operation::Add { b: 3, .. }));
@@ -887,6 +919,8 @@ mod tests {
             vec![3]
         );
         let result: Vec<f32> = folded.constant_operand_ids_to_handles[&3]
+            .as_owned_data()
+            .unwrap()
             .data
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
@@ -923,7 +957,8 @@ mod tests {
             ConstantData {
                 data: vec![0x21, 0x43],
                 label: None,
-            },
+            }
+            .into(),
         );
         assert!(fold_constant_views(&graph).is_none());
     }
@@ -965,7 +1000,12 @@ mod tests {
             .expect("the weight has a producer");
         assert_eq!(producer.r#type, "const");
         // The transposed float16 payload is in the weight blob, once.
-        let source = f16_values(&graph.constant_operand_ids_to_handles[&1].data);
+        let source = f16_values(
+            &graph.constant_operand_ids_to_handles[&1]
+                .as_owned_data()
+                .unwrap()
+                .data,
+        );
         let weights = converted.weights_data.expect("float16 weights sidecar");
         let expected = f16_bytes((0..256 * 256).map(|i| source[(i % 256) * 256 + i / 256]));
         assert!(

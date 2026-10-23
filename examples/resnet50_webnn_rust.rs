@@ -8,7 +8,7 @@ use rustnn::mlcontext::{
     MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
-use rustnn::{ContextProperties, GraphValidator, load_graph_from_path};
+use rustnn::{ContextProperties, GraphValidator};
 
 #[derive(Parser, Debug)]
 #[command(about = "Pure Rust ResNet-50 inference benchmark from .webnn + weights/manifest")]
@@ -234,7 +234,13 @@ fn run() -> Result<(), String> {
     }
 
     println!("Loading graph: {}", args.model.display());
-    let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
+    let graph = rustnn::loader::load_graph_from_path_with_options(
+        &args.model,
+        &rustnn::loader::GraphLoadOptions {
+            resolve_external_weights: true,
+        },
+    )
+    .map_err(|e| format!("load graph: {e}"))?;
 
     let artifacts = GraphValidator::new(&graph, ContextProperties::default())
         .validate()

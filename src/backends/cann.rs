@@ -96,27 +96,12 @@ impl<'context> MLBackendContext<'context> for CannContext {
         let byte_count = descriptor.rustnn_required_bytes();
         let memory = vec![0u8; byte_count];
         self.tensors.push(CannTensor { memory });
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        Ok(MLTensor::new(self.tensors.len() - 1, descriptor.clone()))
     }
 
-    fn create_constant_tensor(
-        &mut self,
-        descriptor: &MLTensorDescriptor,
-        input_data: &[u8],
-    ) -> Result<MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data).map_err(|e| {
-            crate::error::Error::TensorCreationError {
-                source: e.into(),
-                descriptor: descriptor.clone(),
-            }
-        })?;
-        Ok(tensor)
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> Result<()> {
+        self.tensors[tensor.id].memory = Vec::new();
+        Ok(())
     }
 
     fn read_tensor(&mut self, tensor: &MLTensor, array: &mut [u8]) -> Result<()> {

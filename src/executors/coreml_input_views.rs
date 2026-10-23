@@ -348,7 +348,8 @@ mod tests {
                 ConstantData {
                     data: constant_bytes.clone(),
                     label: None,
-                },
+                }
+                .into(),
             )]),
             operations: vec![
                 Operation::Identity {

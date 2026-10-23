@@ -10,8 +10,9 @@ use crate::backend_selection::Backend;
 use std::path::PathBuf;
 
 use crate::{
-    Operand, Operation,
+    Operand, OperandDescriptor, Operation,
     backends::caching::CacheError,
+    graph::ConstantReference,
     graph::DataType,
     mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
@@ -115,6 +116,23 @@ pub enum ShapeInferenceError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum GraphBuilderError {
+    /// A constant operand is missing from the graph.
+    #[error("Missing constant operand {id}")]
+    MissingConstantId { id: u32 },
+
+    #[error(
+        "Tried to get constant data from constant {id} {constant_ref:?} which is not resolved yet"
+    )]
+    UnresolvedConstant {
+        id: u32,
+        constant_ref: ConstantReference,
+    },
+
+    #[error(
+        "Requested memory for dynamically size constant. Dynamically shaped constants are invalid! id={id} descritpor={desc:?}"
+    )]
+    RequestedConstantDataForDynamicallyShapedConstant { id: u32, desc: OperandDescriptor },
+
     /// Failed to build: requested MLGraphBuilder.build with an empty output map.
     #[error("Failed to build: requested MLGraphBuilder.build with an empty output map")]
     EmptyOutputHashMap,
@@ -361,6 +379,14 @@ pub enum Error {
     /// Cannot read from non-readable tensor: `tensor`.
     #[error("Cannot read from non-readable tensor: {tensor:#?}")]
     ReadToNonReadableTensor { tensor: MLTensor },
+
+    /// The tensor has released its backend storage.
+    #[error("Tensor has been destroyed: {tensor:#?}")]
+    TensorDestroyed { tensor: MLTensor },
+
+    /// The tensor belongs to a different context.
+    #[error("Tensor belongs to a different MLContext: {tensor:#?}")]
+    TensorContextMismatch { tensor: MLTensor },
 
     /// Failed to dispatch graph: `source`.
     #[error("Failed to dispatch graph: {source}")]

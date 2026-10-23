@@ -51,6 +51,8 @@ trtx-runtime-mock = ["trtx/mock", "cudarc"]
 # test feature for validation of RTX runtime
 trtx-enterprise = ["trtx-runtime", "trtx/enterprise"]
 zstd-cache-compression = ["dep:zstd"]
+cufile = ["cudarc/cufile"]
+cufile-per-constant = ["cudarc/cufile"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
 cann-runtime = ["dep:hiai-rs"]
 cann-runtime-mock = []
@@ -199,6 +201,7 @@ burn-ndarray = { version = "0.21", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+safetensors = "0.8"
 serde_with = { version = "3.8", features = ["base64"] }
 thiserror = "2.0"
 base64 = "0.23"
@@ -252,12 +255,19 @@ wasm-bindgen-futures = { version = "0.4.77", optional = true }
 objc = { version = "0.2", optional = true, features = [
 ] } # without "exception" it builds on Linux using https://github.com/gnustep/libobjc2
 block = { version = "0.1", optional = true }
+rayon = "1.12.0"
 pollster = { version = "1.0.1", optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
 # Native CoreML targets require Objective-C exception handling.
 objc = { version = "0.2", optional = true, features = ["exception"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7.13"
 
 [build-dependencies]
 # cleanup-markdown rewrites the .proto comments as Markdown and fences their code blocks as
@@ -269,6 +279,7 @@ seahash = "4.1.0"
 [dev-dependencies]
 clap = { version = "4.5", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+insta = { version = "1.47.2", features = ["yaml"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 safetensors = "0.8"
 half = "2.4"
@@ -283,6 +294,8 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 libtest-mimic = "0.8.2"
 pretty_env_logger = "0.5.0"
+criterion = "0.8"
+rand = "0.10"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }
@@ -379,3 +392,11 @@ asset = [
 # Burn uses rand on browser wasm targets, where entropy comes from Web Crypto.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }
+
+[[bench]]
+name = "weights_io"
+harness = false
+
+[profile.dev.package]
+insta.opt-level = 3
+similar.opt-level = 3
