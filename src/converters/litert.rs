@@ -6096,7 +6096,7 @@ impl<'a> TfliteContext<'a> {
                 (Some(builtin_options), builtin_options_type)
             }
             Operation::Cast { data_type, .. } => {
-                let out_dt = datatype_to_tflite(crate::graph::DataType::from(*data_type))?;
+                let out_dt = datatype_to_tflite(*data_type)?;
                 let in_dt = graph
                     .operand(input_id)
                     .map(|o| datatype_to_tflite(o.descriptor.data_type).expect("unsupported dtype"))

@@ -139,10 +139,10 @@ fn validate_plan(plan: &BurnGraphPlan) -> Result<(), GraphError> {
             .copied()
             .ok_or_else(|| err(format!("{} has no input operand", op.op_type())))?;
         let output_type = match op {
-            Operation::Cast { data_type, .. } => (*data_type).into(),
+            Operation::Cast { data_type, .. } => *data_type,
             Operation::Shape { .. } => DataType::Int64,
             Operation::ArgMin { options, .. } | Operation::ArgMax { options, .. } => {
-                options.clone().unwrap_or_default().output_data_type.into()
+                options.clone().unwrap_or_default().output_data_type
             }
             Operation::Equal { .. }
             | Operation::NotEqual { .. }
@@ -517,6 +517,9 @@ mod tests {
         let mut cases = Vec::new();
         let mut p = good.clone();
         p.version += 1;
+        cases.push(p);
+        let mut p = good.clone();
+        p.version = crate::burn::BURN_PLAN_VERSION - 1;
         cases.push(p);
         let mut p = good.clone();
         p.inputs.push(p.inputs[0].clone());

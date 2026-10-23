@@ -13,7 +13,7 @@ use crate::backends::webnn::api_generated::{
 };
 use crate::converters::operand_name;
 use crate::graph::Dimension;
-use crate::operator_enums::{MLOperandDataType, MLPaddingMode};
+use crate::operator_enums::MLPaddingMode;
 use crate::operator_options::{
     MLArgMinMaxOptions, MLBatchNormalizationOptions, MLClampOptions, MLConv2dOptions,
     MLConvTranspose2dOptions, MLCumulativeSumOptions, MLDimension, MLEluOptions, MLGatherOptions,
@@ -620,7 +620,7 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                 builder
                     .cast_with_options(
                         get_operand(&operands, *input),
-                        operand_dtype_to_dtype(*data_type)?,
+                        dtype_to_dtype(*data_type)?,
                         &ml_opts,
                     )
                     .map_err(WebNNConverterError::BuilderOperationFailed)?,
@@ -1518,7 +1518,7 @@ fn to_min_max_options(options: &Option<MLArgMinMaxOptions>) -> Result<MlArgMinMa
     if let Some(options) = options {
         opts.set_label(&options.label);
         opts.set_keep_dimensions(options.keep_dimensions);
-        opts.set_output_data_type(operand_dtype_to_dtype(options.output_data_type)?);
+        opts.set_output_data_type(dtype_to_dtype(options.output_data_type)?);
     }
 
     Ok(opts)
@@ -2034,25 +2034,6 @@ fn dtype_to_dtype(dtype: DataType) -> Result<MlOperandDataType> {
         DataType::Uint64 => MlOperandDataType::Uint64,
         DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
             return Err(WebNNConverterError::UnsupportedDataType(dtype))?;
-        }
-    })
-}
-
-fn operand_dtype_to_dtype(dtype: MLOperandDataType) -> Result<MlOperandDataType> {
-    Ok(match dtype {
-        MLOperandDataType::Float32 => MlOperandDataType::Float32,
-        MLOperandDataType::Float16 => MlOperandDataType::Float16,
-        MLOperandDataType::Int32 => MlOperandDataType::Int32,
-        MLOperandDataType::Uint32 => MlOperandDataType::Uint32,
-        MLOperandDataType::Int8 => MlOperandDataType::Int8,
-        MLOperandDataType::Uint8 => MlOperandDataType::Uint8,
-        MLOperandDataType::Int64 => MlOperandDataType::Int64,
-        MLOperandDataType::Uint64 => MlOperandDataType::Uint64,
-        MLOperandDataType::Bfloat16
-        | MLOperandDataType::Float8e4m3
-        | MLOperandDataType::Int4
-        | MLOperandDataType::Uint4 => {
-            return Err(WebNNConverterError::UnsupportedDataType(dtype.into()).into());
         }
     })
 }

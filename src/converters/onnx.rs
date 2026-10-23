@@ -49,6 +49,10 @@ use webnn_onnx_utils::{
     tensor_data::TensorData,
 };
 
+// Float8 tensor types and Cast/Identity support were introduced in ONNX IR 9 / opset 19.
+const ONNX_IR_VERSION: i64 = 9;
+const ONNX_OP_SET_VERSION: i64 = 19;
+
 /// Append each initializer's `raw_data` into one external blob and point tensors at it (ONNX external data).
 ///
 /// Tensors using `int32_data` / `float_data` / `int64_data` are left unchanged. Only non-empty `raw_data`
@@ -10076,19 +10080,14 @@ impl crate::converters::GraphConverter for OnnxConverter {
             ..Default::default()
         };
 
-        // Float8 tensor types and Cast/Identity support were introduced in ONNX IR 9 / opset 19.
-        let has_float8 = graph
-            .operands
-            .iter()
-            .any(|operand| operand.descriptor.data_type == DataType::Float8e4m3);
         let model = ModelProto {
-            ir_version: if has_float8 { 9 } else { 8 },
+            ir_version: ONNX_IR_VERSION,
             model_version: 1,
             producer_name: "rustnn".to_string(),
             producer_version: "0.1.0".to_string(),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
-                version: if has_float8 { 19 } else { 18 },
+                version: ONNX_OP_SET_VERSION,
                 domain: "".to_string(), // Empty string = default ONNX domain
             }],
             ..Default::default()
