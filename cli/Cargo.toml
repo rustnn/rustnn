@@ -1,0 +1,38 @@
+[package]
+name = "rustnn-cli"
+version = "0.6.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Inspect, convert and execute WebNN graphs with rustnn"
+license = "Apache-2.0"
+repository = "https://github.com/rustnn/rustnn"
+
+[[bin]]
+name = "rustnn-cli"
+path = "src/main.rs"
+
+[features]
+default = [
+    "rustnn/dynamic-inputs",
+    "rustnn/onnx-runtime",
+    "rustnn/burn-cpu-runtime",
+    "rustnn/coreml-converter",
+    "rustnn/litert-converter",
+    "rustnn/trtx-runtime",
+]
+
+[dependencies]
+rustnn = { path = "..", version = "0.6.0", default-features = false }
+clap = { version = "4.5", features = ["derive", "string"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+half = "2.4"
+
+# Native CoreML execution is available to macOS CLI builds without extra flags.
+[target.'cfg(target_os = "macos")'.dependencies]
+rustnn = { path = "..", version = "0.6.0", default-features = false, features = ["coreml-runtime"] }
+[target.'cfg(target_env = "ohos")'.dependencies]
+rustnn = { path = "..", version = "0.6.0", default-features = false, features = ["cann-runtime"] }
+
+[dev-dependencies]
+tempfile = "3.27"

@@ -159,6 +159,19 @@ Browser WebNN uses `webnn-runtime` for graph replay and execution.
 See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-features)
 for platform requirements and optional features.
 
+## Command line
+
+The workspace member `rustnn-cli` builds the `rustnn` executable. It discovers converters
+and compiled runtimes from the library and executes graphs with `MLContext`.
+
+```bash
+cargo run -p rustnn-cli -- --list
+cargo run -p rustnn-cli -- examples/sample_graph.webnn --run burn-cpu
+cargo run -p rustnn-cli -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
+```
+
+See the [CLI guide](cli/README.md) for converter-only builds, backend hints and logging.
+
 ## Documentation
 
 - [Documentation site](https://rustnn.github.io/rustnn/) with the user guide, architecture and development pages

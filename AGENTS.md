@@ -59,6 +59,7 @@ Key modules (`docs/architecture/overview.md` has the full table):
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import and export through the `webnn-graph` crate, `.safetensors` weights |
 | `src/converters/{onnx,coreml_mlprogram,trtx,litert,cann,webnn}.rs` | Lowering of `GraphInfo` to each backend format; `ConverterRegistry` |
 | `src/backends/{ort,trtx,coreml,litert,cann}.rs`, `src/backends/caching.rs` | Backend contexts implementing the crate-private `MLBackendContext` and `MLBackendBuilder` traits; on-disk caches |
+| `cli/` | CLI workspace member (`rustnn-cli`): conversion registry, runtime discovery, MLContext execution |
 | `src/executors/` | Legacy one-shot executors for serialized models |
 | `tests/run_wpt_conformance.rs`, `tests/wpt_conformance/` | WPT conformance harness (`make test-wpt*`) |
 | `scripts/generate_backend_operator_report.py` | Generates `docs/development/backend-operator-support.md`; CI fails on drift |

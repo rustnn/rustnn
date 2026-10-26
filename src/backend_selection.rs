@@ -27,6 +27,7 @@ use crate::{
     error::Result,
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
 };
+use strum::{AsRefStr, EnumString, IntoStaticStr};
 
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 use crate::backends::cann::CannContext;
@@ -55,7 +56,8 @@ pub enum DeviceType {
 /// Execution backend. Each variant is compiled in by the matching Cargo feature
 /// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`,
 /// `burn-cpu-runtime`). Burn CPU is enabled by default.
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, EnumString, AsRefStr, IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
 pub enum Backend {
     /// ONNX Runtime (`onnx-runtime`).
     Onnx,
@@ -69,6 +71,34 @@ pub enum Backend {
     Cann,
     /// Burn NdArray CPU (`burn-cpu-runtime`).
     BurnCpu,
+}
+
+impl Backend {
+    /// Internal runtimes compiled into this build and supported on its target.
+    ///
+    /// This does not load native libraries or probe hardware. Use
+    /// [`crate::mlcontext::MLContext::create`] to check whether a runtime can serve
+    /// the requested power and acceleration hints. The CANN mock counts as a
+    /// compiled backend, although it cannot execute a graph.
+    pub fn compiled() -> Vec<Self> {
+        vec![
+            #[cfg(feature = "onnx-runtime")]
+            Self::Onnx,
+            #[cfg(feature = "trtx-runtime")]
+            Self::Trtx,
+            #[cfg(all(
+                feature = "coreml-runtime",
+                any(target_os = "macos", target_os = "ios")
+            ))]
+            Self::Coreml,
+            #[cfg(feature = "litert-runtime")]
+            Self::Litert,
+            #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+            Self::Cann,
+            #[cfg(feature = "burn-cpu-runtime")]
+            Self::BurnCpu,
+        ]
+    }
 }
 
 /// A concrete device of a [`Backend`], as returned by

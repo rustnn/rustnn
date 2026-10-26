@@ -55,6 +55,7 @@ loads, validates and converts stored graphs without a context.
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import through the `webnn-graph` crate, export, `.safetensors` weights |
 | `src/converters/` | `GraphConverter` trait, `ConverterRegistry`, one converter per format (`onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs` with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs`, `litert.rs`, `cann.rs`, `webnn.rs` for the browser) and shared helpers (`pool2d_shared.rs`, `weight_file_builder.rs`) |
 | `src/backends/` | One module per backend implementing the backend traits; `caching.rs` for on-disk caches; `webnn/` with generated browser bindings; `mod.rs` with `DisabledContext` aliases for backends that are compiled out |
+| `cli/` | Separate CLI crate: registry-based conversion and `MLContext` execution |
 | `src/executors/` | Legacy one-shot execution of converted bytes (ONNX Runtime, TensorRT, CoreML), used by older examples |
 | `src/protos.rs`, `build.rs`, `protos/` | Protobuf (ONNX, CoreML) and flatbuffer (TFLite) schemas compiled at build time |
 | `src/graphviz.rs`, `src/tensor.rs` | DOT export, host tensor helpers |

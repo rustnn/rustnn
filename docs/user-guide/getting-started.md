@@ -106,6 +106,29 @@ sidecar as described in the [converter guide](../development/converters.md).
 See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-features)
 for conversion and execution requirements.
 
+## Command line
+
+The `rustnn-cli` workspace member discovers converters and compiled runtime backends from
+the library. Use `--list` to probe runtimes and `--help` to see enabled choices.
+
+```bash
+cargo run -p rustnn-cli -- --list
+cargo run -p rustnn-cli -- examples/sample_graph.webnn
+cargo run -p rustnn-cli -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
+cargo run -p rustnn-cli -- examples/sample_graph.webnn --run burn-cpu
+```
+
+A graph without flags prints its input/output metadata. Execution uses `MLContext` with
+zeroed inputs and prints output previews. Select `--run auto` for normal backend selection;
+`--accelerated` requests a GPU or NPU. The CLI uses `MLGraph` descriptors for tensor bindings
+and does not call `GraphValidator`.
+
+CLI features forward to the library. For conversion without execution dependencies, use
+`cargo run -p rustnn-cli --no-default-features --features litert-converter -- ...`.
+Converted models go to stdout when no output path is given; diagnostics and tracing go to
+stderr. External weights require `--convert-output`. `RUST_LOG` filters diagnostics, with
+`info` as the default level.
+
 ## Next steps
 
 - [Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/): types, builder conventions and error types.

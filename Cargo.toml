@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "cli"]
+default-members = [".", "cli"]
+resolver = "3"
+
 [package]
 name = "rustnn"
 version = "0.6.0"
