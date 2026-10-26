@@ -17,8 +17,8 @@ default = [
     "rustnn/onnx-runtime",
     "rustnn/burn-cpu-runtime",
     "rustnn/coreml-converter",
-    "rustnn/litert-converter",
-    "rustnn/trtx-runtime",
+    #"rustnn/litert-converter", # requires flatc
+    #"rustnn/trtx-runtime",     # requires clang not newer than version 21
 ]
 
 [dependencies]
