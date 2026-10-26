@@ -569,4 +569,4 @@ check-converters:
 test-cli:
 	$(CARGO) test -p rustnn-cli
 	$(CARGO) test -p rustnn-cli --no-default-features
-	$(CARGO) test -p rustnn-cli --no-default-features --features onnx-converter,coreml-converter,litert-converter
+	$(CARGO) test -p rustnn-cli --no-default-features --features rustnn/onnx-converter,rustnn/coreml-converter,rustnn/litert-converter

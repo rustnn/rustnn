@@ -192,8 +192,8 @@ fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
 }
 
 // Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
-// instead of panicking in a `CString`/`bytemuck` call. `GraphValidator` checks the
-// constant-length rule too, but `MLContext` and `GraphConverter` do not run it.
+// instead of panicking in a `CString`/`bytemuck` call. These checks also cover
+// GraphInfo supplied directly to the converter, bypassing the builder.
 #[cfg(feature = "cann-converter")]
 fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {

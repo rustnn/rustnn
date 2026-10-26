@@ -3,12 +3,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use rustnn::load_graph_from_path;
 use rustnn::mlcontext::{
     MLContext, MLContextOptions, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
     MLTensorDescriptor,
 };
 use rustnn::operator_enums::MLOperandDataType;
-use rustnn::{ContextProperties, GraphValidator, load_graph_from_path};
 
 #[derive(Parser, Debug)]
 #[command(about = "Pure Rust ResNet-50 inference benchmark from .webnn + weights/manifest")]
@@ -236,21 +236,11 @@ fn run() -> Result<(), String> {
     println!("Loading graph: {}", args.model.display());
     let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
 
-    let artifacts = GraphValidator::new(&graph, ContextProperties::default())
-        .validate()
-        .map_err(|e| format!("validate graph: {e}"))?;
-    let input_name = artifacts
-        .input_names_to_descriptors
-        .keys()
-        .next()
-        .ok_or("graph has no inputs")?
-        .clone();
-    let output_name = artifacts
-        .output_names_to_descriptors
-        .keys()
-        .next()
-        .ok_or("graph has no outputs")?
-        .clone();
+    let (inputs, outputs) = graph
+        .io_binding_maps()
+        .map_err(|e| format!("graph I/O: {e}"))?;
+    let input_name = inputs.keys().next().ok_or("graph has no inputs")?.clone();
+    let output_name = outputs.keys().next().ok_or("graph has no outputs")?.clone();
     println!("Graph input `{input_name}`, output `{output_name}`");
 
     let input_data = load_input(&args)?;

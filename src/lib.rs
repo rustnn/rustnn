@@ -17,8 +17,8 @@
 //!   [`operators::Operation`] variants. It is backend-agnostic and round-trips through the
 //!   `.webnn` text and JSON formats of the `webnn-graph` crate via [`loader`] and
 //!   [`webnn_json`].
-//! * **Legacy pipeline.** [`load_graph_from_path`], [`GraphValidator`], the
-//!   [`ConverterRegistry`] and the functions in [`executors`] run a stored graph without an
+//! * **Legacy pipeline.** [`load_graph_from_path`], [`ConverterRegistry`] and the
+//!   functions in [`executors`] run a stored graph without an
 //!   `MLContext`. Executors reload the converted model on every call and have no device
 //!   tensors. The converters are shared with the backends; new code should go through the
 //!   WebNN API.
@@ -81,7 +81,8 @@
 //! `<backend>-converter`; converter features expose serialization without rustnn execution.
 //! With `default-features = false`, enable only the converters or runtimes you need.
 //! Without a runtime, [`mlcontext::MLContext::create`] returns
-//! [`error::Error::NoBackendAvailable`]; loading and validation remain available.
+//! [`error::Error::NoBackendAvailable`]; graph loading, builder validation and enabled
+//! converters remain available.
 //!
 //! | Feature | Effect |
 //! |---|---|
@@ -100,7 +101,7 @@
 //! | `cann-runtime-mock` | Device-free CANN validation and placeholder conversion; no native dependencies, dispatch fails |
 //! | `webnn-runtime` | Browser WebNN graph replay and execution on `wasm32`; no serialized model converter |
 //! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) for validation |
-//! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
+//! | `dynamic-inputs` | Enable ONNX/CoreML conversion of [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
 //! | `zstd-cache-compression` | Compress on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
 //! | `capi` | C API exports and logging support |
@@ -150,7 +151,6 @@ pub mod protos;
 pub mod runtime_checks;
 pub mod shape_inference;
 pub mod tensor;
-pub mod validator;
 pub mod webnn_json;
 pub(crate) mod webnn_save;
 
@@ -176,5 +176,4 @@ pub use graph::{ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, O
 pub use graphviz::graph_to_dot;
 pub use loader::load_graph_from_path;
 pub use operators::Operation;
-pub use validator::{ContextProperties, GraphValidator, ValidationArtifacts};
 extern crate alloc;

@@ -20,7 +20,6 @@ use rustnn::mlcontext::{
 };
 use rustnn::mlcontextoptions::{BackendStatistics, CoremlTensorStatistics, RustNNOptions};
 use rustnn::operator_enums::MLOperandDataType;
-use rustnn::{ContextProperties, GraphValidator};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -65,9 +64,6 @@ struct Fixture {
 fn graph(path: &Path) -> Result<GraphInfo> {
     let graph: GraphInfo = serde_json::from_slice(&fs::read(path)?)
         .with_context(|| format!("deserialize {}", path.display()))?;
-    GraphValidator::new(&graph, ContextProperties::default())
-        .validate()
-        .with_context(|| format!("validate {}", path.display()))?;
     Ok(graph)
 }
 
@@ -717,13 +713,6 @@ pub fn run_configuration(config: &BenchmarkConfig) -> Result<Value> {
 fn smollm_probe(config: &BenchmarkConfig, path: &Path, device_type: DeviceType) -> Result<Value> {
     eprintln!("Importing supplied SmolLM source {}", path.display());
     let graph = rustnn::load_graph_from_path(path).context("SmolLM import")?;
-    let properties = ContextProperties {
-        tensor_byte_length_limit: usize::try_from(500_000_000_000_u64).unwrap_or(usize::MAX),
-        ..ContextProperties::default()
-    };
-    GraphValidator::new(&graph, properties)
-        .validate()
-        .context("SmolLM validation")?;
     let options = MLContextOptions::new(MLPowerPreference::Default, device_type != DeviceType::Cpu)
         .with_rustnn_device_hint(BackendDevice::Coreml { device_type })
         .with_rustnn_options(storage_options(&config.mode)?);

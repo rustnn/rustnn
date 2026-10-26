@@ -120,11 +120,10 @@ cargo run -p rustnn-cli -- examples/sample_graph.webnn --run burn-cpu
 
 A graph without flags prints its input/output metadata. Execution uses `MLContext` with
 zeroed inputs and prints output previews. Select `--run auto` for normal backend selection;
-`--accelerated` requests a GPU or NPU. The CLI uses `MLGraph` descriptors for tensor bindings
-and does not call `GraphValidator`.
+`--accelerated` requests a GPU or NPU. The CLI uses `MLGraph` descriptors for tensor bindings.
 
 CLI features forward to the library. For conversion without execution dependencies, use
-`cargo run -p rustnn-cli --no-default-features --features litert-converter -- ...`.
+`cargo run -p rustnn-cli --no-default-features --features rustnn/litert-converter -- ...`.
 Converted models go to stdout when no output path is given; diagnostics and tracing go to
 stderr. External weights require `--convert-output`. `RUST_LOG` filters diagnostics, with
 `info` as the default level.

@@ -13,7 +13,6 @@ use rustnn::mlcontext::{
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
 use rustnn::protos::coreml::specification;
-use rustnn::validator::{ContextProperties, GraphValidator};
 use serde_json::json;
 
 fn api_dtype(dtype: DataType) -> MLOperandDataType {
@@ -44,9 +43,6 @@ fn produced_output_may_have_the_same_logical_name_as_an_input() {
     let cast = builder.cast(input, MLOperandDataType::Float32).unwrap();
     let recorded = builder
         .finish_graph_info(&MLNamedOperands::from([("input", cast), ("copy", copied)]))
-        .unwrap();
-    GraphValidator::new(&recorded, ContextProperties::default())
-        .validate()
         .unwrap();
     assert!(
         !recorded
@@ -213,9 +209,6 @@ fn alias_metadata_preserves_names_dtypes_shapes_and_unique_ssa_values() {
     ] {
         for shape in [vec![], vec![Dimension::Static(11)]] {
             let graph = named_graph(dtype, shape, half_output);
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
             let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.as_ref().unwrap();
@@ -428,9 +421,7 @@ fn arbitrary_public_names_compile_and_bind_without_changing_the_graph() {
                 options: None,
                 outputs: vec![3],
             };
-            GraphValidator::new(&recorded, ContextProperties::default())
-                .validate()
-                .unwrap();
+
             let converted = CoremlMlProgramConverter.convert(&recorded).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.unwrap();
@@ -602,9 +593,7 @@ fn scalar_static_and_resized_outputs_use_the_logical_namespace() {
                         );
                     }
                 }
-                GraphValidator::new(&graph, ContextProperties::default())
-                    .validate()
-                    .unwrap();
+
                 let mut graph = MLGraphBuilder::new(&mut context)
                     .unwrap()
                     .build_graph_info(graph)
@@ -738,9 +727,6 @@ fn export_output_namespace_models_when_requested() {
             ),
         ] {
             let graph = named_graph(dtype, shape, half_output);
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
             let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.unwrap();
@@ -811,9 +797,7 @@ fn export_output_namespace_models_when_requested() {
             options: None,
             outputs: vec![3],
         };
-        GraphValidator::new(&graph, ContextProperties::default())
-            .validate()
-            .unwrap();
+
         let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
         let model = specification::Model::decode(converted.data.as_slice()).unwrap();
         let description = model.description.unwrap();

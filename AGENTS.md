@@ -54,7 +54,7 @@ Key modules (`docs/architecture/overview.md` has the full table):
 | `src/mlcontext.rs`, `src/mlcontextoptions.rs`, `src/backend_selection.rs` | WebNN context, graph and tensor types; options and hints; the selection order |
 | `src/mlgraphbuilder.rs` | Builder: inputs, constants, all operation methods (macro-generated `op` and `op_with_options`), `build`, `rustnn_save_webnn` |
 | `src/operators.rs`, `src/operator_options.rs`, `src/operator_enums.rs` | `Operation` enum (one variant per operation, `op_type()`), `ML*Options` structs, spec enums |
-| `src/shape_inference.rs`, `src/validator.rs`, `src/runtime_checks.rs` | Shape rules, structural validation, dispatch-time binding checks |
+| `src/shape_inference.rs`, `src/runtime_checks.rs` | Builder shape rules and dispatch-time binding checks |
 | `src/graph.rs` | `GraphInfo`, `Operand`, `Dimension` (static or dynamic), `DataType`, 4-bit packing |
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import and export through the `webnn-graph` crate, `.safetensors` weights |
 | `src/converters/{onnx,coreml_mlprogram,trtx,litert,cann,webnn}.rs` | Lowering of `GraphInfo` to each backend format; `ConverterRegistry` |

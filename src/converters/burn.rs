@@ -224,16 +224,13 @@ mod tests {
 
         use crate::converters::{BurnConverter, GraphConverter};
         use crate::executors::burn::{BurnInput, run_burn_cpu_with_inputs};
-        use crate::{ContextProperties, GraphValidator, load_graph_from_path};
+        use crate::load_graph_from_path;
 
         #[test]
         fn sample_graph_add_zeroed_lhs() {
             let path =
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/sample_graph.webnn");
             let graph = load_graph_from_path(&path).expect("sample graph should load");
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .expect("sample graph should validate");
             let converted = BurnConverter.convert(&graph).expect("convert to burn plan");
             let outputs = run_burn_cpu_with_inputs(
                 &converted.data,

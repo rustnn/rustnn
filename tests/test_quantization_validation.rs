@@ -1,11 +1,10 @@
-//! Quantization parameters obey the same contracts through the builder and GraphInfo.
+//! Quantization parameters obey the same contracts through the builder and graph import.
 
 use rustnn::graph::{DataType, Dimension, GraphInfo, Operand, OperandDescriptor, OperandKind};
 use rustnn::mlcontext::{MLNamedOperands, MLOperandDescriptor};
 use rustnn::mlgraphbuilder::MLGraphBuilder;
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
-use rustnn::{ContextProperties, GraphValidator};
 
 fn graph(
     quantize: bool,
@@ -89,11 +88,13 @@ fn builder_result(graph: &GraphInfo) -> rustnn::error::Result<GraphInfo> {
     builder.finish_graph_info(&outputs)
 }
 
+fn assert_imports(graph: &GraphInfo) {
+    let interchange = rustnn::webnn_json::to_graph_json(graph, false).unwrap();
+    rustnn::webnn_json::from_graph_json(&interchange)
+        .expect("valid quantization parameters must survive graph import");
+}
+
 fn rejected(graph: &GraphInfo, reason: &str) {
-    let error = GraphValidator::new(graph, ContextProperties::default())
-        .validate()
-        .expect_err("invalid GraphInfo must be rejected before conversion");
-    assert!(error.to_string().contains(reason), "{error}");
     let error = builder_result(graph).expect_err("invalid parameters must fail at builder call");
     assert!(error.to_string().contains(reason), "{error}");
     let interchange = rustnn::webnn_json::to_graph_json(graph, false).unwrap();
@@ -270,13 +271,9 @@ fn quantization_preserves_scalar_per_tensor_per_axis_and_blockwise_parameters() 
                 scale_shape,
                 scale_shape,
             );
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
+            assert_imports(&graph);
             let built = builder_result(&graph).unwrap();
-            GraphValidator::new(&built, ContextProperties::default())
-                .validate()
-                .unwrap();
+            assert_imports(&built);
             assert_eq!(
                 built.operands[3].descriptor.data_type,
                 graph.operands[3].descriptor.data_type
@@ -357,9 +354,7 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
     let graph = builder.finish_graph_info(&outputs).unwrap();
     assert_eq!(graph.operations.len(), 1);
     assert_eq!(graph.operands.len(), 6);
-    GraphValidator::new(&graph, ContextProperties::default())
-        .validate()
-        .unwrap();
+    assert_imports(&graph);
 }
 
 #[test]
@@ -375,15 +370,8 @@ fn quantization_retains_existing_integer_parameter_dtypes() {
                 &[1],
                 &[1],
             );
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
-            GraphValidator::new(
-                &builder_result(&graph).unwrap(),
-                ContextProperties::default(),
-            )
-            .validate()
-            .unwrap();
+            assert_imports(&graph);
+            assert_imports(&builder_result(&graph).unwrap());
         }
     }
     let graph = graph(
@@ -395,15 +383,8 @@ fn quantization_retains_existing_integer_parameter_dtypes() {
         &[1],
         &[1],
     );
-    GraphValidator::new(&graph, ContextProperties::default())
-        .validate()
-        .unwrap();
-    GraphValidator::new(
-        &builder_result(&graph).unwrap(),
-        ContextProperties::default(),
-    )
-    .validate()
-    .unwrap();
+    assert_imports(&graph);
+    assert_imports(&builder_result(&graph).unwrap());
 }
 
 /// The specification's tensor-limits tables allow uint32 for the dequantize input and for both
@@ -425,14 +406,7 @@ fn quantization_accepts_the_specification_uint32_parameters() {
             &[1],
             &[1],
         );
-        GraphValidator::new(&graph, ContextProperties::default())
-            .validate()
-            .unwrap();
-        GraphValidator::new(
-            &builder_result(&graph).unwrap(),
-            ContextProperties::default(),
-        )
-        .validate()
-        .unwrap();
+        assert_imports(&graph);
+        assert_imports(&builder_result(&graph).unwrap());
     }
 }

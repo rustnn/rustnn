@@ -7281,7 +7281,7 @@ impl TrtxConverter {
             .zip(strides.iter())
             .map(|(sz, st): (&i32, &i32)| {
                 if *st == 0 {
-                    0_i32 // avoid div-by-zero; validator should reject elsewhere
+                    0_i32 // avoid div-by-zero; the builder rejects zero strides
                 } else if *st == 1 {
                     *sz
                 } else {

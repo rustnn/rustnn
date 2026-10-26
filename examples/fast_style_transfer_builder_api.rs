@@ -526,8 +526,8 @@ fn conv2d(
     let options = MLConv2dOptions {
         label: label.to_string(),
         strides: strides.map(Vec::from).unwrap_or_default(),
-        input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
-        filter_layout: crate::operator_enums::MLConv2dFilterOperandLayout::Oihw,
+        input_layout: rustnn::operator_enums::MLInputOperandLayout::Nchw,
+        filter_layout: rustnn::operator_enums::MLConv2dFilterOperandLayout::Oihw,
         ..Default::default()
     };
     builder
@@ -547,8 +547,8 @@ fn conv_transpose2d(
         padding: vec![0, 1, 0, 1],
         strides: vec![2, 2],
         output_sizes: Some(Vec::from(output_sizes)),
-        input_layout: crate::operator_enums::MLInputOperandLayout::Nchw,
-        filter_layout: crate::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
+        input_layout: rustnn::operator_enums::MLInputOperandLayout::Nchw,
+        filter_layout: rustnn::operator_enums::MLConvTranspose2dFilterOperandLayout::Iohw,
         ..Default::default()
     };
     builder

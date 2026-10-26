@@ -1046,7 +1046,7 @@ fn validate_quantization_parameters(
 
 /// The data type and shape rules that the scale and optional zero point of a `quantizeLinear`
 /// (`is_quantize`) or `dequantizeLinear` must meet against its input. The builder applies them
-/// when it records the operation; `GraphValidator` reuses them for GraphInfo from other sources.
+/// when it records the operation, including operations replayed during graph import.
 ///
 /// The data types follow the specification's tensor-limits tables, which change as WebNN
 /// evolves; compare against them when updating this function:

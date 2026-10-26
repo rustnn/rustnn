@@ -79,6 +79,7 @@ the same pull request. Documentation follows the code; there is no later cleanup
 | `Operation { op_type: String, attributes: serde_json::Value, .. }` | `rustnn::operators::Operation` is an enum with one variant per operation and typed `ML*Options` structs from `src/operator_options.rs` |
 | `HashMap<String, MLOperand>` and `HashMap<&str, &MLTensor>` arguments | `MLNamedOperands` and `MLNamedTensors` (`BTreeMap` aliases) |
 | `run_onnx_with_inputs`, `run_coreml_zeroed`, `run_trtx_with_inputs` as the execution API | Legacy one-shot executors kept for standalone execution and older examples. New code uses `MLContext`. |
+| `GraphValidator`, `ContextProperties`, `ValidationArtifacts` | Removed. Read graph I/O through `GraphInfo::io_binding_maps()` or `MLGraph` descriptors; builder/import operation checks and dispatch binding checks remain. |
 | `ensure_trtx_loaded` | Removed; TensorRT-RTX is loaded on demand. `dynamically_load_tensorrt` exists for custom library paths. |
 | `MLGraphBuilder::conv2_with_options`, `MLTensor::destoy` | Renamed to `conv2d_with_options` (the old name is a deprecated alias) and `destroy` |
 | Operations `round`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `asinh`, `acosh`, `atanh` | Removed with the specification. JSON graphs with `round` are accepted as `roundEven`. |

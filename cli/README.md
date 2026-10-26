@@ -9,7 +9,7 @@ cargo run -p rustnn-cli -- examples/sample_graph.webnn
 cargo run -p rustnn-cli -- examples/sample_graph.webnn --export-dot graph.dot
 cargo run -p rustnn-cli -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
 cargo run -p rustnn-cli -- examples/sample_graph.webnn --run burn-cpu
-cargo run -p rustnn-cli --features trtx-runtime -- examples/sample_graph.webnn --run trtx --accelerated
+cargo run -p rustnn-cli --features rustnn/trtx-runtime -- examples/sample_graph.webnn --run trtx --accelerated
 ```
 
 `--list` lists enabled converters and probes compiled runtimes through `MLContext::create`.
@@ -20,6 +20,6 @@ but cannot execute graphs.
 Disable defaults for converter-only builds:
 
 ```bash
-cargo run -p rustnn-cli --no-default-features --features litert-converter -- --list
-cargo run -p rustnn-cli --no-default-features --features litert-converter -- examples/sample_graph.webnn --convert litert --convert-output model.tflite
+cargo run -p rustnn-cli --no-default-features --features rustnn/litert-converter -- --list
+cargo run -p rustnn-cli --no-default-features --features rustnn/litert-converter -- examples/sample_graph.webnn --convert litert --convert-output model.tflite
 ```

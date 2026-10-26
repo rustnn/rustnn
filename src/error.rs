@@ -400,7 +400,7 @@ pub enum Error {
 }
 
 /// Why the scale and zero point of a `quantizeLinear` or `dequantizeLinear` do not fit its
-/// input. Checked when the builder records the operation, and again by `GraphValidator`.
+/// input. Checked when the builder records the operation, including graph import.
 ///
 /// Variant fields carry the values named in the message; they are not documented separately.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

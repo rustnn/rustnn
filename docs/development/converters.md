@@ -1,6 +1,6 @@
 # Converter Internals
 
-A converter lowers a validated `GraphInfo` to one backend format. This page describes the
+A converter lowers a `GraphInfo` to one backend format. This page describes the
 contract, the structure converters share, the backend-specific rules that shaped them
 and how to debug a wrong model. Read it before touching `src/converters/`.
 
@@ -21,6 +21,10 @@ pub trait GraphConverter {
 `weights_data` sidecar. `ConverterRegistry::with_defaults` registers every converter compiled
 into the build. Each `<backend>-runtime` enables its matching `<backend>-converter`;
 converter-only users can call the registry without enabling rustnn execution.
+
+Graph building and graph import apply operation rules. Converters accept `GraphInfo` directly
+and enforce their backend-specific constraints; there is no separate graph-wide validation
+pass before conversion. Use `GraphInfo::io_binding_maps()` for named I/O descriptors.
 
 Converters read `GraphInfo` and produce model bytes. ONNX, CoreML, LiteRT and Burn
 serialization do not require execution libraries. TensorRT engine building and CANN offline
