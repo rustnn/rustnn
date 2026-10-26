@@ -973,6 +973,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 impl ListDevices for TrtxContext<'_> {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
         trace!("Enumerating Trtx devices");
+        // cudarc panics on a missing driver library before it can return a CUDA error.
+        // SAFETY: Loads the system CUDA driver from trusted library search paths.
+        if !unsafe { sys::is_culib_present() } {
+            trace!("CUDA driver library not found; skipping TensorRT RTX");
+            return Vec::new();
+        }
         let Ok(()) = result::init() else {
             warn!("Could not enumerate CUDA devices for TensorRT RTX");
             return Vec::new();

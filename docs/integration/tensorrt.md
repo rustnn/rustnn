@@ -19,7 +19,9 @@ recurrent operations); there is no ONNX intermediate. The backend itself is
 ## Requirements
 
 - An NVIDIA RTX GPU with a current driver. The CUDA driver API is loaded at run time through
-  `cudarc`; the CUDA toolkit is not required.
+  `cudarc`; the CUDA toolkit is not required. Device enumeration checks for the driver library
+  before initializing CUDA. If the library is missing or initialization fails, it reports no
+  TensorRT-RTX devices so automatic selection can try another backend.
 - The TensorRT-RTX 1.6 library. The `trtx` crate loads it by name (`tensorrt_rtx_1_6`), so the
   SDK's `lib` directory (Linux) or `bin` directory (Windows) must be on `LD_LIBRARY_PATH` or
   `PATH`, or the application calls `rustnn::backends::trtx::dynamically_load_tensorrt(Some(path))`
