@@ -1,4 +1,4 @@
-//! Graphviz DOT export of a [`GraphInfo`] (CLI flag `--export-dot`).
+//! Graphviz DOT export of a [`GraphInfo`].
 
 use std::fmt::Write;
 

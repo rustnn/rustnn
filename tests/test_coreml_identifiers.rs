@@ -1,3 +1,5 @@
+#![cfg(feature = "coreml-converter")]
+
 //! CoreML must not impose MIL identifier rules on WebNN tensor names.
 
 use prost::Message;

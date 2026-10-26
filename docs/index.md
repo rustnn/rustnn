@@ -31,7 +31,7 @@ and [WPT dashboard](https://rustnn.github.io/rustnn/wpt-conformance/). See the
 
 | Section | Content |
 |---|---|
-| [Getting Started](user-guide/getting-started.md) | Requirements, adding the crate, first graph, loading `.webnn` files, the CLI |
+| [Getting Started](user-guide/getting-started.md) | Requirements, adding the crate, first graph, loading `.webnn` files, conversion |
 | [Examples](user-guide/examples.md) | The example programs in `examples/` and short recipes |
 | [Troubleshooting](user-guide/troubleshooting.md) | Error messages by phase, their causes and fixes |
 | [API and Support Map](development/implementation-status.md) | Pointers to API contracts, unimplemented methods, backend support, and consolidated guides |

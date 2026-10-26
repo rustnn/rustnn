@@ -28,7 +28,7 @@ Where the models come from:
 Other files in `examples/`:
 
 - `sample_graph.webnn`, `sample_graph.json`, `toy_transformer.webnn`, `toy_transformer.json`:
-  small graphs for the CLI and for `load_graph_from_path`.
+  small graphs for `load_graph_from_path`.
 - `mobilenetv2_manifest.json`, `mobilenetv2.weights`, `mobilenetv2_weights/`: a MobileNetV2
   weight set in the `manifest.json` plus `.weights` layout that the loader resolves.
 - `imagenet_classes.txt`, `images/test.jpg`, `sample_text.txt`: inputs for the examples.

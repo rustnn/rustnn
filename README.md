@@ -144,30 +144,20 @@ ownership rules, package layout, and exact build and run commands.
 
 ## Features
 
-| Feature | Backend |
-|---|---|
-| `onnx-runtime` | ONNX Runtime (CPU, GPU, NPU execution providers), all platforms |
-| `trtx-runtime` | NVIDIA TensorRT-RTX (Linux, Windows); `trtx-runtime-mock` builds without a GPU |
-| `coreml-runtime` | Apple CoreML (macOS) |
-| `burn-runtime-cpu` | [Burn NdArray CPU](docs/integration/burn-cpu.md); select `Backend::BurnCpu`, no native runtime library required |
-| `litert-runtime` | LiteRT / TensorFlow Lite; needs `flatc` at build time |
-| `cann-runtime` | Huawei CANN on OpenHarmony; `cann-runtime-mock` for validation |
-| `dynamic-inputs` | Dynamic dimensions bounded by a maximum size |
-| `webnn-runtime` | Browser WebNN bindings for `wasm32-unknown-unknown` (in progress) |
-| `trtx-enterprise` | The TensorRT backend linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features such as CUDA graphs are compiled out. Used for validation, not a supported deployment target |
-| `native-examples` | Compiles the large example programs |
+Defaults are `onnx-converter` and `burn-cpu-runtime`. Each backend has a
+`<backend>-converter` feature for model serialization and a `<backend>-runtime`
+feature that includes conversion plus execution: `onnx`, `coreml`, `litert`,
+`trtx`, `cann`, and `burn-cpu`. For converter-only builds, disable defaults:
 
-Full list and environment variables: crate docs (`make docs-api`) or
-[Backends](https://rustnn.github.io/rustnn/api/rustnn/backend_selection/).
-
-## Command line
-
-```bash
-cargo run --features onnx-runtime -- examples/sample_graph.webnn                         # validate
-cargo run --features onnx-runtime -- examples/sample_graph.webnn --export-dot graph.dot  # Graphviz
-cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
-cargo run --features onnx-runtime -- examples/sample_graph.webnn --convert onnx --run-onnx
+```toml
+rustnn = { version = "0.6", default-features = false, features = ["litert-converter"] }
 ```
+
+LiteRT conversion emits TFLite FlatBuffers and needs `flatc`, without the LiteRT
+runtime library. TensorRT and CANN conversion still require their native SDKs.
+Browser WebNN uses `webnn-runtime` for graph replay and execution.
+See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-features)
+for platform requirements and optional features.
 
 ## Documentation
 

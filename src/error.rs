@@ -15,7 +15,7 @@ use crate::{
     graph::DataType,
     mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(feature = "trtx-runtime")]
 use cudarc::driver::DriverError;
 use serde_json::Error as JsonError;
 use thiserror::Error;
@@ -374,7 +374,7 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-converter")]
     /// An error in the Trtx: `source`.
     #[error("An error in the Trtx: {source}")]
     TrtxError {
@@ -382,7 +382,7 @@ pub enum Error {
         source: trtx::Error,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     /// An error in the Trtx backend: `source`.
     #[error("An error in the Trtx backend: {source}")]
     TrtxBackendError {
@@ -390,7 +390,7 @@ pub enum Error {
         source: crate::backends::trtx::TrtxError,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     /// An CUDA error occurred: `source`.
     #[error("An CUDA error occurred: {source}")]
     CudaError {
@@ -604,10 +604,8 @@ pub enum GraphError {
     /// Onnx runtime failed: `reason`.
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
-    /// Tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled.
-    #[error(
-        "tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled"
-    )]
+    /// Tensorrt runtime is only available with the `trtx-runtime` feature enabled.
+    #[error("tensorrt runtime is only available with the `trtx-runtime` feature enabled")]
     TrtxRuntimeUnavailable,
     /// Burn CPU execution failed.
     #[error("burn runtime failed: {reason}")]

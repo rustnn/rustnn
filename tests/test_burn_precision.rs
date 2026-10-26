@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-runtime")]
 
 use rustnn::burn::{BurnGraphPlan, ConstantSlot, IOBinding};
 use rustnn::executors::burn::run_burn_cpu_with_inputs;

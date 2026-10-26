@@ -14,7 +14,7 @@
 //! 4. Not accelerated: CoreML (CPU), then LiteRT (CPU), then ONNX Runtime (CPU).
 //! 5. ONNX Runtime (CPU) is also tried for accelerated requests, followed by Burn CPU as
 //!    the lowest-priority fallback for all power preferences. Burn CPU is enabled by default
-//!    through `burn-runtime-cpu` and runs on the host even for accelerated hints.
+//!    through `burn-cpu-runtime` and runs on the host even for accelerated hints.
 //! 6. CANN is only selected when requested with a backend or device hint.
 //!
 //! Explicit backend hints restrict selection to that backend. When nothing
@@ -34,7 +34,7 @@ use crate::backends::cann::CannContext;
 use crate::backends::litert::LiteRtContext;
 #[cfg(feature = "onnx-runtime")]
 use crate::backends::ort::OrtContext;
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(feature = "trtx-runtime")]
 use crate::backends::trtx::TrtxContext;
 
 #[allow(unused_imports)]
@@ -54,7 +54,7 @@ pub enum DeviceType {
 
 /// Execution backend. Each variant is compiled in by the matching Cargo feature
 /// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`,
-/// `burn-runtime-cpu`). Burn CPU is enabled by default.
+/// `burn-cpu-runtime`). Burn CPU is enabled by default.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Backend {
     /// ONNX Runtime (`onnx-runtime`).
@@ -67,7 +67,7 @@ pub enum Backend {
     Litert,
     /// Huawei CANN on OpenHarmony (`cann-runtime`).
     Cann,
-    /// Burn NdArray CPU (`burn-runtime-cpu`).
+    /// Burn NdArray CPU (`burn-cpu-runtime`).
     BurnCpu,
 }
 
@@ -166,9 +166,9 @@ impl BackendDevice {
 }
 
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
-    let have_trtx = cfg!(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"));
+    let have_trtx = cfg!(feature = "trtx-runtime");
     let want_trtx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Trtx);
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     let trtx_devices = TrtxContext::list_devices();
 
     #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
@@ -202,7 +202,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
 
     Ok(match (options.power_preference, options.accelerated) {
         // Trtx
-        #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+        #[cfg(feature = "trtx-runtime")]
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_trtx
                 && want_trtx
@@ -295,7 +295,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         // Lowest-priority fallback for every power preference, including accelerated requests.
         // An explicit hint for another backend must never silently select Burn CPU.
-        #[cfg(feature = "burn-runtime-cpu")]
+        #[cfg(feature = "burn-cpu-runtime")]
         (_, _)
             if options.backend_hint.is_none() || options.backend_hint == Some(Backend::BurnCpu) =>
         {

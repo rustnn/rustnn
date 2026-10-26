@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-runtime")]
 
 //! Runtime replay of [`BurnGraphPlan`] using Burn tensor operations.
 
@@ -383,7 +383,7 @@ fn bytes_to_f32(bytes: &[u8], data_type: DataType) -> Result<Vec<f32>, GraphErro
     }
 }
 
-#[cfg(all(test, feature = "burn-runtime-cpu"))]
+#[cfg(all(test, feature = "burn-cpu-runtime"))]
 mod tests {
     use super::*;
     use crate::burn::{BurnGraphPlan, ConstantSlot, IOBinding};

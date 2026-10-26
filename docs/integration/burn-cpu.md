@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Burn CPU
 
-Build with `--features burn-runtime-cpu` to execute graphs on the host using Burn's
+Build with `--features burn-cpu-runtime` to execute graphs on the host using Burn's
 NdArray backend. No ONNX Runtime, GPU, or external native runtime library is required.
 Automatic selection tries Burn CPU last, after every other eligible backend, including
 ONNX Runtime CPU. It can also serve accelerated requests when no preferred backend is
@@ -22,8 +22,9 @@ let mut context = MLContext::create(&options)?;
 Use the normal builder, tensor and dispatch workflow from the
 [Rust API reference](https://rustnn.github.io/rustnn/api/rustnn/).
 Graph building lowers typed operations and embedded constants into an in-memory execution
-plan for JIT preparation. The `burn-runtime-cpu` feature includes both conversion and
-execution; no separate plan-generation feature is needed.
+plan for JIT preparation. The `burn-cpu-runtime` feature includes both conversion and
+execution. Use `burn-cpu-converter` with defaults disabled to serialize plans without
+compiling Burn tensor execution dependencies.
 The builder owns operation and shape validation. Burn preparation consumes that validated
 graph, checks its tensor representation limits, and initializes constant tensors once;
 it does not repeat operation arity, datatype or structural validation.

@@ -17,7 +17,7 @@
 
 //! WebNN graph to Burn execution-plan converter.
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-converter")]
 
 use std::collections::HashMap;
 
@@ -218,7 +218,7 @@ mod tests {
         assert!(matches!(plan.operations[0], Operation::Add { .. }));
     }
 
-    #[cfg(feature = "burn-runtime-cpu")]
+    #[cfg(feature = "burn-cpu-runtime")]
     mod sample_graph {
         use std::path::PathBuf;
 

@@ -1,4 +1,4 @@
-//! NVIDIA TensorRT-RTX backend (`trtx-runtime` and `trtx-runtime-mock` features).
+//! NVIDIA TensorRT-RTX backend (`trtx-runtime` feature).
 //!
 //! Graphs are lowered with [`TrtxConverter`] straight into a TensorRT network, built into an
 //! engine, and executed with device tensors on a CUDA stream. Constants are marked
@@ -39,6 +39,7 @@ use crate::backends::caching::PersistentCache;
 #[cfg(feature = "zstd-cache-compression")]
 use crate::backends::caching::ZstdCompressedFileCache as TrtxCache;
 use crate::converters::TrtxConverter;
+use crate::converters::trtx_logger as LOGGER;
 use crate::error::Error;
 
 use crate::error::GraphBuilderError;
@@ -306,10 +307,6 @@ impl std::fmt::Debug for TrtxContext<'_> {
             .finish()
     }
 }
-
-// TODO: should make logger static or remove from API. It is anyway a global for TRT
-pub(crate) static LOGGER: std::sync::LazyLock<trtx::Logger> =
-    std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
 
 impl<'context> TrtxContext<'context> {
     pub(crate) fn new(cuda_device_idx: u32, options: Option<&RustNNOptions>) -> TrtxResult<Self> {

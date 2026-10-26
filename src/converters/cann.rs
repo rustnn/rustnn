@@ -18,14 +18,16 @@
 //! CANN/HiAI converter: `GraphInfo` -> compiled model bytes via the `hiai-rs`
 //! adapter (HiAI DDK C++ API).
 //!
-//! - `cann-runtime`: build a GE graph and compile it to ModelBufferData.
-//! - `cann-runtime-mock`: validate ops, return placeholder bytes.
+//! Enabled by `cann-converter`: builds a GE graph and compiles it to ModelBufferData.
+//! The DDK is required for conversion; `cann-runtime` additionally enables execution.
+//! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
+//! without the DDK. Enabling `cann-converter` also enables real conversion.
 
 use crate::error::GraphError;
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 use crate::graph::DataType;
 use crate::graph::GraphInfo;
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -33,7 +35,7 @@ use super::{ConvertedGraph, GraphConverter};
 // Maps a WebNN op to the DDK operator type registered for it, or `None` if it has no
 // lowering (`None` also covers ops an earlier block lowers itself). The name is not a
 // label: it goes to `cann_operator_create_registered`, so a typo emits a wrong model.
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
         // ── Element-wise binary ──────────────────────────────────────
@@ -166,14 +168,14 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
 
 // Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
 // them to FLOAT would reinterpret packed nibbles as float.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn is_supported_dtype(data_type: DataType) -> bool {
     !matches!(data_type, DataType::Int4 | DataType::Uint4)
 }
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
 // not lower. Orphaned operands left behind by a rewrite are not counted.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
     graph
         .operands
@@ -192,7 +194,7 @@ fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
 // Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
 // instead of panicking in a `CString`/`bytemuck` call. `GraphValidator` checks the
 // constant-length rule too, but `MLContext` and `GraphConverter` do not run it.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         if !is_supported_dtype(operand.descriptor.data_type) {
@@ -245,7 +247,7 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
 // Transpose a 4-D f32 filter into the target layout: `perm[target] = source`,
 // so `dst_dims[k] = src_dims[perm[k]]`. Host-side (const-input Permute can't
 // infershape).
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 fn transpose_filter_f32(
     data: &[f32],
     src_dims: [usize; 4],
@@ -300,7 +302,7 @@ fn transpose_filter_f32(
     )
 }
 
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 mod adapter {
     use super::*;
     use crate::graph::{DataType, OperandDescriptor};
@@ -3573,10 +3575,10 @@ mod adapter {
     }
 }
 
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 pub(crate) use adapter::encode_via_adapter;
 
-#[cfg(not(feature = "cann-runtime"))]
+#[cfg(not(feature = "cann-converter"))]
 pub(crate) fn encode_via_adapter(_graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
     Err(GraphError::ConversionFailed {
         format: "cann".into(),
@@ -3590,7 +3592,7 @@ pub(crate) fn encode_via_adapter(_graph: &GraphInfo) -> Result<Vec<u8>, GraphErr
 /// `Reshape → Transpose([2,0,3,1,4]) → Slice×3 → Reshape×3` becomes the
 /// numerically equivalent `Slice(axis2)×3 → Reshape×3 → Transpose([0,2,1,3])×3`.
 /// Returns `Some` when at least one block matched.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn rewrite_attention_5d(graph: &GraphInfo) -> Option<GraphInfo> {
     use crate::graph::{Dimension, Operand, OperandDescriptor, OperandKind};
     use crate::operator_options::{MLDimension, MLTransposeOptions};

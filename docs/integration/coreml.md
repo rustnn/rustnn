@@ -70,9 +70,9 @@ establishes placement, energy savings or prediction-time fallback; use separate 
    graph, types and shapes are unchanged.
 3. `MLGraphBuilder::build` compiles the model with `MLModel` and keeps the compiled model;
    `dispatch` binds `MLMultiArray`s over the tensor storage and runs a prediction.
-4. The legacy CLI path (`--convert coreml --run-coreml`) passes that blob to the one-shot
-   executor, tries the compute-unit configurations in turn and reports each attempt;
-   `--coreml-compiled-output <dir>` stores the compiled `.mlmodelc` for reuse.
+4. The `_with_weights` one-shot executors accept that blob and try compute-unit
+   configurations in turn. Converter-only users can generate protobufs and weights on
+   any host with `coreml-converter`; execution requires `coreml-runtime` on Apple platforms.
 
 ## Float16 precision
 
@@ -138,10 +138,9 @@ bytes; otherwise they compact just those ranges into one shared allocation, so a
 copy output does not retain a large unrelated weight file.
 Standalone consumers must retain the original weights sidecar alongside the compiled
 model; a `.mlmodelc` alone cannot supply RustNN's exact original-copy values. RustNN does
-not export an `.mlpackage`: `--convert-output` writes the `.mlmodel` plus
-`rustnn_external_weights.data` (the `weights.bin` bytes), and `--coreml-compiled-output`
-keeps only the `.mlmodelc`. A supplied sidecar whose records, byte lengths or checksums do
-not match fails closed, regardless of tensor size. `MLContext`, `--run-coreml` and the
+not export an `.mlpackage`: converter users must write the `.mlmodel` and retain
+`ConvertedGraph::weights_data` (the `weights.bin` bytes). A supplied sidecar whose records, byte lengths or checksums do
+not match fails closed, regardless of tensor size. `MLContext` and the
 `_with_weights` one-shot executors pass the sidecar. Without one, CoreML cannot compile a
 program that references `weights.bin`; in a model that still loads, every copied constant
 is a MIL immediate, and those outputs keep CoreML's computed values like other outputs.

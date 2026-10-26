@@ -4681,23 +4681,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "trtx-runtime-mock")]
-    #[test]
-    fn context_create_honors_backend_hint() {
-        unsafe {
-            let mut options = rustnn_context_options_default();
-            options.accelerated = true;
-            options.backend_hint = RustnnBackend::Trtx;
-            let mut context = ptr::null_mut();
-            assert_eq!(
-                rustnn_context_create(&options, &mut context),
-                RustnnStatus::Success
-            );
-            assert_eq!((*context).0.rustnn_backend(), Backend::Trtx);
-            rustnn_context_destroy(context);
-        }
-    }
-
     #[test]
     fn builds_and_serializes_an_arithmetic_graph() {
         unsafe {

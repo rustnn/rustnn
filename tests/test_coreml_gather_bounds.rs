@@ -1,5 +1,5 @@
 //! Converter-only coverage for gather bounds on dynamically sized data.
-#![cfg(feature = "dynamic-inputs")]
+#![cfg(all(feature = "coreml-converter", feature = "dynamic-inputs"))]
 
 use prost::Message;
 use rustnn::GraphConverter;

@@ -143,10 +143,9 @@ fn main() {
     // A build without any backend feature has nothing to test; only a compiled-in backend
     // that fails to come up is an error (for example a missing ONNX Runtime library).
     const BACKEND_FEATURE_ENABLED: bool = cfg!(any(
-        feature = "burn-runtime-cpu",
+        feature = "burn-cpu-runtime",
         feature = "onnx-runtime",
         feature = "trtx-runtime",
-        feature = "trtx-runtime-mock",
         feature = "litert-runtime",
         feature = "cann-runtime",
         feature = "cann-runtime-mock",

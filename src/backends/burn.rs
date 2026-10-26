@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-runtime")]
 
 use std::fmt;
 
@@ -376,7 +376,7 @@ impl<'context> MLBackendContext<'context> for BurnContext {
     }
 }
 
-#[cfg(all(test, feature = "burn-runtime-cpu"))]
+#[cfg(all(test, feature = "burn-cpu-runtime"))]
 mod tests {
     use super::*;
     use crate::mlcontext::{Backend, MLContext, MLContextOptions, MLPowerPreference};

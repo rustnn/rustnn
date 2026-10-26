@@ -10,7 +10,8 @@ and the backend (`src/backends/cann.rs`) runs it in a HiAI session.
 | Feature | Use |
 |---|---|
 | `cann-runtime` | Real device execution requires `aarch64-unknown-linux-ohos` and the HiAI DDK; CI also checks compilation on the host |
-| `cann-runtime-mock` | Compiles the converter and backend without a device; graph builds succeed, dispatch fails. Used by `cargo test --lib --features cann-runtime-mock` in CI |
+| `cann-runtime-mock` | Device-free backend validation and placeholder conversion; no DDK dependency, dispatch fails |
+| `cann-converter` | Builds offline models using the HiAI DDK, without rustnn execution |
 
 CANN is never selected automatically: request it with
 `MLContextOptions::with_rustnn_backend_hint(Backend::Cann)`. The backend reports one `Npu` device.
@@ -58,8 +59,12 @@ with the corpus embedded (`wpt-embed-corpus` feature), pushes it with the HiAI l
 `hdc`, runs it single-threaded and retrieves the JSON report; `make wpt-sync-cann` regenerates
 `tests/wpt_conformance/cann_expected_failures.txt`. CI checks the host build and mock library tests; device WPT requires the OpenHarmony hardware.
 
-## Conversion without a device
+## Conversion without execution
 
-`cargo run --features cann-runtime -- graph.webnn --convert cann --convert-output model.cann`
-writes the encoded model (`make cann` wraps it for the sample graph). With `cann-runtime-mock`
-the encoder returns a placeholder, which is enough to check operator coverage on a desktop.
+Enable `cann-converter` with default features disabled and call `CannConverter` or
+`ConverterRegistry`. Conversion compiles a GE graph through the HiAI DDK; the DDK is
+required even when `cann-runtime` is disabled.
+
+For device-free validation use `cann-runtime-mock` with defaults disabled. It does not
+enable `cann-converter` or the DDK. If `cann-converter` is also enabled, conversion uses
+the native adapter; execution still requires `cann-runtime`.

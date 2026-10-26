@@ -55,10 +55,9 @@ loads, validates and converts stored graphs without a context.
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import through the `webnn-graph` crate, export, `.safetensors` weights |
 | `src/converters/` | `GraphConverter` trait, `ConverterRegistry`, one converter per format (`onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs` with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs`, `litert.rs`, `cann.rs`, `webnn.rs` for the browser) and shared helpers (`pool2d_shared.rs`, `weight_file_builder.rs`) |
 | `src/backends/` | One module per backend implementing the backend traits; `caching.rs` for on-disk caches; `webnn/` with generated browser bindings; `mod.rs` with `DisabledContext` aliases for backends that are compiled out |
-| `src/executors/` | Legacy one-shot execution of converted bytes (ONNX Runtime, TensorRT, CoreML), used by the CLI |
+| `src/executors/` | Legacy one-shot execution of converted bytes (ONNX Runtime, TensorRT, CoreML), used by older examples |
 | `src/protos.rs`, `build.rs`, `protos/` | Protobuf (ONNX, CoreML) and flatbuffer (TFLite) schemas compiled at build time |
 | `src/graphviz.rs`, `src/tensor.rs` | DOT export, host tensor helpers |
-| `src/main.rs` | The `rustnn` CLI |
 | `tests/run_wpt_conformance.rs`, `tests/wpt_conformance/` | WPT conformance harness, see the [WPT Conformance Guide](../testing/wpt-test-guide.md) |
 | `tests/test_*_execution.rs` | Backend integration tests (TensorRT, LiteRT, CANN on device) |
 | `scripts/` | WPT corpus fetch and report tooling, the operator report generator, git hooks |
@@ -93,7 +92,7 @@ accepted when the `dynamic-inputs` feature is enabled.
 
 `load_graph_from_path` -> `GraphValidator` -> `ConverterRegistry::convert` -> `executors::*`
 runs a stored graph without an `MLContext`. It predates the WebNN API and reloads the converted
-model on every call. The CLI and two examples still use it; the converters are shared with the
+model on every call. Older examples still use it; the converters are shared with the
 backends.
 
 ## Design decisions

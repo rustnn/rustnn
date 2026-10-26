@@ -2,7 +2,7 @@
 //!
 //! [`run_onnx_with_inputs`] loads the model bytes (plus optional external weights) into a new
 //! session on every call. [`run_onnx_with_inputs_checked`] additionally validates the inputs
-//! against WebNN descriptors, and [`run_onnx_zeroed`] feeds zero inputs (CLI `--run-onnx`).
+//! against WebNN descriptors, and [`run_onnx_zeroed`] feeds zero inputs.
 
 #![cfg(feature = "onnx-runtime")]
 

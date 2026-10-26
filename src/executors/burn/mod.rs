@@ -16,9 +16,9 @@
  */
 
 //! Burn NdArray CPU executor and host tensor helpers.
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-runtime")]
 
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-runtime")]
 mod cpu;
 mod device_ops;
 mod execute;

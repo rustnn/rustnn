@@ -10,7 +10,6 @@
 | Node.js | WPT corpus fetch and evaluation (`scripts/fetch_wpt.mjs`, `scripts/wpt_bridge/`) |
 | Python 3 | Only for MkDocs (`pip install -r docs/requirements.txt`) and `scripts/generate_backend_operator_report.py` |
 | libclang | `trtx-runtime`: the `trtx-sys` crate generates bindings with autocxx; set `LIBCLANG_PATH` if it is not found |
-| Graphviz | Optional, for `make viz` |
 | Doxygen and cbindgen | Required for the documentation website and `make docs-capi`; install Doxygen with your package manager and cbindgen with `cargo install cbindgen --locked` |
 
 Windows: install the Visual Studio C++ build tools and run `git config --system core.longpaths true`
@@ -30,12 +29,12 @@ The default build needs no native runtime beyond the prerequisites above.
 | `cann-runtime` | An OHOS/Ascend HiAI environment and `libcann_shim.so` (or `CANN_SHIM_PATH`) |
 | `webnn-runtime` with `webnn-wpt-tests` | The `wasm32-unknown-unknown` target; browser tests additionally need `wasm-pack`, Node.js, Chrome/Chromium, `curl`, and `unzip` |
 
-The mock backend features and `dynamic-inputs`, `native-examples`, `pollster`, and
+The optional features `dynamic-inputs`, `native-examples`, `pollster`, and
 `zstd-cache-compression` do not add external runtime prerequisites.
 
-The default `cli` feature builds the `rustnn` binary and pulls in `clap` and
-`tracing-subscriber`, and enables `onnx` for CLI conversion. Library consumers can drop
-these with `default-features = false`.
+Defaults enable `onnx-converter` and `burn-cpu-runtime`. Each runtime includes its
+converter. For serialization alone, disable defaults and enable `<backend>-converter`.
+See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-features).
 
 ## Build and test
 
@@ -44,27 +43,23 @@ Use the Makefile targets; they set feature flags and environment variables consi
 
 | Target | Effect |
 |---|---|
-| `build` | `cargo build`, no backend features |
+| `build` | `cargo build` with default features |
+| `check-converters` | Check each converter independently with defaults disabled |
 | `test` | `cargo fmt`, `clippy -D warnings`, `cargo test`, operator report drift check |
 | `fmt`, `fmt-check`, `lint` | rustfmt (apply / check), clippy only |
 | `clean`, `clean-all` | `cargo clean`; also the docs site and coverage output |
 | `onnxruntime-download` | Fetch the pinned ONNX Runtime into `target/onnxruntime`; export `ORT_DYLIB_PATH` afterwards |
 | `trtxruntime-download` | Fetch the pinned TensorRT-RTX SDK into `target/tensorrt-rtx`; `test-wpt-trtx` configures its build and runtime paths |
-| `run` | Validate `examples/sample_graph.json` with the CLI |
-| `viz` | Export the sample graph as Graphviz DOT |
-| `onnx`, `onnx-validate` | Convert the sample graph to ONNX (`GRAPH_FILE=...` selects another graph); also execute it with ONNX Runtime |
-| `coreml`, `coreml-validate` | CoreML conversion and execution (macOS) |
 | `benchmark-coreml-kv` | Self-contained attention/cache comparison; optionally set `COREML_KV_CONFIG` for an external model/reference fixture; see [Examples](../user-guide/examples.md#coreml-kv-cache-benchmark) |
 | `test-coreml-kv-benchmark` | Oracle and cache-content regressions for all storage modes, without external fixtures; run in macOS CI |
-| `build-coreml`, `test-coreml` | Build all targets; run library and ordinary integration tests, including CLI execution. Both explicitly enable `cli`. `COREML_FEATURES=coreml-runtime` also checks the build without dynamic inputs |
+| `build-coreml`, `test-coreml` | Build all targets; run library and ordinary integration tests, including execution. `COREML_FEATURES=coreml-runtime` also checks the build without dynamic inputs |
 | `test-coreml-gather` | Focused active-dimension gather regressions, including scalar indices; `TEST_FILTER` selects a test |
 | `test-coreml-dtypes` | Focused numeric boundary regressions for typed dispatch and the convenience API; CI runs with and without dynamic inputs |
 | `test-coreml-gelu` | Exact Half GELU precision, shapes and compositions, including all Half encodings |
 | `test-coreml-precision` | Native typed-boundary, Half layout, constant, fanout and bounded-dynamic regressions |
 | `test-coreml-tensor-reuse` | Retained storage ownership, type conversion and shape regressions; CI runs with and without dynamic inputs |
-| `litert`, `cann` | LiteRT and CANN conversion of the sample graph |
 | `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
-| `validate-all-env` | Build, unit tests, ONNX and CoreML validation in one run |
+| `validate-all-env` | Build and unit tests in one run |
 | `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
 | `test-wpt` | WPT conformance on ONNX Runtime CPU |
 | `test-wpt-tolerance`, `test-wpt-tolerance-parity` | Backend-independent comparison regressions and direct upstream JavaScript-helper parity; the latter requires Node.js and a fetched WPT corpus and also runs after successful full ONNX/CoreML WPT targets |
@@ -191,8 +186,8 @@ from the extracted package as well when changing shared documentation.
 
 ### Burn CPU development
 
-Use `cargo check --features burn-runtime-cpu --all-targets` and
-`cargo test --features burn-runtime-cpu --lib --test test_burn_precision` for the CPU
+Use `cargo check --features burn-cpu-runtime --all-targets` and
+`cargo test --features burn-cpu-runtime --lib --test test_burn_precision` for the CPU
 interpreter and its public-executor datatype regressions. No native runtime
 installation is needed. Run `make test-wpt-burn-cpu` and regenerate its expected failures
 with `make wpt-sync-burn-cpu`. See [Burn CPU](../integration/burn-cpu.md).

@@ -25,10 +25,128 @@ use crate::operator_options::{MLPadOptions, MLPool2dOptions, MLResample2dOptions
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
-use crate::backends::litert::{
-    is_spatial_op, transpose_hwio_to_ohwi, transpose_hwoi_to_ohwi, transpose_ihwo_to_ohwi,
-    transpose_iohw_to_ohwi, transpose_oihw_to_ohwi,
-};
+/// Whether `op` interprets its input as NCHW and needs the NHWC layout transposes.
+pub fn is_spatial_op(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Conv2d { .. }
+            | Operation::ConvTranspose2d { .. }
+            | Operation::MaxPool2d { .. }
+            | Operation::AveragePool2d { .. }
+            | Operation::L2Pool2d { .. }
+            | Operation::InstanceNormalization { .. }
+    )
+}
+
+/// Transpose weight data from OIHW (`[O, I, H, W]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_oihw_to_ohwi(data: &[u8], o: usize, i: usize, h: usize, w: usize) -> Vec<u8> {
+    let esz = data.len() / (o * i * h * w);
+    if esz == 0 || esz * o * i * h * w != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for ii in 0..i {
+            for hh in 0..h {
+                for ww in 0..w {
+                    let src = ((oo * i + ii) * h + hh) * w + ww;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Transpose weight data from IOHW (`[I, O, H, W]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_iohw_to_ohwi(data: &[u8], i: usize, o: usize, h: usize, w: usize) -> Vec<u8> {
+    let esz = data.len() / (i * o * h * w);
+    if esz == 0 || esz * i * o * h * w != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((ii * o + oo) * h + hh) * w + ww;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Transpose weight data from HWOI (`[H, W, O, I]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_hwoi_to_ohwi(data: &[u8], h: usize, w: usize, o: usize, i: usize) -> Vec<u8> {
+    let esz = data.len() / (h * w * o * i);
+    if esz == 0 || esz * h * w * o * i != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((hh * w + ww) * o + oo) * i + ii;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Transpose weight data from HWIO (`[H, W, I, O]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_hwio_to_ohwi(data: &[u8], h: usize, w: usize, i: usize, o: usize) -> Vec<u8> {
+    let esz = data.len() / (h * w * i * o);
+    if esz == 0 || esz * h * w * i * o != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((hh * w + ww) * i + ii) * o + oo;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Transpose weight data from IHWO (`[I, H, W, O]`) to OHWI (`[O, H, W, I]`) layout.
+pub fn transpose_ihwo_to_ohwi(data: &[u8], i: usize, h: usize, w: usize, o: usize) -> Vec<u8> {
+    let esz = data.len() / (i * h * w * o);
+    if esz == 0 || esz * i * h * w * o != data.len() {
+        return data.to_vec();
+    }
+    let mut out = vec![0u8; data.len()];
+    for oo in 0..o {
+        for hh in 0..h {
+            for ww in 0..w {
+                for ii in 0..i {
+                    let src = ((ii * h + hh) * w + ww) * o + oo;
+                    let dst = ((oo * h + hh) * w + ww) * i + ii;
+                    out[dst * esz..(dst + 1) * esz]
+                        .copy_from_slice(&data[src * esz..(src + 1) * esz]);
+                }
+            }
+        }
+    }
+    out
+}
 
 /// Converts a graph to a TFLite flatbuffer for the LiteRT interpreter (NCHW operands become NHWC).
 pub struct LiteRtConverter;
@@ -7856,8 +7974,7 @@ fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
             &mut ctx.fbb,
             &tflite::BufferArgs {
                 data: Some(data_vec),
-                offset: 0,
-                size: 0,
+                ..Default::default()
             },
         );
         buffer_offsets.push(buf);
@@ -7870,8 +7987,7 @@ fn build_native<'a>(graph: &'a GraphInfo) -> Result<Vec<u8>, GraphError> {
         &mut ctx.fbb,
         &tflite::BufferArgs {
             data: Some(meta_data_vec),
-            offset: 0,
-            size: 0,
+            ..Default::default()
         },
     );
     let meta_buf_idx = buffer_offsets.len() as u32;
@@ -8066,6 +8182,7 @@ mod tests {
         eprintln!("Dumped {} bytes to /tmp/our_model.bin", bytes.len());
     }
 
+    #[cfg(feature = "litert-runtime")]
     #[test]
     fn test_model_loads_in_litert() {
         let graph = make_unary("abs", vec![4]);

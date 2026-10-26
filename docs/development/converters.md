@@ -1,7 +1,7 @@
 # Converter Internals
 
 A converter lowers a validated `GraphInfo` to one backend format. This page describes the
-contract, the structure the five converters share, the backend-specific rules that shaped them
+contract, the structure converters share, the backend-specific rules that shaped them
 and how to debug a wrong model. Read it before touching `src/converters/`.
 
 ## Contract
@@ -19,21 +19,22 @@ pub trait GraphConverter {
 
 `ConvertedGraph` carries the serialized model (`data`, `content_type`) and an optional
 `weights_data` sidecar. `ConverterRegistry::with_defaults` registers every converter compiled
-into the build; the CLI `--convert` option, the legacy executors and the `MLGraphBuilder::build`
-path of each backend all go through the same `convert`.
+into the build. Each `<backend>-runtime` enables its matching `<backend>-converter`;
+converter-only users can call the registry without enabling rustnn execution.
 
-Converters are pure: they read `GraphInfo` (operands with `OperandDescriptor`, the `Operation`
-enum, constant bytes) and produce bytes. They must not touch a device. Anything that needs the
-runtime (compiling, transposing runtime tensors, refitting weights) belongs to
-`src/backends/<name>.rs`.
+Converters read `GraphInfo` and produce model bytes. ONNX, CoreML, LiteRT and Burn
+serialization do not require execution libraries. TensorRT engine building and CANN offline
+model compilation use their native SDKs during conversion. Tensor allocation, dispatch and
+refitting runtime weights belong to `src/backends/<name>.rs`.
 
 | Converter | File | Output | Registered when |
 |---|---|---|---|
-| `OnnxConverter` | `onnx.rs` | ONNX `ModelProto` (prost) | `onnx` (default), `onnx-runtime` |
-| `CoremlMlProgramConverter` | `coreml_mlprogram.rs` | CoreML MLProgram (`protos::coreml`) | always |
-| `TrtxConverter` | `trtx.rs`, `trtx_gru.rs`, `trtx_lstm.rs`, `trtx_rnn.rs` | TensorRT network built through the `trtx` crate, serialized engine | `trtx-runtime`, `trtx-runtime-mock` |
-| `LiteRtConverter` | `litert.rs` | TFLite flatbuffer (`flatc`-generated schema) | `litert-runtime` |
-| `CannConverter` | `cann.rs` | HiAI offline model | `cann-runtime`, `cann-runtime-mock` |
+| `OnnxConverter` | `onnx.rs` | ONNX `ModelProto` (prost) | `onnx-converter` (default) |
+| `CoremlMlProgramConverter` | `coreml_mlprogram.rs` | CoreML MLProgram (`protos::coreml`) | `coreml-converter` |
+| `TrtxConverter` | `trtx.rs`, `trtx_gru.rs`, `trtx_lstm.rs`, `trtx_rnn.rs` | TensorRT network built through the `trtx` crate, serialized engine | `trtx-converter` |
+| `LiteRtConverter` | `litert.rs` | TFLite flatbuffer (`flatc`-generated schema) | `litert-converter` |
+| `CannConverter` | `cann.rs` | HiAI offline model | `cann-converter` |
+| `BurnConverter` | `burn.rs` | Serialized Burn execution plan | `burn-cpu-converter` |
 | browser | `webnn.rs` | replays the graph through the browser's `MLGraphBuilder` (`convert_async`, not a `GraphConverter`) | `webnn-runtime` on wasm32 |
 
 Shared helpers: `pool2d_shared.rs` (window and padding arithmetic used by several backends) and
@@ -263,8 +264,8 @@ inference.
 |---|---|---|
 | ONNX Runtime | `RUSTNN_ONNX_DUMP_DIR=<dir>` writes each converted model to `debug_webnn_onnx.onnx` (overwriting the previous dump) | `python -c "import onnx; print(onnx.load('<file>'))"` or Netron |
 | TensorRT-RTX | `TRTX_JSON_DUMP_PATH=<dir>` writes the layer graph of each engine; `RUSTNN_TRTX_LOG_VERBOSITY=verbose` for the builder log | look for the layer that consumes the operand; Myelin-fused layers print as `__myl_...` |
-| CoreML | `--coreml-compiled-output <dir>` in the CLI keeps the `.mlmodelc` | `coremltools` or Xcode |
-| LiteRT | `--convert litert --convert-output model.tflite` | `flatc --json` with `protos/tflite/schema.fbs`, or the TFLite visualizer |
+| CoreML | `ConvertedGraph::data` and `weights_data` | `coremltools` or Xcode |
+| LiteRT | Write `ConvertedGraph::data` to `model.tflite` | `flatc --json` with `protos/tflite/schema.fbs`, or the TFLite visualizer |
 | any | `--export-dot graph.dot` shows the graph rustnn recorded | Graphviz |
 
 Then write the regression test first, fix the lowering, and run the WPT cases for the operation
@@ -272,7 +273,7 @@ on every backend you have.
 
 ## Burn CPU
 
-With `burn-runtime-cpu`, `BurnConverter` lowers typed operations and embedded constants
+With `burn-cpu-converter`, `BurnConverter` lowers typed operations and embedded constants
 into an in-memory execution plan when the graph is built. The CPU runtime prepares and
 replays it using Burn NdArray and host kernels. Conversion and execution are enabled
 together by this single feature.

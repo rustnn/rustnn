@@ -48,6 +48,10 @@ use trtx::{
     ResizeRoundMode, ScatterMode, TopKOperation, UnaryOperation,
 };
 
+// Shared by engine conversion and runtime execution.
+pub(crate) static LOGGER: std::sync::LazyLock<trtx::Logger> =
+    std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
+
 /// TensorRT native converter
 pub struct TrtxConverter;
 
@@ -14791,7 +14795,7 @@ impl GraphConverter for TrtxConverter {
         }
 
         // Create TensorRT logger, builder, and network
-        let logger = &crate::backends::trtx::LOGGER;
+        let logger = &LOGGER;
 
         let mut builder = trtx::Builder::new(logger).map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),

@@ -378,7 +378,7 @@ A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a P
 
 ### Burn CPU
 
-`make test-wpt-burn-cpu` uses `burn-runtime-cpu` and selects `Backend::BurnCpu` through the
+`make test-wpt-burn-cpu` uses `burn-cpu-runtime` and selects `Backend::BurnCpu` through the
 shared MLContext runner. `TEST_FILTER=relu` limits trials. Regenerate
 `tests/wpt_conformance/burn-cpu_expected_failures.txt` with `make wpt-sync-burn-cpu`.
 Direct Cargo runs use `WPT_BACKEND=burn-cpu`. No GPU or external runtime is required.

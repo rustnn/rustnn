@@ -16,7 +16,7 @@ use log::trace;
 use crate::GraphInfo;
 use crate::OperandDescriptor;
 pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(feature = "trtx-runtime")]
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
@@ -131,7 +131,7 @@ pub(crate) trait MLBackendBuilder<'context, 'builder>: std::fmt::Debug + Send {
 // dyn Any does not work since Any requires 'static
 #[derive(Debug)]
 pub(crate) enum MLBackendGraph<'context> {
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     TrtxEngine(TrtxGraph<'context>),
     #[cfg(feature = "onnx-runtime")]
     OnnxSession(
@@ -144,13 +144,13 @@ pub(crate) enum MLBackendGraph<'context> {
     LiteRtGraph(crate::backends::litert::LiteRtGraph),
     #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
     CannEngine(crate::backends::cann::CannGraph),
-    #[cfg(feature = "burn-runtime-cpu")]
+    #[cfg(feature = "burn-cpu-runtime")]
     BurnPlan(crate::backends::burn::BurnCompiledGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
 impl<'context> MLBackendGraph<'context> {
-    #[cfg(feature = "burn-runtime-cpu")]
+    #[cfg(feature = "burn-cpu-runtime")]
     pub(crate) fn as_burn_plan_mut(
         &mut self,
     ) -> Option<&mut crate::backends::burn::BurnCompiledGraph> {
@@ -159,7 +159,7 @@ impl<'context> MLBackendGraph<'context> {
             _ => None,
         }
     }
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
         if let Self::TrtxEngine(v) = self {
             Some(v)
@@ -640,14 +640,14 @@ impl<'context> MLContext<'context> {
                 LiteRtContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
             BackendDevice::BurnCpu => {
-                #[cfg(feature = "burn-runtime-cpu")]
+                #[cfg(feature = "burn-cpu-runtime")]
                 {
                     Box::new(crate::backends::burn::BurnContext::new())
                 }
-                #[cfg(not(feature = "burn-runtime-cpu"))]
+                #[cfg(not(feature = "burn-cpu-runtime"))]
                 {
                     return Err(Error::ContextCreationError {
-                        source: "Burn CPU requires burn-runtime-cpu".into(),
+                        source: "Burn CPU requires burn-cpu-runtime".into(),
                     });
                 }
             }
