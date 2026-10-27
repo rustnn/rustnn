@@ -2,6 +2,7 @@
 
 The `rustnn-cli` workspace member builds the `rustnn` executable. Its features forward
 to the library. Only some runtimes are enabled by default on each platform.
+The CLI is native-only; wasm32 builds use an empty entry point and omit CLI dependencies.
 
 ```bash
 cargo run -p rustnn-cli -- --list

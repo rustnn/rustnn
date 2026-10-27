@@ -41,6 +41,7 @@ See the [crate feature table](https://rustnn.github.io/rustnn/api/rustnn/#cargo-
 The Cargo workspace contains the `rustnn` library at the root and `rustnn-cli` in `cli/`.
 Both are default members. Use `-p rustnn` for library-only commands and `-p rustnn-cli` for
 the CLI. CLI backend features forward to the library with its defaults disabled.
+The CLI is disabled on wasm32: its entry point is empty and its dependencies are omitted.
 
 Use the Makefile targets; they set feature flags and environment variables consistently.
 `make help` prints the same list.

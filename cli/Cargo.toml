@@ -21,7 +21,7 @@ default = [
     #"rustnn/trtx-runtime",     # requires clang not newer than version 21
 ]
 
-[dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rustnn = { path = "..", version = "0.6.0", default-features = false }
 clap = { version = "4.5", features = ["derive", "string"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -34,5 +34,5 @@ rustnn = { path = "..", version = "0.6.0", default-features = false, features = 
 [target.'cfg(target_env = "ohos")'.dependencies]
 rustnn = { path = "..", version = "0.6.0", default-features = false, features = ["cann-runtime"] }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tempfile = "3.27"

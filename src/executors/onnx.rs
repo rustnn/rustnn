@@ -32,6 +32,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
     ENVIRONMENT
         .get_or_init(|| {
             info!("Loading onnxruntime");
+            #[cfg(not(target_arch = "wasm32"))]
             let path = std::env::var_os("ORT_DYLIB_PATH")
                 .filter(|path| !path.is_empty())
                 .map(std::path::PathBuf::from)
@@ -45,8 +46,11 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
                 });
             // Load explicitly before any other ort API: implicit loading can panic.
             let result = (|| {
-                ort::init_from(path)
-                    .map_err(|error| error.to_string())?
+                #[cfg(not(target_arch = "wasm32"))]
+                let builder = ort::init_from(path).map_err(|error| error.to_string())?;
+                #[cfg(target_arch = "wasm32")]
+                let builder = ort::init();
+                builder
                     .with_name("rustnn")
                     .with_execution_providers([ort::ep::CPU::default().build()])
                     .with_telemetry(false)
