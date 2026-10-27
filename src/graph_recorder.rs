@@ -14,6 +14,7 @@ use crate::mlgraphbuilder::infer_operation_descriptors;
 pub(crate) struct GraphRecorder {
     graph: GraphInfo,
     bypass_allowed_data_types_checks: bool,
+    allow_int4_uint4: bool,
 }
 
 impl GraphRecorder {
@@ -27,6 +28,11 @@ impl GraphRecorder {
 
     pub(crate) fn with_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
         self.bypass_allowed_data_types_checks = bypass;
+        self
+    }
+
+    pub(crate) fn with_allow_int4_uint4(mut self, allow: bool) -> Self {
+        self.allow_int4_uint4 = allow;
         self
     }
 
@@ -105,6 +111,7 @@ impl GraphRecorder {
                 &operation,
                 &self.graph,
                 self.bypass_allowed_data_types_checks,
+                self.allow_int4_uint4,
             )?
         };
         let label = (!operation.label().is_empty()).then(|| operation.label().to_string());
