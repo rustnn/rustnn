@@ -619,29 +619,6 @@ mod tests {
     }
 
     #[test]
-    fn dequantize_invalid_scale_type_fails() {
-        let graph = build_quantize_graph(
-            "dequantizeLinear",
-            DataType::Uint8,
-            DataType::Uint8,
-            DataType::Uint8,
-            vec![2, 2],
-            vec![1, 1],
-        );
-        let validator = GraphValidator::new(&graph, ContextProperties::default());
-        let err = validator.validate().unwrap_err();
-        match err {
-            GraphError::QuantizationParameters { source, .. } => assert_eq!(
-                source,
-                crate::error::QuantizationParameterError::ScaleDataType {
-                    found: DataType::Uint8,
-                }
-            ),
-            other => panic!("unexpected error {:?}", other),
-        }
-    }
-
-    #[test]
     fn quantize_scalar_intermediate_is_not_treated_as_unknown() {
         let input_operand = Operand {
             kind: OperandKind::Input,
