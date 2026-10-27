@@ -13,6 +13,7 @@ use crate::mlgraphbuilder::infer_operation_descriptors;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GraphRecorder {
     graph: GraphInfo,
+    bypass_allowed_data_types_checks: bool,
 }
 
 impl GraphRecorder {
@@ -22,6 +23,11 @@ impl GraphRecorder {
 
     pub(crate) fn graph(&self) -> &GraphInfo {
         &self.graph
+    }
+
+    pub(crate) fn with_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
+        self.bypass_allowed_data_types_checks = bypass;
+        self
     }
 
     pub(crate) fn set_quantized(&mut self, quantized: bool) {
@@ -95,7 +101,11 @@ impl GraphRecorder {
         let descriptors = if output_ids.is_empty() {
             Vec::new()
         } else {
-            infer_operation_descriptors(&operation, &self.graph)?
+            infer_operation_descriptors(
+                &operation,
+                &self.graph,
+                self.bypass_allowed_data_types_checks,
+            )?
         };
         let label = (!operation.label().is_empty()).then(|| operation.label().to_string());
         let operands = output_ids
