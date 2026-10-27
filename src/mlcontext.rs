@@ -1278,4 +1278,10 @@ webnn_graph "sample_graph" v1 {
                     == "runtime output tensor `sum` dimension 1 mismatch (expected 2, got 3)"
         );
     }
+
+    #[test]
+    fn ml_graph_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<MLGraph<'static>>();
+    }
 }
