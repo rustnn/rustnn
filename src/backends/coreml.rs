@@ -1216,7 +1216,7 @@ mod test {
     /// Same lifecycle for the compiled-URL route (int32 neg selects it),
     /// including the temporary `.mlmodelc` cleanup on the receiving thread.
     #[test]
-    #[cfg(non(feature = "trtx-runtime"))]
+    #[cfg(not(feature = "trtx-runtime"))]
     fn coreml_url_model_dispatch_and_drop_on_another_thread() {
         let _ = pretty_env_logger::try_init();
         let Some(mut context) = coreml_context() else {
