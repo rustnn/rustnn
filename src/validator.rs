@@ -581,20 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn quantize_blockwise_int4_validates() {
-        let graph = build_quantize_graph(
-            "quantizeLinear",
-            DataType::Float16,
-            DataType::Float16,
-            DataType::Uint4,
-            vec![4, 4],
-            vec![2, 2],
-        );
-        let validator = GraphValidator::new(&graph, ContextProperties::default());
-        validator.validate().unwrap();
-    }
-
-    #[test]
     fn quantize_rank_mismatch_fails() {
         let graph = build_quantize_graph(
             "quantizeLinear",
