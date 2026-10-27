@@ -413,6 +413,23 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
 
 /// Converts an owned GraphJson without cloning inline constant buffers.
 pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphError> {
+    from_graph_json_owned_with_options(
+        graph_json,
+        &crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        ),
+    )
+}
+
+/// Converts an owned GraphJson with the context's allowed data type check policy.
+///
+/// Only the data type policies are used; loading does not create or select a backend.
+/// Bypassed operations emit warnings. Shape and reference checks remain active.
+pub fn from_graph_json_owned_with_options(
+    graph_json: GraphJson,
+    options: &crate::mlcontextoptions::MLContextOptions,
+) -> Result<GraphInfo, GraphError> {
     fn conversion_error(reason: impl Into<String>) -> GraphError {
         GraphError::ConversionFailed {
             format: "webnn-graph-json".to_string(),
@@ -441,7 +458,9 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
         outputs,
         ..
     } = graph_json;
-    let mut recorder = GraphRecorder::new();
+    let mut recorder = GraphRecorder::new()
+        .with_bypass_allowed_data_types_checks(options.bypass_allowed_data_types_checks)
+        .with_allow_int4_uint4(options.allow_int4_uint4);
     recorder.set_quantized(quantized);
     let mut operand_map: BTreeMap<String, u32> = BTreeMap::new();
 
@@ -577,11 +596,14 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
         })?;
         let outputs = recorder
             .record_operation(operation, Some(&output_names))
-            .map_err(|error| {
-                conversion_error(format!(
-                    "node '{}' ({}) could not be recorded: {error}",
+            .map_err(|error| match error {
+                crate::error::GraphBuilderError::AllowedDataTypes(source) => {
+                    GraphError::AllowedDataTypes(source)
+                }
+                other => conversion_error(format!(
+                    "node '{}' ({}) could not be recorded: {other}",
                     node.id, node.op
-                ))
+                )),
             })?;
         for (name, operand) in output_names.into_iter().zip(outputs) {
             operand_map.insert(name, operand.id as u32);

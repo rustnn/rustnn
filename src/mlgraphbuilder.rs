@@ -8,6 +8,10 @@
 //! required operands and arguments; optional operand fields use [`crate::operator_options::OperandIndex`].
 //! Shape inference runs when an operation is recorded, so shape errors surface immediately as
 //! [`GraphBuilderError::ShapeInferenceError`].
+//! Allowed operand types and `SameAs` relationships are checked centrally; violations
+//! return [`GraphBuilderError::AllowedDataTypes`]. The context's
+//! [`crate::mlcontextoptions::MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`]
+//! setting skips these type checks with warnings, while preserving shape validation.
 //!
 //! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
 //! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
@@ -1037,13 +1041,13 @@ pub(crate) fn check_quantization_parameters(
     zero_point: Option<&OperandDescriptor>,
 ) -> std::result::Result<(), QuantizationParameterError> {
     use QuantizationParameterError as E;
-    if let Some(zero_point) = zero_point {
-        if zero_point.shape != scale.shape {
-            return Err(E::ZeroPointShapeMismatch {
-                zero_point: zero_point.shape.clone(),
-                scale: scale.shape.clone(),
-            });
-        }
+    if let Some(zero_point) = zero_point
+        && zero_point.shape != scale.shape
+    {
+        return Err(E::ZeroPointShapeMismatch {
+            zero_point: zero_point.shape.clone(),
+            scale: scale.shape.clone(),
+        });
     }
     if scale.shape.len() != input.shape.len() {
         return Err(E::ScaleRankMismatch {
@@ -1472,15 +1476,25 @@ pub(crate) fn infer_operation_descriptors(
     operation: &Operation,
     graph: &GraphInfo,
     bypass_allowed_data_types_checks: bool,
+    allow_int4_uint4: bool,
 ) -> Result<Vec<OperandDescriptor>> {
-    crate::operation_type_support::check_allowed_data_types(
+    for (_, id) in crate::operation_type_support::named_input_operands(operation) {
+        get_operand(MLOperand { id: id as usize }, graph)?;
+    }
+    crate::operation_type_support::check_allowed_data_types_with_policy(
         operation,
         graph,
         bypass_allowed_data_types_checks,
+        allow_int4_uint4,
     )?;
     let descriptors = infer_descriptors_unchecked(operation, graph)?;
     if !bypass_allowed_data_types_checks {
-        crate::operation_type_support::check_output_data_types(operation, graph, &descriptors)?;
+        crate::operation_type_support::check_output_data_types(
+            operation,
+            graph,
+            &descriptors,
+            allow_int4_uint4,
+        )?;
     }
     let expected = operation.output_operands().len();
     if descriptors.len() != expected {
@@ -2093,6 +2107,23 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
     }
 
+    /// Record a backend-independent graph with context data type policies.
+    ///
+    /// Only allowed-type bypass and packed 4-bit settings are used; this creates
+    /// no backend. The other contracts of [`Self::new_uncompiled`] apply.
+    pub fn new_uncompiled_with_options(
+        options: &crate::mlcontextoptions::MLContextOptions,
+    ) -> MLGraphBuilder<'static, 'static> {
+        MLGraphBuilder {
+            backend: Box::new(UncompiledBackendBuilder),
+            recorder: Some(
+                GraphRecorder::new()
+                    .with_bypass_allowed_data_types_checks(options.bypass_allowed_data_types_checks)
+                    .with_allow_int4_uint4(options.allow_int4_uint4),
+            ),
+        }
+    }
+
     /// Create a builder whose [`Self::build`] compiles for the backend of `context`.
     /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor>
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
@@ -2103,9 +2134,9 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         Ok(Self {
             backend,
             recorder: Some(
-                GraphRecorder::new().with_bypass_allowed_data_types_checks(
-                    context.bypass_allowed_data_types_checks,
-                ),
+                GraphRecorder::new()
+                    .with_bypass_allowed_data_types_checks(context.bypass_allowed_data_types_checks)
+                    .with_allow_int4_uint4(context.allow_int4_uint4),
             ),
         })
     }
@@ -3830,7 +3861,9 @@ mod test {
     #[test]
     fn rustnn_save_webnn_round_trips_packed_4bit_constants_and_executes() {
         let _ = pretty_env_logger::try_init();
-        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        let options = MLContextOptions::new(MLPowerPreference::Default, false)
+            .with_rustnn_allow_int4_uint4(true);
+        let context = MLContext::create(&options);
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         }
@@ -3892,7 +3925,8 @@ mod test {
             safetensors::Dtype::F32
         );
 
-        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        let loaded =
+            crate::loader::load_graph_from_path_with_options(&webnn_path, &options).unwrap();
         assert_eq!(
             loaded.operands[0].descriptor.data_type,
             crate::graph::DataType::Uint4
