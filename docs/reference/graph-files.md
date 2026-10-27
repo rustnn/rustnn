@@ -31,6 +31,15 @@ validate a model. Compile it with
 then use the usual tensor write, dispatch, and read calls. Model-output comparisons belong in
 execution tests.
 
+Loading enforces the generated specification data type rules by default. To use
+backend extensions such as packed 4-bit quantization, set
+`with_rustnn_allow_int4_uint4(true)` on `MLContextOptions` and pass
+those options to `loader::load_graph_from_path_with_options`. The equivalent owned
+JSON entry point is `webnn_json::from_graph_json_owned_with_options`. This enables
+int4/uint4 wherever int8/uint8 are allowed, retaining other type rules, `SameAs`
+equality, shape validation, and operand-reference checks. The separate full bypass
+setting skips type checks and logs a warning for every operation.
+
 ## Weights and compatibility
 
 External constants are resolved relative to the graph file. The shared resolver supports

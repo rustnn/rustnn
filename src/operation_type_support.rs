@@ -78,6 +78,32 @@ pub fn check_allowed_data_types(
     graph: &GraphInfo,
     by_pass_check: bool,
 ) -> Result<(), AllowedDataTypesError> {
+    check_allowed_data_types_with_policy(operation, graph, by_pass_check, false)
+}
+
+/// Check an operation using the context's bypass and packed 4-bit policies.
+///
+/// When enabled, int4/uint4 are accepted wherever the corresponding int8/uint8
+/// type is allowed. Other domains and actual `SameAs` relationships still apply.
+pub fn check_allowed_data_types_with_options(
+    operation: &Operation,
+    graph: &GraphInfo,
+    options: &crate::mlcontextoptions::MLContextOptions,
+) -> Result<(), AllowedDataTypesError> {
+    check_allowed_data_types_with_policy(
+        operation,
+        graph,
+        options.bypass_allowed_data_types_checks,
+        options.allow_int4_uint4,
+    )
+}
+
+pub(crate) fn check_allowed_data_types_with_policy(
+    operation: &Operation,
+    graph: &GraphInfo,
+    by_pass_check: bool,
+    allow_int4_uint4: bool,
+) -> Result<(), AllowedDataTypesError> {
     if by_pass_check {
         log::warn!(
             "Bypassing allowed data type checks for operation {}",
@@ -97,13 +123,14 @@ pub fn check_allowed_data_types(
             ));
         }
     }
-    check_types(operation_name, &types)
+    check_types(operation_name, &types, allow_int4_uint4)
 }
 
 pub(crate) fn check_output_data_types(
     operation: &Operation,
     graph: &GraphInfo,
     outputs: &[OperandDescriptor],
+    allow_int4_uint4: bool,
 ) -> Result<(), AllowedDataTypesError> {
     let Some(operation_name) = spec_operation_name(operation) else {
         return Ok(());
@@ -115,7 +142,7 @@ pub(crate) fn check_output_data_types(
             ml_data_type(output.data_type),
         )
     }));
-    check_types(operation_name, &types)
+    check_types(operation_name, &types, allow_int4_uint4)
 }
 
 fn ml_data_type(data_type: crate::graph::DataType) -> MLOperandDataType {
@@ -144,7 +171,10 @@ fn output_name(operation: &Operation, index: usize) -> OperandName {
             OperandName::Outputs0,
             OperandName::Outputs1,
             OperandName::Outputs2,
-        ][index],
+        ]
+        .get(index)
+        .copied()
+        .unwrap_or(OperandName::Outputs),
         _ => OperandName::Output,
     }
 }
@@ -180,14 +210,32 @@ fn input_data_types(
 fn check_types(
     operation_name: OperationName,
     types: &[(OperandName, MLOperandDataType)],
+    allow_int4_uint4: bool,
 ) -> Result<(), AllowedDataTypesError> {
     for &(operand_name, used_dtype) in types {
         let allowed = allowed_data_types(operation_name, operand_name);
-        if !allowed.contains(&used_dtype) {
+        let packed_type_allowed = allow_int4_uint4
+            && match used_dtype {
+                MLOperandDataType::Int4 => allowed.contains(&MLOperandDataType::Int8),
+                MLOperandDataType::Uint4 => allowed.contains(&MLOperandDataType::Uint8),
+                _ => false,
+            };
+        if !allowed.contains(&used_dtype) && !packed_type_allowed {
+            let mut allowed_dtype = allowed.to_vec();
+            if allow_int4_uint4 {
+                for (packed, integer) in [
+                    (MLOperandDataType::Int4, MLOperandDataType::Int8),
+                    (MLOperandDataType::Uint4, MLOperandDataType::Uint8),
+                ] {
+                    if allowed.contains(&integer) && !allowed_dtype.contains(&packed) {
+                        allowed_dtype.push(packed);
+                    }
+                }
+            }
             return Err(AllowedDataTypesError::NotAllowed {
                 operation_name,
                 operand_name,
-                allowed_dtype: allowed.to_vec(),
+                allowed_dtype,
                 used_dtype,
             });
         }
@@ -212,7 +260,7 @@ fn check_types(
 }
 
 // Exhaustive role mapping keeps positional and option operands tied to typed fields.
-fn named_input_operands(operation: &Operation) -> Vec<(OperandName, u32)> {
+pub(crate) fn named_input_operands(operation: &Operation) -> Vec<(OperandName, u32)> {
     let mut operands = match operation {
         Operation::Add { a, b, .. }
         | Operation::Sub { a, b, .. }
