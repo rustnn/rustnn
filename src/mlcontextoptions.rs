@@ -37,6 +37,7 @@ pub struct MLContextOptions {
     pub(crate) device_hint: Option<BackendDevice>,
     pub(crate) backend_hint: Option<Backend>,
     pub(crate) rustnn_options: RustNNOptions,
+    pub(crate) bypass_allowed_data_types_checks: bool,
 }
 
 impl MLContextOptions {
@@ -48,6 +49,7 @@ impl MLContextOptions {
             device_hint: None,
             backend_hint: None,
             rustnn_options: RustNNOptions::default(),
+            bypass_allowed_data_types_checks: false,
         }
     }
 
@@ -87,6 +89,15 @@ impl MLContextOptions {
     /// Attach backend-specific tuning options.
     pub fn with_rustnn_options(mut self, options: RustNNOptions) -> Self {
         self.rustnn_options = options;
+        self
+    }
+
+    /// Bypass specification operand data type checks while recording operations.
+    ///
+    /// Defaults to `false`. When enabled, each checked operation emits a warning.
+    /// Shape, rank, operand-reference, and backend constraints still apply.
+    pub fn with_rustnn_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
+        self.bypass_allowed_data_types_checks = bypass;
         self
     }
 }
