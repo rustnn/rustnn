@@ -105,6 +105,7 @@ jobs:
         run: cargo check --no-default-features --features onnx-runtime
 
       - name: Run cargo check (TensorRT)
+        if: runner.os == 'Linux' # re-enable for MacOS once TrtxGraph is Send
         run: cargo check -F trtx-runtime --all-targets
 
       - name: Run cargo check (Burn CPU)
