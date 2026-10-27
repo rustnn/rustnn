@@ -1,7 +1,10 @@
 //! WebNN [`MLOpSupportLimits`](https://www.w3.org/TR/webnn/#dictdef-mlopsupportlimits) and related
 //! limit dictionaries, for JSON interchange and alignment with `web-sys` / wasm-bindgen bindings.
 
+mod allowed;
 mod types;
+
+pub use allowed::EVERYTHING_THAT_IS_ALLOWED;
 
 pub use types::{
     MLBatchNormalizationSupportLimits, MLBinarySupportLimits, MLConcatSupportLimits,
@@ -52,18 +55,7 @@ pub struct MLTensorLimits {
 impl Default for MLTensorLimits {
     fn default() -> Self {
         Self {
-            data_types: vec![
-                MLOperandDataType::Float32,
-                MLOperandDataType::Float16,
-                MLOperandDataType::Int32,
-                MLOperandDataType::Uint32,
-                MLOperandDataType::Int64,
-                MLOperandDataType::Uint64,
-                MLOperandDataType::Int8,
-                MLOperandDataType::Uint8,
-                MLOperandDataType::Int4,
-                MLOperandDataType::Uint4,
-            ],
+            data_types: crate::operation_data_types::ALL_DATA_TYPES.to_vec(),
             rank_range: Default::default(),
         }
     }
@@ -237,7 +229,7 @@ pub struct MLOpSupportLimits {
     #[serde(default)]
     /// Support limits for operator `gatherElements()`.
     pub gather_elements: MLGatherSupportLimits,
-    #[serde(default)]
+    #[serde(default, rename = "gatherND", alias = "gatherNd")]
     /// Support limits for operator `gatherND()`.
     pub gather_nd: MLGatherSupportLimits,
 
@@ -356,7 +348,7 @@ pub struct MLOpSupportLimits {
     #[serde(default)]
     /// Support limits for operator `scatterElements()`.
     pub scatter_elements: MLScatterSupportLimits,
-    #[serde(default)]
+    #[serde(default, rename = "scatterND", alias = "scatterNd")]
     /// Support limits for operator `scatterND()`.
     pub scatter_nd: MLScatterSupportLimits,
 

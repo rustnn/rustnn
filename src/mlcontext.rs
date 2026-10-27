@@ -33,6 +33,7 @@ use crate::backends::trtx::TrtxContext;
 use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
+pub use crate::limits::MLOpSupportLimits;
 pub use crate::mlcontextoptions::{
     BackendStatistics, CoremlOptions, CoremlTensorStatistics, LiteRtOptions, MLContextOptions,
     MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
@@ -89,6 +90,10 @@ pub(crate) trait ListDevices {
 
 // could make public later if interface stabilized
 pub(crate) trait MLBackendContext<'context>: std::fmt::Debug + Send + Sync {
+    /// Backend override point for operator limits; all current contexts use the shared default.
+    fn op_support_limits(&self) -> &MLOpSupportLimits {
+        &crate::limits::EVERYTHING_THAT_IS_ALLOWED
+    }
     fn backend_statistics(&self) -> Option<BackendStatistics> {
         None
     }
@@ -391,10 +396,6 @@ impl<'context> MLGraph<'context> {
         Ok(())
     }
 }
-
-/// Placeholder for `MLContext.opSupportLimits()`; not implemented yet.
-#[derive(Debug)]
-pub struct MLOpSupportLimits {}
 
 /// Data type and shape of a graph operand. <https://www.w3.org/TR/webnn/#dictdef-mloperanddescriptor>
 ///
@@ -784,10 +785,9 @@ impl<'context> MLContext<'context> {
         self.backend.dispatch(graph, inputs, outputs)
     }
 
-    /// Not implemented: `MLContext.opSupportLimits()`. Backend coverage is in the generated
-    /// operator support report.
-    pub fn op_support_limits(&self) -> MLOpSupportLimits {
-        todo!()
+    /// See <https://www.w3.org/TR/webnn/#api-mlcontext-opsupportlimits>
+    pub fn op_support_limits(&self) -> &MLOpSupportLimits {
+        self.backend.op_support_limits()
     }
 
     /// Copy a readable tensor into `array`; `array` must hold exactly
@@ -922,6 +922,22 @@ impl<'context> MLContext<'context> {
 #[cfg(test)]
 mod test {
     use crate::{mlcontext::*, mlgraphbuilder::MLGraphBuilder, webnn_json::from_graph_json};
+
+    #[test]
+    fn op_support_limits_inherits_the_backend_default_without_a_runtime() {
+        let context = MLContext {
+            backend: Box::new(crate::backends::DisabledContext {}),
+            device: BackendDevice::LiteRt {
+                device_type: DeviceType::Cpu,
+            },
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
+        };
+        assert!(std::ptr::eq(
+            context.op_support_limits(),
+            &*crate::limits::EVERYTHING_THAT_IS_ALLOWED
+        ));
+    }
 
     #[test]
     fn capacity_shrink_is_rejected_before_calling_any_backend() {
