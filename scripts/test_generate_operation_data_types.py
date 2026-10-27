@@ -9,7 +9,7 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts.generate_operation_data_types import generate, operand_name, operand_data_type_variants, parse_spec
+from scripts.generate_operation_data_types import generate, generate_name_enum, operand_name, operand_data_type_variants, parse_spec
 
 
 def table(rows, operations="MLGraphBuilder/add(a, b, options), MLGraphBuilder/sub(a, b, options)"):
@@ -27,6 +27,24 @@ def row(operand, allowed):
 
 
 class OperationDataTypesTests(unittest.TestCase):
+    def test_generated_identifiers_preserve_spec_spelling(self):
+        source = table(
+            row("{{input}}", "[=/any data type|any=]") +
+            row("*outputs[0]*", "[=/same type as|same as=] {{input}}"),
+            operations="MLGraphBuilder/isNaN(input, options), MLGraphBuilder/gatherND(input, indices, options)",
+        )
+        result = generate(source)
+        self.assertIn('#[strum(serialize = "isNaN")]\n    IsNaN,', result)
+        self.assertIn('#[strum(serialize = "gatherND")]\n    GatherND,', result)
+        self.assertIn('#[strum(serialize = "outputs[0]")]\n    Outputs0,', result)
+        self.assertIn("operation: OperationName::IsNaN,", result)
+        self.assertIn("operand: OperandName::Outputs0,", result)
+        self.assertIn("AllowedDataTypes::SameAs(OperandName::Input)", result)
+
+    def test_identifier_collisions_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Conflicting Rust variant names"):
+            generate_name_enum("OperandName", "Test operands.", {"outputs0", "outputs[0]"})
+
     def test_enum_variants(self):
         variants = operand_data_type_variants()
         self.assertEqual(variants["float32"], "Float32")

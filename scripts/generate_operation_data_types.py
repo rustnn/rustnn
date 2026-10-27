@@ -106,6 +106,33 @@ def operand_data_type_variants() -> dict[str, str]:
     return {variant.lower(): variant for variant in variants}
 
 
+def name_variant(name: str) -> str:
+    """Keep camelCase acronyms and turn indexed outputs into unit variants."""
+    return name[0].upper() + name[1:].replace("[", "").replace("]", "")
+
+
+def generate_name_enum(enum_name: str, description: str, names: set[str]) -> list[str]:
+    """Emit identifiers with exact, reversible spec spellings via strum."""
+    variants = [name_variant(name) for name in sorted(names)]
+    if len(variants) != len(set(variants)):
+        raise ValueError(f"Conflicting Rust variant names in {enum_name}")
+    lines = [
+        f"/// {description}",
+        "///",
+        "/// Strum provides exact spec spelling through `FromStr`, `Display`,",
+        "/// `AsRef<str>`, and conversion into `&'static str`.",
+        "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, Display, AsRefStr, IntoStaticStr, EnumIter)]",
+        f"pub enum {enum_name} {{",
+    ]
+    for name in sorted(names):
+        lines.extend([
+            f"    /// `{name}`.",
+            f"    #[strum(serialize = {json.dumps(name)})]",
+            f"    {name_variant(name)},",
+        ])
+    return lines + ["}", ""]
+
+
 def generate(source: str) -> str:
     """Render deterministic Rust metadata, including the input content hash."""
     operations = parse_spec(source)
@@ -121,7 +148,24 @@ def generate(source: str) -> str:
         "// Do not edit manually.",
         "",
         "use crate::operator_enums::MLOperandDataType;",
+        "use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};",
         "",
+    ]
+    lines.extend([
+        "/// Every data type represented by rustnn, used for unrestricted spec rules.",
+        "pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[",
+        *[f"    MLOperandDataType::{variant}," for variant in variants.values()],
+        "];",
+        "",
+    ])
+    lines.extend(generate_name_enum(
+        "OperationName", "WebNN operation identifier in the spec data type tables.", set(operations)
+    ))
+    lines.extend(generate_name_enum(
+        "OperandName", "Operand identifier shared across the spec data type tables.",
+        {operand for operands in operations.values() for operand in operands},
+    ))
+    lines.extend([
         "/// The specification's allowed data types for one operand.",
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
         "pub enum AllowedDataTypes {",
@@ -130,30 +174,30 @@ def generate(source: str) -> str:
         "    /// An explicit spec type list restricted to types represented by rustnn.",
         "    Types(&'static [MLOperandDataType]),",
         "    /// Must have the same type as the named operand of this operation.",
-        "    SameAs(&'static str),",
+        "    SameAs(OperandName),",
         "}",
         "",
         "/// Allowed types for a positional input, option member, or output.",
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
         "pub struct OperandDataTypes {",
-        "    /// WebNN operation name (camelCase).",
-        "    pub operation: &'static str,",
+        "    /// WebNN operation identifier.",
+        "    pub operation: OperationName,",
         "    /// Operand name; option members omit the dictionary prefix.",
         "    /// Sequence inputs apply to every item; indexed outputs retain their index.",
         "    /// Optional operands and outputs apply when present.",
-        "    pub operand: &'static str,",
+        "    pub operand: OperandName,",
         "    /// Allowed type rule, distinct from the specification's required types.",
         "    pub allowed: AllowedDataTypes,",
         "}",
         "",
         "/// Per-operand rules sorted by operation and operand name.",
         "pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[",
-    ]
+    ])
     for operation, operands in sorted(operations.items()):
         for operand, (kind, values) in sorted(operands.items()):
             rule = f"AllowedDataTypes::{kind}"
             if kind == "SameAs":
-                rule += f"({json.dumps(values[0])})"
+                rule += f"(OperandName::{name_variant(values[0])})"
             elif kind == "Types":
                 rule += "(&[" + ", ".join(
                     f"MLOperandDataType::{variants[value]}"
@@ -161,8 +205,8 @@ def generate(source: str) -> str:
                 ) + "])"
             lines.extend([
                 "    OperandDataTypes {",
-                f"        operation: {json.dumps(operation)},",
-                f"        operand: {json.dumps(operand)},",
+                f"        operation: OperationName::{name_variant(operation)},",
+                f"        operand: OperandName::{name_variant(operand)},",
             ])
             omitted = [value for value in values if value not in variants] if kind == "Types" else []
             if omitted:
