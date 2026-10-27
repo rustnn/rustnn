@@ -8,6 +8,416 @@
 // Do not edit manually.
 
 use crate::operator_enums::MLOperandDataType;
+use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
+
+/// Every data type represented by rustnn, used for unrestricted spec rules.
+pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[
+    MLOperandDataType::Float32,
+    MLOperandDataType::Float16,
+    MLOperandDataType::Int32,
+    MLOperandDataType::Uint32,
+    MLOperandDataType::Int64,
+    MLOperandDataType::Uint64,
+    MLOperandDataType::Int8,
+    MLOperandDataType::Uint8,
+    MLOperandDataType::Int4,
+    MLOperandDataType::Uint4,
+];
+
+/// WebNN operation identifier in the spec data type tables.
+///
+/// Strum provides exact spec spelling through `FromStr`, `Display`,
+/// `AsRef<str>`, and conversion into `&'static str`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, Display, AsRefStr, IntoStaticStr, EnumIter,
+)]
+pub enum OperationName {
+    /// `abs`.
+    #[strum(serialize = "abs")]
+    Abs,
+    /// `add`.
+    #[strum(serialize = "add")]
+    Add,
+    /// `argMax`.
+    #[strum(serialize = "argMax")]
+    ArgMax,
+    /// `argMin`.
+    #[strum(serialize = "argMin")]
+    ArgMin,
+    /// `averagePool2d`.
+    #[strum(serialize = "averagePool2d")]
+    AveragePool2d,
+    /// `batchNormalization`.
+    #[strum(serialize = "batchNormalization")]
+    BatchNormalization,
+    /// `cast`.
+    #[strum(serialize = "cast")]
+    Cast,
+    /// `ceil`.
+    #[strum(serialize = "ceil")]
+    Ceil,
+    /// `clamp`.
+    #[strum(serialize = "clamp")]
+    Clamp,
+    /// `concat`.
+    #[strum(serialize = "concat")]
+    Concat,
+    /// `conv2d`.
+    #[strum(serialize = "conv2d")]
+    Conv2d,
+    /// `convTranspose2d`.
+    #[strum(serialize = "convTranspose2d")]
+    ConvTranspose2d,
+    /// `cos`.
+    #[strum(serialize = "cos")]
+    Cos,
+    /// `cumulativeSum`.
+    #[strum(serialize = "cumulativeSum")]
+    CumulativeSum,
+    /// `dequantizeLinear`.
+    #[strum(serialize = "dequantizeLinear")]
+    DequantizeLinear,
+    /// `div`.
+    #[strum(serialize = "div")]
+    Div,
+    /// `elu`.
+    #[strum(serialize = "elu")]
+    Elu,
+    /// `equal`.
+    #[strum(serialize = "equal")]
+    Equal,
+    /// `erf`.
+    #[strum(serialize = "erf")]
+    Erf,
+    /// `exp`.
+    #[strum(serialize = "exp")]
+    Exp,
+    /// `expand`.
+    #[strum(serialize = "expand")]
+    Expand,
+    /// `floor`.
+    #[strum(serialize = "floor")]
+    Floor,
+    /// `gather`.
+    #[strum(serialize = "gather")]
+    Gather,
+    /// `gatherElements`.
+    #[strum(serialize = "gatherElements")]
+    GatherElements,
+    /// `gatherND`.
+    #[strum(serialize = "gatherND")]
+    GatherND,
+    /// `gelu`.
+    #[strum(serialize = "gelu")]
+    Gelu,
+    /// `gemm`.
+    #[strum(serialize = "gemm")]
+    Gemm,
+    /// `greater`.
+    #[strum(serialize = "greater")]
+    Greater,
+    /// `greaterOrEqual`.
+    #[strum(serialize = "greaterOrEqual")]
+    GreaterOrEqual,
+    /// `gru`.
+    #[strum(serialize = "gru")]
+    Gru,
+    /// `gruCell`.
+    #[strum(serialize = "gruCell")]
+    GruCell,
+    /// `hardSigmoid`.
+    #[strum(serialize = "hardSigmoid")]
+    HardSigmoid,
+    /// `hardSwish`.
+    #[strum(serialize = "hardSwish")]
+    HardSwish,
+    /// `identity`.
+    #[strum(serialize = "identity")]
+    Identity,
+    /// `instanceNormalization`.
+    #[strum(serialize = "instanceNormalization")]
+    InstanceNormalization,
+    /// `isInfinite`.
+    #[strum(serialize = "isInfinite")]
+    IsInfinite,
+    /// `isNaN`.
+    #[strum(serialize = "isNaN")]
+    IsNaN,
+    /// `l2Pool2d`.
+    #[strum(serialize = "l2Pool2d")]
+    L2Pool2d,
+    /// `layerNormalization`.
+    #[strum(serialize = "layerNormalization")]
+    LayerNormalization,
+    /// `leakyRelu`.
+    #[strum(serialize = "leakyRelu")]
+    LeakyRelu,
+    /// `lesser`.
+    #[strum(serialize = "lesser")]
+    Lesser,
+    /// `lesserOrEqual`.
+    #[strum(serialize = "lesserOrEqual")]
+    LesserOrEqual,
+    /// `linear`.
+    #[strum(serialize = "linear")]
+    Linear,
+    /// `log`.
+    #[strum(serialize = "log")]
+    Log,
+    /// `logicalAnd`.
+    #[strum(serialize = "logicalAnd")]
+    LogicalAnd,
+    /// `logicalNot`.
+    #[strum(serialize = "logicalNot")]
+    LogicalNot,
+    /// `logicalOr`.
+    #[strum(serialize = "logicalOr")]
+    LogicalOr,
+    /// `logicalXor`.
+    #[strum(serialize = "logicalXor")]
+    LogicalXor,
+    /// `lstm`.
+    #[strum(serialize = "lstm")]
+    Lstm,
+    /// `lstmCell`.
+    #[strum(serialize = "lstmCell")]
+    LstmCell,
+    /// `matmul`.
+    #[strum(serialize = "matmul")]
+    Matmul,
+    /// `max`.
+    #[strum(serialize = "max")]
+    Max,
+    /// `maxPool2d`.
+    #[strum(serialize = "maxPool2d")]
+    MaxPool2d,
+    /// `min`.
+    #[strum(serialize = "min")]
+    Min,
+    /// `mul`.
+    #[strum(serialize = "mul")]
+    Mul,
+    /// `neg`.
+    #[strum(serialize = "neg")]
+    Neg,
+    /// `notEqual`.
+    #[strum(serialize = "notEqual")]
+    NotEqual,
+    /// `pad`.
+    #[strum(serialize = "pad")]
+    Pad,
+    /// `pow`.
+    #[strum(serialize = "pow")]
+    Pow,
+    /// `prelu`.
+    #[strum(serialize = "prelu")]
+    Prelu,
+    /// `quantizeLinear`.
+    #[strum(serialize = "quantizeLinear")]
+    QuantizeLinear,
+    /// `reciprocal`.
+    #[strum(serialize = "reciprocal")]
+    Reciprocal,
+    /// `reduceL1`.
+    #[strum(serialize = "reduceL1")]
+    ReduceL1,
+    /// `reduceL2`.
+    #[strum(serialize = "reduceL2")]
+    ReduceL2,
+    /// `reduceLogSum`.
+    #[strum(serialize = "reduceLogSum")]
+    ReduceLogSum,
+    /// `reduceLogSumExp`.
+    #[strum(serialize = "reduceLogSumExp")]
+    ReduceLogSumExp,
+    /// `reduceMax`.
+    #[strum(serialize = "reduceMax")]
+    ReduceMax,
+    /// `reduceMean`.
+    #[strum(serialize = "reduceMean")]
+    ReduceMean,
+    /// `reduceMin`.
+    #[strum(serialize = "reduceMin")]
+    ReduceMin,
+    /// `reduceProduct`.
+    #[strum(serialize = "reduceProduct")]
+    ReduceProduct,
+    /// `reduceSum`.
+    #[strum(serialize = "reduceSum")]
+    ReduceSum,
+    /// `reduceSumSquare`.
+    #[strum(serialize = "reduceSumSquare")]
+    ReduceSumSquare,
+    /// `relu`.
+    #[strum(serialize = "relu")]
+    Relu,
+    /// `resample2d`.
+    #[strum(serialize = "resample2d")]
+    Resample2d,
+    /// `reshape`.
+    #[strum(serialize = "reshape")]
+    Reshape,
+    /// `reverse`.
+    #[strum(serialize = "reverse")]
+    Reverse,
+    /// `roundEven`.
+    #[strum(serialize = "roundEven")]
+    RoundEven,
+    /// `scatterElements`.
+    #[strum(serialize = "scatterElements")]
+    ScatterElements,
+    /// `scatterND`.
+    #[strum(serialize = "scatterND")]
+    ScatterND,
+    /// `sigmoid`.
+    #[strum(serialize = "sigmoid")]
+    Sigmoid,
+    /// `sign`.
+    #[strum(serialize = "sign")]
+    Sign,
+    /// `sin`.
+    #[strum(serialize = "sin")]
+    Sin,
+    /// `slice`.
+    #[strum(serialize = "slice")]
+    Slice,
+    /// `softmax`.
+    #[strum(serialize = "softmax")]
+    Softmax,
+    /// `softplus`.
+    #[strum(serialize = "softplus")]
+    Softplus,
+    /// `softsign`.
+    #[strum(serialize = "softsign")]
+    Softsign,
+    /// `split`.
+    #[strum(serialize = "split")]
+    Split,
+    /// `sqrt`.
+    #[strum(serialize = "sqrt")]
+    Sqrt,
+    /// `sub`.
+    #[strum(serialize = "sub")]
+    Sub,
+    /// `tan`.
+    #[strum(serialize = "tan")]
+    Tan,
+    /// `tanh`.
+    #[strum(serialize = "tanh")]
+    Tanh,
+    /// `tile`.
+    #[strum(serialize = "tile")]
+    Tile,
+    /// `transpose`.
+    #[strum(serialize = "transpose")]
+    Transpose,
+    /// `triangular`.
+    #[strum(serialize = "triangular")]
+    Triangular,
+    /// `where`.
+    #[strum(serialize = "where")]
+    Where,
+}
+
+/// Operand identifier shared across the spec data type tables.
+///
+/// Strum provides exact spec spelling through `FromStr`, `Display`,
+/// `AsRef<str>`, and conversion into `&'static str`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, EnumString, Display, AsRefStr, IntoStaticStr, EnumIter,
+)]
+pub enum OperandName {
+    /// `a`.
+    #[strum(serialize = "a")]
+    A,
+    /// `b`.
+    #[strum(serialize = "b")]
+    B,
+    /// `bias`.
+    #[strum(serialize = "bias")]
+    Bias,
+    /// `c`.
+    #[strum(serialize = "c")]
+    C,
+    /// `cellState`.
+    #[strum(serialize = "cellState")]
+    CellState,
+    /// `condition`.
+    #[strum(serialize = "condition")]
+    Condition,
+    /// `falseValue`.
+    #[strum(serialize = "falseValue")]
+    FalseValue,
+    /// `filter`.
+    #[strum(serialize = "filter")]
+    Filter,
+    /// `hiddenState`.
+    #[strum(serialize = "hiddenState")]
+    HiddenState,
+    /// `indices`.
+    #[strum(serialize = "indices")]
+    Indices,
+    /// `initialCellState`.
+    #[strum(serialize = "initialCellState")]
+    InitialCellState,
+    /// `initialHiddenState`.
+    #[strum(serialize = "initialHiddenState")]
+    InitialHiddenState,
+    /// `input`.
+    #[strum(serialize = "input")]
+    Input,
+    /// `inputs`.
+    #[strum(serialize = "inputs")]
+    Inputs,
+    /// `mean`.
+    #[strum(serialize = "mean")]
+    Mean,
+    /// `output`.
+    #[strum(serialize = "output")]
+    Output,
+    /// `outputs`.
+    #[strum(serialize = "outputs")]
+    Outputs,
+    /// `outputs[0]`.
+    #[strum(serialize = "outputs[0]")]
+    Outputs0,
+    /// `outputs[1]`.
+    #[strum(serialize = "outputs[1]")]
+    Outputs1,
+    /// `outputs[2]`.
+    #[strum(serialize = "outputs[2]")]
+    Outputs2,
+    /// `peepholeWeight`.
+    #[strum(serialize = "peepholeWeight")]
+    PeepholeWeight,
+    /// `recurrentBias`.
+    #[strum(serialize = "recurrentBias")]
+    RecurrentBias,
+    /// `recurrentWeight`.
+    #[strum(serialize = "recurrentWeight")]
+    RecurrentWeight,
+    /// `scale`.
+    #[strum(serialize = "scale")]
+    Scale,
+    /// `slope`.
+    #[strum(serialize = "slope")]
+    Slope,
+    /// `trueValue`.
+    #[strum(serialize = "trueValue")]
+    TrueValue,
+    /// `updates`.
+    #[strum(serialize = "updates")]
+    Updates,
+    /// `variance`.
+    #[strum(serialize = "variance")]
+    Variance,
+    /// `weight`.
+    #[strum(serialize = "weight")]
+    Weight,
+    /// `zeroPoint`.
+    #[strum(serialize = "zeroPoint")]
+    ZeroPoint,
+}
 
 /// The specification's allowed data types for one operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,18 +427,18 @@ pub enum AllowedDataTypes {
     /// An explicit spec type list restricted to types represented by rustnn.
     Types(&'static [MLOperandDataType]),
     /// Must have the same type as the named operand of this operation.
-    SameAs(&'static str),
+    SameAs(OperandName),
 }
 
 /// Allowed types for a positional input, option member, or output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperandDataTypes {
-    /// WebNN operation name (camelCase).
-    pub operation: &'static str,
+    /// WebNN operation identifier.
+    pub operation: OperationName,
     /// Operand name; option members omit the dictionary prefix.
     /// Sequence inputs apply to every item; indexed outputs retain their index.
     /// Optional operands and outputs apply when present.
-    pub operand: &'static str,
+    pub operand: OperandName,
     /// Allowed type rule, distinct from the specification's required types.
     pub allowed: AllowedDataTypes,
 }
@@ -36,8 +446,8 @@ pub struct OperandDataTypes {
 /// Per-operand rules sorted by operation and operand name.
 pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
-        operation: "abs",
-        operand: "input",
+        operation: OperationName::Abs,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -48,184 +458,184 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "abs",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Abs,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "add",
-        operand: "a",
+        operation: OperationName::Add,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "add",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Add,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "add",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Add,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "argMax",
-        operand: "input",
+        operation: OperationName::ArgMax,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "argMax",
-        operand: "output",
+        operation: OperationName::ArgMax,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Int32, MLOperandDataType::Int64]),
     },
     OperandDataTypes {
-        operation: "argMin",
-        operand: "input",
+        operation: OperationName::ArgMin,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "argMin",
-        operand: "output",
+        operation: OperationName::ArgMin,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Int32, MLOperandDataType::Int64]),
     },
     OperandDataTypes {
-        operation: "averagePool2d",
-        operand: "input",
+        operation: OperationName::AveragePool2d,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "averagePool2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::AveragePool2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "input",
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "mean",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Mean,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "scale",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Scale,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "batchNormalization",
-        operand: "variance",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::BatchNormalization,
+        operand: OperandName::Variance,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "cast",
-        operand: "input",
+        operation: OperationName::Cast,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "cast",
-        operand: "output",
+        operation: OperationName::Cast,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "ceil",
-        operand: "input",
+        operation: OperationName::Ceil,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "ceil",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Ceil,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "clamp",
-        operand: "input",
+        operation: OperationName::Clamp,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "clamp",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Clamp,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "concat",
-        operand: "inputs",
+        operation: OperationName::Concat,
+        operand: OperandName::Inputs,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "concat",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("inputs"),
+        operation: OperationName::Concat,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Inputs),
     },
     OperandDataTypes {
-        operation: "conv2d",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Conv2d,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "conv2d",
-        operand: "filter",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Conv2d,
+        operand: OperandName::Filter,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "conv2d",
-        operand: "input",
+        operation: OperationName::Conv2d,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "conv2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Conv2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "convTranspose2d",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ConvTranspose2d,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "convTranspose2d",
-        operand: "filter",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ConvTranspose2d,
+        operand: OperandName::Filter,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "convTranspose2d",
-        operand: "input",
+        operation: OperationName::ConvTranspose2d,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "convTranspose2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ConvTranspose2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "cos",
-        operand: "input",
+        operation: OperationName::Cos,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "cos",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Cos,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "cumulativeSum",
-        operand: "input",
+        operation: OperationName::CumulativeSum,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -237,13 +647,13 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "cumulativeSum",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::CumulativeSum,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "dequantizeLinear",
-        operand: "input",
+        operation: OperationName::DequantizeLinear,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: float8e4m3
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Uint8,
@@ -253,108 +663,108 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "dequantizeLinear",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("scale"),
+        operation: OperationName::DequantizeLinear,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Scale),
     },
     OperandDataTypes {
-        operation: "dequantizeLinear",
-        operand: "scale",
+        operation: OperationName::DequantizeLinear,
+        operand: OperandName::Scale,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "dequantizeLinear",
-        operand: "zeroPoint",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::DequantizeLinear,
+        operand: OperandName::ZeroPoint,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "div",
-        operand: "a",
+        operation: OperationName::Div,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "div",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Div,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "div",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Div,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "elu",
-        operand: "input",
+        operation: OperationName::Elu,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "elu",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Elu,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "equal",
-        operand: "a",
+        operation: OperationName::Equal,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "equal",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Equal,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "equal",
-        operand: "output",
+        operation: OperationName::Equal,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "erf",
-        operand: "input",
+        operation: OperationName::Erf,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "erf",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Erf,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "exp",
-        operand: "input",
+        operation: OperationName::Exp,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "exp",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Exp,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "expand",
-        operand: "input",
+        operation: OperationName::Expand,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "expand",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Expand,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "floor",
-        operand: "input",
+        operation: OperationName::Floor,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "floor",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Floor,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gather",
-        operand: "indices",
+        operation: OperationName::Gather,
+        operand: OperandName::Indices,
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
@@ -362,18 +772,18 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "gather",
-        operand: "input",
+        operation: OperationName::Gather,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "gather",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gather,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gatherElements",
-        operand: "indices",
+        operation: OperationName::GatherElements,
+        operand: OperandName::Indices,
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
@@ -381,18 +791,18 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "gatherElements",
-        operand: "input",
+        operation: OperationName::GatherElements,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "gatherElements",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GatherElements,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gatherND",
-        operand: "indices",
+        operation: OperationName::GatherND,
+        operand: OperandName::Indices,
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
@@ -400,560 +810,560 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "gatherND",
-        operand: "input",
+        operation: OperationName::GatherND,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "gatherND",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GatherND,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gelu",
-        operand: "input",
+        operation: OperationName::Gelu,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "gelu",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gelu,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gemm",
-        operand: "a",
+        operation: OperationName::Gemm,
+        operand: OperandName::A,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "gemm",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Gemm,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "gemm",
-        operand: "c",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Gemm,
+        operand: OperandName::C,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "gemm",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Gemm,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "greater",
-        operand: "a",
+        operation: OperationName::Greater,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "greater",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Greater,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "greater",
-        operand: "output",
+        operation: OperationName::Greater,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "greaterOrEqual",
-        operand: "a",
+        operation: OperationName::GreaterOrEqual,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "greaterOrEqual",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::GreaterOrEqual,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "greaterOrEqual",
-        operand: "output",
+        operation: OperationName::GreaterOrEqual,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "initialHiddenState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::InitialHiddenState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "input",
+        operation: OperationName::Gru,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "outputs[0]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::Outputs0,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "outputs[1]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::Outputs1,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "recurrentBias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::RecurrentBias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "recurrentWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::RecurrentWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gru",
-        operand: "weight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Gru,
+        operand: OperandName::Weight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "hiddenState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::HiddenState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "input",
+        operation: OperationName::GruCell,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "recurrentBias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::RecurrentBias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "recurrentWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::RecurrentWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "gruCell",
-        operand: "weight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::GruCell,
+        operand: OperandName::Weight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "hardSigmoid",
-        operand: "input",
+        operation: OperationName::HardSigmoid,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "hardSigmoid",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::HardSigmoid,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "hardSwish",
-        operand: "input",
+        operation: OperationName::HardSwish,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "hardSwish",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::HardSwish,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "identity",
-        operand: "input",
+        operation: OperationName::Identity,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "identity",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Identity,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "instanceNormalization",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::InstanceNormalization,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "instanceNormalization",
-        operand: "input",
+        operation: OperationName::InstanceNormalization,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "instanceNormalization",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::InstanceNormalization,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "instanceNormalization",
-        operand: "scale",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::InstanceNormalization,
+        operand: OperandName::Scale,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "isInfinite",
-        operand: "a",
+        operation: OperationName::IsInfinite,
+        operand: OperandName::A,
         // Spec types absent from MLOperandDataType: bfloat16, float8e4m3
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "isInfinite",
-        operand: "output",
+        operation: OperationName::IsInfinite,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "isNaN",
-        operand: "a",
+        operation: OperationName::IsNaN,
+        operand: OperandName::A,
         // Spec types absent from MLOperandDataType: bfloat16, float8e4m3
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "isNaN",
-        operand: "output",
+        operation: OperationName::IsNaN,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "l2Pool2d",
-        operand: "input",
+        operation: OperationName::L2Pool2d,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "l2Pool2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::L2Pool2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "layerNormalization",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LayerNormalization,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "layerNormalization",
-        operand: "input",
+        operation: OperationName::LayerNormalization,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "layerNormalization",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LayerNormalization,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "layerNormalization",
-        operand: "scale",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LayerNormalization,
+        operand: OperandName::Scale,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "leakyRelu",
-        operand: "input",
+        operation: OperationName::LeakyRelu,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "leakyRelu",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LeakyRelu,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lesser",
-        operand: "a",
+        operation: OperationName::Lesser,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "lesser",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Lesser,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "lesser",
-        operand: "output",
+        operation: OperationName::Lesser,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "lesserOrEqual",
-        operand: "a",
+        operation: OperationName::LesserOrEqual,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "lesserOrEqual",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::LesserOrEqual,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "lesserOrEqual",
-        operand: "output",
+        operation: OperationName::LesserOrEqual,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "linear",
-        operand: "input",
+        operation: OperationName::Linear,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "linear",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Linear,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "log",
-        operand: "input",
+        operation: OperationName::Log,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "log",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Log,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "logicalAnd",
-        operand: "a",
+        operation: OperationName::LogicalAnd,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalAnd",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::LogicalAnd,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "logicalAnd",
-        operand: "output",
+        operation: OperationName::LogicalAnd,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalNot",
-        operand: "a",
+        operation: OperationName::LogicalNot,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalNot",
-        operand: "output",
+        operation: OperationName::LogicalNot,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalOr",
-        operand: "a",
+        operation: OperationName::LogicalOr,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalOr",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::LogicalOr,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "logicalOr",
-        operand: "output",
+        operation: OperationName::LogicalOr,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalXor",
-        operand: "a",
+        operation: OperationName::LogicalXor,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "logicalXor",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::LogicalXor,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "logicalXor",
-        operand: "output",
+        operation: OperationName::LogicalXor,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "initialCellState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::InitialCellState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "initialHiddenState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::InitialHiddenState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "input",
+        operation: OperationName::Lstm,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "outputs[0]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::Outputs0,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "outputs[1]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::Outputs1,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "outputs[2]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::Outputs2,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "peepholeWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::PeepholeWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "recurrentBias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::RecurrentBias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "recurrentWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::RecurrentWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstm",
-        operand: "weight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Lstm,
+        operand: OperandName::Weight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "bias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::Bias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "cellState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::CellState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "hiddenState",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::HiddenState,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "input",
+        operation: OperationName::LstmCell,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "outputs[0]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::Outputs0,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "outputs[1]",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::Outputs1,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "peepholeWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::PeepholeWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "recurrentBias",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::RecurrentBias,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "recurrentWeight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::RecurrentWeight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "lstmCell",
-        operand: "weight",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::LstmCell,
+        operand: OperandName::Weight,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "matmul",
-        operand: "a",
+        operation: OperationName::Matmul,
+        operand: OperandName::A,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "matmul",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Matmul,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "matmul",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Matmul,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "max",
-        operand: "a",
+        operation: OperationName::Max,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "max",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Max,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "max",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Max,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "maxPool2d",
-        operand: "input",
+        operation: OperationName::MaxPool2d,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "maxPool2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::MaxPool2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "min",
-        operand: "a",
+        operation: OperationName::Min,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "min",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Min,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "min",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Min,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "mul",
-        operand: "a",
+        operation: OperationName::Mul,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "mul",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Mul,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "mul",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Mul,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "neg",
-        operand: "input",
+        operation: OperationName::Neg,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -964,53 +1374,53 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "neg",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Neg,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "notEqual",
-        operand: "a",
+        operation: OperationName::NotEqual,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "notEqual",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::NotEqual,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "notEqual",
-        operand: "output",
+        operation: OperationName::NotEqual,
+        operand: OperandName::Output,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "pad",
-        operand: "input",
+        operation: OperationName::Pad,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "pad",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Pad,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "pow",
-        operand: "a",
+        operation: OperationName::Pow,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "pow",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Pow,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "pow",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Pow,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "prelu",
-        operand: "input",
+        operation: OperationName::Prelu,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1021,34 +1431,34 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "prelu",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Prelu,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "prelu",
-        operand: "slope",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Prelu,
+        operand: OperandName::Slope,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "quantizeLinear",
-        operand: "input",
+        operation: OperationName::QuantizeLinear,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "quantizeLinear",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("zeroPoint"),
+        operation: OperationName::QuantizeLinear,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::ZeroPoint),
     },
     OperandDataTypes {
-        operation: "quantizeLinear",
-        operand: "scale",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::QuantizeLinear,
+        operand: OperandName::Scale,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "quantizeLinear",
-        operand: "zeroPoint",
+        operation: OperationName::QuantizeLinear,
+        operand: OperandName::ZeroPoint,
         // Spec types absent from MLOperandDataType: float8e4m3
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Uint8,
@@ -1058,19 +1468,19 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "reciprocal",
-        operand: "input",
+        operation: OperationName::Reciprocal,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "reciprocal",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Reciprocal,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceL1",
-        operand: "input",
+        operation: OperationName::ReduceL1,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1082,77 +1492,77 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "reduceL1",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceL1,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceL2",
-        operand: "input",
+        operation: OperationName::ReduceL2,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "reduceL2",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceL2,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceLogSum",
-        operand: "input",
+        operation: OperationName::ReduceLogSum,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "reduceLogSum",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceLogSum,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceLogSumExp",
-        operand: "input",
+        operation: OperationName::ReduceLogSumExp,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "reduceLogSumExp",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceLogSumExp,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceMax",
-        operand: "input",
+        operation: OperationName::ReduceMax,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "reduceMax",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceMax,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceMean",
-        operand: "input",
+        operation: OperationName::ReduceMean,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "reduceMean",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceMean,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceMin",
-        operand: "input",
+        operation: OperationName::ReduceMin,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "reduceMin",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceMin,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceProduct",
-        operand: "input",
+        operation: OperationName::ReduceProduct,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1164,13 +1574,13 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "reduceProduct",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceProduct,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceSum",
-        operand: "input",
+        operation: OperationName::ReduceSum,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1182,13 +1592,13 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "reduceSum",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceSum,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reduceSumSquare",
-        operand: "input",
+        operation: OperationName::ReduceSumSquare,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1200,13 +1610,13 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "reduceSumSquare",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ReduceSumSquare,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "relu",
-        operand: "input",
+        operation: OperationName::Relu,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1217,13 +1627,13 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "relu",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Relu,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "resample2d",
-        operand: "input",
+        operation: OperationName::Resample2d,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1233,44 +1643,44 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "resample2d",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Resample2d,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reshape",
-        operand: "input",
+        operation: OperationName::Reshape,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "reshape",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Reshape,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "reverse",
-        operand: "input",
+        operation: OperationName::Reverse,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "reverse",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Reverse,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "roundEven",
-        operand: "input",
+        operation: OperationName::RoundEven,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "roundEven",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::RoundEven,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "scatterElements",
-        operand: "indices",
+        operation: OperationName::ScatterElements,
+        operand: OperandName::Indices,
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
@@ -1278,23 +1688,23 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "scatterElements",
-        operand: "input",
+        operation: OperationName::ScatterElements,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "scatterElements",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ScatterElements,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "scatterElements",
-        operand: "updates",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ScatterElements,
+        operand: OperandName::Updates,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "scatterND",
-        operand: "indices",
+        operation: OperationName::ScatterND,
+        operand: OperandName::Indices,
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
@@ -1302,34 +1712,34 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "scatterND",
-        operand: "input",
+        operation: OperationName::ScatterND,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "scatterND",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ScatterND,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "scatterND",
-        operand: "updates",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::ScatterND,
+        operand: OperandName::Updates,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "sigmoid",
-        operand: "input",
+        operation: OperationName::Sigmoid,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "sigmoid",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Sigmoid,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "sign",
-        operand: "input",
+        operation: OperationName::Sign,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
@@ -1340,170 +1750,170 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
         ]),
     },
     OperandDataTypes {
-        operation: "sign",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Sign,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "sin",
-        operand: "input",
+        operation: OperationName::Sin,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "sin",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Sin,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "slice",
-        operand: "input",
+        operation: OperationName::Slice,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "slice",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Slice,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "softmax",
-        operand: "input",
+        operation: OperationName::Softmax,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "softmax",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Softmax,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "softplus",
-        operand: "input",
+        operation: OperationName::Softplus,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "softplus",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Softplus,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "softsign",
-        operand: "input",
+        operation: OperationName::Softsign,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "softsign",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Softsign,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "split",
-        operand: "input",
+        operation: OperationName::Split,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "split",
-        operand: "outputs",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Split,
+        operand: OperandName::Outputs,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "sqrt",
-        operand: "input",
+        operation: OperationName::Sqrt,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "sqrt",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Sqrt,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "sub",
-        operand: "a",
+        operation: OperationName::Sub,
+        operand: OperandName::A,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "sub",
-        operand: "b",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Sub,
+        operand: OperandName::B,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "sub",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("a"),
+        operation: OperationName::Sub,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::A),
     },
     OperandDataTypes {
-        operation: "tan",
-        operand: "input",
+        operation: OperationName::Tan,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "tan",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Tan,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "tanh",
-        operand: "input",
+        operation: OperationName::Tanh,
+        operand: OperandName::Input,
         // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
     },
     OperandDataTypes {
-        operation: "tanh",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Tanh,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "tile",
-        operand: "input",
+        operation: OperationName::Tile,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "tile",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Tile,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "transpose",
-        operand: "input",
+        operation: OperationName::Transpose,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "transpose",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Transpose,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "triangular",
-        operand: "input",
+        operation: OperationName::Triangular,
+        operand: OperandName::Input,
         allowed: AllowedDataTypes::Any,
     },
     OperandDataTypes {
-        operation: "triangular",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("input"),
+        operation: OperationName::Triangular,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::Input),
     },
     OperandDataTypes {
-        operation: "where",
-        operand: "condition",
+        operation: OperationName::Where,
+        operand: OperandName::Condition,
         allowed: AllowedDataTypes::Types(&[MLOperandDataType::Uint8]),
     },
     OperandDataTypes {
-        operation: "where",
-        operand: "falseValue",
-        allowed: AllowedDataTypes::SameAs("trueValue"),
+        operation: OperationName::Where,
+        operand: OperandName::FalseValue,
+        allowed: AllowedDataTypes::SameAs(OperandName::TrueValue),
     },
     OperandDataTypes {
-        operation: "where",
-        operand: "output",
-        allowed: AllowedDataTypes::SameAs("trueValue"),
+        operation: OperationName::Where,
+        operand: OperandName::Output,
+        allowed: AllowedDataTypes::SameAs(OperandName::TrueValue),
     },
     OperandDataTypes {
-        operation: "where",
-        operand: "trueValue",
+        operation: OperationName::Where,
+        operand: OperandName::TrueValue,
         allowed: AllowedDataTypes::Any,
     },
 ];
