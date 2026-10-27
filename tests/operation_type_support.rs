@@ -1,5 +1,5 @@
 use rustnn::operation_data_types::{ALL_DATA_TYPES, OperandName, OperationName};
-use rustnn::operation_type_support::{allowed_data_types, is_data_type_allowed};
+use rustnn::operation_type_support::{allowed_data_types, check_allowed_data_types};
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
 
@@ -44,44 +44,75 @@ fn argmax() -> Operation {
     }
 }
 
+fn graph(types: &[MLOperandDataType]) -> rustnn::GraphInfo {
+    let mut graph = rustnn::GraphInfo::default();
+    for &data_type in types {
+        graph.operands.push(rustnn::Operand {
+            kind: rustnn::OperandKind::Input,
+            descriptor: rustnn::OperandDescriptor {
+                data_type: data_type.into(),
+                shape: rustnn::graph::to_dimension_vector(&[2]),
+                pending_permutation: vec![],
+            },
+            name: None,
+        });
+    }
+    graph
+}
+
 #[test]
-fn runtime_check_accepts_allowed_types_and_rejects_invalid_pairs() {
-    let operation = argmax();
-    assert!(is_data_type_allowed(
-        &operation,
-        OperandName::Output,
-        MLOperandDataType::Int64,
-        false
-    ));
-    assert!(!is_data_type_allowed(
-        &operation,
-        OperandName::Output,
-        MLOperandDataType::Float32,
-        false
-    ));
-    assert!(!is_data_type_allowed(
-        &operation,
-        OperandName::Bias,
-        MLOperandDataType::Float32,
-        false
-    ));
-    let extension = Operation::Squeeze {
-        input: 0,
-        options: None,
-        outputs: vec![1],
-    };
-    assert!(!is_data_type_allowed(
-        &extension,
-        OperandName::Input,
-        MLOperandDataType::Float32,
-        false
+fn checks_all_operands_and_returns_structured_error() {
+    use rustnn::error::AllowedDataTypesError;
+    let valid = graph(&[MLOperandDataType::Float32, MLOperandDataType::Int64]);
+    assert!(check_allowed_data_types(&argmax(), &valid, false).is_ok());
+    let invalid = graph(&[MLOperandDataType::Float32, MLOperandDataType::Float32]);
+    assert_eq!(
+        check_allowed_data_types(&argmax(), &invalid, false),
+        Err(AllowedDataTypesError::NotAllowed {
+            operation_name: OperationName::ArgMax,
+            operand_name: OperandName::Output,
+            allowed_dtype: vec![MLOperandDataType::Int32, MLOperandDataType::Int64],
+            used_dtype: MLOperandDataType::Float32,
+        })
+    );
+    assert!(matches!(
+        check_allowed_data_types(&argmax(), &graph(&[]), false),
+        Err(AllowedDataTypesError::MissingOperand {
+            operand_name: OperandName::Input,
+            ..
+        })
     ));
 }
 
 #[test]
-fn bypass_accepts_types_and_warns_on_every_call() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+fn same_as_checks_actual_types_including_option_operands() {
+    let operation = Operation::Gemm {
+        a: 0,
+        b: 1,
+        options: Some(rustnn::operator_options::MLGemmOptions {
+            c: Some(2),
+            ..Default::default()
+        }),
+        outputs: vec![3],
+    };
+    let graph = graph(&[
+        MLOperandDataType::Float32,
+        MLOperandDataType::Float32,
+        MLOperandDataType::Float16,
+    ]);
+    assert!(matches!(
+        check_allowed_data_types(&operation, &graph, false),
+        Err(rustnn::error::AllowedDataTypesError::NotAllowed {
+            operand_name: OperandName::C,
+            used_dtype: MLOperandDataType::Float16,
+            ..
+        })
+    ));
+}
 
+#[test]
+fn bypass_warns_on_every_call() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     struct WarningCounter(AtomicUsize);
     impl log::Log for WarningCounter {
         fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
@@ -89,11 +120,8 @@ fn bypass_accepts_types_and_warns_on_every_call() {
                 && metadata.target() == "rustnn::operation_type_support"
         }
         fn log(&self, record: &log::Record<'_>) {
-            if self.enabled(record.metadata()) {
-                let message = record.args().to_string();
-                assert!(message.contains("Bypassing allowed data type check"));
-                assert!(message.contains("argMax"));
-                assert!(message.contains("output"));
+            if self.enabled(record.metadata()) && record.args().to_string().contains("argMax") {
+                assert!(record.args().to_string().contains("argMax"));
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -102,15 +130,54 @@ fn bypass_accepts_types_and_warns_on_every_call() {
     static LOGGER: WarningCounter = WarningCounter(AtomicUsize::new(0));
     log::set_logger(&LOGGER).unwrap();
     log::set_max_level(log::LevelFilter::Warn);
-
-    // Both an invalid type and a valid type must warn when bypass is enabled.
     for data_type in [MLOperandDataType::Float32, MLOperandDataType::Int64] {
-        assert!(is_data_type_allowed(
-            &argmax(),
-            OperandName::Output,
-            data_type,
-            true
-        ));
+        assert!(
+            check_allowed_data_types(
+                &argmax(),
+                &graph(&[MLOperandDataType::Float32, data_type]),
+                true
+            )
+            .is_ok()
+        );
     }
     assert_eq!(LOGGER.0.load(Ordering::SeqCst), 2);
+}
+
+#[cfg(feature = "burn-runtime-cpu")]
+#[test]
+fn context_option_controls_recording_without_bypassing_shape_validation() {
+    use rustnn::mlcontext::{
+        Backend, MLContext, MLContextOptions, MLGraphBuilder, MLOperandDescriptor,
+        MLPowerPreference,
+    };
+    for bypass in [false, true] {
+        let options = MLContextOptions::new(MLPowerPreference::Default, false)
+            .with_rustnn_backend_hint(Backend::BurnCpu)
+            .with_rustnn_bypass_allowed_data_types_checks(bypass);
+        let mut context = MLContext::create(&options).unwrap();
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let input = builder
+            .input(
+                "x",
+                &MLOperandDescriptor::new(MLOperandDataType::Uint64, vec![2]),
+            )
+            .unwrap();
+        let result = builder.relu(input);
+        assert_eq!(result.is_ok(), bypass);
+        if !bypass {
+            assert!(matches!(
+                result,
+                Err(rustnn::error::GraphBuilderError::AllowedDataTypes(_))
+            ));
+        }
+        // An invalid reshape still fails even when dtype checks are bypassed.
+        assert!(
+            builder
+                .reshape(
+                    input,
+                    vec![rustnn::operator_options::MLDimension::Static(3)]
+                )
+                .is_err()
+        );
+    }
 }

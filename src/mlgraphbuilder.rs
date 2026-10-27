@@ -101,30 +101,6 @@ fn get_operands<'graph>(
         .collect()
 }
 
-fn check_same_data_type(
-    inputs: &[MLOperand],
-    operation: &Operation,
-    operands: &[&Operand],
-) -> Result<DataType> {
-    let data_type = operands[0].descriptor.data_type;
-    if operands
-        .iter()
-        .skip(1)
-        .any(|o| o.descriptor.data_type != data_type)
-    {
-        return Err(Box::new(ShapeInferenceError::InconsistentDataTypes {
-            operation: operation.clone(),
-            inputs: inputs
-                .iter()
-                .copied()
-                .zip(operands.iter().map(|&o| o.clone()))
-                .collect(),
-        })
-        .into());
-    }
-    Ok(data_type)
-}
-
 fn slice_shape(
     input: MLOperand,
     operation: &Operation,
@@ -172,7 +148,7 @@ fn concat_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-    let data_type = check_same_data_type(inputs, operation, &operands)?;
+    let data_type = operands[0].descriptor.data_type;
 
     let shape = if operands.iter().all(|s| s.descriptor.shape.is_empty()) && axis == 0 {
         vec![Dimension::Static(operands.len() as u32)]
@@ -265,7 +241,7 @@ fn matmul_shape(
 ) -> Result<OperandDescriptor> {
     let a_op = get_operand(a, graph)?;
     let b_op = get_operand(b, graph)?;
-    let data_type = check_same_data_type(&[a, b], operation, &[a_op, b_op])?;
+    let data_type = a_op.descriptor.data_type;
     let shape = infer_shape_err(
         "matmul",
         operation,
@@ -287,7 +263,7 @@ fn gemm_shape(
 ) -> Result<OperandDescriptor> {
     let a_op = get_operand(a, graph)?;
     let b_op = get_operand(b, graph)?;
-    let data_type = check_same_data_type(&[a, b], operation, &[a_op, b_op])?;
+    let data_type = a_op.descriptor.data_type;
     let opts = options.cloned().unwrap_or_default();
     let mut shape = infer_shape_err(
         "gemm",
@@ -444,8 +420,6 @@ fn scatter_nd_shape(
     let indices_op = get_operand(indices, graph)?;
     let updates_op = get_operand(updates, graph)?;
 
-    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
-
     let fully_static =
         |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
     if fully_static(&input_op.descriptor.shape)
@@ -478,8 +452,6 @@ fn scatter_elements_shape(
     let input_op = get_operand(input, graph)?;
     let indices_op = get_operand(indices, graph)?;
     let updates_op = get_operand(updates, graph)?;
-
-    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
 
     let fully_static =
         |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
@@ -878,20 +850,6 @@ fn where_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-    if operands[0].descriptor.data_type != DataType::Uint8 {
-        return Err(Box::new(ShapeInferenceError::NonUint8Condition {
-            operation: operation.clone(),
-            inputs: inputs
-                .iter()
-                .copied()
-                .zip(operands.iter().map(|&o| o.clone()))
-                .collect(),
-        })
-        .into());
-    }
-
-    check_same_data_type(&inputs[1..], operation, &operands[1..])?;
-
     let mut output_shape = crate::shape_inference::broadcast_shapes_dimensions(
         &operands[1].descriptor.shape,
         &operands[2].descriptor.shape,
@@ -936,8 +894,6 @@ fn same_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-
-    check_same_data_type(inputs, operation, &operands)?;
 
     let mut output_descriptor = operands[0].descriptor.clone();
     for op in operands.iter().skip(1) {
@@ -1072,79 +1028,16 @@ fn validate_quantization_parameters(
     })
 }
 
-/// The data type and shape rules that the scale and optional zero point of a `quantizeLinear`
-/// (`is_quantize`) or `dequantizeLinear` must meet against its input. The builder applies them
-/// when it records the operation; `GraphValidator` reuses them for GraphInfo from other sources.
-///
-/// The data types follow the specification's tensor-limits tables, which change as WebNN
-/// evolves; compare against them when updating this function:
-/// [quantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-quantizelinear),
-/// [dequantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-dequantizelinear)
-/// (editor's draft source:
-/// <https://github.com/webmachinelearning/webnn/blob/main/index.bs>). Deliberate differences:
-/// int4 and uint4 are accepted as rustnn's packed 4-bit weight types, an int32 quantize input
-/// is accepted as an extension, and the float8e4m3 and bfloat16 types of the current draft
-/// have no rustnn data type yet.
+/// Quantization scale/zero-point shape rules shared by recording and validation.
+/// Operand data types are checked centrally by `check_allowed_data_types`.
 pub(crate) fn check_quantization_parameters(
-    is_quantize: bool,
+    _is_quantize: bool,
     input: &OperandDescriptor,
     scale: &OperandDescriptor,
     zero_point: Option<&OperandDescriptor>,
 ) -> std::result::Result<(), QuantizationParameterError> {
     use QuantizationParameterError as E;
-    if !matches!(scale.data_type, DataType::Float16 | DataType::Float32) {
-        return Err(E::ScaleDataType {
-            found: scale.data_type,
-        });
-    }
-    let integer_type = |dtype| {
-        matches!(
-            dtype,
-            DataType::Int4
-                | DataType::Uint4
-                | DataType::Int8
-                | DataType::Uint8
-                | DataType::Int32
-                | DataType::Uint32
-        )
-    };
-    if is_quantize {
-        if !matches!(
-            input.data_type,
-            DataType::Float16 | DataType::Float32 | DataType::Int32
-        ) {
-            return Err(E::QuantizeInputDataType {
-                found: input.data_type,
-            });
-        }
-    } else if !integer_type(input.data_type) {
-        return Err(E::DequantizeInputDataType {
-            found: input.data_type,
-        });
-    }
-    // Retain the existing int32 quantize extension, while requiring matching
-    // floating-point input/scale dtypes for the WebNN operation.
-    if is_quantize
-        && matches!(input.data_type, DataType::Float16 | DataType::Float32)
-        && input.data_type != scale.data_type
-    {
-        return Err(E::ScaleInputDataTypeMismatch {
-            scale: scale.data_type,
-            input: input.data_type,
-        });
-    }
     if let Some(zero_point) = zero_point {
-        if !integer_type(zero_point.data_type) {
-            return Err(E::ZeroPointDataType {
-                found: zero_point.data_type,
-            });
-        }
-        if !is_quantize && zero_point.data_type != input.data_type {
-            return Err(E::ZeroPointInputDataTypeMismatch {
-                zero_point: zero_point.data_type,
-                input: input.data_type,
-            });
-        }
         if zero_point.shape != scale.shape {
             return Err(E::ZeroPointShapeMismatch {
                 zero_point: zero_point.shape.clone(),
@@ -1578,8 +1471,17 @@ fn infer_descriptors_unchecked(
 pub(crate) fn infer_operation_descriptors(
     operation: &Operation,
     graph: &GraphInfo,
+    bypass_allowed_data_types_checks: bool,
 ) -> Result<Vec<OperandDescriptor>> {
+    crate::operation_type_support::check_allowed_data_types(
+        operation,
+        graph,
+        bypass_allowed_data_types_checks,
+    )?;
     let descriptors = infer_descriptors_unchecked(operation, graph)?;
+    if !bypass_allowed_data_types_checks {
+        crate::operation_type_support::check_output_data_types(operation, graph, &descriptors)?;
+    }
     let expected = operation.output_operands().len();
     if descriptors.len() != expected {
         return Err(GraphBuilderError::InconsistentGraphInfo {
@@ -2200,7 +2102,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         let backend = context.backend.create_builder()?;
         Ok(Self {
             backend,
-            recorder: Some(GraphRecorder::new()),
+            recorder: Some(
+                GraphRecorder::new().with_bypass_allowed_data_types_checks(
+                    context.bypass_allowed_data_types_checks,
+                ),
+            ),
         })
     }
 

@@ -599,6 +599,7 @@ impl MLTensorDescriptor {
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
     pub(crate) device: BackendDevice,
+    pub(crate) bypass_allowed_data_types_checks: bool,
 }
 
 impl<'context> MLContext<'context> {
@@ -655,7 +656,11 @@ impl<'context> MLContext<'context> {
                 CannContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            bypass_allowed_data_types_checks: options.bypass_allowed_data_types_checks,
+        })
     }
 
     /// Not implemented: `ML.createContext(GPUDevice)`.
@@ -670,7 +675,11 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Cann { .. } => todo!(),
             BackendDevice::BurnCpu => todo!(),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            bypass_allowed_data_types_checks: false,
+        })
     }
     /// Whether the selected device is a GPU or NPU rather than a CPU.
     pub fn accelerated(&self) -> bool {
@@ -914,6 +923,7 @@ mod test {
     #[test]
     fn capacity_shrink_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            bypass_allowed_data_types_checks: false,
             // All mutation methods panic, so reaching it would fail this test.
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
@@ -966,6 +976,7 @@ mod test {
     #[test]
     fn capacity_overflow_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            bypass_allowed_data_types_checks: false,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
@@ -987,6 +998,7 @@ mod test {
     fn backend_statistics_are_optional() {
         // This backend uses the default trait method, without a runtime dependency.
         let context = MLContext {
+            bypass_allowed_data_types_checks: false,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,

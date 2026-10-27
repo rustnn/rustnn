@@ -365,6 +365,8 @@ impl<'a> GraphValidator<'a> {
                 })?;
         let output_desc = &output_operand.descriptor;
 
+        crate::operation_type_support::check_allowed_data_types(operation, self.graph, false)?;
+
         // The parameters decide the output, so their errors come first. The parameter rules are
         // the builder's, so GraphInfo from any source meets the same checks.
         crate::mlgraphbuilder::check_quantization_parameters(
@@ -377,22 +379,6 @@ impl<'a> GraphValidator<'a> {
             operation: op_name.clone(),
             source,
         })?;
-
-        if is_quantize {
-            if output_desc.data_type != zero_point_desc.data_type {
-                return Err(invalid(format!(
-                    "quantize output dtype {:?} must match zeroPoint dtype {:?}",
-                    output_desc.data_type, zero_point_desc.data_type
-                )));
-            }
-        } else {
-            if output_desc.data_type != scale_desc.data_type {
-                return Err(invalid(format!(
-                    "dequantize output dtype {:?} must match scale dtype {:?}",
-                    output_desc.data_type, scale_desc.data_type
-                )));
-            }
-        }
 
         // Shape constraints
         let input_shape_dims = &input_desc.shape;
