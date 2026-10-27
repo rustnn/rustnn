@@ -1,9 +1,10 @@
-//! Specification operand type validation over generated WebNN rules.
+//! General and backend-specific operand dtype validation.
 //!
 //! Checks explicit type domains and actual `SameAs` relationships, independently
 //! of backend capabilities. Context options can bypass these checks with warnings.
+//! Context-backed recording then checks backend operator dtype limits separately.
 
-use crate::error::AllowedDataTypesError;
+use crate::error::{AllowedDataTypesError, BackendDataTypesError, GraphBuilderError};
 use crate::graph::{GraphInfo, OperandDescriptor};
 use crate::operation_data_types::{
     ALL_DATA_TYPES, AllowedDataTypes, OPERATION_DATA_TYPES, OperandName, OperationName,
@@ -214,24 +215,8 @@ fn check_types(
 ) -> Result<(), AllowedDataTypesError> {
     for &(operand_name, used_dtype) in types {
         let allowed = allowed_data_types(operation_name, operand_name);
-        let packed_type_allowed = allow_int4_uint4
-            && match used_dtype {
-                MLOperandDataType::Int4 => allowed.contains(&MLOperandDataType::Int8),
-                MLOperandDataType::Uint4 => allowed.contains(&MLOperandDataType::Uint8),
-                _ => false,
-            };
-        if !allowed.contains(&used_dtype) && !packed_type_allowed {
-            let mut allowed_dtype = allowed.to_vec();
-            if allow_int4_uint4 {
-                for (packed, integer) in [
-                    (MLOperandDataType::Int4, MLOperandDataType::Int8),
-                    (MLOperandDataType::Uint4, MLOperandDataType::Uint8),
-                ] {
-                    if allowed.contains(&integer) && !allowed_dtype.contains(&packed) {
-                        allowed_dtype.push(packed);
-                    }
-                }
-            }
+        if !dtype_allowed(allowed, used_dtype, allow_int4_uint4) {
+            let allowed_dtype = extended_types(allowed, allow_int4_uint4);
             return Err(AllowedDataTypesError::NotAllowed {
                 operation_name,
                 operand_name,
@@ -254,6 +239,81 @@ fn check_types(
                     });
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn dtype_allowed(
+    allowed: &[MLOperandDataType],
+    used: MLOperandDataType,
+    allow_int4_uint4: bool,
+) -> bool {
+    allowed.contains(&used)
+        || (allow_int4_uint4
+            && match used {
+                MLOperandDataType::Int4 => allowed.contains(&MLOperandDataType::Int8),
+                MLOperandDataType::Uint4 => allowed.contains(&MLOperandDataType::Uint8),
+                _ => false,
+            })
+}
+
+fn extended_types(allowed: &[MLOperandDataType], allow_int4_uint4: bool) -> Vec<MLOperandDataType> {
+    let mut types = allowed.to_vec();
+    if allow_int4_uint4 {
+        for (packed, integer) in [
+            (MLOperandDataType::Int4, MLOperandDataType::Int8),
+            (MLOperandDataType::Uint4, MLOperandDataType::Uint8),
+        ] {
+            if allowed.contains(&integer) && !types.contains(&packed) {
+                types.push(packed);
+            }
+        }
+    }
+    types
+}
+
+pub(crate) fn check_backend_data_types(
+    operation: &Operation,
+    graph: &GraphInfo,
+    outputs: &[OperandDescriptor],
+    limits: &crate::limits::MLOpSupportLimits,
+    allow_int4_uint4: bool,
+) -> Result<(), GraphBuilderError> {
+    let Some(operation_name) = spec_operation_name(operation) else {
+        return Ok(());
+    };
+    let mut types = input_data_types(operation, operation_name, graph)?;
+    // The general checker inserts an implicit zero point to resolve SameAs.
+    // Backend limits apply only to actual operands and the inferred output.
+    if matches!(
+        operation,
+        Operation::QuantizeLinear {
+            zero_point: None,
+            ..
+        }
+    ) {
+        types.retain(|(name, _)| *name != OperandName::ZeroPoint);
+    }
+    types.extend(outputs.iter().enumerate().map(|(index, output)| {
+        (
+            output_name(operation, index),
+            ml_data_type(output.data_type),
+        )
+    }));
+    for (operand_name, used_dtype) in types {
+        let allowed = limits
+            .operand_limits(operation_name, operand_name)
+            .map(|tensor| tensor.data_types.as_slice())
+            .unwrap_or(&[]);
+        if !dtype_allowed(allowed, used_dtype, allow_int4_uint4) {
+            return Err(BackendDataTypesError {
+                operation_name,
+                operand_name,
+                allowed_dtype: extended_types(allowed, allow_int4_uint4),
+                used_dtype,
+            }
+            .into());
         }
     }
     Ok(())

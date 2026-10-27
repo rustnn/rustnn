@@ -50,6 +50,22 @@ pub enum AllowedDataTypesError {
     },
 }
 
+/// An operand passes general validation but violates backend operator limits.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "backend limits for {operation_name}.{operand_name} allow {allowed_dtype:?}, but the operand uses {used_dtype:?}"
+)]
+pub struct BackendDataTypesError {
+    /// Operation identifier.
+    pub operation_name: crate::operation_data_types::OperationName,
+    /// Input, option member, or output identifier.
+    pub operand_name: crate::operation_data_types::OperandName,
+    /// Types accepted by the backend, including enabled packed integer extensions.
+    pub allowed_dtype: Vec<crate::operator_enums::MLOperandDataType>,
+    /// Actual operand type.
+    pub used_dtype: crate::operator_enums::MLOperandDataType,
+}
+
 /// Shape or data type conflicts found while recording an operation.
 ///
 /// Variant fields carry the values named in the message; they are not documented separately.
@@ -142,6 +158,9 @@ pub enum ShapeInferenceError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum GraphBuilderError {
+    /// General dtype validation passed, but the backend's operator limits reject an operand.
+    #[error(transparent)]
+    BackendDataTypes(#[from] BackendDataTypesError),
     /// Operand type validation failed while recording an operation.
     #[error(transparent)]
     AllowedDataTypes(#[from] AllowedDataTypesError),

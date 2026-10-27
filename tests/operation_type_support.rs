@@ -267,7 +267,7 @@ fn bypass_warns_on_every_call() {
 
 #[cfg(feature = "burn-runtime-cpu")]
 #[test]
-fn context_option_controls_recording_without_bypassing_shape_validation() {
+fn general_bypass_preserves_backend_and_shape_validation() {
     use rustnn::mlcontext::{
         Backend, MLContext, MLContextOptions, MLGraphBuilder, MLOperandDescriptor,
         MLPowerPreference,
@@ -289,8 +289,12 @@ fn context_option_controls_recording_without_bypassing_shape_validation() {
             )
             .unwrap();
         let result = builder.relu(input);
-        assert_eq!(result.is_ok(), bypass);
-        if !bypass {
+        if bypass {
+            assert!(matches!(
+                result,
+                Err(rustnn::error::GraphBuilderError::BackendDataTypes(_))
+            ));
+        } else {
             assert!(matches!(
                 result,
                 Err(rustnn::error::GraphBuilderError::AllowedDataTypes(_))
@@ -325,9 +329,16 @@ fn context_option_controls_recording_without_bypassing_shape_validation() {
                 ..Default::default()
             },
         );
-        assert_eq!(result.is_ok(), bypass);
         if bypass {
-            assert_eq!(result.unwrap().len(), 2);
+            assert!(matches!(
+                result,
+                Err(rustnn::error::GraphBuilderError::BackendDataTypes(_))
+            ));
+        } else {
+            assert!(matches!(
+                result,
+                Err(rustnn::error::GraphBuilderError::AllowedDataTypes(_))
+            ));
         }
         // Slice arguments must still match the input rank when bypass is enabled.
         assert!(

@@ -8,7 +8,8 @@
 //! rustnn extensions: a backend or device hint that overrides automatic selection, and
 //! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`].
 //! [`MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`] permits
-//! backend type extensions while recording, with a warning for every bypassed operation.
+//! skipping general specification checks while recording, with a warning for every
+//! bypassed operation. Backend operator type limits remain enforced.
 //! [`MLContextOptions::with_rustnn_allow_int4_uint4`] permits packed integer
 //! extensions while retaining all other type validation.
 //! [`BackendStatistics`] holds optional, backend-specific diagnostic snapshots.
@@ -101,7 +102,7 @@ impl MLContextOptions {
     /// Bypass specification operand data type checks while recording operations.
     ///
     /// Defaults to `false`. When enabled, each checked operation emits a warning.
-    /// Shape, rank, operand-reference, and backend constraints still apply.
+    /// Backend operator dtype limits, shape, rank, and operand-reference checks still apply.
     pub fn with_rustnn_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
         self.bypass_allowed_data_types_checks = bypass;
         self

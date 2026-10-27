@@ -786,6 +786,9 @@ impl<'context> MLContext<'context> {
     }
 
     /// See <https://www.w3.org/TR/webnn/#api-mlcontext-opsupportlimits>
+    ///
+    /// Context-backed builders enforce these dtype limits after general dtype
+    /// validation. Bypassing general checks does not skip backend checks.
     pub fn op_support_limits(&self) -> &MLOpSupportLimits {
         self.backend.op_support_limits()
     }

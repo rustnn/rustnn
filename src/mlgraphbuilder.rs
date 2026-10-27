@@ -12,6 +12,9 @@
 //! return [`GraphBuilderError::AllowedDataTypes`]. The context's
 //! [`crate::mlcontextoptions::MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`]
 //! setting skips these type checks with warnings, while preserving shape validation.
+//! After general dtype checks pass, context-backed builders check every operand
+//! against backend operator limits; failures return [`GraphBuilderError::BackendDataTypes`].
+//! Backend limits remain enforced when general checks are bypassed.
 //!
 //! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
 //! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
@@ -1477,6 +1480,7 @@ pub(crate) fn infer_operation_descriptors(
     graph: &GraphInfo,
     bypass_allowed_data_types_checks: bool,
     allow_int4_uint4: bool,
+    backend_op_support_limits: Option<&crate::limits::MLOpSupportLimits>,
 ) -> Result<Vec<OperandDescriptor>> {
     for (_, id) in crate::operation_type_support::named_input_operands(operation) {
         get_operand(MLOperand { id: id as usize }, graph)?;
@@ -1505,6 +1509,15 @@ pub(crate) fn infer_operation_descriptors(
                 descriptors.len()
             ),
         });
+    }
+    if let Some(limits) = backend_op_support_limits {
+        crate::operation_type_support::check_backend_data_types(
+            operation,
+            graph,
+            &descriptors,
+            limits,
+            allow_int4_uint4,
+        )?;
     }
     Ok(descriptors)
 }
@@ -2130,14 +2143,14 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     where
         'context: 'builder,
     {
+        let recorder = GraphRecorder::new()
+            .with_bypass_allowed_data_types_checks(context.bypass_allowed_data_types_checks)
+            .with_allow_int4_uint4(context.allow_int4_uint4)
+            .with_backend_op_support_limits(context.op_support_limits());
         let backend = context.backend.create_builder()?;
         Ok(Self {
             backend,
-            recorder: Some(
-                GraphRecorder::new()
-                    .with_bypass_allowed_data_types_checks(context.bypass_allowed_data_types_checks)
-                    .with_allow_int4_uint4(context.allow_int4_uint4),
-            ),
+            recorder: Some(recorder),
         })
     }
 

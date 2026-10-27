@@ -19,6 +19,13 @@ macro_rules! impl_allowed_limits {
             fn for_operation(operation: OperationName) -> Self {
                 Self { $($field: tensor_limits(operation, OperandName::$operand)),+ }
             }
+
+            fn operand_limits(&self, operand: OperandName) -> Option<&MLTensorLimits> {
+                match operand {
+                    $(OperandName::$operand => Some(&self.$field)),+,
+                    _ => None,
+                }
+            }
         }
     };
 }
@@ -288,3 +295,134 @@ pub static EVERYTHING_THAT_IS_ALLOWED: LazyLock<MLOpSupportLimits> =
         triangular: MLSingleInputSupportLimits::for_operation(OperationName::Triangular),
         r#where: MLWhereSupportLimits::for_operation(OperationName::Where),
     });
+
+impl MLOpSupportLimits {
+    pub(crate) fn operand_limits(
+        &self,
+        operation: OperationName,
+        operand: OperandName,
+    ) -> Option<&MLTensorLimits> {
+        match operation {
+            OperationName::ArgMin => self.arg_min.operand_limits(operand),
+            OperationName::ArgMax => self.arg_max.operand_limits(operand),
+            OperationName::BatchNormalization => self.batch_normalization.operand_limits(operand),
+            OperationName::Cast => self.cast.operand_limits(operand),
+            OperationName::Clamp => self.clamp.operand_limits(operand),
+            OperationName::Concat => self.concat.operand_limits(operand),
+            OperationName::Conv2d => self.conv2d.operand_limits(operand),
+            OperationName::ConvTranspose2d => self.conv_transpose2d.operand_limits(operand),
+            OperationName::CumulativeSum => self.cumulative_sum.operand_limits(operand),
+            OperationName::Add => self.add.operand_limits(operand),
+            OperationName::Sub => self.sub.operand_limits(operand),
+            OperationName::Mul => self.mul.operand_limits(operand),
+            OperationName::Div => self.div.operand_limits(operand),
+            OperationName::Max => self.max.operand_limits(operand),
+            OperationName::Min => self.min.operand_limits(operand),
+            OperationName::Pow => self.pow.operand_limits(operand),
+            OperationName::Equal => self.equal.operand_limits(operand),
+            OperationName::NotEqual => self.not_equal.operand_limits(operand),
+            OperationName::Greater => self.greater.operand_limits(operand),
+            OperationName::GreaterOrEqual => self.greater_or_equal.operand_limits(operand),
+            OperationName::Lesser => self.lesser.operand_limits(operand),
+            OperationName::LesserOrEqual => self.lesser_or_equal.operand_limits(operand),
+            OperationName::LogicalNot => self.logical_not.operand_limits(operand),
+            OperationName::LogicalAnd => self.logical_and.operand_limits(operand),
+            OperationName::LogicalOr => self.logical_or.operand_limits(operand),
+            OperationName::LogicalXor => self.logical_xor.operand_limits(operand),
+            OperationName::IsNaN => self.is_na_n.operand_limits(operand),
+            OperationName::IsInfinite => self.is_infinite.operand_limits(operand),
+            OperationName::Abs => self.abs.operand_limits(operand),
+            OperationName::Ceil => self.ceil.operand_limits(operand),
+            OperationName::Cos => self.cos.operand_limits(operand),
+            OperationName::Erf => self.erf.operand_limits(operand),
+            OperationName::Exp => self.exp.operand_limits(operand),
+            OperationName::Floor => self.floor.operand_limits(operand),
+            OperationName::Identity => self.identity.operand_limits(operand),
+            OperationName::Log => self.log.operand_limits(operand),
+            OperationName::Neg => self.neg.operand_limits(operand),
+            OperationName::Reciprocal => self.reciprocal.operand_limits(operand),
+            OperationName::RoundEven => self.round_even.operand_limits(operand),
+            OperationName::Sin => self.sin.operand_limits(operand),
+            OperationName::Sign => self.sign.operand_limits(operand),
+            OperationName::Sqrt => self.sqrt.operand_limits(operand),
+            OperationName::Tan => self.tan.operand_limits(operand),
+            OperationName::DequantizeLinear => self.dequantize_linear.operand_limits(operand),
+            OperationName::QuantizeLinear => self.quantize_linear.operand_limits(operand),
+            OperationName::Elu => self.elu.operand_limits(operand),
+            OperationName::Expand => self.expand.operand_limits(operand),
+            OperationName::Gather => self.gather.operand_limits(operand),
+            OperationName::GatherElements => self.gather_elements.operand_limits(operand),
+            OperationName::GatherND => self.gather_nd.operand_limits(operand),
+            OperationName::Gelu => self.gelu.operand_limits(operand),
+            OperationName::Gemm => self.gemm.operand_limits(operand),
+            OperationName::Gru => self.gru.operand_limits(operand),
+            OperationName::GruCell => self.gru_cell.operand_limits(operand),
+            OperationName::HardSigmoid => self.hard_sigmoid.operand_limits(operand),
+            OperationName::HardSwish => self.hard_swish.operand_limits(operand),
+            OperationName::InstanceNormalization => {
+                self.instance_normalization.operand_limits(operand)
+            }
+            OperationName::LayerNormalization => self.layer_normalization.operand_limits(operand),
+            OperationName::LeakyRelu => self.leaky_relu.operand_limits(operand),
+            OperationName::Linear => self.linear.operand_limits(operand),
+            OperationName::Lstm => self.lstm.operand_limits(operand),
+            OperationName::LstmCell => self.lstm_cell.operand_limits(operand),
+            OperationName::Matmul => self.matmul.operand_limits(operand),
+            OperationName::Pad => self.pad.operand_limits(operand),
+            OperationName::AveragePool2d => self.average_pool2d.operand_limits(operand),
+            OperationName::L2Pool2d => self.l2_pool2d.operand_limits(operand),
+            OperationName::MaxPool2d => self.max_pool2d.operand_limits(operand),
+            OperationName::Prelu => self.prelu.operand_limits(operand),
+            OperationName::ReduceL1 => self.reduce_l1.operand_limits(operand),
+            OperationName::ReduceL2 => self.reduce_l2.operand_limits(operand),
+            OperationName::ReduceLogSum => self.reduce_log_sum.operand_limits(operand),
+            OperationName::ReduceLogSumExp => self.reduce_log_sum_exp.operand_limits(operand),
+            OperationName::ReduceMax => self.reduce_max.operand_limits(operand),
+            OperationName::ReduceMean => self.reduce_mean.operand_limits(operand),
+            OperationName::ReduceMin => self.reduce_min.operand_limits(operand),
+            OperationName::ReduceProduct => self.reduce_product.operand_limits(operand),
+            OperationName::ReduceSum => self.reduce_sum.operand_limits(operand),
+            OperationName::ReduceSumSquare => self.reduce_sum_square.operand_limits(operand),
+            OperationName::Relu => self.relu.operand_limits(operand),
+            OperationName::Resample2d => self.resample2d.operand_limits(operand),
+            OperationName::Reshape => self.reshape.operand_limits(operand),
+            OperationName::Reverse => self.reverse.operand_limits(operand),
+            OperationName::ScatterElements => self.scatter_elements.operand_limits(operand),
+            OperationName::ScatterND => self.scatter_nd.operand_limits(operand),
+            OperationName::Sigmoid => self.sigmoid.operand_limits(operand),
+            OperationName::Slice => self.slice.operand_limits(operand),
+            OperationName::Softmax => self.softmax.operand_limits(operand),
+            OperationName::Softplus => self.softplus.operand_limits(operand),
+            OperationName::Softsign => self.softsign.operand_limits(operand),
+            OperationName::Split => self.split.operand_limits(operand),
+            OperationName::Tanh => self.tanh.operand_limits(operand),
+            OperationName::Tile => self.tile.operand_limits(operand),
+            OperationName::Transpose => self.transpose.operand_limits(operand),
+            OperationName::Triangular => self.triangular.operand_limits(operand),
+            OperationName::Where => self.r#where.operand_limits(operand),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operand_lookup_covers_every_generated_rule() {
+        for rule in crate::operation_data_types::OPERATION_DATA_TYPES {
+            let tensor = EVERYTHING_THAT_IS_ALLOWED
+                .operand_limits(rule.operation, rule.operand)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing backend limits for {}.{}",
+                        rule.operation, rule.operand
+                    )
+                });
+            assert_eq!(
+                tensor.data_types,
+                allowed_data_types(rule.operation, rule.operand)
+            );
+        }
+    }
+}
