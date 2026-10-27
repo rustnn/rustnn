@@ -144,6 +144,7 @@ pub mod loader;
 pub mod mlcontext;
 pub mod mlcontextoptions;
 pub mod mlgraphbuilder;
+pub mod operation_data_types;
 pub mod operator_enums;
 pub mod operator_options;
 pub mod operators;
