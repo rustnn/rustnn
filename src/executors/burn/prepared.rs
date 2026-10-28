@@ -209,8 +209,17 @@ impl<B: Backend> PreparedPlan<B> {
         device: B::Device,
     ) -> Result<Self, GraphError> {
         // These are runtime representation limits, not WebNN operation rules.
-        // Inspect intermediates too, so unsupported ranks fail at build time.
+        // Inspect intermediates too, so unsupported types and ranks fail at build time.
         for operand in &graph.operands {
+            if matches!(
+                operand.descriptor.data_type,
+                DataType::Bfloat16 | DataType::Float8e4m3
+            ) {
+                return Err(GraphError::UnsupportedDataType {
+                    data_type: operand.descriptor.data_type,
+                    backend: crate::backend_selection::Backend::BurnCpu,
+                });
+            }
             if operand.descriptor.shape.len() > 8 {
                 return Err(err("Burn tensors require rank <= 8"));
             }
@@ -403,6 +412,65 @@ mod tests {
             data: vec![value as f32],
             int64_data: Some(vec![value]),
             uint64_data: None,
+        }
+    }
+
+    #[test]
+    fn builder_preparation_rejects_unsupported_float_types() {
+        use crate::mlcontext::{MLGraphBuilder, MLNamedOperands, MLOperandDescriptor};
+
+        for dtype in [DataType::Bfloat16, DataType::Float8e4m3] {
+            for position in ["input", "constant", "intermediate", "output"] {
+                let mut builder = MLGraphBuilder::new_uncompiled();
+                let x = if position == "constant" {
+                    builder
+                        .constant_from_slice(
+                            &MLOperandDescriptor::new(dtype, vec![1]),
+                            &[0u8; 2][..dtype.bits_per_element() / 8],
+                        )
+                        .unwrap()
+                } else {
+                    builder
+                        .input(
+                            "x",
+                            &MLOperandDescriptor::new(
+                                if position == "input" {
+                                    dtype
+                                } else {
+                                    DataType::Float32
+                                },
+                                vec![1],
+                            ),
+                        )
+                        .unwrap()
+                };
+                let y = if matches!(position, "intermediate" | "output") {
+                    builder.cast(x, dtype).unwrap()
+                } else {
+                    x
+                };
+                let y = if position == "output" {
+                    y
+                } else {
+                    builder.cast(y, DataType::Float32).unwrap()
+                };
+                let graph = builder
+                    .finish_graph_info(&MLNamedOperands::from([("y", y)]))
+                    .unwrap();
+                let error =
+                    PreparedPlan::<NdArray<f32>>::from_builder_graph(&graph, Default::default())
+                        .unwrap_err();
+                assert!(
+                    matches!(
+                        error,
+                        GraphError::UnsupportedDataType {
+                            data_type,
+                            backend: crate::backend_selection::Backend::BurnCpu,
+                        } if data_type == dtype
+                    ),
+                    "{position}: {error}"
+                );
+            }
         }
     }
 
