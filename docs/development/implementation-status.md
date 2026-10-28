@@ -11,7 +11,7 @@ Advanced Topics, and WebNN Specification guides. Graph-file guidance is consolid
 | Topic | Authoritative reference |
 |---|---|
 | API entry point and first graph | [Crate Rustdoc](https://rustnn.github.io/rustnn/api/rustnn/) |
-| Context operations and unimplemented methods | [MLContext](https://rustnn.github.io/rustnn/api/rustnn/mlcontext/struct.MLContext.html), including [op_support_limits](https://rustnn.github.io/rustnn/api/rustnn/mlcontext/struct.MLContext.html#method.op_support_limits) |
+| Context operations and unimplemented methods | [MLContext](https://rustnn.github.io/rustnn/api/rustnn/mlcontext/struct.MLContext.html); [op_support_limits](https://rustnn.github.io/rustnn/api/rustnn/mlcontext/struct.MLContext.html#method.op_support_limits) returns the shared spec-derived defaults until backends provide narrower limits |
 | Builder operations, naming conventions, and constant-construction gaps | [Builder module](https://rustnn.github.io/rustnn/api/rustnn/mlgraphbuilder/), [MLGraphBuilder](https://rustnn.github.io/rustnn/api/rustnn/mlgraphbuilder/struct.MLGraphBuilder.html) |
 | Tensor access, lifetime, and unimplemented methods | [MLTensor](https://rustnn.github.io/rustnn/api/rustnn/mlcontext/struct.MLTensor.html) |
 | WebNN dictionaries, defaults, and enums | [Options](https://rustnn.github.io/rustnn/api/rustnn/operator_options/), [enums](https://rustnn.github.io/rustnn/api/rustnn/operator_enums/) |

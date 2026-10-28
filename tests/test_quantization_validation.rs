@@ -1,7 +1,9 @@
 //! Quantization parameters obey the same contracts through the builder and GraphInfo.
 
 use rustnn::graph::{DataType, Dimension, GraphInfo, Operand, OperandDescriptor, OperandKind};
-use rustnn::mlcontext::{MLNamedOperands, MLOperandDescriptor};
+use rustnn::mlcontext::{
+    MLContextOptions, MLNamedOperands, MLOperandDescriptor, MLPowerPreference,
+};
 use rustnn::mlgraphbuilder::MLGraphBuilder;
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
@@ -61,7 +63,17 @@ fn graph(
 }
 
 fn builder_result(graph: &GraphInfo) -> rustnn::error::Result<GraphInfo> {
-    let mut builder = MLGraphBuilder::new_uncompiled();
+    builder_result_with_options(
+        graph,
+        &MLContextOptions::new(MLPowerPreference::Default, false),
+    )
+}
+
+fn builder_result_with_options(
+    graph: &GraphInfo,
+    options: &MLContextOptions,
+) -> rustnn::error::Result<GraphInfo> {
+    let mut builder = MLGraphBuilder::new_uncompiled_with_options(options);
     let mut inputs = vec![];
     for operand in &graph.operands[..3] {
         inputs.push(
@@ -180,7 +192,7 @@ fn quantization_rejects_mismatched_parameter_dtypes() {
             &[1],
             &[1],
         ),
-        "dtype",
+        "scale",
     );
     rejected(
         &graph(
@@ -192,7 +204,7 @@ fn quantization_rejects_mismatched_parameter_dtypes() {
             &[1],
             &[1],
         ),
-        "dtype",
+        "zeroPoint",
     );
 }
 
@@ -363,7 +375,9 @@ fn invalid_quantization_does_not_partially_record_an_operation() {
 }
 
 #[test]
-fn quantization_retains_existing_integer_parameter_dtypes() {
+fn quantization_integer_extensions_require_explicit_options() {
+    let options =
+        MLContextOptions::new(MLPowerPreference::Default, false).with_rustnn_allow_int4_uint4(true);
     for dtype in [DataType::Int4, DataType::Uint4, DataType::Int32] {
         for quantize in [false, true] {
             let graph = graph(
@@ -375,17 +389,31 @@ fn quantization_retains_existing_integer_parameter_dtypes() {
                 &[1],
                 &[1],
             );
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
-            GraphValidator::new(
-                &builder_result(&graph).unwrap(),
-                ContextProperties::default(),
+            if dtype == DataType::Int32 {
+                GraphValidator::new(&graph, ContextProperties::default())
+                    .validate()
+                    .unwrap();
+                builder_result(&graph).unwrap();
+            } else {
+                assert!(
+                    GraphValidator::new(&graph, ContextProperties::default())
+                        .validate()
+                        .is_err()
+                );
+                assert!(builder_result(&graph).is_err());
+            }
+            let built = builder_result_with_options(&graph, &options).unwrap();
+            rustnn::operation_type_support::check_allowed_data_types_with_options(
+                &built.operations[0],
+                &built,
+                &options,
             )
-            .validate()
             .unwrap();
+            let json = rustnn::webnn_json::to_graph_json(&built, false).unwrap();
+            rustnn::webnn_json::from_graph_json_owned_with_options(json, &options).unwrap();
         }
     }
+    // The packed-integer policy must not enable the separate int32-input extension.
     let graph = graph(
         true,
         DataType::Int32,
@@ -395,14 +423,16 @@ fn quantization_retains_existing_integer_parameter_dtypes() {
         &[1],
         &[1],
     );
-    GraphValidator::new(&graph, ContextProperties::default())
-        .validate()
-        .unwrap();
-    GraphValidator::new(
-        &builder_result(&graph).unwrap(),
-        ContextProperties::default(),
+    assert!(
+        GraphValidator::new(&graph, ContextProperties::default())
+            .validate()
+            .is_err()
+    );
+    assert!(builder_result_with_options(&graph, &options).is_err());
+    builder_result_with_options(
+        &graph,
+        &options.with_rustnn_bypass_allowed_data_types_checks(true),
     )
-    .validate()
     .unwrap();
 }
 

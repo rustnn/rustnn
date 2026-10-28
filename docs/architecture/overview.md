@@ -68,7 +68,7 @@ loads, validates and converts stored graphs without a context.
 A backend implements two crate-private traits from `src/mlcontext.rs`:
 
 - `MLBackendContext`: `create_tensor`, `read_tensor`, `write_tensor`, `dispatch`, tensor
-  capacity and resize, and `create_builder`.
+  capacity and resize, `create_builder`, and `op_support_limits`.
 - `MLBackendBuilder`: `build(GraphInfo) -> MLGraph`.
 
 It also implements `ListDevices::list_devices()` for the selection code. Compiled artifacts are
@@ -76,6 +76,14 @@ stored in the `MLBackendGraph` enum. When a backend's feature is off, `backends/
 its context type to `DisabledContext`, so `MLContext` and the selection code compile under every
 feature combination. The traits are crate-private on purpose: external backends are not
 supported yet.
+
+`MLContext::op_support_limits` borrows its backend's `MLOpSupportLimits`. The trait
+provides an override point; all current backends inherit the shared
+`limits::EVERYTHING_THAT_IS_ALLOWED` value, initialized once. Each operand's types
+come from the generated allowed-type rules; ranks use `MLRankRange::default()`.
+This common default describes the validation envelope. Backend compilation and
+execution can impose additional restrictions. Context type-check bypass and
+packed integer settings do not alter the shared query result.
 
 ## Graph model
 

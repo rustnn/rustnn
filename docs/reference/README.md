@@ -1,38 +1,57 @@
 # WebNN Specification Reference
 
-This directory contains cached copies of the W3C WebNN specification for offline reference.
+Download or refresh the live W3C WebNN Bikeshed source from the repository root:
 
-## Files
-
-- **webnn-index.bs** - Bikeshed source file from the official WebNN spec repository
-  - Source: https://github.com/webmachinelearning/webnn/blob/main/index.bs
-  - Last updated: 2025-12-20
-  - This is the authoritative source that gets compiled to the official W3C spec at https://www.w3.org/TR/webnn/
-
-## Usage
-
-The `.bs` (Bikeshed) file is a markup format used by W3C specifications. While it's primarily meant to be compiled to HTML, it's human-readable and contains all operation definitions, signatures, and specifications.
-
-To find operations:
 ```bash
-grep "MLOperand \w\+(" webnn-index.bs
+make fetch-webnn-spec
 ```
 
-To extract operation list:
+The recipe saves the source to `target/webnn-index.bs`. The download is a local
+build artifact, excluded from version control. It comes from the
+[WebNN main branch](https://github.com/webmachinelearning/webnn/blob/main/index.bs),
+which can change independently of rustnn.
+
+The source is human-readable and contains operation definitions, signatures, and
+validation algorithms. To find builder signatures:
+
 ```bash
-grep -E "MLOperand \w+\(" webnn-index.bs | sed -E 's/.*MLOperand ([a-zA-Z0-9]+)\(.*/\1/' | sort -u
+rg 'MLOperand \w+\(' target/webnn-index.bs
 ```
 
-## Updating
+## Generate allowed data type metadata
 
-To update the cached spec:
 ```bash
-curl -s https://raw.githubusercontent.com/webmachinelearning/webnn/main/index.bs -o docs/reference/webnn-index.bs
-# Update the "Last updated" date in this README
+make generate-operation-data-types
+make check-operation-data-types
+python3 -m unittest scripts/test_generate_operation_data_types.py
+```
+
+Generated explicit type lists use `MLOperandDataType` variants. Spec types absent
+from the enum are omitted and listed in comments beside each affected rule.
+
+`operation_type_support::check_allowed_data_types` checks every present operand
+of an `Operation` against its `GraphInfo`, including actual `SameAs` relationships.
+It returns `AllowedDataTypesError` with operation, operand, allowed types, and used
+type. Builder inference applies it to single- and multi-output operations by
+default. `MLContextOptions::with_rustnn_bypass_allowed_data_types_checks(true)`
+skips type checks with a warning for every operation; shape and reference checks
+remain active.
+
+For packed 4-bit backend extensions, prefer
+`MLContextOptions::with_rustnn_allow_int4_uint4(true)`. This allows int4/uint4
+where int8/uint8 are permitted, while retaining other type and equality checks.
+`check_allowed_data_types_with_options` applies both context policies to a graph
+operation; the const lookup continues to describe the unextended spec domains.
+
+For another source or output path, or offline drift checking:
+
+```bash
+python3 scripts/generate_operation_data_types.py --input target/webnn-index.bs --output target/operation_data_types.rs
+python3 scripts/generate_operation_data_types.py --input target/webnn-index.bs --check
 ```
 
 ## Cross-References
 
-- Implementation status: [Generated backend operator support](https://rustnn.github.io/rustnn/development/backend-operator-support/)
-- Online spec: https://www.w3.org/TR/webnn/
-- Spec repository: https://github.com/webmachinelearning/webnn
+- [Generated backend operator support](../development/backend-operator-support.md)
+- [Published WebNN specification](https://www.w3.org/TR/webnn/)
+- [Specification repository](https://github.com/webmachinelearning/webnn)

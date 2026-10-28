@@ -23,6 +23,49 @@ use thiserror::Error;
 /// Result of the WebNN API (`MLContext`, `MLGraphBuilder::build`, dispatch).
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// An operation operand violates the generated allowed data type rules.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum AllowedDataTypesError {
+    /// The used type is outside the spec domain or differs from a `SameAs` operand.
+    #[error("{operation_name}.{operand_name} allows {allowed_dtype:?}, but uses {used_dtype:?}")]
+    NotAllowed {
+        /// Operation identifier from the generated table.
+        operation_name: crate::operation_data_types::OperationName,
+        /// Input, option member, or output identifier.
+        operand_name: crate::operation_data_types::OperandName,
+        /// Allowed types; a `SameAs` violation lists the referenced actual type.
+        allowed_dtype: Vec<crate::operator_enums::MLOperandDataType>,
+        /// Actual operand type.
+        used_dtype: crate::operator_enums::MLOperandDataType,
+    },
+    /// An operation references an operand missing from its graph.
+    #[error("{operation_name}.{operand_name} references missing operand {operand_id}")]
+    MissingOperand {
+        /// Operation identifier.
+        operation_name: crate::operation_data_types::OperationName,
+        /// Operand role whose reference is invalid.
+        operand_name: crate::operation_data_types::OperandName,
+        /// Missing graph operand index.
+        operand_id: u32,
+    },
+}
+
+/// An operand passes general validation but violates backend operator limits.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error(
+    "backend limits for {operation_name}.{operand_name} allow {allowed_dtype:?}, but the operand uses {used_dtype:?}"
+)]
+pub struct BackendDataTypesError {
+    /// Operation identifier.
+    pub operation_name: crate::operation_data_types::OperationName,
+    /// Input, option member, or output identifier.
+    pub operand_name: crate::operation_data_types::OperandName,
+    /// Types accepted by the backend, including enabled packed integer extensions.
+    pub allowed_dtype: Vec<crate::operator_enums::MLOperandDataType>,
+    /// Actual operand type.
+    pub used_dtype: crate::operator_enums::MLOperandDataType,
+}
+
 /// Shape or data type conflicts found while recording an operation.
 ///
 /// Variant fields carry the values named in the message; they are not documented separately.
@@ -115,6 +158,12 @@ pub enum ShapeInferenceError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum GraphBuilderError {
+    /// General dtype validation passed, but the backend's operator limits reject an operand.
+    #[error(transparent)]
+    BackendDataTypes(#[from] BackendDataTypesError),
+    /// Operand type validation failed while recording an operation.
+    #[error(transparent)]
+    AllowedDataTypes(#[from] AllowedDataTypesError),
     /// Failed to build: requested MLGraphBuilder.build with an empty output map.
     #[error("Failed to build: requested MLGraphBuilder.build with an empty output map")]
     EmptyOutputHashMap,
@@ -456,6 +505,9 @@ pub enum QuantizationParameterError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum GraphError {
+    /// An operation violates the generated operand data type rules.
+    #[error(transparent)]
+    AllowedDataTypes(#[from] AllowedDataTypesError),
     /// Graph file `path` could not be read: `source`.
     #[error("graph file {path} could not be read: {source}")]
     Io {

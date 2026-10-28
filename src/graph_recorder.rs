@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ops::Deref;
 
 use crate::Operation;
@@ -13,6 +14,9 @@ use crate::mlgraphbuilder::infer_operation_descriptors;
 #[derive(Clone, Debug, Default)]
 pub(crate) struct GraphRecorder {
     graph: GraphInfo,
+    bypass_allowed_data_types_checks: bool,
+    allow_int4_uint4: bool,
+    backend_op_support_limits: Option<Cow<'static, crate::limits::MLOpSupportLimits>>,
 }
 
 impl GraphRecorder {
@@ -22,6 +26,29 @@ impl GraphRecorder {
 
     pub(crate) fn graph(&self) -> &GraphInfo {
         &self.graph
+    }
+
+    pub(crate) fn with_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
+        self.bypass_allowed_data_types_checks = bypass;
+        self
+    }
+
+    pub(crate) fn with_allow_int4_uint4(mut self, allow: bool) -> Self {
+        self.allow_int4_uint4 = allow;
+        self
+    }
+
+    pub(crate) fn with_backend_op_support_limits(
+        mut self,
+        limits: &crate::limits::MLOpSupportLimits,
+    ) -> Self {
+        let shared = &*crate::limits::EVERYTHING_THAT_IS_ALLOWED;
+        self.backend_op_support_limits = Some(if std::ptr::eq(limits, shared) {
+            Cow::Borrowed(shared)
+        } else {
+            Cow::Owned(limits.clone())
+        });
+        self
     }
 
     pub(crate) fn set_quantized(&mut self, quantized: bool) {
@@ -95,7 +122,13 @@ impl GraphRecorder {
         let descriptors = if output_ids.is_empty() {
             Vec::new()
         } else {
-            infer_operation_descriptors(&operation, &self.graph)?
+            infer_operation_descriptors(
+                &operation,
+                &self.graph,
+                self.bypass_allowed_data_types_checks,
+                self.allow_int4_uint4,
+                self.backend_op_support_limits.as_deref(),
+            )?
         };
         let label = (!operation.label().is_empty()).then(|| operation.label().to_string());
         let operands = output_ids
@@ -196,6 +229,222 @@ mod tests {
             .enumerate()
             .map(|(index, shape)| recorder.add_input(format!("input_{index}"), descriptor(shape)))
             .collect()
+    }
+
+    #[test]
+    fn backend_dtype_failure_is_distinct_and_does_not_record_outputs() {
+        use crate::operation_data_types::{OperandName, OperationName};
+        use crate::operator_enums::MLOperandDataType;
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.relu.input.data_types = vec![MLOperandDataType::Float16];
+        let mut recorder = GraphRecorder::new().with_backend_op_support_limits(&limits);
+        // Backend overrides are snapshotted; later changes cannot affect this builder.
+        limits.relu.input.data_types.clear();
+        let input = recorder.add_input("x".into(), descriptor(&[2]));
+        let error = recorder
+            .record_operation(
+                Operation::Relu {
+                    input,
+                    options: None,
+                    outputs: vec![1],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(error, GraphBuilderError::BackendDataTypes(
+            crate::error::BackendDataTypesError {
+                operation_name: OperationName::Relu, operand_name: OperandName::Input,
+                allowed_dtype, used_dtype: MLOperandDataType::Float32,
+            }
+        ) if allowed_dtype == [MLOperandDataType::Float16]));
+        assert_eq!(recorder.operands.len(), 1);
+        assert!(recorder.operations.is_empty());
+        recorder
+            .record_operation(
+                Operation::Identity {
+                    input,
+                    options: None,
+                    outputs: vec![1],
+                },
+                None,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn generally_disallowed_output_precedes_a_backend_input_failure() {
+        use crate::operation_data_types::OperandName;
+        use crate::operator_enums::MLOperandDataType;
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.arg_max.input.data_types.clear();
+        let mut recorder = GraphRecorder::new().with_backend_op_support_limits(&limits);
+        let input = recorder.add_input("x".into(), descriptor(&[2]));
+        let error = recorder
+            .record_operation(
+                Operation::ArgMax {
+                    input,
+                    axis: 0,
+                    options: Some(crate::operator_options::MLArgMinMaxOptions {
+                        output_data_type: MLOperandDataType::Float32,
+                        ..Default::default()
+                    }),
+                    outputs: vec![1],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphBuilderError::AllowedDataTypes(crate::error::AllowedDataTypesError::NotAllowed {
+                operand_name: OperandName::Output,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn backend_limits_check_inferred_outputs_and_option_operands() {
+        use crate::operation_data_types::OperandName;
+        use crate::operator_enums::MLOperandDataType;
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.arg_max.output.data_types = vec![MLOperandDataType::Int32];
+        limits.gemm.c.data_types = vec![MLOperandDataType::Float16];
+        let mut recorder = GraphRecorder::new().with_backend_op_support_limits(&limits);
+        let ids = named_inputs(&mut recorder, &[&[2, 2], &[2, 2], &[2, 2]]);
+        let error = recorder
+            .record_operation(
+                Operation::ArgMax {
+                    input: ids[0],
+                    axis: 0,
+                    options: Some(crate::operator_options::MLArgMinMaxOptions {
+                        output_data_type: MLOperandDataType::Int64,
+                        ..Default::default()
+                    }),
+                    outputs: vec![3],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphBuilderError::BackendDataTypes(crate::error::BackendDataTypesError {
+                operand_name: OperandName::Output,
+                ..
+            })
+        ));
+        let error = recorder
+            .record_operation(
+                Operation::Gemm {
+                    a: ids[0],
+                    b: ids[1],
+                    options: Some(crate::operator_options::MLGemmOptions {
+                        c: Some(ids[2]),
+                        ..Default::default()
+                    }),
+                    outputs: vec![3],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphBuilderError::BackendDataTypes(crate::error::BackendDataTypesError {
+                operand_name: OperandName::C,
+                ..
+            })
+        ));
+        assert!(recorder.operations.is_empty());
+    }
+
+    #[test]
+    fn backend_limits_check_every_output_of_multi_output_operations() {
+        use crate::operation_data_types::OperandName;
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.gru.output1.data_types.clear();
+        let mut recorder = GraphRecorder::new().with_backend_op_support_limits(&limits);
+        let ids = named_inputs(&mut recorder, &[&[3, 2, 4], &[1], &[1]]);
+        let error = recorder
+            .record_operation(
+                Operation::Gru {
+                    input: ids[0],
+                    weight: ids[1],
+                    recurrence: ids[2],
+                    steps: 3,
+                    hidden_size: 5,
+                    options: Some(MLGruOptions {
+                        return_sequence: true,
+                        ..Default::default()
+                    }),
+                    outputs: vec![3, 4],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphBuilderError::BackendDataTypes(crate::error::BackendDataTypesError {
+                operand_name: OperandName::Outputs1,
+                ..
+            })
+        ));
+        assert_eq!(recorder.operands.len(), 3);
+    }
+
+    #[test]
+    fn packed_integer_setting_does_not_override_a_backend_without_the_matching_type() {
+        use crate::operation_data_types::OperandName;
+        use crate::operator_enums::MLOperandDataType;
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.dequantize_linear.input.data_types = vec![MLOperandDataType::Int8];
+        let mut recorder = GraphRecorder::new()
+            .with_allow_int4_uint4(true)
+            .with_backend_op_support_limits(&limits);
+        let mut packed = descriptor(&[2]);
+        packed.data_type = DataType::Uint4;
+        let input = recorder.add_input("x".into(), packed);
+        let scale = recorder.add_input("scale".into(), descriptor(&[1]));
+        let error = recorder
+            .record_operation(
+                Operation::DequantizeLinear {
+                    input,
+                    scale,
+                    zero_point: None,
+                    options: None,
+                    outputs: vec![2],
+                },
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GraphBuilderError::BackendDataTypes(crate::error::BackendDataTypesError {
+                operand_name: OperandName::Input,
+                used_dtype: MLOperandDataType::Uint4,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn backend_limits_ignore_an_omitted_quantization_zero_point() {
+        let mut limits = crate::limits::EVERYTHING_THAT_IS_ALLOWED.clone();
+        limits.quantize_linear.zero_point.data_types.clear();
+        let mut recorder = GraphRecorder::new().with_backend_op_support_limits(&limits);
+        let input = recorder.add_input("x".into(), descriptor(&[2]));
+        let scale = recorder.add_input("scale".into(), descriptor(&[1]));
+        recorder
+            .record_operation(
+                Operation::QuantizeLinear {
+                    input,
+                    scale,
+                    zero_point: None,
+                    options: None,
+                    outputs: vec![2],
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(recorder.operands[2].descriptor.data_type, DataType::Uint8);
     }
 
     #[test]

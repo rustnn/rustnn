@@ -365,6 +365,8 @@ impl<'a> GraphValidator<'a> {
                 })?;
         let output_desc = &output_operand.descriptor;
 
+        crate::operation_type_support::check_allowed_data_types(operation, self.graph, false)?;
+
         // The parameters decide the output, so their errors come first. The parameter rules are
         // the builder's, so GraphInfo from any source meets the same checks.
         crate::mlgraphbuilder::check_quantization_parameters(
@@ -377,22 +379,6 @@ impl<'a> GraphValidator<'a> {
             operation: op_name.clone(),
             source,
         })?;
-
-        if is_quantize {
-            if output_desc.data_type != zero_point_desc.data_type {
-                return Err(invalid(format!(
-                    "quantize output dtype {:?} must match zeroPoint dtype {:?}",
-                    output_desc.data_type, zero_point_desc.data_type
-                )));
-            }
-        } else {
-            if output_desc.data_type != scale_desc.data_type {
-                return Err(invalid(format!(
-                    "dequantize output dtype {:?} must match scale dtype {:?}",
-                    output_desc.data_type, scale_desc.data_type
-                )));
-            }
-        }
 
         // Shape constraints
         let input_shape_dims = &input_desc.shape;
@@ -595,20 +581,6 @@ mod tests {
     }
 
     #[test]
-    fn quantize_blockwise_int4_validates() {
-        let graph = build_quantize_graph(
-            "quantizeLinear",
-            DataType::Float16,
-            DataType::Float16,
-            DataType::Uint4,
-            vec![4, 4],
-            vec![2, 2],
-        );
-        let validator = GraphValidator::new(&graph, ContextProperties::default());
-        validator.validate().unwrap();
-    }
-
-    #[test]
     fn quantize_rank_mismatch_fails() {
         let graph = build_quantize_graph(
             "quantizeLinear",
@@ -626,29 +598,6 @@ mod tests {
                 crate::error::QuantizationParameterError::ScaleRankMismatch {
                     scale_rank: 1,
                     input_rank: 2,
-                }
-            ),
-            other => panic!("unexpected error {:?}", other),
-        }
-    }
-
-    #[test]
-    fn dequantize_invalid_scale_type_fails() {
-        let graph = build_quantize_graph(
-            "dequantizeLinear",
-            DataType::Uint8,
-            DataType::Uint8,
-            DataType::Uint8,
-            vec![2, 2],
-            vec![1, 1],
-        );
-        let validator = GraphValidator::new(&graph, ContextProperties::default());
-        let err = validator.validate().unwrap_err();
-        match err {
-            GraphError::QuantizationParameters { source, .. } => assert_eq!(
-                source,
-                crate::error::QuantizationParameterError::ScaleDataType {
-                    found: DataType::Uint8,
                 }
             ),
             other => panic!("unexpected error {:?}", other),
