@@ -69,8 +69,8 @@ pub const fn allowed_data_types(
 /// Optional quantization zero points default to uint8 when absent.
 ///
 /// `by_pass_check` skips type validation and logs a warning on every call. Shape
-/// and reference validation elsewhere remain active. Emulated global pooling and
-/// squeeze/unsqueeze use the corresponding pool/reshape rules. The rustnn `shape`
+/// and reference validation elsewhere remain active. Emulated
+/// squeeze/unsqueeze use the corresponding reshape rules. The rustnn `shape`
 /// extension accepts every represented input type and produces int64.
 /// Prospective outputs are checked by the shared inference path before recording.
 pub fn check_allowed_data_types(
@@ -316,8 +316,6 @@ pub(crate) fn named_input_operands(operation: &Operation) -> Vec<(OperandName, u
         | Operation::AveragePool2d { input, .. }
         | Operation::MaxPool2d { input, .. }
         | Operation::L2Pool2d { input, .. }
-        | Operation::GlobalAveragePool { input, .. }
-        | Operation::GlobalMaxPool { input, .. }
         | Operation::ReduceSum { input, .. }
         | Operation::ReduceMean { input, .. }
         | Operation::ReduceMax { input, .. }

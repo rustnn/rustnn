@@ -16,10 +16,6 @@ The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.c
 
 Unavailable backends are skipped at startup with a log message.
 
-Native WPT contexts explicitly enable `with_rustnn_allow_int4_uint4(true)` because
-the pinned corpus includes packed 4-bit quantization cases. Other data type rules
-and `SameAs` checks remain enforced; the full type-check bypass stays disabled.
-
 The local fixture tests also exercise Node's module loader. Preloaded fixture modules use
 relative specifiers from the fixture directory so Windows drive letters are not interpreted
 as URL schemes. If a Windows launcher shim silently drops multiline `node -e` scripts,

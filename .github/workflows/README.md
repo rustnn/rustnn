@@ -13,12 +13,6 @@
 
 ## Conventions
 
-- Specification data type metadata is refreshed manually with `make fetch-webnn-spec`
-  and `make generate-operation-data-types`. `make check-operation-data-types` checks
-  against the local cached source; CI does not fetch the moving specification.
-  Run the extractor regressions with
-  `python3 -m unittest scripts/test_generate_operation_data_types.py`.
-
 - The Rust version is pinned in `rust-toolchain.toml`; every workflow that installs Rust pins
   the same version. Bump them together (the toolchain file lists the workflows).
 - `protoc` is installed in every job; `flatc` in jobs that build the `litert-runtime` feature.
