@@ -40,17 +40,18 @@ fn err(message: impl Into<String>) -> GraphError {
 }
 
 pub(super) fn is_integer(dtype: DataType) -> bool {
-    matches!(
-        dtype,
+    // explicitly list all types to force manual update, once new types are added
+    match dtype {
         DataType::Int4
-            | DataType::Uint4
-            | DataType::Int8
-            | DataType::Uint8
-            | DataType::Int32
-            | DataType::Uint32
-            | DataType::Int64
-            | DataType::Uint64
-    )
+        | DataType::Uint4
+        | DataType::Int8
+        | DataType::Uint8
+        | DataType::Int32
+        | DataType::Uint32
+        | DataType::Int64
+        | DataType::Uint64 => true,
+        DataType::Float32 | DataType::Float16 | DataType::Float8e4m3 | DataType::Bfloat16 => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
