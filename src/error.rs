@@ -429,44 +429,23 @@ pub enum Error {
     },
 }
 
-/// Why the scale and zero point of a `quantizeLinear` or `dequantizeLinear` do not fit its
-/// input. Checked when the builder records the operation, including graph import.
-///
-/// Variant fields carry the values named in the message; they are not documented separately.
+/// Error for failed validation on a `quantizeLinear`/`dequantizeLinear` operation
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
-#[allow(missing_docs)]
 pub enum QuantizationParameterError {
-    /// The scale is not float16 or float32.
-    #[error("scale must be float16 or float32 (got {found:?})")]
-    ScaleDataType { found: DataType },
-    /// The quantize input is not float16, float32 or int32.
-    #[error("quantize input must be float16/float32/int32 (got {found:?})")]
-    QuantizeInputDataType { found: DataType },
-    /// The dequantize input is not a quantized integer type.
-    #[error("dequantize input must be int4/uint4/int8/uint8/int32/uint32 (got {found:?})")]
-    DequantizeInputDataType { found: DataType },
-    /// A floating-point quantize input and its scale have different types.
-    #[error("scale dtype {scale:?} must match quantize input dtype {input:?}")]
-    ScaleInputDataTypeMismatch { scale: DataType, input: DataType },
-    /// The zero point is not a quantized integer type.
-    #[error("zeroPoint must be int4/uint4/int8/uint8/int32/uint32 (got {found:?})")]
-    ZeroPointDataType { found: DataType },
-    /// The dequantize zero point and input have different types.
-    #[error("zeroPoint dtype {zero_point:?} must match dequantize input dtype {input:?}")]
-    ZeroPointInputDataTypeMismatch {
-        zero_point: DataType,
-        input: DataType,
-    },
     /// The zero point and scale have different shapes.
     #[error("zeroPoint shape {zero_point:?} must match scale shape {scale:?}")]
     ZeroPointShapeMismatch {
+        /// The zero point's shape.
         zero_point: Vec<crate::graph::Dimension>,
+        /// The scale's shape.
         scale: Vec<crate::graph::Dimension>,
     },
     /// The scale does not have the input's rank.
     #[error("scale rank {scale_rank} must match input rank {input_rank}")]
     ScaleRankMismatch {
+        /// The scale's rank.
         scale_rank: usize,
+        /// The input's rank.
         input_rank: usize,
     },
     /// A scale dimension is zero or does not divide the input dimension (blockwise).
@@ -474,8 +453,11 @@ pub enum QuantizationParameterError {
         "scale dim {axis} (value {scale_dim}) must divide input dim {axis} (value {input_dim}) for blockwise quantization"
     )]
     ScaleDoesNotDivideInput {
+        /// The dimension index.
         axis: usize,
+        /// The scale dimension's size.
         scale_dim: u32,
+        /// The input dimension's size.
         input_dim: u32,
     },
 }
@@ -896,14 +878,14 @@ mod tests {
     fn quantization_parameter_errors_name_the_operation_and_the_rule() {
         let err = GraphError::QuantizationParameters {
             operation: "dequantizeLinear".to_string(),
-            source: QuantizationParameterError::ZeroPointInputDataTypeMismatch {
-                zero_point: DataType::Uint8,
-                input: DataType::Int8,
+            source: QuantizationParameterError::ScaleRankMismatch {
+                scale_rank: 1,
+                input_rank: 2,
             },
         };
         assert_eq!(
             err.to_string(),
-            "quantization validation failed for `dequantizeLinear`: zeroPoint dtype Uint8 must match dequantize input dtype Int8"
+            "quantization validation failed for `dequantizeLinear`: scale rank 1 must match input rank 2"
         );
     }
 

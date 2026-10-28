@@ -1,4 +1,4 @@
-use rustnn::operation_data_types::{ALL_RUSTNN_DATA_TYPES, OperandName, OperationName};
+use rustnn::operation_data_types::{ALL_SPEC_DATA_TYPES, OperandName, OperationName};
 use rustnn::operation_type_support::{allowed_data_types, check_allowed_data_types};
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
@@ -14,7 +14,7 @@ fn const_lookup_preserves_operand_specific_types() {
     );
     assert_eq!(
         allowed_data_types(OperationName::ArgMax, OperandName::Input),
-        ALL_RUSTNN_DATA_TYPES
+        ALL_SPEC_DATA_TYPES
     );
     assert!(allowed_data_types(OperationName::ArgMax, OperandName::Bias).is_empty());
 }
@@ -23,7 +23,7 @@ fn const_lookup_preserves_operand_specific_types() {
 fn same_type_rules_resolve_to_the_referenced_domain() {
     assert_eq!(
         allowed_data_types(OperationName::Add, OperandName::B),
-        ALL_RUSTNN_DATA_TYPES
+        ALL_SPEC_DATA_TYPES
     );
     assert_eq!(
         allowed_data_types(OperationName::BatchNormalization, OperandName::Scale),

@@ -6,8 +6,7 @@
 use crate::error::AllowedDataTypesError;
 use crate::graph::{GraphInfo, OperandDescriptor};
 use crate::operation_data_types::{
-    ALL_RUSTNN_DATA_TYPES, ALL_SPEC_DATA_TYPES, AllowedDataTypes, OPERATION_DATA_TYPES,
-    OperandName, OperationName,
+    ALL_SPEC_DATA_TYPES, AllowedDataTypes, OPERATION_DATA_TYPES, OperandName, OperationName,
 };
 use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;

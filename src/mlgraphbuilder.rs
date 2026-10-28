@@ -987,7 +987,7 @@ fn validate_quantization_parameters(
         .map(|id| get_operand(MLOperand { id: id as usize }, graph))
         .transpose()?
         .map(|operand| &operand.descriptor);
-    check_quantization_parameters(is_quantize, input, scale, zero_point).map_err(|source| {
+    check_quantization_parameters(input, scale, zero_point).map_err(|source| {
         Box::new(ShapeInferenceError::InferError {
             op_name: if is_quantize {
                 "quantizeLinear"
@@ -1005,7 +1005,6 @@ fn validate_quantization_parameters(
 }
 
 pub(crate) fn check_quantization_parameters(
-    _is_quantize: bool,
     input: &OperandDescriptor,
     scale: &OperandDescriptor,
     zero_point: Option<&OperandDescriptor>,
