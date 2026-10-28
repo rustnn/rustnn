@@ -103,6 +103,7 @@ nav:
       - Windows TensorRT-RTX Setup: integration/windows-tensorrt-setup.md
       - CoreML: integration/coreml.md
       - LiteRT: integration/litert.md
+      - Burn CPU: integration/burn-cpu.md
       - CANN (OpenHarmony): integration/cann.md
       - Browser WebNN (wasm32): integration/webnn-browser.md
   - Reference:

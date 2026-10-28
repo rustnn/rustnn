@@ -346,6 +346,7 @@ pub(crate) struct CompiledCoremlModel {
     compute_unit: &'static str,
     diagnostics: CoremlLoadDiagnostics,
     aliases: Box<CoremlFeatureAliases<'static>>,
+    has_single_program_output_scope: bool,
     backing: CoremlModelBacking,
 }
 
@@ -504,6 +505,43 @@ impl CompiledCoremlModel {
     }
 }
 
+fn has_single_program_output_scope(data: &[u8]) -> bool {
+    use crate::protos::coreml::specification::{Model, model};
+    use prost::Message;
+    // Pipeline prediction applies the outer backing names to earlier children,
+    // which reject final outputs absent from their own feature descriptions.
+    // Retain native input storage but copy the returned Pipeline outputs. Checking
+    // only the source graph's static shapes cannot establish this native scope.
+    matches!(
+        Model::decode(data).ok().and_then(|model| model.r#type),
+        Some(model::Type::MlProgram(_))
+    )
+}
+
+#[cfg(test)]
+mod output_backing_scope_tests {
+    #[test]
+    fn output_backings_require_a_single_native_program() {
+        use crate::protos::coreml::specification::{Model, model};
+        use prost::Message;
+        for (kind, expected) in [
+            (model::Type::MlProgram(Default::default()), true),
+            (model::Type::Pipeline(Default::default()), false),
+        ] {
+            let model = Model {
+                r#type: Some(kind),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::has_single_program_output_scope(&model.encode_to_vec()),
+                expected
+            );
+        }
+        assert!(!super::has_single_program_output_scope(&[]));
+        assert!(!super::has_single_program_output_scope(&[0xff]));
+    }
+}
+
 /// Load a CoreML model directly from protobuf bytes and retain it for repeated
 /// dispatch, falling back to CPU-only if the preferred compute units fail.
 pub(crate) fn compile_model(
@@ -563,6 +601,7 @@ fn compile_model_from_asset(
                 compute_unit: name,
                 diagnostics: trace.finish(route, name),
                 aliases: Box::new(aliases),
+                has_single_program_output_scope: has_single_program_output_scope(model_bytes),
                 backing: CoremlModelBacking::InMemory {
                     asset,
                     specification_data,
@@ -635,6 +674,7 @@ fn compile_model_from_url(
                 compute_unit: name,
                 diagnostics: trace.finish(route, name),
                 aliases: Box::new(aliases),
+                has_single_program_output_scope: has_single_program_output_scope(model_bytes),
                 backing: CoremlModelBacking::OnDisk {
                     compiled_dir,
                     temp_model,

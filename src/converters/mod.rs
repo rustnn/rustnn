@@ -10,10 +10,15 @@
 #![doc = include_str!("../../docs/development/converters.md")]
 
 use std::collections::HashMap;
+#[cfg(feature = "burn-runtime-cpu")]
+mod burn;
+#[cfg(feature = "burn-runtime-cpu")]
+pub use burn::BurnConverter;
 
 use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
+mod coreml_constant_fold;
 mod coreml_mlprogram;
 pub(crate) mod coreml_names;
 #[cfg(feature = "litert-runtime")]
@@ -125,6 +130,8 @@ impl ConverterRegistry {
         };
         #[cfg(feature = "onnx")]
         registry.register(Box::new(OnnxConverter));
+        #[cfg(feature = "burn-runtime-cpu")]
+        registry.register(Box::new(BurnConverter));
         registry.register(Box::new(CoremlMlProgramConverter));
         #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
         registry.register(Box::new(TrtxConverter::new()));

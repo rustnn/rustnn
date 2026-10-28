@@ -17,6 +17,10 @@ jobs:
             label: ONNX
             continue_on_error: false
             os: ubuntu-latest
+          - id: burn-cpu
+            label: Burn CPU
+            continue_on_error: false
+            os: ubuntu-latest
           - id: litert
             label: LiteRT
             continue_on_error: true
@@ -82,10 +86,23 @@ jobs:
         run: node scripts/fetch_wpt.mjs
 
       - name: Run WPT conformance tests
+        if: matrix.backend.id != 'burn-cpu'
         env:
           RUSTNN_GIT_SHA: ${{ github.sha }}
           RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: make test-wpt-report WPT_BACKEND=${{ matrix.backend.id }}
+
+      - name: Run Burn CPU WPT conformance tests
+        if: matrix.backend.id == 'burn-cpu'
+        env:
+          WPT_BACKEND: burn-cpu
+          WPT_STRICT_REVISION: '1'
+          WPT_REPORT_JSON: reports/wpt-conformance.json
+          RUSTNN_GIT_SHA: ${{ github.sha }}
+          RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+        run: |
+          mkdir -p reports
+          cargo test --locked --release --features burn-runtime-cpu --test run_wpt_conformance -- --test-threads 1
 
       - name: Upload WPT conformance report
         if: always()

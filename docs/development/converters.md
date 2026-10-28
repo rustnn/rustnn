@@ -81,6 +81,8 @@ Rules that hold for every converter:
   direction is `both` and the first dimension is 1; outputs are wired by name with a positional
   fallback in spec order.
 - Large initializers go to `rustnn_external_weights.data` (`ONNX_EXTERNAL_WEIGHTS_FILENAME`).
+- `resample2d` emits exact integer sizes, computed as `floor(input_size * scale)` in
+  double precision when explicit sizes are absent.
 
 ### TensorRT-RTX
 
@@ -97,6 +99,11 @@ Rules that hold for every converter:
   edits invalidate cached engines. This source hash does not invalidate the separate TensorRT
   JIT runtime cache. See the [cache guide](https://rustnn.github.io/rustnn/integration/tensorrt/#caches).
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+  Output dimensions use `floor(input_size * scale)` in double precision, matching shared
+  shape inference; explicit sizes take precedence over scales.
+- Float16 `reduceLogSum` promotes the input to float32 for the sum and logarithm,
+  then casts the result back to float16. This avoids overflow when the sum exceeds
+  float16's range but its logarithm remains finite.
 - `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
   a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
@@ -114,6 +121,18 @@ Rules that hold for every converter:
   A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- `transpose`, `reshape` and `cast` of a constant are folded into a new constant before
+  emission (`coreml_constant_fold.rs`, applied to a copy of the graph at the start of
+  `convert_with_float16_precision`, for both float16 lowerings). The Neural Engine admits `matmul(x, const)` but refuses
+  `matmul(x, transpose(const))`, and a literal lowering would also transpose the weight on
+  every dispatch on the CPU and GPU paths; GPT-Neo style graphs carry one such transpose per
+  projection. The folded operand keeps its index and name, graph inputs and outputs are never
+  rewritten, a constant with other consumers keeps its payload, and chains fold in one pass.
+  Narrow integer constants (8-bit and 4-bit, the quantized weights whose casts and reshapes
+  are dequantization chains that would otherwise be stored widened), casts that would grow the
+  stored payload (float16 weights read as float32 stay float16 in the weight blob), and casts
+  that WebNN leaves implementation-defined (a float whose truncation does not fit the integer
+  target, or NaN) stay in the graph.
 - WebNN names need not be MIL identifiers, and its input/output namespaces are independent.
   Unsafe or colliding names receive unique physical identifiers. Creator-defined
   `rustnn.webnn.input_aliases` and `rustnn.webnn.output_aliases` JSON mappings preserve
@@ -140,6 +159,59 @@ Rules that hold for every converter:
   or compacts only the required ranges, then supplies independently owned results. Standalone
   compiled models require the original weights sidecar. The valid native graph still
   runs; arithmetic-derived outputs are not reconstructed from inputs or constants.
+- Float16 lowering follows `CoremlOptions::float16_precision`
+  (`CoremlMlProgramConverter::convert_with_float16_precision`; `GraphConverter::convert` uses
+  `Native`). WebNN leaves float16 accumulation precision open (webmachinelearning/webnn#948),
+  so both lowerings conform; they differ in which compute units reproduce the CPU's values.
+  - `Native` (default): float16 operations lower to native float16 MIL kernels. One MIL
+    program, no added operations, eligible for the Neural Engine.
+  - `Exact`: compute is float32 and storage stays float16; each WebNN float16 result is
+    rounded once. The rules below apply only to float16 operands.
+    - `gelu` (MIL `mode="EXACT"`), `sigmoid`, `tanh` (NaN preserved), `relu`, `leakyRelu`,
+      `elu`, `exp`, `neg` (division by -1), `reciprocal`, `hardSigmoid` and `hardSwish` (its
+      sigmoid helper is not rounded separately) evaluate in float32. Parameters such as
+      `alpha` are rounded to float16 first, as WebNN casts them at graph construction.
+    - `matmul`, `layer_norm`, `sub` and `l2_pool`, and data movement (`identity`,
+      `reshape`, `transpose`, `slice_by_size`, `slice_by_index`, `reverse`, `concat`,
+      `split`, `gather`, `gather_along_axis`, `gather_nd`, `tile`, `pad`, `select`,
+      `squeeze`, `expand_dims`, `scatter_along_axis`, `scatter_nd`) take float32 operands
+      and are cast back after the operation, because accelerator kernels can flush
+      represented subnormals or lose small values.
+    - `layerNormalization` normalizes and applies scale and bias in float32. `sign`,
+      `roundEven`, `isNaN`, `isInfinite` and identity copies of constants also evaluate in
+      float32. Constant float32-to-float16 casts are folded on the host with
+      round-to-nearest-even, and public float16 constant outputs are materialized.
+    - Explicit float16 rounding boundaries become native Pipeline children when Core ML
+      could otherwise eliminate a narrowing or fuse a widened kernel back into float16.
+      Child interfaces carry live results only; constants are rematerialized from the
+      shared weight blob. Public descriptors and the backend-independent graph are
+      unchanged; private scalar and Boolean interfaces use explicit rank and type adapters.
+    - Affected float16 widening layouts use compact private features. Original high-rank
+      inputs declare `rustnn.webnn.compact_input_views`; contiguous storage is viewed with
+      its owner retained, padded storage is copied as raw float16 bytes, and dynamic
+      restoration uses the actual input shape.
+- Rules for both lowerings and every float type:
+  - `reciprocal` lowers to `real_div(1, x)`: MIL `inverse` loses the sign of -0 on older
+    Core ML stacks. `log` passes `epsilon = 0`: WebNN specifies `log(x)`.
+  - `roundEven` computes ties-to-even explicitly (MIL `round` ties away from zero on GPU
+    and Neural Engine kernels), in the input type for `Native` and in float32 for `Exact`.
+  - Float32 `tanh` keeps NaN, float32 `sign` returns 0 for NaN, float32 `neg` divides by
+    -1 (both zero signs survive) and float32 identity copies of constants use
+    `real_div(x, 1)`.
+  - `layerNormalization` with constant scale and bias on trailing, ascending axes keeps the
+    fused native `layer_norm(gamma, beta)`. Nontrailing or permuted axes and runtime scale or
+    bias apply the affine work with explicit `mul`/`add` in the declared axis order; for
+    nontrailing or permuted axes that work is placed in its own Pipeline child, because a
+    native plan that fuses it back can omit or reorder the parameters. A missing epsilon
+    defaults to 1e-5.
+  - `instanceNormalization` with runtime scale or bias runs native `instance_norm` without
+    them and applies `mul`/`add` over the channel axis. An NHWC input takes the same
+    NHWC→NCHW and NCHW→NHWC transposes around the native op as the constant-affine path.
+    Scale or bias computed from constants (a widening `cast` of float16 constants, which
+    the constant-view fold keeps in the graph) takes this path too.
+  - Pipeline boundaries take shape bounds through every shape-preserving MIL operation
+    (casts and copies, unary arithmetic, activations, normalization, `softmax`), so a
+    bounded dynamic dimension keeps its provenance across a cut.
 - The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
   inside CoreML and widening the public int64 result at readback. Imported shape tensors
   retain their type and rank through the shared `unsqueeze` inference path.
@@ -197,3 +269,73 @@ inference.
 
 Then write the regression test first, fix the lowering, and run the WPT cases for the operation
 on every backend you have.
+
+## Burn CPU
+
+With `burn-runtime-cpu`, `BurnConverter` lowers typed operations and embedded constants
+into an in-memory execution plan when the graph is built. The CPU runtime prepares and
+replays it using Burn NdArray and host kernels. Conversion and execution are enabled
+together by this single feature.
+The MLContext builder passes its validated graph to Burn preparation, which checks only
+backend tensor representation limits and initializes constants and lifetimes. Operation
+arity, datatype and graph structure rules belong to the builder and are not revalidated
+by Burn preparation. Dispatch does not serialize or deserialize the graph. Prepared
+execution retains graph outputs and constants, releases intermediate tensors after their final consumer, and
+clears temporary state after failed runs. Serialized standalone execution validates plan
+structure and metadata at its external entry point and prepares a fresh runtime per call.
+Both paths retain tensor payload validation and kernel-result publication checks.
+Constant dimensions must be static; runtime inputs may use bounded dynamic dimensions.
+Resampling shape inference floors scaled dimensions and dynamic bounds. Burn float
+resampling uses the same flooring rule as its integer path; explicit sizes override
+scales, and sampling coordinates use the actual output-to-input size ratio.
+Packed int4/uint4 constants and tensors use the shared nibble codecs from `graph.rs`.
+Decoding uses the logical shape's element count, so the unused high nibble of odd-length
+buffers is ignored. Quantization computes logical values, clamps to the target 4-bit range,
+and packs outputs with zero padding. The typed host interpreter handles integer arithmetic,
+comparisons, casts, reductions, tensor movement and integer indices using exact integer
+payloads. Broadcast and block quantization parameters preserve integer zero points;
+dequantization subtracts them before converting to floating point. Integer arithmetic wraps
+to the operand width, integer casts reinterpret the low bits, and float-to-integer casts
+truncate and saturate (NaN becomes zero). Strided slices use WebNN input-window
+extents, with output sizes computed as `ceil(size / stride)`, for floating-point and integer
+tensors. Integer clamp and padding bounds are parsed without
+passing through floating point. An operation involving integers must have an explicit typed
+implementation; dispatch rejects it rather than falling back to a float kernel.
+The runtime stores each operand in one opaque, validated value containing a Burn float
+tensor, signed integers, or unsigned integers. Its private storage variants and restricted
+integer kinds determine the datatype. Constructors check shape, length and integer range;
+only the environment owns its value map. Integer kernels use borrowed exact views and
+apply wrapping or cast conversion before constructing results. Import rejects out-of-range
+exact integers and fractional or non-finite narrow integers supplied as floats. Integer operands
+never acquire persistent float mirrors. The public serialized-plan executor generates its
+legacy float output view only when collecting results. Device outputs declared as float16
+are rounded at every operation boundary, as are host outputs. Accumulation inside
+a float16 operation can still use float32. See
+[Burn CPU](https://rustnn.github.io/rustnn/integration/burn-cpu/) for setup and precision limits.
+
+
+Burn runtime maintenance keeps datatype-independent movement in `typed/movement.rs`,
+integer arithmetic and conversion in `typed.rs`, recurrent kernels in `rnn.rs`, and floating
+host kernels in `float_ops.rs` and `host_array.rs`. `value.rs` owns operand storage and output
+conversion; `tensor_env.rs` owns the operand map and exposes read-only inputs to kernels.
+`execute.rs` explicitly routes operations to shared movement, typed arithmetic or float
+execution. Every kernel writes through `outputs.rs`, which requires datatype metadata,
+checks output ownership and exactly-once completeness, and stages all results until the
+operation succeeds. Checked value construction enforces storage shape, length and datatype;
+graph output binding shapes are checked before publication, including dynamic dimensions.
+Float16 rounding occurs at this shared output boundary.
+`shape.rs` owns validated slice and reduction descriptors, broadcasting and axis helpers.
+Slice windows and reduction output shapes reuse the main shape-inference functions with
+resolved input dimensions; coordinate mapping is independent of datatype. Intermediate
+shapes are computed from runtime inputs, without adding serialized plan metadata.
+`runtime_tensor.rs` adapts runtime ranks to Burn const generics. Its local macros expand
+mechanical read, map, matching-rank binary and construction dispatch; scalar rank remains
+explicit, and numerical formulas stay in ordinary Rust functions. Adapter rank coverage is
+separate from backend capability: NdArray's native reshape and kernels that depend on it
+are limited to six ranks. Shared movement can use the plan's eight-rank limit for float
+and exact integer values. Layout and activation choices
+use the existing WebNN enums. Shared options that still contain strings are parsed at kernel
+entry by `options.rs`; empty strings retain their documented defaults and other invalid
+values return errors. Keep string conversion at serialization and API boundaries, not in
+numeric loops. The operator report scans both numeric dispatchers and the shared movement
+module, so moving an operation between them does not remove it from the report.

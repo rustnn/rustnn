@@ -76,18 +76,22 @@
 //!
 //! # Cargo features
 //!
-//! Backends are opt-in. Without a runtime feature the crate still validates graphs and
-//! converts them to CoreML protobufs (and ONNX with the default `onnx` feature), but [`mlcontext::MLContext::create`] fails
+//! Burn CPU is enabled by default and selected after every other eligible backend.
+//! Other runtime backends are opt-in. Without a runtime feature, the crate still validates
+//! graphs and converts them to CoreML protobufs (and ONNX with the `onnx` feature), but
+//! [`mlcontext::MLContext::create`] fails
 //! with [`error::Error::NoBackendAvailable`].
 //!
 //! | Feature | Effect |
 //! |---|---|
+//! | `cli` (default) | Build the CLI with `clap`, `tracing-subscriber` and ONNX conversion (`onnx`) |
 //! | `onnx` | ONNX converter and `protos::onnx` (default; enabled by `onnx-runtime`). Without it, `webnn-onnx-utils` is not built |
 //! | `onnx-runtime` | ONNX Runtime backend through the `ort` crate (dynamic loading, `ORT_DYLIB_PATH`) |
 //! | `trtx-runtime` | NVIDIA TensorRT-RTX backend through the `trtx` crate; `trtx-runtime-mock` builds without a GPU |
 //! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features are compiled out (validation only) |
 //! | `coreml-runtime` | Apple CoreML backend; executes on macOS/iOS; failing shims on other targets |
 //! | `litert-runtime` | LiteRT (TensorFlow Lite) backend through `litert-sys`; needs `flatc` at build time |
+//! | `burn-runtime-cpu` | Burn NdArray CPU backend, enabled by default as the lowest-priority fallback; no native runtime library required |
 //! | `cann-runtime` | Huawei CANN/HiAI backend on OpenHarmony; `cann-runtime-mock` validates without a device |
 //! | `webnn-runtime` | Browser WebNN backend for `wasm32-unknown-unknown` (`webnn-wpt-tests` embeds the WPT corpus) |
 //! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
@@ -104,6 +108,7 @@
 //! | `TRTX_JSON_DUMP_PATH` | Directory for per-engine TensorRT layer dumps |
 //! | `ORT_DYLIB_PATH` | Path of the ONNX Runtime shared library loaded by `ort` |
 //! | `WPT_COREML_TENSOR_MODE` | WPT harness only: `baseline` (default), `persistent`, or `backings`; does not change library defaults |
+//! | `WPT_COREML_FLOAT16` | WPT harness only: `native` (default) or `exact` CoreML float16 lowering; does not change library defaults |
 //!
 //! Persistent caches (TensorRT engines and the TensorRT runtime cache) live under the
 //! platform cache directory, `<cache_dir>/rustnn/<category>`; see [`backends::caching`].
@@ -113,6 +118,8 @@
 
 pub mod backend_selection;
 pub mod backends;
+#[cfg(feature = "burn-runtime-cpu")]
+pub mod burn;
 #[cfg(feature = "capi")]
 pub mod capi;
 pub mod converters;

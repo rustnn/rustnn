@@ -12,9 +12,12 @@
 //! 3. `accelerated` with `LowPower`: CoreML (Neural Engine), then LiteRT (NPU), then ONNX
 //!    Runtime (NPU).
 //! 4. Not accelerated: CoreML (CPU), then LiteRT (CPU), then ONNX Runtime (CPU).
-//! 5. CANN is only selected when requested with a backend hint.
+//! 5. ONNX Runtime (CPU) is also tried for accelerated requests, followed by Burn CPU as
+//!    the lowest-priority fallback for all power preferences. Burn CPU is enabled by default
+//!    through `burn-runtime-cpu` and runs on the host even for accelerated hints.
+//! 6. CANN is only selected when requested with a backend or device hint.
 //!
-//! ONNX Runtime CPU also serves as the last resort for accelerated requests. When nothing
+//! Explicit backend hints restrict selection to that backend. When nothing
 //! matches, creation fails with [`crate::error::Error::NoBackendAvailable`] (or the
 //! `ForBackendHint` variant), which lists the wanted and compiled backends.
 
@@ -50,7 +53,8 @@ pub enum DeviceType {
 }
 
 /// Execution backend. Each variant is compiled in by the matching Cargo feature
-/// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`).
+/// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`,
+/// `burn-runtime-cpu`). Burn CPU is enabled by default.
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum Backend {
     /// ONNX Runtime (`onnx-runtime`).
@@ -63,6 +67,8 @@ pub enum Backend {
     Litert,
     /// Huawei CANN on OpenHarmony (`cann-runtime`).
     Cann,
+    /// Burn NdArray CPU (`burn-runtime-cpu`).
+    BurnCpu,
 }
 
 /// A concrete device of a [`Backend`], as returned by
@@ -100,6 +106,8 @@ pub enum BackendDevice {
         /// Always `Npu`.
         device_type: DeviceType,
     },
+    /// Burn NdArray on the host CPU.
+    BurnCpu,
     //WebNN {
     //options: MLContextOptions,
     //},
@@ -115,6 +123,7 @@ impl BackendDevice {
             BackendDevice::Coreml { .. } => Backend::Coreml,
             BackendDevice::LiteRt { .. } => Backend::Litert,
             BackendDevice::Cann { .. } => Backend::Cann,
+            BackendDevice::BurnCpu => Backend::BurnCpu,
         }
     }
 
@@ -122,6 +131,7 @@ impl BackendDevice {
     pub fn device_type(&self) -> DeviceType {
         match self {
             BackendDevice::Trtx { .. } => DeviceType::Gpu,
+            BackendDevice::BurnCpu => DeviceType::Cpu,
             BackendDevice::Onnx { device_type, .. }
             | BackendDevice::Coreml { device_type }
             | BackendDevice::LiteRt { device_type }
@@ -282,6 +292,14 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
                 && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_cpu()) =>
         {
             *first
+        }
+        // Lowest-priority fallback for every power preference, including accelerated requests.
+        // An explicit hint for another backend must never silently select Burn CPU.
+        #[cfg(feature = "burn-runtime-cpu")]
+        (_, _)
+            if options.backend_hint.is_none() || options.backend_hint == Some(Backend::BurnCpu) =>
+        {
+            BackendDevice::BurnCpu
         }
         (_, _) if let Some(backend_hint) = options.backend_hint => {
             return Err(crate::error::Error::NoBackendAvailableForBackendHint {

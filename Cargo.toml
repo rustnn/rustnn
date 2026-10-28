@@ -26,7 +26,7 @@ exclude = [
 
 # docs.rs builds with the backends that compile on Linux so their APIs appear in the docs.
 [package.metadata.docs.rs]
-features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "dynamic-inputs"]
+features = ["onnx-runtime", "trtx-runtime", "cann-runtime", "burn-runtime-cpu", "dynamic-inputs"]
 
 # The `objc` 0.2 `msg_send!`/`sel_impl!` macros expand to `cfg(feature = "cargo-clippy")`,
 # which rustc flags as an unexpected cfg. A file-level `#![allow(unexpected_cfgs)]` does not
@@ -39,7 +39,8 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 ] }
 
 [features]
-default = ["onnx"]
+default = ["cli", "onnx", "burn-runtime-cpu"]
+cli = ["dep:clap", "dep:tracing-subscriber", "onnx"]
 onnx = ["dep:webnn-onnx-utils"]
 capi = ["dep:pretty_env_logger"]
 dynamic-inputs = []
@@ -53,6 +54,7 @@ zstd-cache-compression = ["dep:zstd"]
 litert-runtime = ["litert", "litert-sys", "dep:flatbuffers"]
 cann-runtime = ["dep:hiai-rs"]
 cann-runtime-mock = []
+burn-runtime-cpu = ["dep:postcard", "dep:burn-tensor", "dep:burn-ndarray", "dep:getrandom"]
 native-examples = []
 wpt-embed-corpus = []
 webnn-wpt-tests = ["wpt-embed-corpus"]
@@ -191,7 +193,10 @@ MlTriangularOptions = []
 MlWhereSupportLimits = []
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+postcard = { version = "1", optional = true, features = ["alloc"] }
+burn-tensor = { version = "0.21", optional = true, default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.21", optional = true }
+clap = { version = "4.5", features = ["derive"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_with = { version = "3.8", features = ["base64"] }
@@ -204,11 +209,14 @@ bytemuck = { version = "1.15", features = ["extern_crate_std"] }
 ndarray = { version = "0.17", optional = true }
 tempfile = "3.27"
 libloading = { version = "0.9", optional = true }
-ort = { version = "=2.0.0-rc.13", optional = true, features = [
+# Keep the API level aligned with ORT_VERSION in the Makefile. ort defaults to
+# a newer API, which would reject our pinned runtime even with load-dynamic.
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = [
     "ndarray",
     "half",
     "load-dynamic",
-    "api-27",
+    "api-29",
+    "tracing",
 ] }
 half = "2.4"
 trtx = { version = "0.9.1", optional = true }
@@ -223,7 +231,7 @@ webnn-onnx-utils = { version = "0.1.1", optional = true }
 cudarc = { version = "0.19", features = ["cuda-13020"], optional = true }
 log = "0.4.29"
 tracing = { version = "0.1.44", default-features = false, features = ["attributes", "std"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 pretty_env_logger = { version = "0.5.0", optional = true }
 seahash = "4.1.0"
 dirs = "7.0.0"
@@ -259,6 +267,8 @@ cc = "1.0"
 seahash = "4.1.0"
 
 [dev-dependencies]
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 safetensors = "0.8"
 half = "2.4"
@@ -281,6 +291,11 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 
+
+[[bin]]
+name = "rustnn"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [[test]]
 name = "run_wpt_conformance"
@@ -360,3 +375,7 @@ asset = [
     { from = "cmake/rustnnConfig.cmake", to = "rustnn/cmake" },
     { from = "cmake/rustnnConfigVersion.cmake", to = "rustnn/cmake" },
 ]
+
+# Burn uses rand on browser wasm targets, where entropy comes from Web Crypto.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }

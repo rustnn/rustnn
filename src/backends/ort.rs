@@ -4,7 +4,6 @@
 //! tensors in host memory. Devices are the execution-provider devices reported by ONNX
 //! Runtime; the library itself is loaded dynamically from `ORT_DYLIB_PATH`.
 
-use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
 
@@ -43,7 +42,7 @@ impl From<ort::memory::DeviceType> for crate::backend_selection::DeviceType {
         match value {
             ort::memory::DeviceType::CPU => Self::Cpu,
             ort::memory::DeviceType::GPU => Self::Gpu,
-            ort::memory::DeviceType::NPU => Self::Gpu,
+            ort::memory::DeviceType::NPU | ort::memory::DeviceType::FPGA => Self::Npu,
         }
     }
 }
@@ -109,7 +108,9 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
     fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
         let converted = OnnxConverter.convert(&graph_info)?;
 
-        let mut builder = Session::builder()
+        let env =
+            ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        let mut builder = Session::builder(&env)
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("session builder failed: {e}"),
             })?
@@ -121,14 +122,13 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
             builder = builder
                 .with_external_initializer_file_in_memory(
                     ONNX_EXTERNAL_WEIGHTS_FILENAME,
-                    Cow::Owned(weights.to_vec()),
+                    Arc::from(weights),
                 )
                 .map_err(|e| GraphError::OnnxRuntimeFailed {
                     reason: format!("set external initializer failed: {e}"),
                 })?;
         }
 
-        ensure_ort_initialized().map_err(|e| Error::GraphBuildError { source: e.into() })?;
         let session = builder
             .with_optimization_level(GraphOptimizationLevel::Disable)
             .map_err(|e| Error::GraphBuildError {
@@ -592,9 +592,8 @@ impl OrtContext {
         device_idx: usize,
         _options: Option<&RustNNOptions>,
     ) -> crate::error::Result<Self> {
-        ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
-        let env =
-            Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })?;
+        let env = ensure_ort_initialized()
+            .map_err(|e| Error::ContextCreationError { source: e.into() })?;
         Ok(Self {
             env,
             device_idx,
@@ -607,9 +606,8 @@ impl OrtContext {
         device_type: crate::backend_selection::DeviceType,
         _options: Option<&RustNNOptions>,
     ) -> crate::error::Result<Self> {
-        ensure_ort_initialized().map_err(|e| Error::ContextCreationError { source: e.into() })?;
-        let env =
-            Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })?;
+        let env = ensure_ort_initialized()
+            .map_err(|e| Error::ContextCreationError { source: e.into() })?;
 
         let selected = env
             .devices()
@@ -657,13 +655,7 @@ impl fmt::Debug for OrtContext {
 
 impl ListDevices for OrtContext {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
-        if ensure_ort_initialized().is_err() {
-            return vec![];
-        }
-
-        let Ok(env) =
-            Environment::current().map_err(|e| Error::ContextCreationError { source: e.into() })
-        else {
+        let Ok(env) = ensure_ort_initialized() else {
             return vec![];
         };
 

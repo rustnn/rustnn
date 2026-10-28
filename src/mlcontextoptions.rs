@@ -159,7 +159,34 @@ impl Default for OrtOptions {
     }
 }
 
-/// CoreML tensor storage options; see the CoreML integration guide.
+/// How the CoreML converter lowers float16 arithmetic (rustnn extension).
+///
+/// WebNN does not yet fix the intermediate precision of a float16 operation: without an
+/// explicit request, an implementation may accumulate in float16 or wider
+/// (<https://github.com/webmachinelearning/webnn/issues/948>), and whether represented
+/// subnormals must survive is open
+/// (<https://github.com/webmachinelearning/webnn/issues/967>). The CoreML integration guide
+/// lists the measured differences per compute unit and device.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub enum CoremlFloat16Precision {
+    /// Native float16 MIL kernels: one MIL program, no added operations, eligible for the
+    /// Neural Engine. Core ML chooses the accumulation precision, so results can differ
+    /// between compute units and devices.
+    #[default]
+    Native,
+    /// Float16 storage with float32 evaluation of float16 arithmetic, activations,
+    /// normalization and data movement, rounded once at each WebNN float16 result. Explicit
+    /// float16 rounding boundaries that Core ML would otherwise fuse away become native
+    /// Pipeline children, and the model compiles from a URL (the CoreML integration guide
+    /// lists the input-free programs that load in memory instead). This keeps CPU, GPU and
+    /// Neural Engine requests within WebNN's bounds on the devices measured, at the cost
+    /// of more operations and longer builds. Float32 work is not eligible for the Neural
+    /// Engine, so under a Neural Engine request the values come from running it elsewhere.
+    Exact,
+}
+
+/// CoreML tensor storage and lowering options; see the CoreML integration guide.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
 pub struct CoremlOptions {
@@ -171,6 +198,8 @@ pub struct CoremlOptions {
     /// Defaults to true. Flexible output features are excluded. CoreML may decline
     /// compatible backings; the backend then copies into its owned storage.
     pub output_backings: bool,
+    /// Float16 lowering. Defaults to [`CoremlFloat16Precision::Native`].
+    pub float16_precision: CoremlFloat16Precision,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -179,6 +208,7 @@ impl Default for CoremlOptions {
         Self {
             reuse_tensor_storage: false,
             output_backings: true,
+            float16_precision: CoremlFloat16Precision::Native,
         }
     }
 }

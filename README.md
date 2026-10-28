@@ -95,8 +95,7 @@ The ONNX Runtime backend loads the ONNX Runtime 1.29 shared library from `ORT_DY
 from the repository root, `make onnxruntime-download` fetches a matching release into
 `target/onnxruntime/`.
 Set the variable before running (`export ORT_DYLIB_PATH=...` in bash,
-`$env:ORT_DYLIB_PATH = "..."` in PowerShell); without it the `ort` crate picks up an older
-system library and aborts. See [Getting Started](docs/user-guide/getting-started.md).
+`$env:ORT_DYLIB_PATH = "..."` in PowerShell). See [Getting Started](docs/user-guide/getting-started.md).
 
 **For Python examples**, see the [pywebnn repository](https://github.com/rustnn/pywebnn).
 
@@ -150,6 +149,7 @@ ownership rules, package layout, and exact build and run commands.
 | `onnx-runtime` | ONNX Runtime (CPU, GPU, NPU execution providers), all platforms |
 | `trtx-runtime` | NVIDIA TensorRT-RTX (Linux, Windows); `trtx-runtime-mock` builds without a GPU |
 | `coreml-runtime` | Apple CoreML (macOS) |
+| `burn-runtime-cpu` | [Burn NdArray CPU](docs/integration/burn-cpu.md); select `Backend::BurnCpu`, no native runtime library required |
 | `litert-runtime` | LiteRT / TensorFlow Lite; needs `flatc` at build time |
 | `cann-runtime` | Huawei CANN on OpenHarmony; `cann-runtime-mock` for validation |
 | `dynamic-inputs` | Dynamic dimensions bounded by a maximum size |

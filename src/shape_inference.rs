@@ -928,39 +928,6 @@ pub fn infer_pool2d_shape_dimensions(
     Ok(to_dimension_vector(&out))
 }
 
-/// Infer the output shape for global pooling operations
-/// Global pooling reduces spatial dimensions to 1x1
-pub fn infer_global_pool_shape(
-    input_shape: &[u32],
-    layout: InputLayout,
-) -> Result<Vec<u32>, GraphError> {
-    // Validate input is 4D
-    if input_shape.len() != 4 {
-        return Err(GraphError::ShapeInferenceFailed {
-            reason: format!(
-                "Global pooling input must be 4D, got {}D tensor {:?}",
-                input_shape.len(),
-                input_shape
-            ),
-        });
-    }
-
-    // Global pooling reduces spatial dimensions to 1x1
-    // Output shape depends on layout
-    let output_shape = match layout {
-        InputLayout::Nchw => {
-            // [N, C, H, W] -> [N, C, 1, 1]
-            vec![input_shape[0], input_shape[1], 1, 1]
-        }
-        InputLayout::Nhwc => {
-            // [N, H, W, C] -> [N, 1, 1, C]
-            vec![input_shape[0], 1, 1, input_shape[3]]
-        }
-    };
-
-    Ok(output_shape)
-}
-
 /// Infer the output shape for batchNormalization
 /// Batch normalization output has the same shape as input
 pub fn infer_batch_normalization_shape(input_shape: &[u32]) -> Result<Vec<u32>, GraphError> {
@@ -2148,6 +2115,7 @@ pub fn infer_scatter_elements_shape(
 ///
 /// Resizes the two spatial axes given by `axes` (default last two). `sizes` takes precedence
 /// over `scales` when both are set (WebNN semantics).
+/// Scaled dimensions and dynamic upper bounds use floor(input size * scale).
 pub fn infer_resample2d_shape(
     input_shape: &[Dimension],
     axes: [usize; 2],
@@ -2186,16 +2154,20 @@ pub fn infer_resample2d_shape(
     for (axis_idx, scale) in scale_pair.iter().enumerate() {
         let axis = axes[axis_idx];
         output[axis] = match &input_shape[axis] {
-            Dimension::Static(in_dim) => {
-                Dimension::Static(((*in_dim).max(1) as f32 * scale).round().max(1.0) as u32)
-            }
+            Dimension::Static(in_dim) => Dimension::Static(
+                (f64::from((*in_dim).max(1)) * f64::from(*scale))
+                    .floor()
+                    .max(1.0) as u32,
+            ),
             Dimension::Dynamic(d) => {
-                if (*scale - 1.0).abs() < f32::EPSILON {
+                if *scale == 1.0 {
                     Dimension::Dynamic(d.clone())
                 } else {
                     Dimension::Dynamic(DynamicDimension {
                         name: d.name.clone(),
-                        max_size: ((d.max_size.max(1) as f32) * scale).round().max(1.0) as u32,
+                        max_size: (f64::from(d.max_size.max(1)) * f64::from(*scale))
+                            .floor()
+                            .max(1.0) as u32,
                     })
                 }
             }
@@ -2980,38 +2952,6 @@ mod tests {
         );
     }
 
-    // Global pooling tests
-    #[test]
-    fn test_global_pool_nchw() {
-        // Input: [1, 64, 28, 28] -> Output: [1, 64, 1, 1]
-        let output = infer_global_pool_shape(&[1, 64, 28, 28], InputLayout::Nchw).unwrap();
-        assert_eq!(output, vec![1, 64, 1, 1]);
-    }
-
-    #[test]
-    fn test_global_pool_nhwc() {
-        // Input: [1, 28, 28, 64] -> Output: [1, 1, 1, 64]
-        let output = infer_global_pool_shape(&[1, 28, 28, 64], InputLayout::Nhwc).unwrap();
-        assert_eq!(output, vec![1, 1, 1, 64]);
-    }
-
-    #[test]
-    fn test_global_pool_various_sizes() {
-        // Different spatial sizes should all reduce to 1x1
-        let output = infer_global_pool_shape(&[2, 128, 7, 7], InputLayout::Nchw).unwrap();
-        assert_eq!(output, vec![2, 128, 1, 1]);
-
-        let output = infer_global_pool_shape(&[1, 512, 14, 14], InputLayout::Nchw).unwrap();
-        assert_eq!(output, vec![1, 512, 1, 1]);
-    }
-
-    #[test]
-    fn test_global_pool_invalid_input_dim() {
-        // Input must be 4D
-        assert!(infer_global_pool_shape(&[64, 32, 32], InputLayout::Nchw).is_err());
-        assert!(infer_global_pool_shape(&[1, 64, 32, 32, 32], InputLayout::Nchw).is_err());
-    }
-
     // Normalization tests
     #[test]
     fn test_batch_normalization_shape() {
@@ -3712,6 +3652,49 @@ mod tests {
     }
 
     #[test]
+    fn resample2d_floors_noninteger_scaled_dimensions_and_bounds() {
+        let input = to_dimension_vector(&[1, 1, 3, 7]);
+        assert_eq!(
+            infer_resample2d_shape(&input, [2, 3], None, &[1.5, 0.5]).unwrap(),
+            to_dimension_vector(&[1, 1, 4, 3]),
+        );
+        let input = vec![
+            Dimension::Dynamic(DynamicDimension {
+                name: "height".into(),
+                max_size: 3,
+            }),
+            Dimension::Dynamic(DynamicDimension {
+                name: "width".into(),
+                max_size: 7,
+            }),
+        ];
+        assert_eq!(
+            infer_resample2d_shape(&input, [0, 1], None, &[1.5, 0.5]).unwrap(),
+            vec![
+                Dimension::Dynamic(DynamicDimension {
+                    name: "height".into(),
+                    max_size: 4
+                }),
+                Dimension::Dynamic(DynamicDimension {
+                    name: "width".into(),
+                    max_size: 3
+                }),
+            ],
+        );
+        // Integer dimensions must not be rounded to f32 before scaling.
+        assert_eq!(
+            infer_resample2d_shape(
+                &to_dimension_vector(&[16_777_217, 3]),
+                [0, 1],
+                None,
+                &[1.0, 1.5]
+            )
+            .unwrap(),
+            to_dimension_vector(&[16_777_217, 4]),
+        );
+    }
+
+    #[test]
     fn test_resample2d_shape() {
         let input = vec![
             Dimension::Static(1),
@@ -3743,6 +3726,41 @@ mod tests {
 
         let out = infer_resample2d_shape(&input, [2, 3], None, &[]).unwrap();
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_resample2d_fractional_scales_floor_in_double_precision() {
+        for (size, scale, expected) in [
+            (3, 1.5, 4),
+            (3, 0.5, 1),
+            (19, 1.9473684, 36),
+            (16_777_217, 1.0, 16_777_217),
+            (3, f32::from_bits(1.0_f32.to_bits() - 1), 2),
+        ] {
+            let input = vec![Dimension::Static(1), Dimension::Static(size)];
+            assert_eq!(
+                infer_resample2d_shape(&input, [0, 1], None, &[1.0, scale]).unwrap(),
+                vec![Dimension::Static(1), Dimension::Static(expected)],
+            );
+
+            let input = vec![
+                Dimension::Static(1),
+                Dimension::Dynamic(DynamicDimension {
+                    name: "width".to_string(),
+                    max_size: size,
+                }),
+            ];
+            assert_eq!(
+                infer_resample2d_shape(&input, [0, 1], None, &[1.0, scale]).unwrap(),
+                vec![
+                    Dimension::Static(1),
+                    Dimension::Dynamic(DynamicDimension {
+                        name: "width".to_string(),
+                        max_size: expected,
+                    }),
+                ],
+            );
+        }
     }
 
     // ScatterND tests

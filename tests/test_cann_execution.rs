@@ -302,6 +302,52 @@ mod tests {
     }
 
     #[test]
+    fn test_pool2d_default_window() {
+        // A missing window_dimensions pools over the whole spatial extent, so
+        // pool2d without options reduces [1,1,4,4] to [1,1,1,1] in both layouts.
+        let mut context = CONTEXT.lock().unwrap();
+
+        for (layout, shape) in [("nchw", vec![1u64, 1, 4, 4]), ("nhwc", vec![1u64, 4, 4, 1])] {
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let input_desc = MLOperandDescriptor::new(MLOperandDataType::Float32, shape.clone());
+            let input: MLOperand = builder.input("x", &input_desc).unwrap();
+            let output: MLOperand = builder
+                .average_pool2d_with_options(
+                    input,
+                    MLPool2dOptions {
+                        layout: layout.to_string(),
+                        ..MLPool2dOptions::default()
+                    },
+                )
+                .unwrap();
+            let mut graph = builder.build(&BTreeMap::from([("y", output)])).unwrap();
+
+            let tdesc_input = MLTensorDescriptor::new(MLOperandDataType::Float32, shape.clone())
+                .to_writable()
+                .to_readable();
+            let tdesc_output =
+                MLTensorDescriptor::new(MLOperandDataType::Float32, vec![1, 1, 1, 1]).to_readable();
+            let tensor_input = context.create_tensor(&tdesc_input).unwrap();
+            let tensor_output = context.create_tensor(&tdesc_output).unwrap();
+
+            let input_data: Vec<f32> = (0..16).map(|v| v as f32).collect();
+            context.write_tensor(&tensor_input, &input_data).unwrap();
+            context
+                .dispatch(
+                    &mut graph,
+                    &BTreeMap::from([("x", &tensor_input)]),
+                    &BTreeMap::from([("y", &tensor_output)]),
+                )
+                .unwrap();
+
+            let mut out_data = vec![0.0f32; 1];
+            context.read_tensor(&tensor_output, &mut out_data).unwrap();
+            println!("  AvgPool2d default window {layout} {shape:?} = {out_data:?}");
+            assert_eq!(out_data, [7.5f32], "layout {layout}");
+        }
+    }
+
+    #[test]
     fn test_concat() {
         let mut context = CONTEXT.lock().unwrap();
 

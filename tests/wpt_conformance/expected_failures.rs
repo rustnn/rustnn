@@ -8,6 +8,9 @@
 use std::collections::HashSet;
 use std::sync::LazyLock;
 
+static BURN_CPU_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
+    LazyLock::new(|| parse_expected_failures(include_str!("burn-cpu_expected_failures.txt")));
+
 static COREML_EXPECTED_FAILURES: LazyLock<HashSet<&'static str>> =
     LazyLock::new(|| parse_expected_failures(include_str!("coreml_expected_failures.txt")));
 
@@ -37,6 +40,7 @@ fn parse_expected_failures(contents: &'static str) -> HashSet<&'static str> {
 /// an unexpected pass remains a normal passing result.
 pub fn is_expected_failure(backend: &str, trial_name: &str) -> bool {
     match backend {
+        "burn-cpu" => BURN_CPU_EXPECTED_FAILURES.contains(trial_name),
         "coreml" => COREML_EXPECTED_FAILURES.contains(trial_name),
         "litert" => LITERT_EXPECTED_FAILURES.contains(trial_name),
         "cann" => CANN_EXPECTED_FAILURES.contains(trial_name),

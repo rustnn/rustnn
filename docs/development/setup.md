@@ -33,6 +33,10 @@ The default build needs no native runtime beyond the prerequisites above.
 The mock backend features and `dynamic-inputs`, `native-examples`, `pollster`, and
 `zstd-cache-compression` do not add external runtime prerequisites.
 
+The default `cli` feature builds the `rustnn` binary and pulls in `clap` and
+`tracing-subscriber`, and enables `onnx` for CLI conversion. Library consumers can drop
+these with `default-features = false`.
+
 ## Build and test
 
 Use the Makefile targets; they set feature flags and environment variables consistently.
@@ -52,9 +56,11 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `coreml`, `coreml-validate` | CoreML conversion and execution (macOS) |
 | `benchmark-coreml-kv` | Self-contained attention/cache comparison; optionally set `COREML_KV_CONFIG` for an external model/reference fixture; see [Examples](../user-guide/examples.md#coreml-kv-cache-benchmark) |
 | `test-coreml-kv-benchmark` | Oracle and cache-content regressions for all storage modes, without external fixtures; run in macOS CI |
-| `build-coreml`, `test-coreml` | Build all targets; run library and ordinary integration tests. `COREML_FEATURES=coreml-runtime` also checks the build without dynamic inputs |
+| `build-coreml`, `test-coreml` | Build all targets; run library and ordinary integration tests, including CLI execution. Both explicitly enable `cli`. `COREML_FEATURES=coreml-runtime` also checks the build without dynamic inputs |
 | `test-coreml-gather` | Focused active-dimension gather regressions, including scalar indices; `TEST_FILTER` selects a test |
 | `test-coreml-dtypes` | Focused numeric boundary regressions for typed dispatch and the convenience API; CI runs with and without dynamic inputs |
+| `test-coreml-gelu` | Exact Half GELU precision, shapes and compositions, including all Half encodings |
+| `test-coreml-precision` | Native typed-boundary, Half layout, constant, fanout and bounded-dynamic regressions |
 | `test-coreml-tensor-reuse` | Retained storage ownership, type conversion and shape regressions; CI runs with and without dynamic inputs |
 | `litert`, `cann` | LiteRT and CANN conversion of the sample graph |
 | `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
@@ -149,7 +155,7 @@ Then:
 | Workflow | Trigger | Content |
 |---|---|---|
 | `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (including wasm32, and CoreML on macOS), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with `-D warnings`, operator report drift check and generator tests, MkDocs strict build |
-| `wpt-conformance.yml` | push, pull request | WPT suites for ONNX Runtime (Linux), LiteRT (Linux, non-blocking) and CoreML (macOS) |
+| `wpt-conformance.yml` | push, pull request | WPT suites for ONNX Runtime and Burn CPU (Linux), LiteRT (Linux, non-blocking) and CoreML (macOS) |
 | `wpt-conformance-nightly.yml` | schedule | Full WPT run with JSON and HTML reports; publishes the dashboard together with the docs site |
 | `wpt-sync.yml` | weekly, manual | Regenerates snapshots and expected failures against the pinned WPT revision and opens a pull request |
 | `rustnnpt-gate.yml` | pull request | Runs the external rustnnpt conformance runner against the PR's rustnn and enforces a minimum pass rate |
@@ -182,3 +188,11 @@ from the extracted package as well when changing shared documentation.
   warnings. A new module gets a `//!` header saying what the module owns. Enum variants that
   are only operand indices (`Operation`) and error fields described by their message carry an
   explicit `#[allow(missing_docs)]`.
+
+### Burn CPU development
+
+Use `cargo check --features burn-runtime-cpu --all-targets` and
+`cargo test --features burn-runtime-cpu --lib --test test_burn_precision` for the CPU
+interpreter and its public-executor datatype regressions. No native runtime
+installation is needed. Run `make test-wpt-burn-cpu` and regenerate its expected failures
+with `make wpt-sync-burn-cpu`. See [Burn CPU](../integration/burn-cpu.md).

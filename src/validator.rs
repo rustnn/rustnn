@@ -365,36 +365,20 @@ impl<'a> GraphValidator<'a> {
                 })?;
         let output_desc = &output_operand.descriptor;
 
-        // Dtype constraints
-        let scale_ok = matches!(scale_desc.data_type, DataType::Float16 | DataType::Float32);
-        if !scale_ok {
-            return Err(invalid(format!(
-                "scale must be float16 or float32 (got {:?})",
-                scale_desc.data_type
-            )));
-        }
-        let zero_point_ok = matches!(
-            zero_point_desc.data_type,
-            DataType::Int4 | DataType::Uint4 | DataType::Int8 | DataType::Uint8 | DataType::Int32
-        );
-        if !zero_point_ok {
-            return Err(invalid(format!(
-                "zeroPoint must be int4/uint4/int8/uint8/int32 (got {:?})",
-                zero_point_desc.data_type
-            )));
-        }
+        // The parameters decide the output, so their errors come first. The parameter rules are
+        // the builder's, so GraphInfo from any source meets the same checks.
+        crate::mlgraphbuilder::check_quantization_parameters(
+            is_quantize,
+            input_desc,
+            scale_desc,
+            Some(zero_point_desc),
+        )
+        .map_err(|source| GraphError::QuantizationParameters {
+            operation: op_name.clone(),
+            source,
+        })?;
 
         if is_quantize {
-            let input_ok = matches!(
-                input_desc.data_type,
-                DataType::Float16 | DataType::Float32 | DataType::Int32
-            );
-            if !input_ok {
-                return Err(invalid(format!(
-                    "quantize input must be float16/float32/int32 (got {:?})",
-                    input_desc.data_type
-                )));
-            }
             if output_desc.data_type != zero_point_desc.data_type {
                 return Err(invalid(format!(
                     "quantize output dtype {:?} must match zeroPoint dtype {:?}",
@@ -402,20 +386,6 @@ impl<'a> GraphValidator<'a> {
                 )));
             }
         } else {
-            let input_ok = matches!(
-                input_desc.data_type,
-                DataType::Int4
-                    | DataType::Uint4
-                    | DataType::Int8
-                    | DataType::Uint8
-                    | DataType::Int32
-            );
-            if !input_ok {
-                return Err(invalid(format!(
-                    "dequantize input must be int4/uint4/int8/uint8/int32 (got {:?})",
-                    input_desc.data_type
-                )));
-            }
             if output_desc.data_type != scale_desc.data_type {
                 return Err(invalid(format!(
                     "dequantize output dtype {:?} must match scale dtype {:?}",
@@ -426,66 +396,12 @@ impl<'a> GraphValidator<'a> {
 
         // Shape constraints
         let input_shape_dims = &input_desc.shape;
-        let scale_shape_dims = &scale_desc.shape;
-        let zero_point_shape_dims = &zero_point_desc.shape;
         let input_shape = input_desc.static_or_max_shape();
-        let scale_shape = scale_desc.static_or_max_shape();
-
-        if scale_shape_dims.is_empty() {
-            if !zero_point_shape_dims.is_empty() {
-                return Err(invalid(format!(
-                    "zeroPoint shape {:?} must match scalar scale for per-tensor quantization",
-                    zero_point_shape_dims
-                )));
-            }
-        } else {
-            if scale_shape_dims.len() != input_shape_dims.len() {
-                return Err(invalid(format!(
-                    "scale rank {} must match input rank {}",
-                    scale_shape_dims.len(),
-                    input_shape_dims.len()
-                )));
-            }
-            if zero_point_shape_dims != scale_shape_dims {
-                return Err(invalid(format!(
-                    "zeroPoint shape {:?} must match scale shape {:?}",
-                    zero_point_shape_dims, scale_shape_dims
-                )));
-            }
-        }
         if output_desc.static_or_max_shape() != input_shape {
             return Err(invalid(format!(
                 "output shape {:?} must match input shape {:?}",
                 output_desc.shape, input_shape_dims
             )));
-        }
-
-        let mut non_one_dims = Vec::new();
-        for (idx, &dim) in scale_shape.iter().enumerate() {
-            if dim != 1 {
-                non_one_dims.push(idx);
-            }
-        }
-
-        let is_per_tensor = non_one_dims.is_empty();
-        let is_per_axis = non_one_dims.len() == 1
-            && scale_shape[non_one_dims[0]] == *input_shape.get(non_one_dims[0]).unwrap_or(&0);
-
-        if !(is_per_tensor || is_per_axis) {
-            // Blockwise: allow divisibility along differing dims
-            for (i, (&scale_dim, &input_dim)) in
-                scale_shape.iter().zip(input_shape.iter()).enumerate()
-            {
-                if scale_dim == 1 || scale_dim == input_dim {
-                    continue;
-                }
-                if scale_dim == 0 || input_dim == 0 || input_dim % scale_dim != 0 {
-                    return Err(invalid(format!(
-                        "scale dim {} (value {}) must divide input dim {} (value {}) for blockwise quantization",
-                        i, scale_dim, i, input_dim
-                    )));
-                }
-            }
         }
 
         Ok(())
@@ -705,9 +621,13 @@ mod tests {
         let validator = GraphValidator::new(&graph, ContextProperties::default());
         let err = validator.validate().unwrap_err();
         match err {
-            GraphError::QuantizationValidation { reason, .. } => {
-                assert!(reason.contains("rank"), "unexpected reason: {}", reason);
-            }
+            GraphError::QuantizationParameters { source, .. } => assert_eq!(
+                source,
+                crate::error::QuantizationParameterError::ScaleRankMismatch {
+                    scale_rank: 1,
+                    input_rank: 2,
+                }
+            ),
             other => panic!("unexpected error {:?}", other),
         }
     }
@@ -725,9 +645,12 @@ mod tests {
         let validator = GraphValidator::new(&graph, ContextProperties::default());
         let err = validator.validate().unwrap_err();
         match err {
-            GraphError::QuantizationValidation { reason, .. } => {
-                assert!(reason.contains("scale"), "unexpected reason: {}", reason);
-            }
+            GraphError::QuantizationParameters { source, .. } => assert_eq!(
+                source,
+                crate::error::QuantizationParameterError::ScaleDataType {
+                    found: DataType::Uint8,
+                }
+            ),
             other => panic!("unexpected error {:?}", other),
         }
     }

@@ -1,5 +1,6 @@
 # Rust
 /target
+/target-*
 /reports/
 
 # MkDocs output; built by `make docs-build` and in CI

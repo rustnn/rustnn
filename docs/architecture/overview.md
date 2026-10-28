@@ -116,9 +116,10 @@ backends.
 | Capability | Platforms |
 |---|---|
 | Validation, shape inference, conversion to ONNX and CoreML | Linux, macOS, Windows, wasm32 |
-| ONNX Runtime execution | Linux, macOS, Windows |
-| TensorRT-RTX execution | Linux and Windows with NVIDIA RTX GPUs |
-| CoreML execution | macOS |
-| LiteRT execution | Linux, macOS |
-| CANN execution | OpenHarmony (aarch64) |
-| Browser WebNN | wasm32 (bindings only) |
+| [ONNX Runtime execution](../user-guide/getting-started.md#provide-onnx-runtime) | Linux, macOS, Windows |
+| [Burn CPU execution](../integration/burn-cpu.md) | Linux, macOS, Windows |
+| [TensorRT-RTX execution](../integration/tensorrt.md) | Linux and Windows with NVIDIA RTX GPUs |
+| [CoreML execution](../integration/coreml.md) | macOS |
+| [LiteRT execution](../integration/litert.md) | Linux, macOS |
+| [CANN execution](../integration/cann.md) | OpenHarmony (aarch64) |
+| [Browser WebNN](../integration/webnn-browser.md) | wasm32 (bindings only) |

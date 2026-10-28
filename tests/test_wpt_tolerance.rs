@@ -415,10 +415,11 @@ fn javascript_fixture_bridge_preserves_signed_zero_in_tensors_and_options() {
         ("dump_corpus.mjs", true),
     ] {
         let mut command = std::process::Command::new("node");
+        // Node's --import treats Windows drive letters as URL schemes. Resolve
+        // the relative specifier from the fixture directory on every platform.
+        command.current_dir(&fixture_root);
         if without_native_float16 {
-            command
-                .arg("--import")
-                .arg(fixture_root.join("without-native-float16.mjs"));
+            command.arg("--import").arg("./without-native-float16.mjs");
         }
         command.arg(wpt_js_loader::bridge_dir().join(script));
         if script == "dump_tests.mjs" {

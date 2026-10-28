@@ -16,6 +16,11 @@ The in-repo WPT harness runs upstream [WebNN conformance tests](https://github.c
 
 Unavailable backends are skipped at startup with a log message.
 
+The local fixture tests also exercise Node's module loader. Preloaded fixture modules use
+relative specifiers from the fixture directory so Windows drive letters are not interpreted
+as URL schemes. If a Windows launcher shim silently drops multiline `node -e` scripts,
+put the actual Node installation directory first on `PATH` when running the tests.
+
 ## Quick start
 
 ```bash
@@ -38,6 +43,9 @@ make test-wpt-coreml
 # Compare the opt-in CoreML storage paths with the default baseline
 WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
 WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
+
+# Compare the CoreML float16 lowerings (native is the default) on one requested device
+WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
@@ -367,3 +375,17 @@ A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a P
 **Parse warnings (`file_errors`)** — Some WPT files may fail to parse; warnings are logged but do not fail the run.
 
 **Slow TRTX runs** — TensorRT engine compilation per trial makes a full debug-build run take tens of minutes. Use `make test-wpt-op OP=<op>` to iterate on a single operation.
+
+### Burn CPU
+
+`make test-wpt-burn-cpu` uses `burn-runtime-cpu` and selects `Backend::BurnCpu` through the
+shared MLContext runner. `TEST_FILTER=relu` limits trials. Regenerate
+`tests/wpt_conformance/burn-cpu_expected_failures.txt` with `make wpt-sync-burn-cpu`.
+Direct Cargo runs use `WPT_BACKEND=burn-cpu`. No GPU or external runtime is required.
+
+The Node fixture sandbox exposes `structuredClone` for upstream fixtures that derive graphs
+by cloning their resources, including affine instance-normalization layout cases.
+
+On pushes and pull requests to `main`, `wpt-conformance.yml` runs the full Burn CPU
+conformance suite in release mode on Linux. Unexpected failures fail CI; JSON and HTML
+reports are uploaded even when tests fail. The job enforces the pinned WPT revision.

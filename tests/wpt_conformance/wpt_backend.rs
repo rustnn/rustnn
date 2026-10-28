@@ -56,7 +56,13 @@ impl WptBackend {
                 "invalid WPT_COREML_TENSOR_MODE={mode}; expected baseline, persistent or backings"
             ),
         }
+        coreml.coreml.float16_precision = super::wpt_config::coreml_float16_precision();
         vec![
+            Self::new(
+                "burn-cpu",
+                MLContextOptions::new(MLPowerPreference::Default, false)
+                    .with_rustnn_backend_hint(Backend::BurnCpu),
+            ),
             Self::new(
                 "onnx",
                 MLContextOptions::new(MLPowerPreference::Default, false)
@@ -119,7 +125,7 @@ impl WptBackend {
                 Some(backend) => vec![backend],
                 None => {
                     eprintln!(
-                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, coreml, litert or cann); using all backends"
+                        "[WPT] warning: invalid WPT_BACKEND={raw} (expected onnx, trtx, coreml, litert, cann or burn-cpu); using all backends"
                     );
                     Self::all()
                 }

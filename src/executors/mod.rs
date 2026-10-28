@@ -6,6 +6,8 @@
 //! the CLI (`--run-onnx`, `--run-trtx`, `--run-coreml`) and older examples; new code should
 //! use `MLContext` and the backends in [`crate::backends`].
 
+#[cfg(feature = "burn-runtime-cpu")]
+pub mod burn;
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 pub mod cann;
 #[cfg(feature = "coreml-runtime")]

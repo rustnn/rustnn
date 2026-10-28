@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 pub use crate::mlcontextoptions::{
-    BackendStatistics, CoremlOptions, CoremlTensorStatistics, LiteRtOptions, MLContextOptions,
-    MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
+    BackendStatistics, CoremlFloat16Precision, CoremlOptions, CoremlTensorStatistics,
+    LiteRtOptions, MLContextOptions, MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
 };
 
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedtensors>
@@ -144,10 +144,21 @@ pub(crate) enum MLBackendGraph<'context> {
     LiteRtGraph(crate::backends::litert::LiteRtGraph),
     #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
     CannEngine(crate::backends::cann::CannGraph),
+    #[cfg(feature = "burn-runtime-cpu")]
+    BurnPlan(crate::backends::burn::BurnCompiledGraph),
     PhantomData(PhantomData<&'context u8>),
 }
 
 impl<'context> MLBackendGraph<'context> {
+    #[cfg(feature = "burn-runtime-cpu")]
+    pub(crate) fn as_burn_plan_mut(
+        &mut self,
+    ) -> Option<&mut crate::backends::burn::BurnCompiledGraph> {
+        match self {
+            Self::BurnPlan(plan) => Some(plan),
+            _ => None,
+        }
+    }
     #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
     pub(crate) fn as_trtx_engine_mut(&mut self) -> Option<&mut TrtxGraph<'context>> {
         if let Self::TrtxEngine(v) = self {
@@ -628,6 +639,18 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::LiteRt { device_type } => Box::new(
                 LiteRtContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
+            BackendDevice::BurnCpu => {
+                #[cfg(feature = "burn-runtime-cpu")]
+                {
+                    Box::new(crate::backends::burn::BurnContext::new())
+                }
+                #[cfg(not(feature = "burn-runtime-cpu"))]
+                {
+                    return Err(Error::ContextCreationError {
+                        source: "Burn CPU requires burn-runtime-cpu".into(),
+                    });
+                }
+            }
             crate::backend_selection::BackendDevice::Cann { device_type } => Box::new(
                 CannContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
@@ -645,6 +668,7 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Coreml { device_type } => todo!(),
             crate::backend_selection::BackendDevice::LiteRt { .. } => todo!(),
             crate::backend_selection::BackendDevice::Cann { .. } => todo!(),
+            BackendDevice::BurnCpu => todo!(),
         };
         Ok(Self { backend, device })
     }
