@@ -11,7 +11,7 @@ use crate::operator_enums::MLOperandDataType;
 use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};
 
 /// Every data type represented by rustnn, used for unrestricted spec rules.
-pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[
+pub const ALL_RUSTNN_DATA_TYPES: &[MLOperandDataType] = &[
     MLOperandDataType::Float32,
     MLOperandDataType::Float16,
     MLOperandDataType::Int32,
@@ -22,6 +22,18 @@ pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[
     MLOperandDataType::Uint8,
     MLOperandDataType::Int4,
     MLOperandDataType::Uint4,
+];
+
+/// Every data type represented by WebNN standard
+pub const ALL_SPEC_DATA_TYPES: &[MLOperandDataType] = &[
+    MLOperandDataType::Float32,
+    MLOperandDataType::Float16,
+    MLOperandDataType::Int32,
+    MLOperandDataType::Uint32,
+    MLOperandDataType::Int64,
+    MLOperandDataType::Uint64,
+    MLOperandDataType::Int8,
+    MLOperandDataType::Uint8,
 ];
 
 /// WebNN operation identifier in the spec data type tables.
