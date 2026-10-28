@@ -114,9 +114,7 @@ fn create_tensors(
     descriptors
         .iter()
         .map(|(name, descriptor)| {
-            let shape = descriptor
-                .static_shape()
-                .with_context(|| format!("tensor {name:?} needs a concrete shape for execution"))?;
+            let shape = descriptor.static_or_max_shape();
             let descriptor = MLTensorDescriptor::new(
                 descriptor.data_type.try_into()?,
                 shape.into_iter().map(u64::from).collect(),
