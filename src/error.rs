@@ -431,6 +431,7 @@ pub enum Error {
 
 /// Error for failed validation on a `quantizeLinear`/`dequantizeLinear` operation
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[allow(missing_docs)]
 pub enum QuantizationParameterError {
     /// The zero point and scale have different shapes.
     #[error("zeroPoint shape {zero_point:?} must match scale shape {scale:?}")]
