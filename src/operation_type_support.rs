@@ -6,7 +6,8 @@
 use crate::error::AllowedDataTypesError;
 use crate::graph::{GraphInfo, OperandDescriptor};
 use crate::operation_data_types::{
-    ALL_DATA_TYPES, AllowedDataTypes, OPERATION_DATA_TYPES, OperandName, OperationName,
+    ALL_RUSTNN_DATA_TYPES, ALL_SPEC_DATA_TYPES, AllowedDataTypes, OPERATION_DATA_TYPES,
+    OperandName, OperationName,
 };
 use crate::operator_enums::MLOperandDataType;
 use crate::operators::Operation;
@@ -44,7 +45,7 @@ pub const fn allowed_data_types(
                 && rule.operand as usize == operand as usize
             {
                 match rule.allowed {
-                    AllowedDataTypes::Any => return ALL_DATA_TYPES,
+                    AllowedDataTypes::Any => return ALL_SPEC_DATA_TYPES,
                     AllowedDataTypes::Types(types) => return types,
                     AllowedDataTypes::SameAs(reference) => next_operand = Some(reference),
                 }
@@ -214,6 +215,8 @@ fn check_types(
 ) -> Result<(), AllowedDataTypesError> {
     for &(operand_name, used_dtype) in types {
         let allowed = allowed_data_types(operation_name, operand_name);
+        // TODO: remove allow_int4_uint4 and int4->int8, uint4->uint8 promotion once
+        // int4/uint4 are a regular part of the standard
         let packed_type_allowed = allow_int4_uint4
             && match used_dtype {
                 MLOperandDataType::Int4 => allowed.contains(&MLOperandDataType::Int8),

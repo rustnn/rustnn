@@ -112,6 +112,9 @@ impl MLContextOptions {
     /// Defaults to `false`. This enables packed integer backend extensions without
     /// bypassing other data type checks, `SameAs` equality, or shape validation.
     /// Unrestricted spec operands already accept every rustnn data type.
+    ///
+    /// This option will be removed in a future version of RustNN when
+    /// uint4/int4 are a regular part of the WebNN spec.
     pub fn with_rustnn_allow_int4_uint4(mut self, allow: bool) -> Self {
         self.allow_int4_uint4 = allow;
         self
