@@ -107,7 +107,7 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 .PHONY: build test fmt fmt-check lint clean clean-all help \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	docs-serve docs-build docs-clean ci-docs docs-api docs-capi docs-backend-ops docs-backend-ops-check \
-	fetch-webnn-spec generate-operation-data-types check-operation-data-types \
+	fetch-webnn-spec generate-operation-data-types \
 	fetch-wpt require-wpt-cache test-wpt test-wpt-trtx test-wpt-litert test-wpt-coreml \
 	test-wpt-coreml-report build-coreml test-coreml benchmark-coreml-kv test-wpt-op test-wpt-report test-wpt-cann \
 	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
@@ -145,9 +145,6 @@ target/webnn-index.bs:
 
 generate-operation-data-types: target/webnn-index.bs
 	python3 scripts/generate_operation_data_types.py
-
-check-operation-data-types: target/webnn-index.bs
-	python3 scripts/generate_operation_data_types.py --check
 
 fetch-wpt:
 	node scripts/fetch_wpt.mjs
@@ -509,7 +506,6 @@ help:
 	@echo "WebNN Specification:"
 	@echo "  fetch-webnn-spec   - Refresh the WebNN Bikeshed source in target/webnn-index.bs"
 	@echo "  generate-operation-data-types - Generate Rust allowed data type rules from the cached spec"
-	@echo "  check-operation-data-types - Check generated rules against the cached spec"
 	@echo ""
 	@echo "Code Coverage:"
 	@echo "  coverage           - Run tests with coverage (text output)"

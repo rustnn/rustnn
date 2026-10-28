@@ -265,7 +265,7 @@ fn bypass_warns_on_every_call() {
     assert_eq!(LOGGER.0.load(Ordering::SeqCst), 2);
 }
 
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-runtime")]
 #[test]
 fn context_option_controls_recording_without_bypassing_shape_validation() {
     use rustnn::mlcontext::{

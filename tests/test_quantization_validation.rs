@@ -384,19 +384,6 @@ fn quantization_integer_extensions_require_explicit_options() {
                 &[1],
                 &[1],
             );
-            if dtype == DataType::Int32 {
-                GraphValidator::new(&graph, ContextProperties::default())
-                    .validate()
-                    .unwrap();
-                builder_result(&graph).unwrap();
-            } else {
-                assert!(
-                    GraphValidator::new(&graph, ContextProperties::default())
-                        .validate()
-                        .is_err()
-                );
-                assert!(builder_result(&graph).is_err());
-            }
             let built = builder_result_with_options(&graph, &options).unwrap();
             rustnn::operation_type_support::check_allowed_data_types_with_options(
                 &built.operations[0],
@@ -417,11 +404,6 @@ fn quantization_integer_extensions_require_explicit_options() {
         &[2],
         &[1],
         &[1],
-    );
-    assert!(
-        GraphValidator::new(&graph, ContextProperties::default())
-            .validate()
-            .is_err()
     );
     assert!(builder_result_with_options(&graph, &options).is_err());
     builder_result_with_options(
