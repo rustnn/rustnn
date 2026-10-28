@@ -78,6 +78,7 @@ impl MLOperandDataType {
 
     /// Byte size of one element for byte-aligned types. Use [`Self::storage_byte_length`]
     /// for packed `int4` and `uint4` elements.
+    #[cfg(any(feature = "cann-converter", feature = "coreml-converter"))]
     pub(crate) fn bytes_per_element(self) -> usize {
         let bits = self.bits_per_element();
         debug_assert!(
