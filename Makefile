@@ -197,7 +197,7 @@ wpt-sync-burn-cpu: fetch-wpt
 
 test-wpt-litert:
 	@WPT_REPORT_JSON="$(WPT_REPORT_LITERT_JSON)" \
-	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert --test-threads=1
+	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert
 
 test-wpt-coreml:
 	WPT_BACKEND=coreml $(CARGO) test --test run_wpt_conformance --features coreml-runtime -- $(if $(TEST_FILTER),$(TEST_FILTER),coreml) --test-threads 1
@@ -214,23 +214,23 @@ test-wpt-tolerance-parity: require-wpt-cache
 
 .PHONY: test-coreml-gather
 test-coreml-gather:
-	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_dynamic_gather --test test_coreml_gather_bounds -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_dynamic_gather --test test_coreml_gather_bounds -- $(TEST_FILTER)
 
 .PHONY: test-coreml-dtypes
 test-coreml-dtypes:
-	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_dtypes -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_dtypes -- $(TEST_FILTER)
 
 .PHONY: test-coreml-gelu
 test-coreml-gelu:
-	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_gelu --test test_coreml_gelu_precision -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_gelu --test test_coreml_gelu_precision -- $(TEST_FILTER)
 
 .PHONY: test-coreml-precision
 test-coreml-precision:
-	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_precision_pipeline -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_precision_pipeline -- $(TEST_FILTER)
 
 .PHONY: test-coreml-tensor-reuse
 test-coreml-tensor-reuse:
-	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_tensor_reuse -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_tensor_reuse -- $(TEST_FILTER)
 
 # Build every target, including examples and the separately run WPT harness.
 build-coreml:
@@ -239,7 +239,7 @@ build-coreml:
 # Ordinary integration suites use test_*. The live WPT and browser harnesses
 # have their own targets and corpus/device setup; do not run them here.
 test-coreml:
-	$(CARGO) test --lib --test 'test_*' --no-default-features --features $(COREML_FEATURES) -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --lib --test 'test_*' --no-default-features --features $(COREML_FEATURES) -- $(TEST_FILTER)
 
 # Defaults to self-contained attention/cache chaining with an independent oracle.
 benchmark-coreml-kv:
