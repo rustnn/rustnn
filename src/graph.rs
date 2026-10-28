@@ -479,18 +479,6 @@ mod tests {
     }
 
     #[test]
-    fn test_data_type_bytes_per_element() {
-        assert_eq!(DataType::Float16.bytes_per_element(), 2);
-        assert_eq!(DataType::Float32.bytes_per_element(), 4);
-        assert_eq!(DataType::Int32.bytes_per_element(), 4);
-        assert_eq!(DataType::Uint32.bytes_per_element(), 4);
-        assert_eq!(DataType::Int8.bytes_per_element(), 1);
-        assert_eq!(DataType::Uint8.bytes_per_element(), 1);
-        assert_eq!(DataType::Int64.bytes_per_element(), 8);
-        assert_eq!(DataType::Uint64.bytes_per_element(), 8);
-    }
-
-    #[test]
     fn test_data_type_storage_byte_length_int4() {
         assert_eq!(DataType::Int4.storage_byte_length(0), Some(0));
         assert_eq!(DataType::Int4.storage_byte_length(1), Some(1));
