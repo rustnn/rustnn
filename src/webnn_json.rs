@@ -893,7 +893,13 @@ mod tests {
             "text serialization preserves quantized marker"
         );
 
-        let graph_info = from_graph_json(&parsed).expect("graph from text");
+        let options = crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        )
+        .with_rustnn_allow_int4_uint4(true);
+        let graph_info =
+            from_graph_json_owned_with_options(parsed, &options).expect("graph from text");
         assert!(graph_info.quantized);
         assert_eq!(graph_info.operands[0].descriptor.data_type, DataType::Uint4);
     }
@@ -1135,6 +1141,11 @@ mod tests {
 
     #[test]
     fn test_all_data_types_roundtrip() {
+        let options = crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        )
+        .with_rustnn_allow_int4_uint4(true);
         let types = vec![
             DataType::Float32,
             DataType::Float16,
@@ -1151,7 +1162,7 @@ mod tests {
         for dtype in types {
             let graph = build_quantized_graph_info(dtype);
             let json = to_graph_json(&graph, false).expect("to_graph_json");
-            let back = from_graph_json(&json).expect("from_graph_json");
+            let back = from_graph_json_owned_with_options(json, &options).expect("from_graph_json");
 
             assert_eq!(
                 back.operands[0].descriptor.data_type, dtype,

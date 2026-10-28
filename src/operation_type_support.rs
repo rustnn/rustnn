@@ -151,8 +151,7 @@ fn ml_data_type(data_type: crate::graph::DataType) -> MLOperandDataType {
 
 fn spec_operation_name(operation: &Operation) -> Option<OperationName> {
     match operation {
-        Operation::GlobalAveragePool { .. } => Some(OperationName::AveragePool2d),
-        Operation::GlobalMaxPool { .. } => Some(OperationName::MaxPool2d),
+        // TODO: get rid of those non-spec operations or find a proper way to handling those
         Operation::Squeeze { .. } | Operation::Unsqueeze { .. } => Some(OperationName::Reshape),
         Operation::Shape { .. } => None,
         _ => Some(
