@@ -38,6 +38,18 @@ pub enum AllowedDataTypesError {
         /// Actual operand type.
         used_dtype: crate::operator_enums::MLOperandDataType,
     },
+    /// A concat input differs from the first input's data type.
+    #[error(
+        "concat input {input_index} has data type {used_dtype:?}, but input 0 has {expected_dtype:?}; all concat inputs must have the same data type (cast inputs explicitly)"
+    )]
+    InconsistentConcatInput {
+        /// Zero-based index in the concat input sequence.
+        input_index: usize,
+        /// Data type of the first input.
+        expected_dtype: crate::operator_enums::MLOperandDataType,
+        /// Data type of the mismatched input.
+        used_dtype: crate::operator_enums::MLOperandDataType,
+    },
     /// An operation references an operand missing from its graph.
     #[error("{operation_name}.{operand_name} references missing operand {operand_id}")]
     MissingOperand {

@@ -3204,6 +3204,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     );
 
     /// Concatenates `inputs` along `axis`; all other dimensions must match.
+    ///
+    /// All inputs must have the same data type. A mismatch returns
+    /// [`crate::error::AllowedDataTypesError::InconsistentConcatInput`] with the
+    /// zero-based input index and expected and actual types; cast inputs explicitly
+    /// to a common type. The context's type-check bypass also bypasses this check.
     /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat>
     pub fn concat(&mut self, inputs: &[MLOperand], axis: u32) -> Result<MLOperand> {
         self.concat_with_options(inputs, axis, MLOperatorOptions::default())
@@ -3390,6 +3395,45 @@ mod test {
         },
         operators::Operation,
     };
+
+    #[test]
+    fn concat_reports_mismatched_input_types() {
+        use crate::error::{AllowedDataTypesError, GraphBuilderError};
+        use crate::operator_enums::MLOperandDataType;
+
+        for shape in [vec![2], vec![]] {
+            let mut builder = MLGraphBuilder::new_uncompiled();
+            let a = builder
+                .input(
+                    "a",
+                    &MLOperandDescriptor::new(MLOperandDataType::Float32, shape.clone()),
+                )
+                .unwrap();
+            let b = builder
+                .input(
+                    "b",
+                    &MLOperandDescriptor::new(MLOperandDataType::Int32, shape),
+                )
+                .unwrap();
+            let error = builder.concat(&[a, a, b], 0).unwrap_err();
+            assert!(matches!(
+                error,
+                GraphBuilderError::AllowedDataTypes(
+                    AllowedDataTypesError::InconsistentConcatInput {
+                        input_index: 2,
+                        expected_dtype: MLOperandDataType::Float32,
+                        used_dtype: MLOperandDataType::Int32,
+                    }
+                )
+            ));
+            assert_eq!(
+                error.to_string(),
+                "concat input 2 has data type Int32, but input 0 has Float32; all concat inputs must have the same data type (cast inputs explicitly)"
+            );
+            // A rejected operation leaves the builder usable.
+            builder.concat(&[a, a], 0).unwrap();
+        }
+    }
 
     #[test]
     fn conv2d_bias_through_options_uses_operand_index() {

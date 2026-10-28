@@ -23,6 +23,7 @@ lines to most of these situations.
 | `GraphBuilderError::WrongConstantSize` | The byte size of the slice does not match the descriptor; check the element count and the data type (4-bit types pack two values per byte) |
 | `GraphBuilderError::RequestedInputAsOutput` / `RequestedConstantAsOutput` | Outputs must be operation results; pass the result of `identity` if an input must be echoed |
 | `GraphBuilderError::AllowedDataTypes` | An input, option operand, or output violates the spec's type rules. The nested `AllowedDataTypesError` reports the operation, operand, allowed types, and used type; insert a cast or correct the descriptor. Packed 4-bit extensions use `with_rustnn_allow_int4_uint4(true)` on context options. The separate `with_rustnn_bypass_allowed_data_types_checks(true)` bypasses all type checks and emits warnings |
+| `AllowedDataTypesError::InconsistentConcatInput` | Concat inputs have different data types. The error identifies the zero-based input index and both types; cast inputs to a common type before concatenating |
 | `ShapeInferenceError::BroadcastError` | Input shapes are not broadcast-compatible; insert `reshape` or `expand` |
 | `GraphError::DynamicInputsFeatureDisabled` | The graph file declares a dynamic dimension; build with `--features dynamic-inputs` |
 | `Failed to convert graph: ... Unsupported operation: <name>` | The selected backend's converter has no lowering for that operation; see the [operator support report](../development/backend-operator-support.md) and pick another backend or decompose the operation |
