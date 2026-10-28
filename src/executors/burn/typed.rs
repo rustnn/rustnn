@@ -40,7 +40,17 @@ fn err(message: impl Into<String>) -> GraphError {
 }
 
 pub(super) fn is_integer(dtype: DataType) -> bool {
-    !matches!(dtype, DataType::Float16 | DataType::Float32)
+    matches!(
+        dtype,
+        DataType::Int4
+            | DataType::Uint4
+            | DataType::Int8
+            | DataType::Uint8
+            | DataType::Int32
+            | DataType::Uint32
+            | DataType::Int64
+            | DataType::Uint64
+    )
 }
 
 #[derive(Clone, Copy, Debug)]

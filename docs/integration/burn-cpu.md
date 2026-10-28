@@ -38,6 +38,8 @@ on the MLContext builder path. Tensor payload checks and kernel-result checks re
 their storage and publication boundaries.
 Dispatch replays typed operations with Burn tensors; operations without a device implementation
 use host kernels. Float16 values are represented by float32 tensors with explicit rounding.
+Graph building rejects `bfloat16` and `float8e4m3` operands, including constants and
+intermediate results, because Burn CPU cannot represent these types.
 Tensors may have at most eight dimensions. Quantization and dequantization support packed
 `int4` and `uint4` tensors, including scalar parameters, odd element counts, broadcasting
 and block quantization. Tensor storage places even indices in the low nibble and odd indices
