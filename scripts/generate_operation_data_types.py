@@ -91,6 +91,25 @@ def parse_spec(source: str) -> dict[str, dict[str, tuple[str, tuple[str, ...]]]]
             operations[name] = operands.copy()
     if not operations:
         raise ValueError("No tensor-limits tables found")
+    # Read declarations independently of table IDs and link-for attributes so
+    # changes to either cannot silently remove operations from the metadata.
+    idl_operations = set()
+    for body in re.findall(r"\binterface\s+MLGraphBuilder\s*\{(.*?)\};", source, re.S):
+        body = re.sub(r"/\*.*?\*/|//[^\n]*", "", body, flags=re.S)
+        idl_operations.update(
+            re.findall(
+                r"\b(?:MLOperand|sequence\s*<\s*MLOperand\s*>)\s+(\w+)\s*\(", body
+            )
+        )
+    missing = idl_operations - operations.keys()
+    unexpected = operations.keys() - idl_operations
+    if missing != {"input", "constant"} or unexpected:
+        raise ValueError(
+            "Tensor-limits operations do not match MLGraphBuilder IDL "
+            "(expected only input and constant without tables): "
+            f"IDL operations without tables={sorted(missing)}, "
+            f"table operations absent from IDL={sorted(unexpected)}"
+        )
     return operations
 
 
@@ -103,6 +122,12 @@ def operand_data_type_variants() -> dict[str, str]:
     variants = re.findall(r"^\s*([A-Za-z][A-Za-z0-9]*)\s*,", enum[1], re.M)
     if not variants:
         raise ValueError("MLOperandDataType has no variants")
+
+    EXPECTED_RUSTNN_DATA_TYPES = 10
+    assert len(variants) == EXPECTED_RUSTNN_DATA_TYPES, (
+        f"Detected number of variants of MLOperandDataType is {len(variants)}. In the past it was {EXPECTED_RUSTNN_DATA_TYPES=}."
+        "Please review whether this change is expected and then update EXPECTED_RUSTNN_DATA_TYPES"
+    )
     return {variant.lower(): variant for variant in variants}
 
 
@@ -125,11 +150,13 @@ def generate_name_enum(enum_name: str, description: str, names: set[str]) -> lis
         f"pub enum {enum_name} {{",
     ]
     for name in sorted(names):
-        lines.extend([
-            f"    /// `{name}`.",
-            f"    #[strum(serialize = {json.dumps(name)})]",
-            f"    {name_variant(name)},",
-        ])
+        lines.extend(
+            [
+                f"    /// `{name}`.",
+                f"    #[strum(serialize = {json.dumps(name)})]",
+                f"    {name_variant(name)},",
+            ]
+        )
     return lines + ["}", ""]
 
 
@@ -151,74 +178,104 @@ def generate(source: str) -> str:
         "use strum::{AsRefStr, Display, EnumIter, EnumString, IntoStaticStr};",
         "",
     ]
-    lines.extend([
-        "/// Every data type represented by rustnn, used for unrestricted spec rules.",
-        "pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[",
-        *[f"    MLOperandDataType::{variant}," for variant in variants.values()],
-        "];",
-        "",
-    ])
-    lines.extend(generate_name_enum(
-        "OperationName", "WebNN operation identifier in the spec data type tables.", set(operations)
-    ))
-    lines.extend(generate_name_enum(
-        "OperandName", "Operand identifier shared across the spec data type tables.",
-        {operand for operands in operations.values() for operand in operands},
-    ))
-    lines.extend([
-        "/// The specification's allowed data types for one operand.",
-        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
-        "pub enum AllowedDataTypes {",
-        "    /// Any MLOperandDataType, including future additions to the specification.",
-        "    Any,",
-        "    /// An explicit spec type list restricted to types represented by rustnn.",
-        "    Types(&'static [MLOperandDataType]),",
-        "    /// Must have the same type as the named operand of this operation.",
-        "    SameAs(OperandName),",
-        "}",
-        "",
-        "/// Allowed types for a positional input, option member, or output.",
-        "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
-        "pub struct OperandDataTypes {",
-        "    /// WebNN operation identifier.",
-        "    pub operation: OperationName,",
-        "    /// Operand name; option members omit the dictionary prefix.",
-        "    /// Sequence inputs apply to every item; indexed outputs retain their index.",
-        "    /// Optional operands and outputs apply when present.",
-        "    pub operand: OperandName,",
-        "    /// Allowed type rule, distinct from the specification's required types.",
-        "    pub allowed: AllowedDataTypes,",
-        "}",
-        "",
-        "/// Per-operand rules sorted by operation and operand name.",
-        "pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[",
-    ])
+    lines.extend(
+        [
+            "/// Every data type represented by rustnn, used for unrestricted spec rules.",
+            "pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[",
+            *[f"    MLOperandDataType::{variant}," for variant in variants.values()],
+            "];",
+            "",
+        ]
+    )
+    lines.extend(
+        generate_name_enum(
+            "OperationName",
+            "WebNN operation identifier in the spec data type tables.",
+            set(operations),
+        )
+    )
+    lines.extend(
+        generate_name_enum(
+            "OperandName",
+            "Operand identifier shared across the spec data type tables.",
+            {operand for operands in operations.values() for operand in operands},
+        )
+    )
+    lines.extend(
+        [
+            "/// The specification's allowed data types for one operand.",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+            "pub enum AllowedDataTypes {",
+            "    /// Any MLOperandDataType, including future additions to the specification.",
+            "    Any,",
+            "    /// An explicit spec type list restricted to types represented by rustnn.",
+            "    Types(&'static [MLOperandDataType]),",
+            "    /// Must have the same type as the named operand of this operation.",
+            "    SameAs(OperandName),",
+            "}",
+            "",
+            "/// Allowed types for a positional input, option member, or output.",
+            "#[derive(Debug, Clone, Copy, PartialEq, Eq)]",
+            "pub struct OperandDataTypes {",
+            "    /// WebNN operation identifier.",
+            "    pub operation: OperationName,",
+            "    /// Operand name; option members omit the dictionary prefix.",
+            "    /// Sequence inputs apply to every item; indexed outputs retain their index.",
+            "    /// Optional operands and outputs apply when present.",
+            "    pub operand: OperandName,",
+            "    /// Allowed type rule, distinct from the specification's required types.",
+            "    pub allowed: AllowedDataTypes,",
+            "}",
+            "",
+            "/// Per-operand rules sorted by operation and operand name.",
+            "pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[",
+        ]
+    )
     for operation, operands in sorted(operations.items()):
         for operand, (kind, values) in sorted(operands.items()):
             rule = f"AllowedDataTypes::{kind}"
             if kind == "SameAs":
                 rule += f"(OperandName::{name_variant(values[0])})"
             elif kind == "Types":
-                rule += "(&[" + ", ".join(
-                    f"MLOperandDataType::{variants[value]}"
-                    for value in values if value in variants
-                ) + "])"
-            lines.extend([
-                "    OperandDataTypes {",
-                f"        operation: OperationName::{name_variant(operation)},",
-                f"        operand: OperandName::{name_variant(operand)},",
-            ])
-            omitted = [value for value in values if value not in variants] if kind == "Types" else []
+                rule += (
+                    "(&["
+                    + ", ".join(
+                        f"MLOperandDataType::{variants[value]}"
+                        for value in values
+                        if value in variants
+                    )
+                    + "])"
+                )
+            lines.extend(
+                [
+                    "    OperandDataTypes {",
+                    f"        operation: OperationName::{name_variant(operation)},",
+                    f"        operand: OperandName::{name_variant(operand)},",
+                ]
+            )
+            omitted = (
+                [value for value in values if value not in variants]
+                if kind == "Types"
+                else []
+            )
             if omitted:
-                lines.append("        // Spec types absent from MLOperandDataType: " + ", ".join(omitted))
-            lines.extend([
-                f"        allowed: {rule},",
-                "    },",
-            ])
+                lines.append(
+                    "        // Spec types absent from MLOperandDataType: "
+                    + ", ".join(omitted)
+                )
+            lines.extend(
+                [
+                    f"        allowed: {rule},",
+                    "    },",
+                ]
+            )
     lines.append("];\n")
     result = subprocess.run(
         ["rustfmt", "--edition", "2024", "--emit", "stdout"],
-        input="\n".join(lines), text=True, capture_output=True, check=True,
+        input="\n".join(lines),
+        text=True,
+        capture_output=True,
+        check=True,
     )
     return result.stdout
 
@@ -226,19 +283,32 @@ def generate(source: str) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=ROOT / "target/webnn-index.bs")
-    parser.add_argument("--output", type=Path, default=ROOT / "src/operation_data_types.rs")
-    parser.add_argument("--check", action="store_true", help="Fail if the generated file differs")
+    parser.add_argument(
+        "--output", type=Path, default=ROOT / "src/operation_data_types.rs"
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="Fail if the generated file differs"
+    )
     args = parser.parse_args()
     try:
         result = generate(args.input.read_text(encoding="utf-8"))
         if args.check:
-            if not args.output.exists() or args.output.read_text(encoding="utf-8") != result:
-                print(f"{args.output} is out of date; run make generate-operation-data-types", file=sys.stderr)
+            if (
+                not args.output.exists()
+                or args.output.read_text(encoding="utf-8") != result
+            ):
+                print(
+                    f"{args.output} is out of date; run make generate-operation-data-types",
+                    file=sys.stderr,
+                )
                 return 1
         else:
             args.output.write_text(result, encoding="utf-8", newline="\n")
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
-        print(f"{error}\nFetch the specification with make fetch-webnn-spec.", file=sys.stderr)
+        print(
+            f"{error}\nFetch the specification with make fetch-webnn-spec.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 
