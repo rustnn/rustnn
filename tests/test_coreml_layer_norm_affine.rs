@@ -1,4 +1,5 @@
 //! Layer normalization retains affine parameters on nontrailing axes.
+#![cfg(feature = "coreml-converter")]
 
 use prost::Message;
 use rustnn::converters::{CoremlMlProgramConverter, GraphConverter};

@@ -1,5 +1,7 @@
 //! Explicit narrowing casts remain observable after CoreML graph optimization.
 
+#![cfg(feature = "coreml-converter")]
+
 /// These suites qualify the exact float16 lowering; the default is native float16.
 const EXACT: rustnn::mlcontext::CoremlFloat16Precision =
     rustnn::mlcontext::CoremlFloat16Precision::Exact;

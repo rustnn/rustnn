@@ -1,5 +1,7 @@
 //! Precision and shape boundaries for the CoreML exact-GELU lowering.
 
+#![cfg(feature = "coreml-converter")]
+
 /// These suites qualify the exact float16 lowering; the default is native float16.
 const EXACT: rustnn::mlcontext::CoremlFloat16Precision =
     rustnn::mlcontext::CoremlFloat16Precision::Exact;

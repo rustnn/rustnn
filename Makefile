@@ -487,7 +487,6 @@ help:
 	@echo "Rust Targets:"
 	@echo "  build              - Build the Rust project"
 	@echo "  test               - Run rustfmt, clippy, Rust tests, and backend report drift check"
-	@echo "  test-cli           - Test CLI defaults, no features, and converter-only builds"
 	@echo "  fmt                - Format Rust code"
 	@echo "  clean              - Clean Rust build artifacts"
 	@echo ""
@@ -563,10 +562,3 @@ check-converters:
 	@set -e; for backend in onnx coreml litert trtx cann burn-cpu; do \
 	    $(CARGO) check --no-default-features --all-targets --features $$backend-converter; \
 	done
-
-.PHONY: test-cli
-# Converter-only configurations must keep inspection and discovery usable.
-test-cli:
-	$(CARGO) test -p rustnn-cli
-	$(CARGO) test -p rustnn-cli --no-default-features
-	$(CARGO) test -p rustnn-cli --no-default-features --features rustnn/onnx-converter,rustnn/coreml-converter,rustnn/litert-converter

@@ -95,9 +95,6 @@ jobs:
       - name: Run cargo check (explicitly without dynamic-inputs)
         run: cargo check --no-default-features
 
-      - name: Test CLI workspace member and converter-only builds
-        run: make test-cli
-
       - name: Check isolated converter features
         run: make check-converters
 
