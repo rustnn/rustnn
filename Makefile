@@ -189,7 +189,7 @@ test-wpt-trtx: onnxruntime-download trtxruntime-download
 	$(ORT_ENV_VARS) $(TRT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
 
 test-wpt-burn-cpu:
-	WPT_BACKEND=burn-cpu $(CARGO) test --test run_wpt_conformance --features burn-cpu-runtime -- $(TEST_FILTER) --test-threads 1
+	WPT_BACKEND=burn-cpu $(CARGO) test --release --test run_wpt_conformance --features burn-cpu-runtime -- $(TEST_FILTER) --test-threads 1
 
 wpt-sync-burn-cpu: fetch-wpt
 	./scripts/update_expected_failures.sh burn-cpu 2>&1 | tee /tmp/wpt-burn-cpu.log || true
