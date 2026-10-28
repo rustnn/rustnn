@@ -197,6 +197,11 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
             if DataType::from(*data_type) != destination_type || source_shape != destination_shape {
                 return None;
             }
+            // A fold never grows the stored payload: a widening cast (float16 weights read
+            // as float32, for example) stays a runtime cast over the original bytes.
+            if destination_type.bytes_per_element() > source_type.bytes_per_element() {
+                return None;
+            }
             cast_bytes(data, source_type, destination_type)?
         }
         _ => return None,
@@ -422,6 +427,68 @@ mod tests {
             .chunks_exact(2)
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect()
+    }
+
+    #[test]
+    fn widening_casts_keep_the_narrow_payload() {
+        // float16 weights read as float32 stay float16 in the weight blob; the narrowing
+        // direction still folds.
+        let graph = |source: DataType, target: MLOperandDataType, bytes: Vec<u8>| {
+            let mut graph = GraphInfo {
+                operands: vec![
+                    operand(OperandKind::Constant, source, &[2], "w"),
+                    operand(
+                        OperandKind::Intermediate,
+                        DataType::from(target),
+                        &[2],
+                        "cast",
+                    ),
+                    operand(OperandKind::Output, DataType::from(target), &[2], "y"),
+                ],
+                output_operands: vec![2],
+                operations: vec![
+                    Operation::Cast {
+                        input: 0,
+                        data_type: target,
+                        options: None,
+                        outputs: vec![1],
+                    },
+                    Operation::Identity {
+                        input: 1,
+                        options: None,
+                        outputs: vec![2],
+                    },
+                ],
+                ..Default::default()
+            };
+            graph.constant_operand_ids_to_handles.insert(
+                0,
+                ConstantData {
+                    data: bytes,
+                    label: None,
+                },
+            );
+            graph
+        };
+        let half: Vec<u8> = [1.5f32, -2.0]
+            .iter()
+            .flat_map(|&x| half::f16::from_f32(x).to_le_bytes())
+            .collect();
+        assert!(
+            fold_constant_views(&graph(DataType::Float16, MLOperandDataType::Float32, half))
+                .is_none()
+        );
+        let single: Vec<u8> = [1.5f32, -2.0]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        let folded = fold_constant_views(&graph(
+            DataType::Float32,
+            MLOperandDataType::Float16,
+            single,
+        ))
+        .expect("a narrowing cast of a constant folds");
+        assert_eq!(folded.constant_operand_ids_to_handles[&1].data.len(), 4);
     }
 
     #[test]

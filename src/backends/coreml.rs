@@ -15,7 +15,7 @@ use log::debug;
 
 use crate::GraphInfo;
 use crate::backend_selection::DeviceType;
-use crate::converters::{CoremlMlProgramConverter, GraphConverter};
+use crate::converters::CoremlMlProgramConverter;
 use crate::error::Error;
 use crate::executors::coreml::{
     CompiledCoremlModel, CoremlByteInput, CoremlTensorBinding, CoremlTensorStorage, compile_model,
@@ -27,7 +27,9 @@ use crate::mlcontext::{
     MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLNamedTensors, MLTensor,
     MLTensorDescriptor,
 };
-use crate::mlcontextoptions::{BackendStatistics, CoremlOptions, CoremlTensorStatistics};
+use crate::mlcontextoptions::{
+    BackendStatistics, CoremlFloat16Precision, CoremlOptions, CoremlTensorStatistics,
+};
 use crate::operators::Operation;
 
 /// Number of bytes required to store a tensor described by `descriptor`.
@@ -85,12 +87,14 @@ impl fmt::Debug for CoremlGraph {
 
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
+    float16_precision: CoremlFloat16Precision,
 }
 
 impl fmt::Debug for CoremlBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CoremlBuilder")
             .field("device_type", &self.device_type)
+            .field("float16_precision", &self.float16_precision)
             .finish()
     }
 }
@@ -99,13 +103,30 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
     fn build(&mut self, graph_info: GraphInfo) -> crate::error::Result<MLGraph<'context>> {
         let output_backings_eligible = supports_output_backings(&graph_info);
         let converted = CoremlMlProgramConverter
-            .convert(&graph_info)
+            .convert_with_float16_precision(&graph_info, self.float16_precision)
             .map_err(|e| Error::GraphBuildError { source: e.into() })?;
+        // Native float16 keeps the in-memory default with its reproduced URL cases.
+        // Exact float16 was qualified through URL compilation: in memory, its widened
+        // float16 subtraction loses NaN classes under a CPU and Neural Engine request,
+        // and the A12 GPU flushes float16 subnormals when it widens a constant.
+        // Data-free programs of proven constant copies stay in memory, where BNNS does
+        // not crash on them. An input-free program with no float16 operand has nothing
+        // for the exact lowering to change, and the URL compiler evaluates such a program
+        // itself, so it follows the Native rule: through the URL compiler, iOS and tvOS 26
+        // and 27 return 0 for WPT's data-free uint8 clamp that saturates to 255.
+        let use_asset = match self.float16_precision {
+            CoremlFloat16Precision::Exact
+                if !graph_info.input_operands.is_empty() || has_float16_operand(&graph_info) =>
+            {
+                CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
+            }
+            _ => supports_in_memory_asset(&graph_info),
+        };
         let model = compile_model(
             converted.data,
             converted.weights_data,
             self.device_type,
-            supports_in_memory_asset(&graph_info),
+            use_asset,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         MLGraph::new(
@@ -130,6 +151,15 @@ fn supports_output_backings(graph: &GraphInfo) -> bool {
     })
 }
 
+/// The exact float16 lowering differs from the native one only where a float16 operand
+/// exists.
+fn has_float16_operand(graph: &GraphInfo) -> bool {
+    graph
+        .operands
+        .iter()
+        .any(|operand| operand.descriptor.data_type == DataType::Float16)
+}
+
 /// CoreML's in-memory model compiler does not currently behave identically to
 /// URL compilation for every MIL program. Keep the memory path as the default,
 /// but use the established URL path for graphs with demonstrated correctness
@@ -146,6 +176,15 @@ fn supports_in_memory_asset(graph: &GraphInfo) -> bool {
         Operation::Neg { input, .. } => graph
             .operand(*input)
             .is_some_and(|operand| operand.descriptor.data_type == DataType::Int32),
+        // The in-memory compiler produces different convTranspose2d results for
+        // some padding/outputPadding combinations and quantized convTranspose2d
+        // (WPT conv_transpose2d and qdq_subgraph); URL compilation matches WebNN.
+        Operation::ConvTranspose2d { .. } => true,
+        // Zero-epsilon instanceNormalization of tiny-variance inputs loses its
+        // epsilon on the in-memory route (WPT instance-normalization-zero-epsilon).
+        Operation::InstanceNormalization { options, .. } => options
+            .as_ref()
+            .is_some_and(|options| options.epsilon == 0.0),
         // Integer triangular subtraction is exact through URL compilation;
         // the memory path loses low bits of retained int32 values beyond 2^24.
         Operation::Triangular { input, options, .. } => {
@@ -269,6 +308,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
     {
         Ok(Box::new(CoremlBuilder {
             device_type: self.device_type,
+            float16_precision: self.options.float16_precision,
         }))
     }
 
@@ -589,9 +629,18 @@ mod test {
     /// Build a context backed by CoreML. Returns `None` (test skipped) if no
     /// accelerated backend is available on this machine.
     fn coreml_context<'a>() -> Option<MLContext<'a>> {
+        coreml_context_with(crate::mlcontext::CoremlFloat16Precision::Native)
+    }
+
+    fn coreml_context_with<'a>(
+        precision: crate::mlcontext::CoremlFloat16Precision,
+    ) -> Option<MLContext<'a>> {
+        let mut options = crate::mlcontext::RustNNOptions::default();
+        options.coreml.float16_precision = precision;
         let context = MLContext::create(
             &MLContextOptions::new(MLPowerPreference::Default, true)
-                .with_rustnn_backend_hint(Backend::Coreml),
+                .with_rustnn_backend_hint(Backend::Coreml)
+                .with_rustnn_options(options),
         );
         match context {
             Ok(ctx) => Some(ctx),
@@ -601,10 +650,161 @@ mod test {
     }
 
     #[test]
-    fn coreml_graph_and_compiled_model_are_send() {
-        fn assert_send<T: Send>() {}
-        assert_send::<super::CoremlGraph>();
-        assert_send::<crate::executors::coreml::CompiledCoremlModel>();
+    fn compile_route_follows_the_float16_lowering() {
+        use crate::executors::coreml::CoremlLoadRoute;
+        use crate::mlcontext::{CoremlFloat16Precision, LoadDiagnostics};
+        for precision in [
+            CoremlFloat16Precision::Native,
+            CoremlFloat16Precision::Exact,
+        ] {
+            for dtype in [
+                MLOperandDataType::Float16,
+                MLOperandDataType::Float32,
+                MLOperandDataType::Int32,
+            ] {
+                let Some(mut context) = coreml_context_with(precision) else {
+                    return;
+                };
+                let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+                let input = builder
+                    .input("input", &MLOperandDescriptor::new(dtype, vec![11]))
+                    .unwrap();
+                let output = builder.relu(input).unwrap();
+                let graph = builder
+                    .build(&MLNamedOperands::from([("result", output)]))
+                    .unwrap();
+                let Some(LoadDiagnostics::Coreml(diagnostic)) = graph.rustnn_load_diagnostics()
+                else {
+                    panic!("missing CoreML load diagnostics")
+                };
+                let expected = if precision == CoremlFloat16Precision::Exact {
+                    CoremlLoadRoute::CompiledUrl
+                } else {
+                    CoremlLoadRoute::InMemoryAsset
+                };
+                assert_eq!(diagnostic.route, expected, "{precision:?} {dtype:?}");
+            }
+        }
+    }
+
+    /// Input-free programs keep the exact lowering's URL route only for float16 work. WPT
+    /// mlNumber "cast float to integer overflows" (a uint8 constant clamped with minValue
+    /// 1000) returns 0 through the URL compiler on iOS and tvOS 26 and 27, and 255 in memory;
+    /// a float16 constant widened to float32 loses its subnormals in memory on the A12 GPU.
+    #[test]
+    fn input_free_exact_programs_keep_the_url_route_only_for_float16_work() {
+        use crate::executors::coreml::CoremlLoadRoute;
+        use crate::mlcontext::CoremlFloat16Precision;
+        use crate::operator_options::MLClampOptions;
+        for precision in [
+            CoremlFloat16Precision::Native,
+            CoremlFloat16Precision::Exact,
+        ] {
+            let Some(mut context) = coreml_context_with(precision) else {
+                return;
+            };
+            {
+                let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+                let constant = builder
+                    .constant_from_bytes(
+                        &MLOperandDescriptor::new(MLOperandDataType::Uint8, vec![4]),
+                        vec![255, 127, 5, 0],
+                    )
+                    .unwrap();
+                let output = builder
+                    .clamp_with_options(
+                        constant,
+                        MLClampOptions {
+                            min_value: Some(serde_json::json!(1000)),
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                let graph = builder
+                    .build(&MLNamedOperands::from([("result", output)]))
+                    .unwrap();
+                assert_eq!(
+                    load_route(&graph),
+                    CoremlLoadRoute::InMemoryAsset,
+                    "{precision:?} uint8 clamp"
+                );
+            }
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let half = builder
+                .constant_from_bytes(
+                    &MLOperandDescriptor::new(MLOperandDataType::Float16, vec![4]),
+                    [0x03ff_u16, 0x0001, 0x3c00, 0x8001]
+                        .into_iter()
+                        .flat_map(u16::to_le_bytes)
+                        .collect(),
+                )
+                .unwrap();
+            let wide = builder.cast(half, MLOperandDataType::Float32).unwrap();
+            let graph = builder
+                .build(&MLNamedOperands::from([("result", wide)]))
+                .unwrap();
+            let expected = if precision == CoremlFloat16Precision::Exact {
+                CoremlLoadRoute::CompiledUrl
+            } else {
+                CoremlLoadRoute::InMemoryAsset
+            };
+            assert_eq!(
+                load_route(&graph),
+                expected,
+                "{precision:?} float16 widening"
+            );
+        }
+    }
+
+    #[test]
+    fn url_compilation_is_limited_to_reproduced_route_differences() {
+        use crate::graph::{
+            DataType, GraphInfo, Operand, OperandDescriptor, OperandKind, to_dimension_vector,
+        };
+        use crate::operator_options::{MLConvTranspose2dOptions, MLInstanceNormalizationOptions};
+        use crate::operators::Operation;
+        let operand = |shape: &[u32]| Operand {
+            kind: OperandKind::Input,
+            name: Some("input".into()),
+            descriptor: OperandDescriptor {
+                data_type: DataType::Float32,
+                shape: to_dimension_vector(shape),
+                pending_permutation: vec![],
+            },
+        };
+        let graph = |operation| GraphInfo {
+            operands: vec![operand(&[1, 2, 2, 2]), operand(&[1, 2, 2, 2])],
+            operations: vec![operation],
+            ..Default::default()
+        };
+        for (epsilon, url) in [(0.0, true), (1e-5, false)] {
+            let instance = graph(Operation::InstanceNormalization {
+                input: 0,
+                options: Some(MLInstanceNormalizationOptions {
+                    epsilon,
+                    ..Default::default()
+                }),
+                outputs: vec![1],
+            });
+            assert_eq!(
+                super::supports_in_memory_asset(&instance),
+                !url,
+                "{epsilon}"
+            );
+        }
+        let transpose = graph(Operation::ConvTranspose2d {
+            input: 0,
+            filter: 1,
+            options: Some(MLConvTranspose2dOptions::default()),
+            outputs: vec![2],
+        });
+        assert!(!super::supports_in_memory_asset(&transpose));
+        let relu = graph(Operation::Relu {
+            input: 0,
+            options: None,
+            outputs: vec![1],
+        });
+        assert!(super::supports_in_memory_asset(&relu));
     }
 
     #[test]
@@ -649,6 +849,13 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn coreml_graph_and_compiled_model_are_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::CoremlGraph>();
+        assert_send::<crate::executors::coreml::CompiledCoremlModel>();
     }
 
     #[test]
@@ -966,11 +1173,16 @@ mod test {
         };
 
         let desc = MLOperandDescriptor::new(MLOperandDataType::Float32, [4].to_vec());
+        let expected = [11.0f32, 22., 33., 44.];
         let mut graph = {
             let mut builder = MLGraphBuilder::new(&mut context).unwrap();
-            let a = builder.input("a", &desc).unwrap();
-            let b = builder.input("b", &desc).unwrap();
-            let out = builder.add(a, b).unwrap();
+            // Only proven constant copies use the asset route after typed
+            // arithmetic boundaries move to URL compilation. This also moves
+            // the retained constant owner and feature bindings across threads.
+            let constant = builder
+                .constant_from_bytes(&desc, bytemuck::cast_slice(&expected).to_vec())
+                .unwrap();
+            let out = builder.identity(constant).unwrap();
             let mut outputs = MLNamedOperands::new();
             outputs.insert("out", out);
             builder.build(&outputs).unwrap()
@@ -980,11 +1192,7 @@ mod test {
         let mut io_desc = MLTensorDescriptor::from_operand_descriptor(&desc);
         io_desc.set_writable(true);
         io_desc.set_readable(true);
-        let a = context.create_tensor(&io_desc).unwrap();
-        let b = context.create_tensor(&io_desc).unwrap();
         let out = context.create_tensor(&io_desc).unwrap();
-        context.write_tensor(&a, &[1.0f32, 2., 3., 4.]).unwrap();
-        context.write_tensor(&b, &[10.0f32, 20., 30., 40.]).unwrap();
 
         // Moving the context, graph and tensors into the closure only compiles
         // while they are `Send`; the model is released on this thread.
@@ -992,7 +1200,7 @@ mod test {
             context
                 .dispatch(
                     &mut graph,
-                    &MLNamedTensors::from([("a", &a), ("b", &b)]),
+                    &MLNamedTensors::new(),
                     &MLNamedTensors::from([("out", &out)]),
                 )
                 .unwrap();
@@ -1002,7 +1210,7 @@ mod test {
         })
         .join()
         .unwrap();
-        assert_eq!(result, [11.0f32, 22., 33., 44.]);
+        assert_eq!(result, expected);
     }
 
     /// Same lifecycle for the compiled-URL route (int32 neg selects it),

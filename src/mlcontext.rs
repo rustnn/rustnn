@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use std::{collections::HashMap, fmt::Display, marker::PhantomData};
 
 pub use crate::mlcontextoptions::{
-    BackendStatistics, CoremlOptions, CoremlTensorStatistics, LiteRtOptions, MLContextOptions,
-    MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
+    BackendStatistics, CoremlFloat16Precision, CoremlOptions, CoremlTensorStatistics,
+    LiteRtOptions, MLContextOptions, MLPowerPreference, OrtOptions, RustNNOptions, TrtxOptions,
 };
 
 /// <https://www.w3.org/TR/webnn/#typedefdef-mlnamedtensors>

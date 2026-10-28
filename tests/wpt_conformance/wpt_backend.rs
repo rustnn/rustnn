@@ -56,6 +56,7 @@ impl WptBackend {
                 "invalid WPT_COREML_TENSOR_MODE={mode}; expected baseline, persistent or backings"
             ),
         }
+        coreml.coreml.float16_precision = super::wpt_config::coreml_float16_precision();
         vec![
             Self::new(
                 "burn-cpu",

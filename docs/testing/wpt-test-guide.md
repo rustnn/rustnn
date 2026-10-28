@@ -43,6 +43,9 @@ make test-wpt-coreml
 # Compare the opt-in CoreML storage paths with the default baseline
 WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
 WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
+
+# Compare the CoreML float16 lowerings (native is the default) on one requested device
+WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
