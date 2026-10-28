@@ -23,7 +23,7 @@
 //! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
 //! without the DDK. Enabling `cann-converter` also enables real conversion.
 use crate::error::GraphError;
-#[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
+#[cfg(feature = "cann-converter")]
 use crate::graph::DataType;
 use crate::graph::GraphInfo;
 #[cfg(any(feature = "cann-converter", test))]
@@ -165,6 +165,8 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
+// int4/uint4/bf16/fp8 have corresponding CANN dtype, but are not yet implemented here
+#[cfg(feature = "cann-converter")]
 fn is_supported_dtype(data_type: DataType) -> bool {
     matches!(
         data_type,
@@ -181,6 +183,7 @@ fn is_supported_dtype(data_type: DataType) -> bool {
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
 // not lower. Orphaned operands left behind by a rewrite are not counted.
+#[cfg(feature = "cann-converter")]
 fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
     graph
         .operands
@@ -252,6 +255,7 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
 // Transpose a 4-D f32 filter into the target layout: `perm[target] = source`,
 // so `dst_dims[k] = src_dims[perm[k]]`. Host-side (const-input Permute can't
 // infershape).
+#[cfg(any(feature = "cann-converter", test))]
 fn transpose_filter_f32(
     data: &[f32],
     src_dims: [usize; 4],
