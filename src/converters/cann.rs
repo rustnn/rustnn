@@ -22,12 +22,11 @@
 //! The DDK is required for conversion; `cann-runtime` additionally enables execution.
 //! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
 //! without the DDK. Enabling `cann-converter` also enables real conversion.
-
-#![cfg(feature = "cann-converter")]
-
 use crate::error::GraphError;
+#[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
 use crate::graph::DataType;
 use crate::graph::GraphInfo;
+#[cfg(any(feature = "cann-converter", test))]
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -35,6 +34,7 @@ use super::{ConvertedGraph, GraphConverter};
 // Maps a WebNN op to the DDK operator type registered for it, or `None` if it has no
 // lowering (`None` also covers ops an earlier block lowers itself). The name is not a
 // label: it goes to `cann_operator_create_registered`, so a typo emits a wrong model.
+#[cfg(any(feature = "cann-converter", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
         // ── Element-wise binary ──────────────────────────────────────
@@ -165,11 +165,17 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
-// These storage formats have no supported lowering in this adapter.
 fn is_supported_dtype(data_type: DataType) -> bool {
-    !matches!(
+    matches!(
         data_type,
-        DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3
+        DataType::Float32
+            | DataType::Float16
+            | DataType::Int32
+            | DataType::Uint32
+            | DataType::Int64
+            | DataType::Uint64
+            | DataType::Int8
+            | DataType::Uint8
     )
 }
 
@@ -193,6 +199,7 @@ fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
 // Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
 // instead of panicking in a `CString`/`bytemuck` call. These checks also cover
 // GraphInfo supplied directly to the converter, bypassing the builder.
+#[cfg(feature = "cann-converter")]
 fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         if !is_supported_dtype(operand.descriptor.data_type) {
@@ -299,6 +306,7 @@ fn transpose_filter_f32(
     )
 }
 
+#[cfg(feature = "cann-converter")]
 mod adapter {
     use super::*;
     use crate::graph::{DataType, OperandDescriptor};
