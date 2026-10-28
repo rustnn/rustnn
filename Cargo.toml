@@ -58,7 +58,7 @@ trtx-converter = ["dep:trtx"]
 burn-cpu-runtime = ["burn-cpu-converter", "dep:burn-tensor", "dep:burn-ndarray", "dep:getrandom"]
 cann-runtime = ["cann-converter"]
 # Device-free backend validation; does not enable the native converter or DDK.
-cann-runtime-mock = ["cann-converter"]
+cann-runtime-mock = []
 coreml-runtime = ["coreml-converter", "objc", "block"]
 litert-runtime = ["litert-converter", "dep:litert", "dep:litert-sys"]
 onnx-runtime = ["onnx-converter", "ort", "ndarray"]
