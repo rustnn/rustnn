@@ -144,6 +144,7 @@ pub mod loader;
 pub mod mlcontext;
 pub mod mlcontextoptions;
 pub mod mlgraphbuilder;
+#[path = "generated/operation_data_types.rs"]
 pub mod operation_data_types;
 pub mod operation_type_support;
 pub mod operator_enums;

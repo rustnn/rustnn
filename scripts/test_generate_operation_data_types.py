@@ -2,6 +2,7 @@
 """Offline regressions for specification data type extraction."""
 
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,21 @@ from scripts.generate_operation_data_types import generate, generate_name_enum, 
 
 
 def table(rows, operations="MLGraphBuilder/add(a, b, options), MLGraphBuilder/sub(a, b, options)"):
-    return f'''<table id=tensor-limits-test class='data' link-for="{operations}">
+    names = re.findall(r"MLGraphBuilder/(\w+)\(", operations)
+    declarations = "\n".join(f"MLOperand {name}();" for name in names)
+    return f'''enum MLOperandDataType {{
+    "float32", "float16", "int32", "uint32", "int64", "uint64", "int8", "uint8",
+    "bfloat16", "float8e4m3"
+    }};
+    interface MLGraphBuilder {{
+    MLOperand input();
+    MLOperand constant();
+    MLOperand constant(MLOperandDataType dataType, MLNumber value);
+    }};
+    partial interface MLGraphBuilder {{
+    {declarations}
+    }};
+    <table id=tensor-limits-test class='data' link-for="{operations}">
     <caption>Tensor limits</caption>
     <thead><tr><th>operand</th><th>[=/allowed data types=]</th>
     <th>[=/required data types=]</th><th>[=/allowed ranks=]</th></tr></thead>
@@ -27,6 +42,56 @@ def row(operand, allowed):
 
 
 class OperationDataTypesTests(unittest.TestCase):
+    def test_standard_types_come_from_spec_idl(self):
+        source = table(row("{{a}}", "[=/any data type|any=]"))
+        result = generate(source)
+        standard = result.split("pub const ALL_SPEC_DATA_TYPES:", 1)[1].split("];", 1)[0]
+        self.assertEqual(re.findall(r"MLOperandDataType::(\w+)", standard), [
+            "Float32", "Float16", "Int32", "Uint32", "Int64", "Uint64", "Int8", "Uint8",
+        ])
+        self.assertIn("// Spec type absent from MLOperandDataType: bfloat16", standard)
+        self.assertIn("MLOperandDataType::Int4", result.split("pub const ALL_SPEC_DATA_TYPES:")[0])
+        changed = generate(source.replace('"float32", "float16"', '"int4", "float16"'))
+        standard = changed.split("pub const ALL_SPEC_DATA_TYPES:", 1)[1].split("];", 1)[0]
+        self.assertIn("MLOperandDataType::Int4", standard)
+        self.assertNotIn("MLOperandDataType::Float32", standard)
+
+    def test_missing_or_invalid_spec_enum_rejected(self):
+        source = table(row("{{a}}", "[=/any data type|any=]"))
+        for bad in (
+            source.replace("enum MLOperandDataType", "enum Renamed"),
+            re.sub(r"enum MLOperandDataType \{.*?\};", "enum MLOperandDataType {};", source, flags=re.S),
+            source.replace('"float32", "float16"', '"float32", "float32"'),
+        ):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "MLOperandDataType"):
+                generate(bad)
+
+    def test_idl_coverage_rejects_missing_or_unexpected_operations(self):
+        source = table(row("{{a}}", "[=/any data type|any=]"))
+        for bad in (
+            source.replace("MLGraphBuilder/sub(a, b, options)", ""),
+            source + table(row("{{a}}", "[=/any data type|any=]"),
+                           operations="MLGraphBuilder/mul(a, b, options)")
+                     .replace("id=tensor-limits-test", "id=renamed-limits"),
+            source.replace("MLOperand sub();", ""),
+            source.replace("MLOperand input();", ""),
+            source.replace("MLOperand constant", "void constant"),
+            re.sub(r"(?:partial )?interface MLGraphBuilder \{.*?\};", "", source, flags=re.S),
+        ):
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "do not match MLGraphBuilder IDL"):
+                parse_spec(bad)
+
+    def test_idl_sequence_returns_and_unrelated_interfaces(self):
+        source = table(row("{{a}}", "[=/any data type|any=]"))
+        source = source.replace("MLOperand sub();", "sequence < MLOperand > sub();")
+        source += '''interface Other { MLOperand unrelated(); };
+        partial interface MLGraphBuilder {
+          // MLOperand commentedOut();
+          /* sequence<MLOperand> alsoCommentedOut(); */
+          Promise<MLGraph> build();
+        };'''
+        self.assertEqual(set(parse_spec(source)), {"add", "sub"})
+
     def test_generated_identifiers_preserve_spec_spelling(self):
         source = table(
             row("{{input}}", "[=/any data type|any=]") +
@@ -131,7 +196,7 @@ class OperationDataTypesTests(unittest.TestCase):
         source = table(row("{{a}}", "[=/any data type|any=]"))
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "index.bs"
-            output_path = Path(directory) / "generated.rs"
+            output_path = Path(directory) / "generated" / "operation_data_types.rs"
             input_path.write_text(source)
             command = [sys.executable, str(Path(__file__).with_name("generate_operation_data_types.py")),
                        "--input", str(input_path), "--output", str(output_path)]

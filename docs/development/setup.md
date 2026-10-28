@@ -68,7 +68,7 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `validate-all-env` | Build and unit tests in one run |
 | `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
 | `fetch-webnn-spec` | Refresh the live WebNN Bikeshed source in `target/webnn-index.bs` (requires `curl`) |
-| `generate-operation-data-types`, `check-operation-data-types` | Generate `src/operation_data_types.rs` from the cached spec; check for drift. Requires Python 3 and rustfmt; downloads the spec if missing |
+| `generate-operation-data-types`, `check-operation-data-types` | Generate `src/generated/operation_data_types.rs` from the cached spec; check for drift. Requires Python 3 and rustfmt; downloads the spec if missing |
 | `test-wpt` | WPT conformance on ONNX Runtime CPU |
 | `test-wpt-tolerance`, `test-wpt-tolerance-parity` | Backend-independent comparison regressions and direct upstream JavaScript-helper parity; the latter requires Node.js and a fetched WPT corpus and also runs after successful full ONNX/CoreML WPT targets |
 | `test-wpt-op OP=relu` | One operation; `WPT_BACKEND=onnx|trtx|litert|coreml` selects the backend |

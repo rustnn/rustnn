@@ -127,7 +127,7 @@ method and option-field Rustdoc. Do not maintain parallel API tables in guide pa
 
 Run `make fetch-webnn-spec` to download the live specification source to
 `target/webnn-index.bs`. Run `make generate-operation-data-types` to extract its
-per-operand allowed type rules into `src/operation_data_types.rs`; see
+per-operand allowed type rules into `src/generated/operation_data_types.rs`; see
 `docs/reference/README.md`. The `search-bikeshed` tool can also index the live specification:
 
 ```bash

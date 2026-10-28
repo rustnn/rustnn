@@ -14,7 +14,7 @@ use crate::operators::Operation;
 /// Allowed types for an operation and operand, evaluated in const contexts too.
 ///
 /// Resolves `SameAs` chains within the operation and expands `Any` to
-/// [`ALL_DATA_TYPES`]. An absent operand rule, an empty explicit list, or a cycle
+/// [`ALL_SPEC_DATA_TYPES`]. An absent operand rule, an empty explicit list, or a cycle
 /// returns an empty slice. Optional operands and outputs apply when present.
 /// This returns a type domain; callers must separately enforce equal actual
 /// types for operands linked by `SameAs`.
