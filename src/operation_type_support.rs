@@ -211,6 +211,22 @@ fn check_types(
     types: &[(OperandName, MLOperandDataType)],
     allow_int4_uint4: bool,
 ) -> Result<(), AllowedDataTypesError> {
+    if operation_name == OperationName::Concat {
+        let mut inputs = types
+            .iter()
+            .filter(|(name, _)| *name == OperandName::Inputs);
+        if let Some(&(_, expected_dtype)) = inputs.next() {
+            for (index, &(_, used_dtype)) in inputs.enumerate() {
+                if used_dtype != expected_dtype {
+                    return Err(AllowedDataTypesError::InconsistentConcatInput {
+                        input_index: index + 1,
+                        expected_dtype,
+                        used_dtype,
+                    });
+                }
+            }
+        }
+    }
     for &(operand_name, used_dtype) in types {
         let allowed = allowed_data_types(operation_name, operand_name);
         // TODO: remove allow_int4_uint4 and int4->int8, uint4->uint8 promotion once
