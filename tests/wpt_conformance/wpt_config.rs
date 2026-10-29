@@ -26,8 +26,35 @@ fn parse_coreml_device(value: Option<&str>) -> &'static str {
     }
 }
 
+/// CoreML float16 lowering for the trials: `WPT_COREML_FLOAT16=native` (default) or `exact`.
+pub fn coreml_float16_precision() -> rustnn::mlcontext::CoremlFloat16Precision {
+    parse_coreml_float16(std::env::var("WPT_COREML_FLOAT16").ok().as_deref())
+}
+
+fn parse_coreml_float16(value: Option<&str>) -> rustnn::mlcontext::CoremlFloat16Precision {
+    use rustnn::mlcontext::CoremlFloat16Precision;
+    match value {
+        None | Some("native") => CoremlFloat16Precision::Native,
+        Some("exact") => CoremlFloat16Precision::Exact,
+        Some(other) => panic!("WPT_COREML_FLOAT16 must be native or exact; got {other:?}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn coreml_float16_defaults_to_native_and_accepts_exact() {
+        use rustnn::mlcontext::CoremlFloat16Precision;
+        assert_eq!(
+            super::parse_coreml_float16(None),
+            CoremlFloat16Precision::Native
+        );
+        assert_eq!(
+            super::parse_coreml_float16(Some("exact")),
+            CoremlFloat16Precision::Exact
+        );
+    }
+
     #[test]
     fn coreml_policy_defaults_to_cpu_and_preserves_valid_requests() {
         assert_eq!(super::parse_coreml_device(None), "cpu");

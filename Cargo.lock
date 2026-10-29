@@ -4335,6 +4335,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustnn-cli"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "half",
+ "rustnn",
+ "tempfile",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"

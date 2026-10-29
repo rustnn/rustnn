@@ -11,7 +11,7 @@ fast.
 | `fast_style_transfer_builder_api.rs` | Builds the fast style transfer network with the builder API (`conv2d`, `conv_transpose2d`, instance normalization with a fallback composed from reductions, `pad`), downloads the weights from the WebNN test-data repository, and pipelines inferences over pre-allocated tensors | `cargo run --release --features native-examples,onnx-runtime --example fast_style_transfer_builder_api -- --input photo.jpg --output styled.png` |
 | `smollm_mlcontext.rs` | Text generation with SmolLM-135M from an onnx2webnn export: loads `.webnn` plus weights, uses dynamic tensor shapes for the KV cache (`rustnn_set_tensor_capacity`, `rustnn_resize_tensor`) and a tokenizer | `cargo run --release --features native-examples,onnx-runtime,dynamic-inputs --example smollm_mlcontext -- --model model.webnn --tokenizer tokenizer.json --max-new-tokens 32` |
 | `resnet50_webnn_rust.rs` | ResNet-50 classification and a latency benchmark from a `.webnn` export, with ImageNet preprocessing of a JPEG or PNG input | `cargo run --release --features onnx-runtime --example resnet50_webnn_rust -- --model resnet50_Opset16.webnn --input cat.jpg --labels examples/imagenet_classes.txt --bench` |
-| `gpt2_webnn_rust.rs`, `smollm_webnn_rust.rs` | Older generation loops built on the legacy executor path (`ConverterRegistry` plus `run_onnx_with_inputs`) instead of `MLContext` | `cargo run --features onnx-runtime --example smollm_webnn_rust -- --help` |
+| `gpt2_webnn_rust.rs` | Older generation loops built on the legacy executor path (`ConverterRegistry` plus `run_onnx_with_inputs`) instead of `MLContext` |  |
 
 Replace `onnx-runtime` with `trtx-runtime` to run the same programs on TensorRT-RTX. All of
 them accept `--help`.
@@ -28,7 +28,7 @@ Where the models come from:
 Other files in `examples/`:
 
 - `sample_graph.webnn`, `sample_graph.json`, `toy_transformer.webnn`, `toy_transformer.json`:
-  small graphs for the CLI and for `load_graph_from_path`.
+  small graphs for `load_graph_from_path`.
 - `mobilenetv2_manifest.json`, `mobilenetv2.weights`, `mobilenetv2_weights/`: a MobileNetV2
   weight set in the `manifest.json` plus `.weights` layout that the loader resolves.
 - `imagenet_classes.txt`, `images/test.jpg`, `sample_text.txt`: inputs for the examples.

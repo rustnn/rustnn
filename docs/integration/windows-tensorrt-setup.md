@@ -33,7 +33,7 @@ cargo build --release --features trtx-runtime
 
 ```powershell
 $env:RUST_LOG = "info"
-cargo run --release --features trtx-runtime,onnx-runtime -- examples\sample_graph.webnn --convert onnx --run-trtx
+make test-wpt-trtx TEST_FILTER=relu
 ```
 
 The log lists the CUDA devices found and `Backend selected: Trtx { cuda_device_idx: 0 }`. In an
@@ -68,5 +68,5 @@ is fully buffered when redirected to a file; watch the console or wait for the p
 ## Without a GPU
 
 `cargo check -F trtx-runtime --all-targets` compiles the backend and is what CI runs. The
-`trtx-runtime-mock` feature builds the converter against the mock `trtx` API for API-level
-checks; the execution tests are excluded in mock mode.
+`trtx-converter` feature builds the converter without rustnn dispatch for API-level
+checks. Engine generation still requires the SDK and a compatible GPU.

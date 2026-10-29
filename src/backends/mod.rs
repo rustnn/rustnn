@@ -9,16 +9,16 @@
 //! | Module | Feature | Notes |
 //! |---|---|---|
 //! | `ort` | `onnx-runtime` | ONNX Runtime sessions; lists CPU/GPU/NPU execution-provider devices |
-//! | `trtx` | `trtx-runtime`, `trtx-runtime-mock` | TensorRT-RTX engines with refittable weights, engine and runtime caches, CUDA graphs |
+//! | `trtx` | `trtx-runtime` | TensorRT-RTX engines with refittable weights, engine and runtime caches, CUDA graphs |
 //! | `coreml` | `coreml-runtime` | CoreML MLProgram compiled on macOS; failing shims elsewhere |
 //! | `litert` | `litert-runtime` | LiteRT interpreter over a TFLite flatbuffer |
-//! | `burn` | `burn-runtime-cpu` | Burn NdArray CPU interpreter with host tensor storage |
+//! | `burn` | `burn-cpu-runtime` | Burn NdArray CPU interpreter with host tensor storage |
 //! | `cann` | `cann-runtime`, `cann-runtime-mock` | Huawei HiAI/CANN on OpenHarmony |
 //! | `webnn` | `webnn-runtime` | Browser WebNN through generated bindings (`wasm32`) |
 
 use crate::mlcontext::{self, RustNNOptions};
 
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-runtime")]
 pub(crate) mod burn;
 pub mod caching;
 
@@ -28,7 +28,7 @@ pub mod coreml;
 #[cfg(feature = "onnx-runtime")]
 pub mod ort;
 
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(feature = "trtx-runtime")]
 pub mod trtx;
 
 #[cfg(feature = "litert-runtime")]
@@ -147,7 +147,7 @@ pub mod ort {
 }
 
 /// Disabled TensorRT-RTX backend (built without `trtx-runtime`).
-#[cfg(not(any(feature = "trtx-runtime", feature = "trtx-runtime-mock")))]
+#[cfg(not(feature = "trtx-runtime"))]
 pub mod trtx {
     pub(crate) use crate::backends::DisabledContext as TrtxContext;
     use crate::mlcontext::RustNNOptions;

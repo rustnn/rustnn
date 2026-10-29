@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-runtime")]
 
 use std::collections::HashMap;
 

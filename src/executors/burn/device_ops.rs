@@ -22,7 +22,6 @@ use burn_tensor::module::conv2d;
 use burn_tensor::ops::{ConvOptions, PaddedConvOptions};
 use burn_tensor::{Tensor, TensorData};
 
-use super::options::parse_option_or_default as parse_option;
 use super::outputs::OperationOutputs;
 use super::shape::ReductionSpec;
 use crate::error::GraphError;
@@ -254,32 +253,4 @@ pub fn gemm_device<B: Backend>(
         }
     }
     Ok(out)
-}
-
-pub fn global_pool_device<B: Backend>(
-    env: &TensorEnv<B>,
-    input_id: u32,
-    options: &MLPool2dOptions,
-    kind: PoolKind,
-) -> Result<RuntimeTensor<B>, GraphError> {
-    let input_rt = env.get(input_id)?;
-    if input_rt.rank() != 4 {
-        return Err(burn_err(format!(
-            "global pool expects 4D input, got rank {}",
-            input_rt.rank()
-        )));
-    }
-    let nchw = parse_option::<MLInputOperandLayout>(&options.layout, "layout")?
-        == MLInputOperandLayout::Nchw;
-    let (h, w) = if nchw {
-        (input_rt.shape()[2], input_rt.shape()[3])
-    } else {
-        (input_rt.shape()[1], input_rt.shape()[2])
-    };
-    let mut opts = options.clone();
-    opts.window_dimensions = Some(vec![h as u32, w as u32]);
-    if opts.strides.is_empty() {
-        opts.strides = vec![h as u32, w as u32];
-    }
-    pool2d_device(env, input_id, &opts, kind)
 }

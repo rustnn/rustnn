@@ -6,12 +6,14 @@ use std::{fs::File, path::Path};
 
 use seahash::SeaHasher;
 
+#[cfg(feature = "coreml-converter")]
 fn collect_protos(dir: &str) -> Vec<String> {
     let mut files = Vec::new();
     recurse(dir.as_ref(), &mut files);
     files
 }
 
+#[cfg(feature = "coreml-converter")]
 fn recurse(dir: &Path, files: &mut Vec<String>) {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -25,7 +27,7 @@ fn recurse(dir: &Path, files: &mut Vec<String>) {
     }
 }
 
-#[cfg(feature = "litert-runtime")]
+#[cfg(feature = "litert-converter")]
 fn run_flatc(schema: &str, out_dir: &str) -> Result<(), String> {
     let status = Command::new("flatc")
         .args(["--rust", "-o", out_dir, schema])
@@ -51,7 +53,7 @@ fn run_flatc(schema: &str, out_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "litert-runtime")]
+#[cfg(feature = "litert-converter")]
 fn build_tflite_schema() {
     let out_dir = env::var("OUT_DIR").unwrap();
     run_flatc("protos/tflite/schema.fbs", &out_dir)
@@ -59,6 +61,7 @@ fn build_tflite_schema() {
     println!("cargo:rerun-if-changed=protos/tflite/schema.fbs");
 }
 
+#[cfg(feature = "coreml-converter")]
 fn build_coreml_protos() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config.bytes(["."]); // Fix clippy::needless_borrows_for_generic_args
@@ -208,13 +211,14 @@ fn copy_litert_dlls(dir: &Path) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Only compile CoreML protos - ONNX protos come from webnn-onnx-utils
+    #[cfg(feature = "coreml-converter")]
     build_coreml_protos()?;
     #[cfg(feature = "coreml-runtime")]
     build_coreml_shim();
     embed_wpt_corpus()?;
 
-    // Build TFLite flatbuffer schema - Only required for the litert-runtime.
-    #[cfg(feature = "litert-runtime")]
+    // Build TFLite flatbuffer schema - Only required for litert-converter.
+    #[cfg(feature = "litert-converter")]
     build_tflite_schema();
 
     println!("cargo:rerun-if-changed=protos");

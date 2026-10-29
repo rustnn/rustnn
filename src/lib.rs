@@ -17,8 +17,8 @@
 //!   [`operators::Operation`] variants. It is backend-agnostic and round-trips through the
 //!   `.webnn` text and JSON formats of the `webnn-graph` crate via [`loader`] and
 //!   [`webnn_json`].
-//! * **Legacy pipeline.** [`load_graph_from_path`], [`GraphValidator`], the
-//!   [`ConverterRegistry`] and the functions in [`executors`] run a stored graph without an
+//! * **Legacy pipeline.** [`load_graph_from_path`], [`ConverterRegistry`] and the
+//!   functions in [`executors`] run a stored graph without an
 //!   `MLContext`. Executors reload the converted model on every call and have no device
 //!   tensors. The converters are shared with the backends; new code should go through the
 //!   WebNN API.
@@ -69,34 +69,44 @@
 //!
 //! # Diagnostics
 //!
-//! Library users install their own [`tracing`] subscriber; the CLI installs one filtered by
+//! Library users install their own [`tracing`] subscriber, optionally filtered by
 //! `RUST_LOG`. Spans identify contexts, graphs, files and calls. Targets are module paths, so
 //! filters can select a backend or subsystem. Instrumented public calls record errors on their
 //! spans before returning them. See the environment variables below for converter dumps.
 //!
 //! # Cargo features
 //!
-//! Burn CPU is enabled by default and selected after every other eligible backend.
-//! Other runtime backends are opt-in. Without a runtime feature, the crate still validates
-//! graphs and converts them to CoreML protobufs (and ONNX with the `onnx` feature), but
-//! [`mlcontext::MLContext::create`] fails
-//! with [`error::Error::NoBackendAvailable`].
+//! Default features are `onnx-converter` and `burn-cpu-runtime`. Burn CPU is selected
+//! after every other eligible backend. Each `<backend>-runtime` enables its matching
+//! `<backend>-converter`; converter features expose serialization without rustnn execution.
+//! With `default-features = false`, enable only the converters or runtimes you need.
+//! Without a runtime, [`mlcontext::MLContext::create`] returns
+//! [`error::Error::NoBackendAvailable`]; graph loading, builder validation and enabled
+//! converters remain available.
 //!
 //! | Feature | Effect |
 //! |---|---|
-//! | `cli` (default) | Build the CLI with `clap`, `tracing-subscriber` and ONNX conversion (`onnx`) |
-//! | `onnx` | ONNX converter and `protos::onnx` (default; enabled by `onnx-runtime`). Without it, `webnn-onnx-utils` is not built |
-//! | `onnx-runtime` | ONNX Runtime backend through the `ort` crate (dynamic loading, `ORT_DYLIB_PATH`) |
-//! | `trtx-runtime` | NVIDIA TensorRT-RTX backend through the `trtx` crate; `trtx-runtime-mock` builds without a GPU |
-//! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) instead of TensorRT-RTX; RTX-only features are compiled out (validation only) |
-//! | `coreml-runtime` | Apple CoreML backend; executes on macOS/iOS; failing shims on other targets |
-//! | `litert-runtime` | LiteRT (TensorFlow Lite) backend through `litert-sys`; needs `flatc` at build time |
-//! | `burn-runtime-cpu` | Burn NdArray CPU backend, enabled by default as the lowest-priority fallback; no native runtime library required |
-//! | `cann-runtime` | Huawei CANN/HiAI backend on OpenHarmony; `cann-runtime-mock` validates without a device |
-//! | `webnn-runtime` | Browser WebNN backend for `wasm32-unknown-unknown` (`webnn-wpt-tests` embeds the WPT corpus) |
-//! | `dynamic-inputs` | Accept [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
-//! | `zstd-cache-compression` | Compress the on-disk engine caches (enabled by `trtx-runtime`) |
+//! | `onnx-converter` | ONNX protobuf generation and `protos::onnx` (default) |
+//! | `coreml-converter` | CoreML MLProgram protobufs and weights; works on non-Apple hosts |
+//! | `litert-converter` | TFLite FlatBuffer generation; needs `flatc`, no LiteRT library |
+//! | `burn-cpu-converter` | Portable Burn execution-plan serialization; no Burn tensor dependencies |
+//! | `trtx-converter` | Serialized TensorRT-RTX engines through `trtx`; conversion requires the NVIDIA SDK and GPU |
+//! | `cann-converter` | HiAI offline models through `hiai-rs`; conversion requires the CANN DDK |
+//! | `onnx-runtime` | ONNX Runtime execution through `ort` (dynamic loading, `ORT_DYLIB_PATH`) |
+//! | `coreml-runtime` | Apple CoreML execution on macOS/iOS; failing shims on other targets |
+//! | `litert-runtime` | LiteRT execution through `litert` and `litert-sys` |
+//! | `burn-cpu-runtime` | Burn NdArray CPU execution (default); no native runtime library |
+//! | `trtx-runtime` | TensorRT-RTX execution, CUDA tensors and compressed engine caches |
+//! | `cann-runtime` | Huawei CANN/HiAI execution on OpenHarmony |
+//! | `cann-runtime-mock` | Device-free CANN validation and placeholder conversion; no native dependencies, dispatch fails |
+//! | `webnn-runtime` | Browser WebNN graph replay and execution on `wasm32`; no serialized model converter |
+//! | `trtx-enterprise` | `trtx-runtime` linked against full TensorRT 10 (`nvinfer`) for validation |
+//! | `dynamic-inputs` | Enable ONNX/CoreML conversion of [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
+//! | `zstd-cache-compression` | Compress on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
+//! | `capi` | C API exports and logging support |
+//! | `wpt-embed-corpus` | Embed the WPT corpus for targets without filesystem access |
+//! | `webnn-wpt-tests` | Browser WPT tests, including the embedded corpus |
 //!
 //! # Environment variables
 //!
@@ -108,6 +118,7 @@
 //! | `TRTX_JSON_DUMP_PATH` | Directory for per-engine TensorRT layer dumps |
 //! | `ORT_DYLIB_PATH` | Path of the ONNX Runtime shared library loaded by `ort` |
 //! | `WPT_COREML_TENSOR_MODE` | WPT harness only: `baseline` (default), `persistent`, or `backings`; does not change library defaults |
+//! | `WPT_COREML_FLOAT16` | WPT harness only: `native` (default) or `exact` CoreML float16 lowering; does not change library defaults |
 //!
 //! Persistent caches (TensorRT engines and the TensorRT runtime cache) live under the
 //! platform cache directory, `<cache_dir>/rustnn/<category>`; see [`backends::caching`].
@@ -117,7 +128,7 @@
 
 pub mod backend_selection;
 pub mod backends;
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-converter")]
 pub mod burn;
 #[cfg(feature = "capi")]
 pub mod capi;
@@ -140,7 +151,6 @@ pub mod protos;
 pub mod runtime_checks;
 pub mod shape_inference;
 pub mod tensor;
-pub mod validator;
 pub mod webnn_json;
 pub(crate) mod webnn_save;
 
@@ -166,5 +176,4 @@ pub use graph::{ConstantData, DataType, GraphInfo, Operand, OperandDescriptor, O
 pub use graphviz::graph_to_dot;
 pub use loader::load_graph_from_path;
 pub use operators::Operation;
-pub use validator::{ContextProperties, GraphValidator, ValidationArtifacts};
 extern crate alloc;

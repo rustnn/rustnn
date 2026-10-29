@@ -4,7 +4,7 @@ use anyhow::{Context, anyhow, bail};
 use clap::Parser;
 use log::{debug, info};
 use rustnn::{
-    ContextProperties, GraphValidator, ValidationArtifacts, load_graph_from_path,
+    load_graph_from_path,
     mlcontext::{
         MLContext, MLContextOptions, MLGraph, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
         MLTensor, MLTensorDescriptor,
@@ -24,8 +24,6 @@ struct Args {
     prompt: String,
     #[arg(long, default_value_t = 16)]
     max_new_tokens: usize,
-    #[arg(long, default_value_t = 500_000_000_000usize)]
-    tensor_limit: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -85,14 +83,17 @@ fn boxed_result<T>(
     }
 }
 
-fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
+fn detect_layout(
+    inputs: &HashMap<String, rustnn::OperandDescriptor>,
+    outputs: &HashMap<String, rustnn::OperandDescriptor>,
+) -> anyhow::Result<Layout> {
     let mut num_layers = 0usize;
     let mut num_heads = None;
     let mut max_cache_len = None;
     let mut head_dim = None;
     let mut logits_name = None;
 
-    for (name, desc) in &artifacts.input_names_to_descriptors {
+    for (name, desc) in inputs {
         if let Some(rest) = name.strip_prefix("past_key_values_") {
             let parts: Vec<&str> = rest.split('_').collect();
             if parts.len() >= 2
@@ -108,7 +109,7 @@ fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
         }
     }
 
-    for name in artifacts.output_names_to_descriptors.keys() {
+    for name in outputs.keys() {
         if name == "logits" || name.contains("logits") {
             logits_name = Some(name.clone());
             break;
@@ -116,8 +117,7 @@ fn detect_layout(artifacts: &ValidationArtifacts) -> anyhow::Result<Layout> {
     }
 
     let logits_name = logits_name.ok_or_else(|| anyhow!("failed to detect logits output"))?;
-    let logits_desc = artifacts
-        .output_names_to_descriptors
+    let logits_desc = outputs
         .get(&logits_name)
         .ok_or_else(|| anyhow!("missing logits descriptor"))?;
     let vocab_size = dim_to_usize(
@@ -287,7 +287,7 @@ fn compact_kv(
 }
 
 // Stores the last token's KV slice from the present output into the padded CPU cache at
-// current_pos. Mirrors smollm_webnn_rust's update_kv_cache logic.
+// current_pos.
 fn store_present(
     state: &mut StepState,
     layout: &Layout,
@@ -488,14 +488,8 @@ fn main() -> anyhow::Result<()> {
         bail!("prompt produced zero tokens");
     }
 
-    let context_properties = ContextProperties {
-        tensor_byte_length_limit: args.tensor_limit,
-        ..Default::default()
-    };
-    let artifacts = GraphValidator::new(&graph_info, context_properties)
-        .validate()
-        .context("validate graph")?;
-    let layout = detect_layout(&artifacts)?;
+    let (inputs, outputs) = graph_info.io_binding_maps().context("graph I/O")?;
+    let layout = detect_layout(&inputs, &outputs)?;
     info!(
         "Layout: {} layers, {} heads, cache_len={}, head_dim={}, vocab={}",
         layout.num_layers,
@@ -525,8 +519,7 @@ fn main() -> anyhow::Result<()> {
     info!("Graph built");
 
     // Logits output is always [1, 1, vocab_size] — create it once and reuse across all steps.
-    let logits_ndim = artifacts
-        .output_names_to_descriptors
+    let logits_ndim = outputs
         .get(&layout.logits_name)
         .map(|d| d.shape.len())
         .unwrap_or(3);

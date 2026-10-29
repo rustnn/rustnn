@@ -21,9 +21,9 @@ DOXYGEN ?= doxygen
 ORT_VERSION ?= 1.29.0
 ORT_BASE ?= https://github.com/microsoft/onnxruntime/releases/download/v$(ORT_VERSION)
 ORT_DIR ?= target/onnxruntime
-TRT_VERSION ?= 1.6.1.120
+TRT_VERSION ?= 1.7.1.116
 TRT_CUDA_VERSION ?= 13.4
-TRT_BASE ?= https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.6
+TRT_BASE ?= https://developer.nvidia.com/downloads/trt/rtx_sdk/secure/1.7
 TRT_DIR ?= target/tensorrt-rtx
 TRT_SDK_DIR ?= $(TRT_DIR)/TensorRT-RTX-$(TRT_VERSION)
 CHROMEDRIVER_CACHE ?= $(CURDIR)/.cache/chromedriver
@@ -104,14 +104,14 @@ CANN_CROSS_ENV = CC_aarch64_unknown_linux_ohos=$(OHOS_SDK_NATIVE)/llvm/bin/clang
 	CANN_DDK=$(CANN_DDK) \
 	RUSTFLAGS="-Clink-arg=--target=aarch64-linux-ohos -Clink-arg=--sysroot=$(OHOS_SDK_NATIVE)/sysroot"
 
-.PHONY: build test fmt fmt-check lint run viz clean clean-all help \
+.PHONY: build test fmt fmt-check lint clean clean-all help \
 	coverage coverage-html coverage-lcov coverage-open coverage-clean \
 	docs-serve docs-build docs-clean ci-docs docs-api docs-capi docs-backend-ops docs-backend-ops-check \
 	fetch-wpt require-wpt-cache test-wpt test-wpt-trtx test-wpt-litert test-wpt-coreml \
 	test-wpt-coreml-report build-coreml test-coreml benchmark-coreml-kv test-wpt-op test-wpt-report test-wpt-cann \
 	wpt-sync-onnx wpt-sync-litert wpt-sync-coreml wpt-sync-trtx wpt-sync-cann \
 	webnn-chromedriver test-webnn-wpt-chrome test-webnn-wpt-chrome-headless \
-	onnxruntime-download trtxruntime-download onnx onnx-validate coreml coreml-validate litert cann \
+	onnxruntime-download trtxruntime-download \
 	cann-build cann-device-test validate-cann-env validate-all-env capi-examples
 
 clean:
@@ -125,9 +125,9 @@ build:
 
 test:
 	@echo "Running rustfmt..."
-	$(CARGO) fmt
+	$(CARGO) fmt --all
 	@echo "Running clippy..."
-	$(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
 	@echo "Running tests..."
 	$(CARGO) test
 	@echo "Checking backend operator support report drift..."
@@ -189,7 +189,7 @@ test-wpt-trtx: onnxruntime-download trtxruntime-download
 	$(ORT_ENV_VARS) $(TRT_ENV_VARS) $(CARGO) test --test run_wpt_conformance --features "onnx-runtime,trtx-runtime" -- trtx --test-threads 1
 
 test-wpt-burn-cpu:
-	WPT_BACKEND=burn-cpu $(CARGO) test --test run_wpt_conformance --features burn-runtime-cpu -- $(TEST_FILTER) --test-threads 1
+	WPT_BACKEND=burn-cpu $(CARGO) test --test run_wpt_conformance --features burn-cpu-runtime -- $(TEST_FILTER) --test-threads 1
 
 wpt-sync-burn-cpu: fetch-wpt
 	./scripts/update_expected_failures.sh burn-cpu 2>&1 | tee /tmp/wpt-burn-cpu.log || true
@@ -220,18 +220,26 @@ test-coreml-gather:
 test-coreml-dtypes:
 	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_dtypes -- $(TEST_FILTER) --test-threads=1
 
+.PHONY: test-coreml-gelu
+test-coreml-gelu:
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_gelu --test test_coreml_gelu_precision -- $(TEST_FILTER) --test-threads=1
+
+.PHONY: test-coreml-precision
+test-coreml-precision:
+	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_precision_pipeline -- $(TEST_FILTER) --test-threads=1
+
 .PHONY: test-coreml-tensor-reuse
 test-coreml-tensor-reuse:
 	$(CARGO) test --no-default-features --features $(COREML_FEATURES) --test test_coreml_tensor_reuse -- $(TEST_FILTER) --test-threads=1
 
 # Build every target, including examples and the separately run WPT harness.
 build-coreml:
-	$(CARGO) build --all-targets --no-default-features --features cli,$(COREML_FEATURES)
+	$(CARGO) build --all-targets --no-default-features --features $(COREML_FEATURES)
 
 # Ordinary integration suites use test_*. The live WPT and browser harnesses
 # have their own targets and corpus/device setup; do not run them here.
 test-coreml:
-	$(CARGO) test --lib --bins --test 'test_*' --no-default-features --features cli,$(COREML_FEATURES) -- $(TEST_FILTER) --test-threads=1
+	$(CARGO) test --lib --test 'test_*' --no-default-features --features $(COREML_FEATURES) -- $(TEST_FILTER) --test-threads=1
 
 # Defaults to self-contained attention/cache chaining with an independent oracle.
 benchmark-coreml-kv:
@@ -290,13 +298,17 @@ wpt-sync-cann: fetch-wpt
 	@grep -q -F '[WPT] result:' /tmp/wpt-cann.log
 
 fmt:
-	$(CARGO) fmt
+	$(CARGO) fmt --all
 
 fmt-check:
-	$(CARGO) fmt --check
+	$(CARGO) fmt --all --check
 
 lint:
-	$(CARGO) clippy --all-targets -- -D warnings
+	$(CARGO) clippy --workspace --all-targets -- -D warnings
+
+.PHONY: test-quantization-validation
+test-quantization-validation:
+	$(CARGO) test --test test_quantization_validation
 
 # ==============================================================================
 # Code Coverage Targets
@@ -326,13 +338,7 @@ coverage-clean:
 	rm -rf target/llvm-cov/
 	@echo "[OK] Coverage artifacts cleaned"
 
-run:
-	$(CARGO) run -- examples/sample_graph.json
 
-viz:
-	$(CARGO) run -- $(GRAPH_FILE) --export-dot $(DOT_PATH)
-	$(DOT) -Tpng $(DOT_PATH) -o $(PNG_PATH)
-	open $(PNG_PATH)
 
 
 onnxruntime-download:
@@ -369,12 +375,7 @@ trtxruntime-download:
 		echo "TensorRT-RTX $(TRT_VERSION) downloaded to $(TRT_SDK_DIR)"; \
 	fi
 
-onnx: onnxruntime-download
-	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH)
-	@echo "ONNX graph written to $(ONNX_PATH)"
 
-onnx-validate: onnx
-	$(ORT_ENV_VARS) $(CARGO) run --features onnx-runtime -- $(GRAPH_FILE) --convert onnx --convert-output $(ONNX_PATH) --run-onnx
 
 # Build, install, and execute the C and C++ API examples with ONNX Runtime.
 capi-examples: onnxruntime-download
@@ -387,18 +388,9 @@ capi-examples: onnxruntime-download
 	RUST_LOG="$(CAPI_RUST_LOG)" $(ORT_ENV_VARS) "$(CAPI_EXAMPLE_BUILD_DIR)/rustnn_c_example"
 	RUST_LOG="$(CAPI_RUST_LOG)" $(ORT_ENV_VARS) "$(CAPI_EXAMPLE_BUILD_DIR)/rustnn_cpp_example"
 
-coreml:
-	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH)
-	@echo "CoreML graph written to $(COREML_PATH)"
 
-coreml-validate: coreml
-	$(CARGO) run --features coreml-runtime -- $(GRAPH_FILE) --convert coreml --convert-output $(COREML_PATH) --run-coreml --coreml-compiled-output $(COREMLC_PATH)
 
-litert:
-	$(CARGO) run --features litert-runtime -- $(GRAPH_FILE) --convert litert --convert-output $(LITERT_PATH)
 
-cann:
-	$(CARGO) run --features cann-runtime -- $(GRAPH_FILE) --convert cann --convert-output $(CANN_PATH)
 
 validate-cann-env:
 	@if ! rustup target list --installed | grep -qx aarch64-unknown-linux-ohos; then \
@@ -424,7 +416,7 @@ cann-device-test: validate-cann-env
 	CANN_DDK=$(CANN_DDK) \
 	./scripts/ohos-test-helper.sh $(filter-out $@,$(MAKECMDGOALS))
 
-validate-all-env: build test onnx-validate coreml-validate
+validate-all-env: build test
 	@echo "Full pipeline (build/test/convert/validate) completed."
 
 # ==============================================================================
@@ -456,7 +448,7 @@ docs-clean:
 
 # Rust API documentation (rustdoc). Warnings are errors so broken doc links fail CI.
 # The feature list matches what CI type-checks on Linux; coreml-runtime is macOS-only.
-DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,coreml-runtime,burn-runtime-cpu,dynamic-inputs
+DOCS_API_FEATURES ?= onnx-runtime,trtx-runtime,litert-runtime,cann-runtime,coreml-runtime,burn-cpu-runtime,dynamic-inputs
 docs-api:
 	@echo "Building Rust API documentation..."
 	RUSTDOCFLAGS="-D warnings" $(CARGO) doc --no-deps --lib --features $(DOCS_API_FEATURES)
@@ -498,7 +490,6 @@ help:
 	@echo "  build              - Build the Rust project"
 	@echo "  test               - Run rustfmt, clippy, Rust tests, and backend report drift check"
 	@echo "  fmt                - Format Rust code"
-	@echo "  run                - Run with sample graph"
 	@echo "  clean              - Clean Rust build artifacts"
 	@echo ""
 	@echo "Code Coverage:"
@@ -509,13 +500,10 @@ help:
 	@echo "  coverage-clean     - Clean coverage artifacts"
 	@echo ""
 	@echo "Visualization:"
-	@echo "  viz                - Generate and open graph visualization"
 	@echo ""
 	@echo "ONNX Conversion:"
 	@echo "  onnxruntime-download - Download ONNX Runtime"
 	@echo "  trtxruntime-download - Download TensorRT-RTX SDK"
-	@echo "  onnx               - Convert graph to ONNX format"
-	@echo "  onnx-validate      - Convert and validate ONNX graph"
 	@echo ""
 	@echo "C and C++ API:"
 	@echo "  capi-examples      - Install the C API and build/run both dispatch examples"
@@ -540,18 +528,15 @@ help:
 	@echo "  test-webnn-wpt-chrome-headless - Run the browser WebNN WPT tests headlessly"
 	@echo ""
 	@echo "CoreML Conversion:"
-	@echo "  coreml             - Convert graph to CoreML format"
-	@echo "  coreml-validate    - Convert and validate CoreML graph"
 	@echo "  benchmark-coreml-kv - Measure KV-cache reuse with COREML_KV_CONFIG=..."
 	@echo "  build-coreml       - Build all targets with CoreML and dynamic inputs (macOS)"
 	@echo "  test-coreml        - Run CoreML unit/integration tests (optional TEST_FILTER=triangular)"
+	@echo "  test-coreml-precision - Test explicit FP16 rounding and native Pipeline stage interfaces"
 	@echo "                       Set COREML_FEATURES=coreml-runtime to disable dynamic inputs"
 	@echo ""
 	@echo "LiteRT Conversion:"
-	@echo "  litert             - Convert graph to LiteRT/TFLite format"
 	@echo ""
 	@echo "CANN:"
-	@echo "  cann               - Convert graph to CANN/HiAI format"
 	@echo "  cann-build    		- Cross-compile rustnn for OHOS via cargo"
 	@echo "  cann-device-test   - Test on device via scripts/ohos-test-helper.sh"
 	@echo ""
@@ -573,3 +558,9 @@ help:
 	@echo "Note: Python bindings are available in the pywebnn package:"
 	@echo "      https://github.com/rustnn/pywebnn"
 	@echo ""
+
+.PHONY: check-converters
+check-converters:
+	@set -e; for backend in onnx coreml litert trtx cann burn-cpu; do \
+	    $(CARGO) check --no-default-features --all-targets --features $$backend-converter; \
+	done

@@ -28,11 +28,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--layers", type=int, default=6)
     p.add_argument("--heads", type=int, default=12)
     p.add_argument("--head-dim", type=int, default=64)
-    p.add_argument("--tensor-limit", type=int, default=500_000_000_000)
     return p.parse_args()
 
 
-def convert_webnn_to_onnx(webnn_path: Path, onnx_path: Path, tensor_limit: int) -> None:
+def convert_webnn_to_onnx(webnn_path: Path, onnx_path: Path) -> None:
     cmd = [
         "cargo",
         "run",
@@ -40,8 +39,6 @@ def convert_webnn_to_onnx(webnn_path: Path, onnx_path: Path, tensor_limit: int) 
         "onnx-runtime",
         "--",
         str(webnn_path),
-        "--tensor-limit",
-        str(tensor_limit),
         "--convert",
         "onnx",
         "--convert-output",
@@ -77,7 +74,7 @@ def run_generation(args: argparse.Namespace) -> None:
         raise FileNotFoundError(f"Missing WebNN graph: {args.webnn}")
 
     print(f"[INFO] Converting WebNN to ONNX: {args.webnn} -> {args.onnx}")
-    convert_webnn_to_onnx(args.webnn, args.onnx, args.tensor_limit)
+    convert_webnn_to_onnx(args.webnn, args.onnx)
 
     print("[INFO] Loading tokenizer: distilgpt2")
     tokenizer = AutoTokenizer.from_pretrained("distilgpt2")

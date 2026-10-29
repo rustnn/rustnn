@@ -18,14 +18,16 @@
 //! CANN/HiAI converter: `GraphInfo` -> compiled model bytes via the `hiai-rs`
 //! adapter (HiAI DDK C++ API).
 //!
-//! - `cann-runtime`: build a GE graph and compile it to ModelBufferData.
-//! - `cann-runtime-mock`: validate ops, return placeholder bytes.
+//! Enabled by `cann-converter`: builds a GE graph and compiles it to ModelBufferData.
+//! The DDK is required for conversion; `cann-runtime` additionally enables execution.
+//! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
+//! without the DDK. Enabling `cann-converter` also enables real conversion.
 
 use crate::error::GraphError;
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 use crate::graph::DataType;
 use crate::graph::GraphInfo;
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 use crate::operators::Operation;
 
 use super::{ConvertedGraph, GraphConverter};
@@ -33,7 +35,7 @@ use super::{ConvertedGraph, GraphConverter};
 // Maps a WebNN op to the DDK operator type registered for it, or `None` if it has no
 // lowering (`None` also covers ops an earlier block lowers itself). The name is not a
 // label: it goes to `cann_operator_create_registered`, so a typo emits a wrong model.
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     match op {
         // ── Element-wise binary ──────────────────────────────────────
@@ -148,8 +150,6 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         Operation::IsNaN { .. } => None,
         Operation::IsInfinite { .. } => None,
         Operation::Reverse { .. } => None,
-        Operation::GlobalAveragePool { .. } => None,
-        Operation::GlobalMaxPool { .. } => None,
 
         // ── Not supported ─────────────────────────────────────────────
         Operation::Shape { .. }
@@ -168,14 +168,14 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
 
 // Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
 // them to FLOAT would reinterpret packed nibbles as float.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn is_supported_dtype(data_type: DataType) -> bool {
     !matches!(data_type, DataType::Int4 | DataType::Uint4)
 }
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
 // not lower. Orphaned operands left behind by a rewrite are not counted.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
     graph
         .operands
@@ -192,9 +192,9 @@ fn live_operands_rank_over_4(graph: &GraphInfo) -> Vec<u32> {
 }
 
 // Rejects inputs the DDK cannot express, so a bad graph fails with a named operand
-// instead of panicking in a `CString`/`bytemuck` call. `GraphValidator` checks the
-// constant-length rule too, but `MLContext` and `GraphConverter` do not run it.
-#[cfg(feature = "cann-runtime")]
+// instead of panicking in a `CString`/`bytemuck` call. These checks also cover
+// GraphInfo supplied directly to the converter, bypassing the builder.
+#[cfg(feature = "cann-converter")]
 fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     for (i, operand) in graph.operands.iter().enumerate() {
         if !is_supported_dtype(operand.descriptor.data_type) {
@@ -244,32 +244,10 @@ fn check_encodable(graph: &GraphInfo) -> Result<(), GraphError> {
     Ok(())
 }
 
-// Spatial axes a global pool reduces: the trailing two for NCHW, 1..2 for NHWC. Reducing
-// them in place matches transposing to NCHW first, so no transpose is emitted. An unset
-// layout means NCHW.
-#[cfg(feature = "cann-runtime")]
-fn global_pool_axes(
-    rank: usize,
-    options: &Option<crate::operator_options::MLPool2dOptions>,
-) -> Vec<i32> {
-    let rank = rank as i32;
-    let is_nhwc = options
-        .as_ref()
-        .map(|o| o.layout.eq_ignore_ascii_case("nhwc"))
-        .unwrap_or(false);
-    if is_nhwc && rank >= 3 {
-        vec![1, 2]
-    } else if rank >= 2 {
-        vec![rank - 2, rank - 1]
-    } else {
-        vec![0]
-    }
-}
-
 // Transpose a 4-D f32 filter into the target layout: `perm[target] = source`,
 // so `dst_dims[k] = src_dims[perm[k]]`. Host-side (const-input Permute can't
 // infershape).
-#[cfg(any(feature = "cann-runtime", test))]
+#[cfg(any(feature = "cann-converter", test))]
 fn transpose_filter_f32(
     data: &[f32],
     src_dims: [usize; 4],
@@ -324,7 +302,7 @@ fn transpose_filter_f32(
     )
 }
 
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 mod adapter {
     use super::*;
     use crate::graph::{DataType, OperandDescriptor};
@@ -1072,8 +1050,6 @@ mod adapter {
             | Operation::MaxPool2d { outputs, .. }
             | Operation::AveragePool2d { outputs, .. }
             | Operation::L2Pool2d { outputs, .. }
-            | Operation::GlobalMaxPool { outputs, .. }
-            | Operation::GlobalAveragePool { outputs, .. }
             // ArgMax / ArgMin
             | Operation::ArgMax { outputs, .. }
             | Operation::ArgMin { outputs, .. }
@@ -1944,74 +1920,6 @@ mod adapter {
                 continue;
             }
 
-            // globalAveragePool = ReduceMean over the spatial axes.
-            if let Operation::GlobalAveragePool {
-                input,
-                options,
-                outputs,
-                ..
-            } = op
-            {
-                let out_id = outputs[0];
-                let mean = create_op(
-                    "ReduceMean",
-                    &format!("global_avg_pool_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(mean, "x", *input, &handles, &split_out)?;
-                let axes = global_pool_axes(
-                    graph.operands[*input as usize].descriptor.shape.len(),
-                    options,
-                );
-                let axes_const = make_const(
-                    &format!("global_avg_pool_axes_{out_id}"),
-                    bytemuck::cast_slice(&axes),
-                    &[axes.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(axes_const);
-                connect_input(mean, "axes", axes_const)?;
-                set_bool_attr(mean, "keep_dims", true);
-
-                handles[out_id as usize] = mean;
-                continue;
-            }
-
-            // globalMaxPool = ReduceMax over the spatial axes.
-            if let Operation::GlobalMaxPool {
-                input,
-                options,
-                outputs,
-                ..
-            } = op
-            {
-                let out_id = outputs[0];
-                let max = create_op(
-                    "ReduceMax",
-                    &format!("global_max_pool_{out_id}"),
-                    &mut guard.extra_ops,
-                )?;
-                connect_src_input(max, "x", *input, &handles, &split_out)?;
-                let axes = global_pool_axes(
-                    graph.operands[*input as usize].descriptor.shape.len(),
-                    options,
-                );
-                let axes_const = make_const(
-                    &format!("global_max_pool_axes_{out_id}"),
-                    bytemuck::cast_slice(&axes),
-                    &[axes.len() as i64],
-                    ddk_CannDataType::CANN_DT_INT32,
-                    2,
-                );
-                guard.extra_ops.push(axes_const);
-                connect_input(max, "axes", axes_const)?;
-                set_bool_attr(max, "keep_dims", true);
-
-                handles[out_id as usize] = max;
-                continue;
-            }
-
             // linear(x) = alpha * x + beta.
             if let Operation::Linear {
                 input,
@@ -2665,8 +2573,20 @@ mod adapter {
                 }
 
                 // hiai::op::PoolingD: mode(0=max,1=avg,2=l2), window(2), stride(2), pad(4).
-                let mut window_h: i64 = 1;
-                let mut window_w: i64 = 1;
+                // A missing window pools over the whole spatial extent: NCHW
+                // `[.., H, W]` at dims 2,3 and NHWC `[.., H, W, C]` at dims 1,2.
+                let pool_in_dims = descriptor_dims(&graph.operands[input as usize].descriptor);
+                let (default_h, default_w) = if pool_in_dims.len() == 4 {
+                    if is_nhwc {
+                        (pool_in_dims[1], pool_in_dims[2])
+                    } else {
+                        (pool_in_dims[2], pool_in_dims[3])
+                    }
+                } else {
+                    (1, 1)
+                };
+                let mut window_h: i64 = default_h;
+                let mut window_w: i64 = default_w;
                 let mut stride_h: i64 = 1;
                 let mut stride_w: i64 = 1;
                 let mut padding_top: i64 = 0;
@@ -3655,10 +3575,10 @@ mod adapter {
     }
 }
 
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 pub(crate) use adapter::encode_via_adapter;
 
-#[cfg(not(feature = "cann-runtime"))]
+#[cfg(not(feature = "cann-converter"))]
 pub(crate) fn encode_via_adapter(_graph: &GraphInfo) -> Result<Vec<u8>, GraphError> {
     Err(GraphError::ConversionFailed {
         format: "cann".into(),
@@ -3672,7 +3592,7 @@ pub(crate) fn encode_via_adapter(_graph: &GraphInfo) -> Result<Vec<u8>, GraphErr
 /// `Reshape → Transpose([2,0,3,1,4]) → Slice×3 → Reshape×3` becomes the
 /// numerically equivalent `Slice(axis2)×3 → Reshape×3 → Transpose([0,2,1,3])×3`.
 /// Returns `Some` when at least one block matched.
-#[cfg(feature = "cann-runtime")]
+#[cfg(feature = "cann-converter")]
 fn rewrite_attention_5d(graph: &GraphInfo) -> Option<GraphInfo> {
     use crate::graph::{Dimension, Operand, OperandDescriptor, OperandKind};
     use crate::operator_options::{MLDimension, MLTransposeOptions};

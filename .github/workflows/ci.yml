@@ -95,17 +95,21 @@ jobs:
       - name: Run cargo check (explicitly without dynamic-inputs)
         run: cargo check --no-default-features
 
+      - name: Check isolated converter features
+        run: make check-converters
+
       - name: Run cargo check (onnx-runtime without dynamic-inputs)
         run: cargo check --no-default-features --features onnx-runtime
 
       - name: Run cargo check (TensorRT)
+        if: runner.os == 'Linux' # re-enable for MacOS once TrtxGraph is Send
         run: cargo check -F trtx-runtime --all-targets
 
       - name: Run cargo check (Burn CPU)
-        run: cargo check --features burn-runtime-cpu --all-targets
+        run: cargo check --features burn-cpu-runtime --all-targets
 
       - name: Run cargo test (Burn CPU)
-        run: cargo test --features burn-runtime-cpu --lib --test test_burn_precision
+        run: cargo test --features burn-cpu-runtime --lib --test test_burn_precision
 
       - name: Run cargo check (LiteRT)
         run: cargo check --features litert-runtime --all-targets
@@ -150,6 +154,12 @@ jobs:
         run: |
           make test-coreml-dtypes COREML_FEATURES=coreml-runtime
           make test-coreml-dtypes
+
+      - name: Test CoreML exact GELU precision and composition
+        if: runner.os == 'macOS'
+        run: |
+          make test-coreml-gelu COREML_FEATURES=coreml-runtime
+          make test-coreml-gelu
 
       - name: Test CoreML retained tensor ownership and reuse
         if: runner.os == 'macOS'
@@ -234,7 +244,7 @@ jobs:
           key: ${{ runner.os }}-capi-examples-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run capi tests
-        run: cargo test -F capi,onnx-runtime capi --lib
+        run: cargo test -p rustnn -F capi,onnx-runtime capi --lib
 
       - name: Build and run C and C++ API examples
         run: make capi-examples

@@ -978,6 +978,7 @@ pub struct MLResample2dOptions {
     #[serde(default)]
     pub mode: String, // "nearest-neighbor" | "linear"
     /// Scale factor per resampled axis; empty means `[1.0, 1.0]`. Ignored when `sizes` is set.
+    /// Output dimensions are `floor(input_dimension * scale)`, computed in double precision.
     #[serde(default)]
     pub scales: Vec<f32>,
     /// Explicit output size per resampled axis.
@@ -1312,8 +1313,7 @@ impl OperatorOptions {
                 "lstm" => try_opt!(MLLstmOptions, Lstm),
                 "lstmCell" => try_opt!(MLLstmCellOptions, LstmCell),
                 "pad" => try_opt!(MLPadOptions, Pad),
-                "averagePool2d" | "maxPool2d" | "l2Pool2d" | "globalAveragePool"
-                | "globalMaxPool" => try_opt!(MLPool2dOptions, Pool2d),
+                "averagePool2d" | "maxPool2d" | "l2Pool2d" => try_opt!(MLPool2dOptions, Pool2d),
                 "reduceSum" | "reduceMean" | "reduceMax" | "reduceMin" | "reduceProduct"
                 | "reduceL1" | "reduceL2" | "reduceLogSum" | "reduceLogSumExp"
                 | "reduceSumSquare" => {

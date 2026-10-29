@@ -1,8 +1,9 @@
 # Flexible Input Shapes
 
 This page describes how dynamic dimensions are encoded, validated and used at run time.
-Dynamic dimensions require the `dynamic-inputs` Cargo feature; without it the validator rejects
-such graphs with `GraphError::DynamicInputsFeatureDisabled`.
+Converting dynamic graphs to ONNX or CoreML requires the `dynamic-inputs` Cargo feature;
+without it these converters return `GraphError::DynamicInputsFeatureDisabled`. The graph
+model and builder can still record dynamic dimensions.
 
 ## Encoding
 
@@ -50,5 +51,5 @@ length as capacity, and are resized every token.
 ## Legacy executors
 
 `run_onnx_with_inputs_checked` and `run_coreml_with_inputs_checked` take the input and output
-descriptor maps from `ValidationArtifacts` and apply the same checks to a one-shot run;
+descriptor maps from `GraphInfo::io_binding_maps()` or `MLGraph` and apply the same checks to a one-shot run;
 `run_onnx_with_inputs` skips them.

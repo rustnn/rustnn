@@ -33,8 +33,7 @@ use crate::operator_options::{
 use crate::operators::Operation;
 
 use super::device_ops::{
-    conv2d_device, gemm_device, global_pool_device, host_kernel, insert_tensor, pool2d_device,
-    reduce_device,
+    conv2d_device, gemm_device, host_kernel, insert_tensor, pool2d_device, reduce_device,
 };
 use super::f16::{
     f16_add, f16_div, f16_mul, f16_neg, f16_sqrt, f16_sub, round_f16, use_f16_arithmetic,
@@ -729,34 +728,6 @@ fn execute_float<B: Backend>(
         } => {
             let out = l2_pool2d(&env.get_host(*input)?, &options.clone().unwrap_or_default())?;
             insert_output(env, outputs, out)?;
-        }
-        Operation::GlobalAveragePool {
-            input,
-            options,
-            outputs,
-            ..
-        } => {
-            let out = global_pool_device(
-                env,
-                *input,
-                &options.clone().unwrap_or_default(),
-                PoolKind::Average,
-            )?;
-            insert_tensor(env, outputs, out)?;
-        }
-        Operation::GlobalMaxPool {
-            input,
-            options,
-            outputs,
-            ..
-        } => {
-            let out = global_pool_device(
-                env,
-                *input,
-                &options.clone().unwrap_or_default(),
-                PoolKind::Max,
-            )?;
-            insert_tensor(env, outputs, out)?;
         }
 
         Operation::Resample2d {

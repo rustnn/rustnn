@@ -17,7 +17,7 @@
 
 //! Burn backend intermediate representation shared by converter and executor.
 
-#![cfg(feature = "burn-runtime-cpu")]
+#![cfg(feature = "burn-cpu-converter")]
 
 /// Versioned execution-plan types and serialization.
 pub mod plan;

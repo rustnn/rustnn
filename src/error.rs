@@ -15,7 +15,7 @@ use crate::{
     graph::DataType,
     mlcontext::{MLOperand, MLOperandDescriptor, MLTensor, MLTensorDescriptor},
 };
-#[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+#[cfg(feature = "trtx-runtime")]
 use cudarc::driver::DriverError;
 use serde_json::Error as JsonError;
 use thiserror::Error;
@@ -374,7 +374,7 @@ pub enum Error {
         source: Box<dyn std::error::Error + Send + Sync>,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-converter")]
     /// An error in the Trtx: `source`.
     #[error("An error in the Trtx: {source}")]
     TrtxError {
@@ -382,7 +382,7 @@ pub enum Error {
         source: trtx::Error,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     /// An error in the Trtx backend: `source`.
     #[error("An error in the Trtx backend: {source}")]
     TrtxBackendError {
@@ -390,12 +390,63 @@ pub enum Error {
         source: crate::backends::trtx::TrtxError,
     },
 
-    #[cfg(any(feature = "trtx-runtime", feature = "trtx-runtime-mock"))]
+    #[cfg(feature = "trtx-runtime")]
     /// An CUDA error occurred: `source`.
     #[error("An CUDA error occurred: {source}")]
     CudaError {
         #[from]
         source: DriverError,
+    },
+}
+
+/// Why the scale and zero point of a `quantizeLinear` or `dequantizeLinear` do not fit its
+/// input. Checked when the builder records the operation, including graph import.
+///
+/// Variant fields carry the values named in the message; they are not documented separately.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[allow(missing_docs)]
+pub enum QuantizationParameterError {
+    /// The scale is not float16 or float32.
+    #[error("scale must be float16 or float32 (got {found:?})")]
+    ScaleDataType { found: DataType },
+    /// The quantize input is not float16, float32 or int32.
+    #[error("quantize input must be float16/float32/int32 (got {found:?})")]
+    QuantizeInputDataType { found: DataType },
+    /// The dequantize input is not a quantized integer type.
+    #[error("dequantize input must be int4/uint4/int8/uint8/int32/uint32 (got {found:?})")]
+    DequantizeInputDataType { found: DataType },
+    /// A floating-point quantize input and its scale have different types.
+    #[error("scale dtype {scale:?} must match quantize input dtype {input:?}")]
+    ScaleInputDataTypeMismatch { scale: DataType, input: DataType },
+    /// The zero point is not a quantized integer type.
+    #[error("zeroPoint must be int4/uint4/int8/uint8/int32/uint32 (got {found:?})")]
+    ZeroPointDataType { found: DataType },
+    /// The dequantize zero point and input have different types.
+    #[error("zeroPoint dtype {zero_point:?} must match dequantize input dtype {input:?}")]
+    ZeroPointInputDataTypeMismatch {
+        zero_point: DataType,
+        input: DataType,
+    },
+    /// The zero point and scale have different shapes.
+    #[error("zeroPoint shape {zero_point:?} must match scale shape {scale:?}")]
+    ZeroPointShapeMismatch {
+        zero_point: Vec<crate::graph::Dimension>,
+        scale: Vec<crate::graph::Dimension>,
+    },
+    /// The scale does not have the input's rank.
+    #[error("scale rank {scale_rank} must match input rank {input_rank}")]
+    ScaleRankMismatch {
+        scale_rank: usize,
+        input_rank: usize,
+    },
+    /// A scale dimension is zero or does not divide the input dimension (blockwise).
+    #[error(
+        "scale dim {axis} (value {scale_dim}) must divide input dim {axis} (value {input_dim}) for blockwise quantization"
+    )]
+    ScaleDoesNotDivideInput {
+        axis: usize,
+        scale_dim: u32,
+        input_dim: u32,
     },
 }
 
@@ -512,6 +563,13 @@ pub enum GraphError {
     /// Quantization validation failed for ``operation``: `reason`.
     #[error("quantization validation failed for `{operation}`: {reason}")]
     QuantizationValidation { operation: String, reason: String },
+    /// The scale and zero point of ``operation`` do not fit its input: `source`.
+    #[error("quantization validation failed for `{operation}`: {source}")]
+    QuantizationParameters {
+        operation: String,
+        #[source]
+        source: QuantizationParameterError,
+    },
     /// Graph converter ``requested`` is not available. Supported: `available`.
     #[error("graph converter `{requested}` is not available. Supported: {available:?}")]
     UnknownConverter {
@@ -546,10 +604,8 @@ pub enum GraphError {
     /// Onnx runtime failed: `reason`.
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
-    /// Tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled.
-    #[error(
-        "tensorrt runtime is only available with the `trtx-runtime` or `trtx-runtime-mock` feature enabled"
-    )]
+    /// Tensorrt runtime is only available with the `trtx-runtime` feature enabled.
+    #[error("tensorrt runtime is only available with the `trtx-runtime` feature enabled")]
     TrtxRuntimeUnavailable,
     /// Burn CPU execution failed.
     #[error("burn runtime failed: {reason}")]
@@ -801,6 +857,21 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("shape inference failed"));
         assert!(msg.contains("incompatible dimensions"));
+    }
+
+    #[test]
+    fn quantization_parameter_errors_name_the_operation_and_the_rule() {
+        let err = GraphError::QuantizationParameters {
+            operation: "dequantizeLinear".to_string(),
+            source: QuantizationParameterError::ZeroPointInputDataTypeMismatch {
+                zero_point: DataType::Uint8,
+                input: DataType::Int8,
+            },
+        };
+        assert_eq!(
+            err.to_string(),
+            "quantization validation failed for `dequantizeLinear`: zeroPoint dtype Uint8 must match dequantize input dtype Int8"
+        );
     }
 
     #[test]

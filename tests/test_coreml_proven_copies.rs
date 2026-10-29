@@ -1,3 +1,5 @@
+#![cfg(feature = "coreml-converter")]
+
 //! Exact copies are selected by public graph provenance, not native output values.
 
 use std::collections::HashMap;
@@ -372,13 +374,25 @@ fn constant_float32_no_op_cast_uses_the_constant_identity_lowering() {
         options: None,
         outputs: vec![1],
     };
-    let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
-    let model = specification::Model::decode(converted.data.as_slice()).unwrap();
-    let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
-        panic!("expected MLProgram")
+    let lowering = |graph: &GraphInfo| {
+        let converted = CoremlMlProgramConverter.convert(graph).unwrap();
+        let model = specification::Model::decode(converted.data.as_slice()).unwrap();
+        let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
+            panic!("expected MLProgram")
+        };
+        program.functions["main"].block_specializations["CoreML7"]
+            .operations
+            .clone()
     };
-    let operations = &program.functions["main"].block_specializations["CoreML7"].operations;
-    assert!(operations.iter().any(|operation| operation.r#type == "mul"));
+    let operations = lowering(&graph);
+    graph.operations[0] = Operation::Identity {
+        input: 0,
+        options: None,
+        outputs: vec![1],
+    };
+    // Precision lowering may use real_div instead of mul for floating-point
+    // constant transport; a same-type Cast must inherit that exact lowering.
+    assert_eq!(operations, lowering(&graph));
     assert!(
         !operations
             .iter()
@@ -811,29 +825,5 @@ mod runtime {
         )
         .unwrap();
         assert_outputs(&attempts, &[("y", &[1.5, -2.5]), ("out", &[1.5, -2.5])]);
-    }
-
-    #[cfg(feature = "cli")]
-    #[test]
-    fn cli_run_coreml_executes_constant_copy_outputs() {
-        for (text, shape) in [(IMMEDIATE_CONSTANT_COPY, 4), (BLOB_CONSTANT_COPY, 2)] {
-            let (_directory, path) = graph_file(text);
-            let output = std::process::Command::new(env!("CARGO_BIN_EXE_rustnn"))
-                .arg(&path)
-                .args(["--convert", "coreml", "--run-coreml"])
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success(),
-                "{stdout}{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(stdout.contains("  - CPU_ONLY succeeded:"), "{stdout}");
-            assert!(
-                stdout.contains(&format!("      out: shape=[{shape}]")),
-                "{stdout}"
-            );
-        }
     }
 }

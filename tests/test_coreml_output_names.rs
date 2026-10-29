@@ -13,7 +13,6 @@ use rustnn::mlcontext::{
 use rustnn::operator_enums::MLOperandDataType;
 use rustnn::operators::Operation;
 use rustnn::protos::coreml::specification;
-use rustnn::validator::{ContextProperties, GraphValidator};
 use serde_json::json;
 
 fn api_dtype(dtype: DataType) -> MLOperandDataType {
@@ -44,9 +43,6 @@ fn produced_output_may_have_the_same_logical_name_as_an_input() {
     let cast = builder.cast(input, MLOperandDataType::Float32).unwrap();
     let recorded = builder
         .finish_graph_info(&MLNamedOperands::from([("input", cast), ("copy", copied)]))
-        .unwrap();
-    GraphValidator::new(&recorded, ContextProperties::default())
-        .validate()
         .unwrap();
     assert!(
         !recorded
@@ -213,9 +209,6 @@ fn alias_metadata_preserves_names_dtypes_shapes_and_unique_ssa_values() {
     ] {
         for shape in [vec![], vec![Dimension::Static(11)]] {
             let graph = named_graph(dtype, shape, half_output);
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
             let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.as_ref().unwrap();
@@ -236,26 +229,37 @@ fn alias_metadata_preserves_names_dtypes_shapes_and_unique_ssa_values() {
             let passthroughs = passthroughs.as_object().unwrap();
             assert_eq!(passthroughs.len(), if half_output { 1 } else { 3 });
             assert_eq!(passthroughs["copy"]["input"], "shared");
-            let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
-                panic!("expected MLProgram")
+            let children = match model.r#type.as_ref().unwrap() {
+                specification::model::Type::MlProgram(_) => vec![&model],
+                specification::model::Type::Pipeline(pipeline) => pipeline.models.iter().collect(),
+                _ => panic!("expected MIL container"),
             };
-            let function = &program.functions["main"];
-            let block = &function.block_specializations["CoreML7"];
-            assert_eq!(block.outputs.len(), description.output.len());
-            assert!(
-                block
-                    .operations
+            for child in children {
+                let specification::model::Type::MlProgram(program) = child.r#type.as_ref().unwrap()
+                else {
+                    panic!("expected MLProgram child");
+                };
+                let function = &program.functions["main"];
+                let block = &function.block_specializations["CoreML7"];
+                assert_eq!(
+                    block.outputs.len(),
+                    child.description.as_ref().unwrap().output.len()
+                );
+                assert!(
+                    block
+                        .operations
+                        .iter()
+                        .all(|operation| operation.r#type != "mul")
+                );
+                let mut names: std::collections::HashSet<_> = function
+                    .inputs
                     .iter()
-                    .all(|operation| operation.r#type != "mul")
-            );
-            let mut names: std::collections::HashSet<_> = function
-                .inputs
-                .iter()
-                .map(|input| input.name.as_str())
-                .collect();
-            for operation in &function.block_specializations["CoreML7"].operations {
-                for output in &operation.outputs {
-                    assert!(names.insert(&output.name));
+                    .map(|input| input.name.as_str())
+                    .collect();
+                for operation in &block.operations {
+                    for output in &operation.outputs {
+                        assert!(names.insert(&output.name));
+                    }
                 }
             }
             assert_eq!(graph.operands[0].name.as_deref(), Some("shared"));
@@ -417,9 +421,7 @@ fn arbitrary_public_names_compile_and_bind_without_changing_the_graph() {
                 options: None,
                 outputs: vec![3],
             };
-            GraphValidator::new(&recorded, ContextProperties::default())
-                .validate()
-                .unwrap();
+
             let converted = CoremlMlProgramConverter.convert(&recorded).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.unwrap();
@@ -591,9 +593,7 @@ fn scalar_static_and_resized_outputs_use_the_logical_namespace() {
                         );
                     }
                 }
-                GraphValidator::new(&graph, ContextProperties::default())
-                    .validate()
-                    .unwrap();
+
                 let mut graph = MLGraphBuilder::new(&mut context)
                     .unwrap()
                     .build_graph_info(graph)
@@ -727,9 +727,6 @@ fn export_output_namespace_models_when_requested() {
             ),
         ] {
             let graph = named_graph(dtype, shape, half_output);
-            GraphValidator::new(&graph, ContextProperties::default())
-                .validate()
-                .unwrap();
             let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
             let model = specification::Model::decode(converted.data.as_slice()).unwrap();
             let description = model.description.unwrap();
@@ -800,9 +797,7 @@ fn export_output_namespace_models_when_requested() {
             options: None,
             outputs: vec![3],
         };
-        GraphValidator::new(&graph, ContextProperties::default())
-            .validate()
-            .unwrap();
+
         let converted = CoremlMlProgramConverter.convert(&graph).unwrap();
         let model = specification::Model::decode(converted.data.as_slice()).unwrap();
         let description = model.description.unwrap();

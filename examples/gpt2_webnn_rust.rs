@@ -15,7 +15,7 @@ mod app {
         OnnxInput, OnnxOutputWithData, TensorData, run_onnx_with_inputs_checked,
     };
     use rustnn::protos::onnx::ModelProto;
-    use rustnn::{ContextProperties, ConverterRegistry, GraphValidator, load_graph_from_path};
+    use rustnn::{ConverterRegistry, load_graph_from_path};
     use serde_json::Value;
 
     #[derive(Parser, Debug)]
@@ -37,8 +37,6 @@ mod app {
             help = "Path to GPT-2 vocab.json"
         )]
         vocab: PathBuf,
-        #[arg(long, default_value_t = 500_000_000_000usize)]
-        tensor_limit: usize,
     }
 
     #[derive(Debug, Clone)]
@@ -64,14 +62,17 @@ mod app {
         }
     }
 
-    fn detect_layout(artifacts: &rustnn::ValidationArtifacts) -> Result<Gpt2Layout, String> {
+    fn detect_layout(
+        inputs: &HashMap<String, rustnn::OperandDescriptor>,
+        outputs: &HashMap<String, rustnn::OperandDescriptor>,
+    ) -> Result<Gpt2Layout, String> {
         let mut num_layers = 0usize;
         let mut num_heads = None;
         let mut cache_len = None;
         let mut head_dim = None;
         let mut logits_name = None;
 
-        for (name, desc) in &artifacts.input_names_to_descriptors {
+        for (name, desc) in inputs {
             if let Some(rest) = name.strip_prefix("past_key_values_") {
                 let parts: Vec<&str> = rest.split('_').collect();
                 if parts.len() >= 2
@@ -87,7 +88,7 @@ mod app {
             }
         }
 
-        for name in artifacts.output_names_to_descriptors.keys() {
+        for name in outputs.keys() {
             if name == "logits" || name.contains("logits") {
                 logits_name = Some(name.clone());
                 break;
@@ -340,18 +341,16 @@ mod app {
         let args = Args::parse();
 
         let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
-        let mut context = ContextProperties::default();
-        context.tensor_byte_length_limit = args.tensor_limit;
-        let artifacts = GraphValidator::new(&graph, context)
-            .validate()
-            .map_err(|e| format!("validate graph: {e}"))?;
+        let (input_descriptors, output_descriptors) = graph
+            .io_binding_maps()
+            .map_err(|e| format!("graph I/O: {e}"))?;
 
         let converted = ConverterRegistry::with_defaults()
             .convert("onnx", &graph)
             .map_err(|e| format!("convert to onnx: {e}"))?;
         let input_order = model_input_order(&converted.data)?;
 
-        let layout = detect_layout(&artifacts)?;
+        let layout = detect_layout(&input_descriptors, &output_descriptors)?;
         let prompt_ids = parse_prompt_ids(&args.prompt_ids)?;
         let reverse_vocab = load_reverse_vocab(&args.vocab)?;
         if prompt_ids.is_empty() {
@@ -385,8 +384,8 @@ mod app {
                 &converted.data,
                 converted.weights_data.as_deref(),
                 inputs,
-                &artifacts.input_names_to_descriptors,
-                &artifacts.output_names_to_descriptors,
+                &input_descriptors,
+                &output_descriptors,
             )
             .map_err(|e| format!("onnx run (prefill pos={current_pos}): {e}"))?;
             update_kv_cache(&layout, &mut state, &outputs, current_pos)?;
@@ -422,8 +421,8 @@ mod app {
                 &converted.data,
                 converted.weights_data.as_deref(),
                 inputs,
-                &artifacts.input_names_to_descriptors,
-                &artifacts.output_names_to_descriptors,
+                &input_descriptors,
+                &output_descriptors,
             )
             .map_err(|e| format!("onnx run (decode pos={current_pos}): {e}"))?;
             update_kv_cache(&layout, &mut state, &outputs, current_pos)?;

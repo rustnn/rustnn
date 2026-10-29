@@ -102,7 +102,7 @@ jobs:
           RUSTNN_GIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
         run: |
           mkdir -p reports
-          cargo test --locked --release --features burn-runtime-cpu --test run_wpt_conformance -- --test-threads 1
+          cargo test --locked --release --features burn-cpu-runtime --test run_wpt_conformance -- --test-threads 1
 
       - name: Upload WPT conformance report
         if: always()

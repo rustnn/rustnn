@@ -4,44 +4,45 @@
 //! a graph is built: ONNX protobuf (`OnnxConverter`), CoreML MLProgram
 //! ([`CoremlMlProgramConverter`]), a native TensorRT network (`TrtxConverter`), a TFLite
 //! flatbuffer (`LiteRtConverter`) or a CANN offline model (`CannConverter`). The
-//! [`ConverterRegistry`] exposes the same converters by format name for the CLI and for the
-//! legacy pipeline that pairs them with [`crate::executors`].
+//! [`ConverterRegistry`] exposes converters enabled by `<backend>-converter` features by
+//! format name. Runtime features include their matching converter.
 //!
 #![doc = include_str!("../../docs/development/converters.md")]
 
 use std::collections::HashMap;
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-converter")]
 mod burn;
-#[cfg(feature = "burn-runtime-cpu")]
+#[cfg(feature = "burn-cpu-converter")]
 pub use burn::BurnConverter;
 
 use crate::error::GraphError;
 use crate::graph::GraphInfo;
 
+#[cfg(feature = "coreml-converter")]
+mod coreml_constant_fold;
+#[cfg(feature = "coreml-converter")]
 mod coreml_mlprogram;
+#[cfg(feature = "coreml-converter")]
 pub(crate) mod coreml_names;
-#[cfg(feature = "litert-runtime")]
+#[cfg(feature = "litert-converter")]
 pub mod litert;
-#[cfg(feature = "onnx")]
+#[cfg(feature = "onnx-converter")]
 pub mod onnx;
-#[cfg(any(
-    feature = "onnx",
-    feature = "trtx-runtime-mock",
-    feature = "trtx-runtime"
-))]
+#[cfg(any(feature = "onnx-converter", feature = "trtx-converter"))]
 mod pool2d_shared;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(feature = "trtx-converter")]
 mod trtx;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(feature = "trtx-converter")]
 mod trtx_gru;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(feature = "trtx-converter")]
 mod trtx_lstm;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(feature = "trtx-converter")]
 mod trtx_rnn;
 /// Replays a graph through the browser WebNN API (`wasm32` only).
 #[cfg(feature = "webnn-runtime")]
 #[allow(missing_docs)]
 pub mod webnn;
+#[cfg(feature = "coreml-converter")]
 mod weight_file_builder;
 
 #[cfg(all(
@@ -49,6 +50,7 @@ mod weight_file_builder;
     any(target_os = "macos", target_os = "ios", test)
 ))]
 pub(crate) use coreml_mlprogram::CoremlConstantCopies;
+#[cfg(feature = "coreml-converter")]
 pub use coreml_mlprogram::CoremlMlProgramConverter;
 #[cfg(feature = "coreml-runtime")]
 pub(crate) use coreml_mlprogram::CoremlPassthrough;
@@ -60,12 +62,15 @@ pub(crate) use coreml_mlprogram::{
     INPUT_ALIASES_METADATA_KEY, OUTPUT_ALIASES_METADATA_KEY, OUTPUT_CONSTANT_COPIES_METADATA_KEY,
     OUTPUT_PASSTHROUGHS_METADATA_KEY,
 };
-#[cfg(feature = "litert-runtime")]
+#[cfg(feature = "litert-converter")]
 pub use litert::LiteRtConverter;
-#[cfg(feature = "onnx")]
+#[cfg(feature = "onnx-converter")]
 pub use onnx::OnnxConverter;
-#[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+#[cfg(feature = "trtx-runtime")]
+pub(crate) use trtx::LOGGER as trtx_logger;
+#[cfg(feature = "trtx-converter")]
 pub use trtx::TrtxConverter;
+#[cfg(feature = "coreml-converter")]
 pub(crate) use weight_file_builder::WeightFileBuilder;
 #[cfg(all(
     feature = "coreml-runtime",
@@ -73,9 +78,9 @@ pub(crate) use weight_file_builder::WeightFileBuilder;
 ))]
 pub(crate) use weight_file_builder::weight_ranges;
 
-#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+#[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
 pub mod cann;
-#[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+#[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
 pub use cann::CannConverter;
 
 /// Filename (relative to the `.onnx` file directory) for ONNX external initializer data produced by the ONNX converter.
@@ -88,6 +93,7 @@ pub const ONNX_EXTERNAL_WEIGHTS_FILENAME: &str = "rustnn_external_weights.data";
 ///
 /// This is a shared helper used by all converters to ensure consistent
 /// operand naming across different backend formats.
+#[allow(dead_code)]
 pub(crate) fn operand_name(graph: &GraphInfo, id: u32) -> String {
     graph
         .operand(id)
@@ -116,7 +122,7 @@ pub trait GraphConverter {
     fn convert(&self, graph: &GraphInfo) -> Result<ConvertedGraph, GraphError>;
 }
 
-/// Converters by format name; used by the CLI `--convert` option and the legacy pipeline.
+/// Converters enabled in this build, indexed by format name.
 pub struct ConverterRegistry {
     converters: HashMap<&'static str, Box<dyn GraphConverter + Send + Sync>>,
 }
@@ -124,19 +130,21 @@ pub struct ConverterRegistry {
 impl ConverterRegistry {
     /// Registry with every converter compiled into this build.
     pub fn with_defaults() -> Self {
+        #[allow(unused_mut)]
         let mut registry = Self {
             converters: HashMap::new(),
         };
-        #[cfg(feature = "onnx")]
+        #[cfg(feature = "onnx-converter")]
         registry.register(Box::new(OnnxConverter));
-        #[cfg(feature = "burn-runtime-cpu")]
+        #[cfg(feature = "burn-cpu-converter")]
         registry.register(Box::new(BurnConverter));
+        #[cfg(feature = "coreml-converter")]
         registry.register(Box::new(CoremlMlProgramConverter));
-        #[cfg(any(feature = "trtx-runtime-mock", feature = "trtx-runtime"))]
+        #[cfg(feature = "trtx-converter")]
         registry.register(Box::new(TrtxConverter::new()));
-        #[cfg(feature = "litert-runtime")]
+        #[cfg(feature = "litert-converter")]
         registry.register(Box::new(LiteRtConverter::new()));
-        #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
+        #[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
         registry.register(Box::new(CannConverter));
         registry
     }
@@ -227,9 +235,46 @@ mod tests {
         let registry = ConverterRegistry::with_defaults();
         let formats = registry.available_formats();
 
-        #[cfg(feature = "onnx")]
+        #[cfg(feature = "onnx-converter")]
         assert!(formats.contains(&"onnx"));
-        assert!(formats.contains(&"coreml"));
+        let expected = [
+            (cfg!(feature = "onnx-converter"), "onnx"),
+            (cfg!(feature = "coreml-converter"), "coreml"),
+            (cfg!(feature = "litert-converter"), "litert"),
+            (cfg!(feature = "trtx-converter"), "trtx"),
+            (
+                cfg!(any(
+                    feature = "cann-converter",
+                    feature = "cann-runtime-mock"
+                )),
+                "cann",
+            ),
+            (cfg!(feature = "burn-cpu-converter"), "burn"),
+        ];
+        for (enabled, format) in expected {
+            assert_eq!(formats.contains(&format), enabled, "{format}");
+        }
+    }
+
+    #[cfg(not(any(
+        feature = "onnx-runtime",
+        feature = "coreml-runtime",
+        feature = "litert-runtime",
+        feature = "trtx-runtime",
+        feature = "cann-runtime",
+        feature = "cann-runtime-mock",
+        feature = "burn-cpu-runtime",
+        feature = "webnn-runtime",
+    )))]
+    #[test]
+    fn converters_do_not_enable_execution() {
+        use crate::mlcontext::{MLContext, MLContextOptions, MLPowerPreference};
+
+        let options = MLContextOptions::new(MLPowerPreference::Default, false);
+        assert!(matches!(
+            MLContext::create(&options),
+            Err(crate::error::Error::NoBackendAvailable { .. })
+        ));
     }
 
     #[test]
@@ -264,7 +309,7 @@ mod tests {
                 available,
             } => {
                 assert_eq!(requested, "unknown_format");
-                assert!(!available.is_empty());
+                assert_eq!(available, registry.available_formats());
             }
             _ => panic!("Expected UnknownConverter error"),
         }

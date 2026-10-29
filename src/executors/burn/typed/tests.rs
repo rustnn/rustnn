@@ -222,55 +222,6 @@ fn concat_empty_past_with_present_key() {
 }
 
 #[test]
-fn integer_pooling_and_nearest_resampling_preserve_samples() {
-    let mut r = Runtime::new();
-    let max = u64::MAX as i128;
-    r.integers(
-        0,
-        DataType::Uint64,
-        &[1, 1, 2, 2],
-        &[max - 1, max - 2, 0, max],
-    );
-    r.run(
-        Operation::MaxPool2d {
-            input: 0,
-            options: Some(MLPool2dOptions {
-                window_dimensions: Some(vec![1, 2]),
-                ..Default::default()
-            }),
-            outputs: vec![1],
-        },
-        DataType::Uint64,
-    );
-    r.expect(1, &[1, 1, 2, 1], &[max - 1, max]);
-    r.run(
-        Operation::GlobalMaxPool {
-            input: 0,
-            options: Some(MLPool2dOptions {
-                window_dimensions: Some(vec![1, 1]),
-                ..Default::default()
-            }),
-            outputs: vec![2],
-        },
-        DataType::Uint64,
-    );
-    r.expect(2, &[1, 1, 1, 1], &[max]);
-    r.integers(3, DataType::Int8, &[1, 1, 1, 2], &[127, -128]);
-    r.run(
-        Operation::Resample2d {
-            input: 3,
-            options: Some(MLResample2dOptions {
-                sizes: Some(vec![1, 4]),
-                ..Default::default()
-            }),
-            outputs: vec![4],
-        },
-        DataType::Int8,
-    );
-    r.expect(4, &[1, 1, 1, 4], &[127, 127, -128, -128]);
-}
-
-#[test]
 fn zeroed_wide_inputs_have_authoritative_integer_storage() {
     for dtype in [
         DataType::Int32,

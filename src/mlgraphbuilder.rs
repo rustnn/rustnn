@@ -21,7 +21,9 @@ use bytemuck::NoUninit;
 use log::{debug, trace};
 use webnn_graph::serialize::SerializeOptions;
 
-use crate::error::{GraphBuilderError, GraphError, ShapeInferenceError};
+use crate::error::{
+    GraphBuilderError, GraphError, QuantizationParameterError, ShapeInferenceError,
+};
 use crate::graph::{Dimension, get_static_or_max_size, to_dimension_vector};
 use crate::graph_recorder::GraphRecorder;
 use crate::mlcontext::{MLGraph, MLNamedOperands, MLOperand, MLOperandDescriptor, MLTensor};
@@ -37,14 +39,13 @@ use crate::operator_options::{
     MLUnsqueezeOptions, OperandIndex,
 };
 use crate::shape_inference::{
-    InputLayout, ReduceOptions, SplitSpec, infer_concat_shape_dimensions,
-    infer_conv_transpose2d_shape, infer_conv2d_shape, infer_expand_shape_dimensions,
-    infer_gather_shape_dimensions, infer_gemm_shape_dimensions, infer_global_pool_shape,
-    infer_matmul_shape_dimensions, infer_pad_shape, infer_pool2d_shape_dimensions,
-    infer_prelu_shape, infer_reduce_shape_dimensions, infer_resample2d_shape,
-    infer_scatter_elements_shape, infer_scatter_nd_shape, infer_slice_shape, infer_split_shapes,
-    infer_squeeze_shape, infer_tile_shape, infer_transpose_shape_dimensions,
-    infer_triangular_shape, infer_unsqueeze_shape_dimensions,
+    ReduceOptions, SplitSpec, infer_concat_shape_dimensions, infer_conv_transpose2d_shape,
+    infer_conv2d_shape, infer_expand_shape_dimensions, infer_gather_shape_dimensions,
+    infer_gemm_shape_dimensions, infer_matmul_shape_dimensions, infer_pad_shape,
+    infer_pool2d_shape_dimensions, infer_prelu_shape, infer_reduce_shape_dimensions,
+    infer_resample2d_shape, infer_scatter_elements_shape, infer_scatter_nd_shape,
+    infer_slice_shape, infer_split_shapes, infer_squeeze_shape, infer_tile_shape,
+    infer_transpose_shape_dimensions, infer_triangular_shape, infer_unsqueeze_shape_dimensions,
 };
 use crate::webnn_json::to_graph_json;
 use crate::{DataType, Operand, OperandDescriptor, OperandKind, Operation};
@@ -687,33 +688,6 @@ fn pool2d_shape(
     })
 }
 
-fn global_pool_shape(
-    input: MLOperand,
-    operation: &Operation,
-    options: Option<&MLPool2dOptions>,
-    graph: &GraphInfo,
-) -> Result<OperandDescriptor> {
-    let operand = get_operand(input, graph)?;
-    let default_pool = MLPool2dOptions::default();
-    let o = options.unwrap_or(&default_pool);
-    let layout_enum = if o.layout.eq_ignore_ascii_case("nhwc") {
-        InputLayout::Nhwc
-    } else {
-        InputLayout::Nchw
-    };
-    let shape = infer_shape_err(
-        "globalPool",
-        operation,
-        infer_global_pool_shape(&shape_dims_u32(&operand.descriptor.shape), layout_enum)
-            .map(|v| to_dimension_vector(&v)),
-    )?;
-    Ok(OperandDescriptor {
-        data_type: operand.descriptor.data_type,
-        shape,
-        pending_permutation: vec![],
-    })
-}
-
 fn pad_shape(
     input: MLOperand,
     operation: &Operation,
@@ -999,10 +973,13 @@ fn cast_shape(
 /// WebNN: output descriptor uses zeroPoint's dataType and input's shape.
 fn quantize_linear_shape(
     input: MLOperand,
+    scale: MLOperand,
     zero_point: Option<u32>,
+    operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let input_op = get_operand(input, graph)?;
+    validate_quantization_parameters(input, scale, zero_point, operation, graph, true)?;
     let data_type = match zero_point {
         Some(zp) => {
             get_operand(MLOperand { id: zp as usize }, graph)?
@@ -1022,15 +999,152 @@ fn quantize_linear_shape(
 fn dequantize_linear_shape(
     input: MLOperand,
     scale: MLOperand,
+    zero_point: Option<u32>,
+    operation: &Operation,
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let input_op = get_operand(input, graph)?;
     let scale_op = get_operand(scale, graph)?;
+    validate_quantization_parameters(input, scale, zero_point, operation, graph, false)?;
     Ok(OperandDescriptor {
         data_type: scale_op.descriptor.data_type,
         shape: input_op.descriptor.shape.clone(),
         pending_permutation: vec![],
     })
+}
+
+fn validate_quantization_parameters(
+    input: MLOperand,
+    scale: MLOperand,
+    zero_point: Option<u32>,
+    operation: &Operation,
+    graph: &GraphInfo,
+    is_quantize: bool,
+) -> Result<()> {
+    let input = &get_operand(input, graph)?.descriptor;
+    let scale = &get_operand(scale, graph)?.descriptor;
+    let zero_point = zero_point
+        .map(|id| get_operand(MLOperand { id: id as usize }, graph))
+        .transpose()?
+        .map(|operand| &operand.descriptor);
+    check_quantization_parameters(is_quantize, input, scale, zero_point).map_err(|source| {
+        Box::new(ShapeInferenceError::InferError {
+            op_name: if is_quantize {
+                "quantizeLinear"
+            } else {
+                "dequantizeLinear"
+            },
+            operation: operation.clone(),
+            source: GraphError::QuantizationParameters {
+                operation: operation.display_name(),
+                source,
+            },
+        })
+        .into()
+    })
+}
+
+/// The data type and shape rules that the scale and optional zero point of a `quantizeLinear`
+/// (`is_quantize`) or `dequantizeLinear` must meet against its input. The builder applies them
+/// when it records the operation, including operations replayed during graph import.
+///
+/// The data types follow the specification's tensor-limits tables, which change as WebNN
+/// evolves; compare against them when updating this function:
+/// [quantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-quantizelinear),
+/// [dequantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-dequantizelinear)
+/// (editor's draft source:
+/// <https://github.com/webmachinelearning/webnn/blob/main/index.bs>). Deliberate differences:
+/// int4 and uint4 are accepted as rustnn's packed 4-bit weight types, an int32 quantize input
+/// is accepted as an extension, and the float8e4m3 and bfloat16 types of the current draft
+/// have no rustnn data type yet.
+pub(crate) fn check_quantization_parameters(
+    is_quantize: bool,
+    input: &OperandDescriptor,
+    scale: &OperandDescriptor,
+    zero_point: Option<&OperandDescriptor>,
+) -> std::result::Result<(), QuantizationParameterError> {
+    use QuantizationParameterError as E;
+    if !matches!(scale.data_type, DataType::Float16 | DataType::Float32) {
+        return Err(E::ScaleDataType {
+            found: scale.data_type,
+        });
+    }
+    let integer_type = |dtype| {
+        matches!(
+            dtype,
+            DataType::Int4
+                | DataType::Uint4
+                | DataType::Int8
+                | DataType::Uint8
+                | DataType::Int32
+                | DataType::Uint32
+        )
+    };
+    if is_quantize {
+        if !matches!(
+            input.data_type,
+            DataType::Float16 | DataType::Float32 | DataType::Int32
+        ) {
+            return Err(E::QuantizeInputDataType {
+                found: input.data_type,
+            });
+        }
+    } else if !integer_type(input.data_type) {
+        return Err(E::DequantizeInputDataType {
+            found: input.data_type,
+        });
+    }
+    // Retain the existing int32 quantize extension, while requiring matching
+    // floating-point input/scale dtypes for the WebNN operation.
+    if is_quantize
+        && matches!(input.data_type, DataType::Float16 | DataType::Float32)
+        && input.data_type != scale.data_type
+    {
+        return Err(E::ScaleInputDataTypeMismatch {
+            scale: scale.data_type,
+            input: input.data_type,
+        });
+    }
+    if let Some(zero_point) = zero_point {
+        if !integer_type(zero_point.data_type) {
+            return Err(E::ZeroPointDataType {
+                found: zero_point.data_type,
+            });
+        }
+        if !is_quantize && zero_point.data_type != input.data_type {
+            return Err(E::ZeroPointInputDataTypeMismatch {
+                zero_point: zero_point.data_type,
+                input: input.data_type,
+            });
+        }
+        if zero_point.shape != scale.shape {
+            return Err(E::ZeroPointShapeMismatch {
+                zero_point: zero_point.shape.clone(),
+                scale: scale.shape.clone(),
+            });
+        }
+    }
+    if scale.shape.len() != input.shape.len() {
+        return Err(E::ScaleRankMismatch {
+            scale_rank: scale.shape.len(),
+            input_rank: input.shape.len(),
+        });
+    }
+    for (axis, (&scale_dim, &input_dim)) in scale
+        .static_or_max_shape()
+        .iter()
+        .zip(input.static_or_max_shape().iter())
+        .enumerate()
+    {
+        if scale_dim == 0 || (input_dim != 0 && input_dim % scale_dim != 0) {
+            return Err(E::ScaleDoesNotDivideInput {
+                axis,
+                scale_dim,
+                input_dim,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Generates `fn_name(input)` / `fn_name(input, extra, …)` and matching `_with_options` on `MLGraphBuilder`.
@@ -1795,15 +1909,6 @@ fn shape_inference_single_output(
             options.as_ref(),
             graph,
         ),
-        Operation::GlobalAveragePool { input, options, .. }
-        | Operation::GlobalMaxPool { input, options, .. } => global_pool_shape(
-            MLOperand {
-                id: *input as usize,
-            },
-            operation,
-            options.as_ref(),
-            graph,
-        ),
         Operation::ReduceSum { input, options, .. }
         | Operation::ReduceMean { input, options, .. }
         | Operation::ReduceMax { input, options, .. }
@@ -1962,21 +2067,35 @@ fn shape_inference_single_output(
             graph,
         ),
         Operation::QuantizeLinear {
-            input, zero_point, ..
+            input,
+            scale,
+            zero_point,
+            ..
         } => quantize_linear_shape(
-            MLOperand {
-                id: *input as usize,
-            },
-            *zero_point,
-            graph,
-        ),
-        Operation::DequantizeLinear { input, scale, .. } => dequantize_linear_shape(
             MLOperand {
                 id: *input as usize,
             },
             MLOperand {
                 id: *scale as usize,
             },
+            *zero_point,
+            operation,
+            graph,
+        ),
+        Operation::DequantizeLinear {
+            input,
+            scale,
+            zero_point,
+            ..
+        } => dequantize_linear_shape(
+            MLOperand {
+                id: *input as usize,
+            },
+            MLOperand {
+                id: *scale as usize,
+            },
+            *zero_point,
+            operation,
             graph,
         ),
         Operation::Shape { input, .. } => shape_op_shape(
@@ -3001,22 +3120,6 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-l2>
         l2_pool2d, l2_pool2d_with_options, L2Pool2d, MLPool2dOptions);
     impl_unary_op!(
-        /// Average pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `average_pool2d` with the default window).
-        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-average>
-        global_average_pool,
-        global_average_pool_with_options,
-        GlobalAveragePool,
-        MLPool2dOptions
-    );
-    impl_unary_op!(
-        /// Max pooling over the whole spatial extent (kept from earlier WebNN drafts; equals `max_pool2d` with the default window).
-        /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-pool2d-max>
-        global_max_pool,
-        global_max_pool_with_options,
-        GlobalMaxPool,
-        MLPool2dOptions
-    );
-    impl_unary_op!(
         /// Sum over `axes` (default: all).
         /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-reduce>
         reduce_sum,
@@ -3672,17 +3775,21 @@ mod test {
             crate::operator_enums::MLOperandDataType::Uint8,
             [2, 3].to_vec(),
         );
-        let scalar_f32 = MLOperandDescriptor::new(
+        let scale_desc = MLOperandDescriptor::new(
             crate::operator_enums::MLOperandDataType::Float32,
-            [].to_vec(),
+            [1, 1].to_vec(),
         );
-        let scalar_u8 =
-            MLOperandDescriptor::new(crate::operator_enums::MLOperandDataType::Uint8, [].to_vec());
+        let zero_point_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Uint8,
+            [1, 1].to_vec(),
+        );
 
         let mut builder = MLGraphBuilder::new(&mut context).unwrap();
         let x = builder.input("x", &float_desc).unwrap();
-        let scale = builder.constant_from_slice(&scalar_f32, &[0.5f32]).unwrap();
-        let zero_point = builder.constant_from_slice(&scalar_u8, &[128u8]).unwrap();
+        let scale = builder.constant_from_slice(&scale_desc, &[0.5f32]).unwrap();
+        let zero_point = builder
+            .constant_from_slice(&zero_point_desc, &[128u8])
+            .unwrap();
         let q = builder
             .quantize_linear_with_zeropoint(x, scale, zero_point)
             .unwrap();

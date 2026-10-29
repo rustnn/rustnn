@@ -1,7 +1,7 @@
 # Converter Internals
 
-A converter lowers a validated `GraphInfo` to one backend format. This page describes the
-contract, the structure the five converters share, the backend-specific rules that shaped them
+A converter lowers a `GraphInfo` to one backend format. This page describes the
+contract, the structure converters share, the backend-specific rules that shaped them
 and how to debug a wrong model. Read it before touching `src/converters/`.
 
 ## Contract
@@ -19,21 +19,26 @@ pub trait GraphConverter {
 
 `ConvertedGraph` carries the serialized model (`data`, `content_type`) and an optional
 `weights_data` sidecar. `ConverterRegistry::with_defaults` registers every converter compiled
-into the build; the CLI `--convert` option, the legacy executors and the `MLGraphBuilder::build`
-path of each backend all go through the same `convert`.
+into the build. Each `<backend>-runtime` enables its matching `<backend>-converter`;
+converter-only users can call the registry without enabling rustnn execution.
 
-Converters are pure: they read `GraphInfo` (operands with `OperandDescriptor`, the `Operation`
-enum, constant bytes) and produce bytes. They must not touch a device. Anything that needs the
-runtime (compiling, transposing runtime tensors, refitting weights) belongs to
-`src/backends/<name>.rs`.
+Graph building and graph import apply operation rules. Converters accept `GraphInfo` directly
+and enforce their backend-specific constraints; there is no separate graph-wide validation
+pass before conversion. Use `GraphInfo::io_binding_maps()` for named I/O descriptors.
+
+Converters read `GraphInfo` and produce model bytes. ONNX, CoreML, LiteRT and Burn
+serialization do not require execution libraries. TensorRT engine building and CANN offline
+model compilation use their native SDKs during conversion. Tensor allocation, dispatch and
+refitting runtime weights belong to `src/backends/<name>.rs`.
 
 | Converter | File | Output | Registered when |
 |---|---|---|---|
-| `OnnxConverter` | `onnx.rs` | ONNX `ModelProto` (prost) | `onnx` (default), `onnx-runtime` |
-| `CoremlMlProgramConverter` | `coreml_mlprogram.rs` | CoreML MLProgram (`protos::coreml`) | always |
-| `TrtxConverter` | `trtx.rs`, `trtx_gru.rs`, `trtx_lstm.rs`, `trtx_rnn.rs` | TensorRT network built through the `trtx` crate, serialized engine | `trtx-runtime`, `trtx-runtime-mock` |
-| `LiteRtConverter` | `litert.rs` | TFLite flatbuffer (`flatc`-generated schema) | `litert-runtime` |
-| `CannConverter` | `cann.rs` | HiAI offline model | `cann-runtime`, `cann-runtime-mock` |
+| `OnnxConverter` | `onnx.rs` | ONNX `ModelProto` (prost) | `onnx-converter` (default) |
+| `CoremlMlProgramConverter` | `coreml_mlprogram.rs` | CoreML MLProgram (`protos::coreml`) | `coreml-converter` |
+| `TrtxConverter` | `trtx.rs`, `trtx_gru.rs`, `trtx_lstm.rs`, `trtx_rnn.rs` | TensorRT network built through the `trtx` crate, serialized engine | `trtx-converter` |
+| `LiteRtConverter` | `litert.rs` | TFLite flatbuffer (`flatc`-generated schema) | `litert-converter` |
+| `CannConverter` | `cann.rs` | HiAI offline model | `cann-converter` |
+| `BurnConverter` | `burn.rs` | Serialized Burn execution plan | `burn-cpu-converter` |
 | browser | `webnn.rs` | replays the graph through the browser's `MLGraphBuilder` (`convert_async`, not a `GraphConverter`) | `webnn-runtime` on wasm32 |
 
 Shared helpers: `pool2d_shared.rs` (window and padding arithmetic used by several backends) and
@@ -81,6 +86,8 @@ Rules that hold for every converter:
   direction is `both` and the first dimension is 1; outputs are wired by name with a positional
   fallback in spec order.
 - Large initializers go to `rustnn_external_weights.data` (`ONNX_EXTERNAL_WEIGHTS_FILENAME`).
+- `resample2d` emits exact integer sizes, computed as `floor(input_size * scale)` in
+  double precision when explicit sizes are absent.
 
 ### TensorRT-RTX
 
@@ -97,6 +104,11 @@ Rules that hold for every converter:
   edits invalidate cached engines. This source hash does not invalidate the separate TensorRT
   JIT runtime cache. See the [cache guide](https://rustnn.github.io/rustnn/integration/tensorrt/#caches).
 - The nearest-neighbour rounding of `resample2d` is `round_prefer_floor` (`kHALF_DOWN`).
+  Output dimensions use `floor(input_size * scale)` in double precision, matching shared
+  shape inference; explicit sizes take precedence over scales.
+- Float16 `reduceLogSum` promotes the input to float32 for the sum and logarithm,
+  then casts the result back to float16. This avoids overflow when the sum exceeds
+  float16's range but its logarithm remains finite.
 - `triangular` builds a Boolean keep mask and selects the input or a typed zero. Multiplying by
   a zero mask would propagate NaN and infinity into positions that WebNN requires to be zero.
 
@@ -114,6 +126,18 @@ Rules that hold for every converter:
   A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
+- `transpose`, `reshape` and `cast` of a constant are folded into a new constant before
+  emission (`coreml_constant_fold.rs`, applied to a copy of the graph at the start of
+  `convert_with_float16_precision`, for both float16 lowerings). The Neural Engine admits `matmul(x, const)` but refuses
+  `matmul(x, transpose(const))`, and a literal lowering would also transpose the weight on
+  every dispatch on the CPU and GPU paths; GPT-Neo style graphs carry one such transpose per
+  projection. The folded operand keeps its index and name, graph inputs and outputs are never
+  rewritten, a constant with other consumers keeps its payload, and chains fold in one pass.
+  Narrow integer constants (8-bit and 4-bit, the quantized weights whose casts and reshapes
+  are dequantization chains that would otherwise be stored widened), casts that would grow the
+  stored payload (float16 weights read as float32 stay float16 in the weight blob), and casts
+  that WebNN leaves implementation-defined (a float whose truncation does not fit the integer
+  target, or NaN) stay in the graph.
 - WebNN names need not be MIL identifiers, and its input/output namespaces are independent.
   Unsafe or colliding names receive unique physical identifiers. Creator-defined
   `rustnn.webnn.input_aliases` and `rustnn.webnn.output_aliases` JSON mappings preserve
@@ -140,6 +164,59 @@ Rules that hold for every converter:
   or compacts only the required ranges, then supplies independently owned results. Standalone
   compiled models require the original weights sidecar. The valid native graph still
   runs; arithmetic-derived outputs are not reconstructed from inputs or constants.
+- Float16 lowering follows `CoremlOptions::float16_precision`
+  (`CoremlMlProgramConverter::convert_with_float16_precision`; `GraphConverter::convert` uses
+  `Native`). WebNN leaves float16 accumulation precision open (webmachinelearning/webnn#948),
+  so both lowerings conform; they differ in which compute units reproduce the CPU's values.
+  - `Native` (default): float16 operations lower to native float16 MIL kernels. One MIL
+    program, no added operations, eligible for the Neural Engine.
+  - `Exact`: compute is float32 and storage stays float16; each WebNN float16 result is
+    rounded once. The rules below apply only to float16 operands.
+    - `gelu` (MIL `mode="EXACT"`), `sigmoid`, `tanh` (NaN preserved), `relu`, `leakyRelu`,
+      `elu`, `exp`, `neg` (division by -1), `reciprocal`, `hardSigmoid` and `hardSwish` (its
+      sigmoid helper is not rounded separately) evaluate in float32. Parameters such as
+      `alpha` are rounded to float16 first, as WebNN casts them at graph construction.
+    - `matmul`, `layer_norm`, `sub` and `l2_pool`, and data movement (`identity`,
+      `reshape`, `transpose`, `slice_by_size`, `slice_by_index`, `reverse`, `concat`,
+      `split`, `gather`, `gather_along_axis`, `gather_nd`, `tile`, `pad`, `select`,
+      `squeeze`, `expand_dims`, `scatter_along_axis`, `scatter_nd`) take float32 operands
+      and are cast back after the operation, because accelerator kernels can flush
+      represented subnormals or lose small values.
+    - `layerNormalization` normalizes and applies scale and bias in float32. `sign`,
+      `roundEven`, `isNaN`, `isInfinite` and identity copies of constants also evaluate in
+      float32. Constant float32-to-float16 casts are folded on the host with
+      round-to-nearest-even, and public float16 constant outputs are materialized.
+    - Explicit float16 rounding boundaries become native Pipeline children when Core ML
+      could otherwise eliminate a narrowing or fuse a widened kernel back into float16.
+      Child interfaces carry live results only; constants are rematerialized from the
+      shared weight blob. Public descriptors and the backend-independent graph are
+      unchanged; private scalar and Boolean interfaces use explicit rank and type adapters.
+    - Affected float16 widening layouts use compact private features. Original high-rank
+      inputs declare `rustnn.webnn.compact_input_views`; contiguous storage is viewed with
+      its owner retained, padded storage is copied as raw float16 bytes, and dynamic
+      restoration uses the actual input shape.
+- Rules for both lowerings and every float type:
+  - `reciprocal` lowers to `real_div(1, x)`: MIL `inverse` loses the sign of -0 on older
+    Core ML stacks. `log` passes `epsilon = 0`: WebNN specifies `log(x)`.
+  - `roundEven` computes ties-to-even explicitly (MIL `round` ties away from zero on GPU
+    and Neural Engine kernels), in the input type for `Native` and in float32 for `Exact`.
+  - Float32 `tanh` keeps NaN, float32 `sign` returns 0 for NaN, float32 `neg` divides by
+    -1 (both zero signs survive) and float32 identity copies of constants use
+    `real_div(x, 1)`.
+  - `layerNormalization` with constant scale and bias on trailing, ascending axes keeps the
+    fused native `layer_norm(gamma, beta)`. Nontrailing or permuted axes and runtime scale or
+    bias apply the affine work with explicit `mul`/`add` in the declared axis order; for
+    nontrailing or permuted axes that work is placed in its own Pipeline child, because a
+    native plan that fuses it back can omit or reorder the parameters. A missing epsilon
+    defaults to 1e-5.
+  - `instanceNormalization` with runtime scale or bias runs native `instance_norm` without
+    them and applies `mul`/`add` over the channel axis. An NHWC input takes the same
+    NHWC→NCHW and NCHW→NHWC transposes around the native op as the constant-affine path.
+    Scale or bias computed from constants (a widening `cast` of float16 constants, which
+    the constant-view fold keeps in the graph) takes this path too.
+  - Pipeline boundaries take shape bounds through every shape-preserving MIL operation
+    (casts and copies, unary arithmetic, activations, normalization, `softmax`), so a
+    bounded dynamic dimension keeps its provenance across a cut.
 - The internal `shape` extension lowers to MIL `shape`, retaining its native int32 result
   inside CoreML and widening the public int64 result at readback. Imported shape tensors
   retain their type and rank through the shared `unsqueeze` inference path.
@@ -191,8 +268,8 @@ inference.
 |---|---|---|
 | ONNX Runtime | `RUSTNN_ONNX_DUMP_DIR=<dir>` writes each converted model to `debug_webnn_onnx.onnx` (overwriting the previous dump) | `python -c "import onnx; print(onnx.load('<file>'))"` or Netron |
 | TensorRT-RTX | `TRTX_JSON_DUMP_PATH=<dir>` writes the layer graph of each engine; `RUSTNN_TRTX_LOG_VERBOSITY=verbose` for the builder log | look for the layer that consumes the operand; Myelin-fused layers print as `__myl_...` |
-| CoreML | `--coreml-compiled-output <dir>` in the CLI keeps the `.mlmodelc` | `coremltools` or Xcode |
-| LiteRT | `--convert litert --convert-output model.tflite` | `flatc --json` with `protos/tflite/schema.fbs`, or the TFLite visualizer |
+| CoreML | `ConvertedGraph::data` and `weights_data` | `coremltools` or Xcode |
+| LiteRT | Write `ConvertedGraph::data` to `model.tflite` | `flatc --json` with `protos/tflite/schema.fbs`, or the TFLite visualizer |
 | any | `--export-dot graph.dot` shows the graph rustnn recorded | Graphviz |
 
 Then write the regression test first, fix the lowering, and run the WPT cases for the operation
@@ -200,7 +277,7 @@ on every backend you have.
 
 ## Burn CPU
 
-With `burn-runtime-cpu`, `BurnConverter` lowers typed operations and embedded constants
+With `burn-cpu-converter`, `BurnConverter` lowers typed operations and embedded constants
 into an in-memory execution plan when the graph is built. The CPU runtime prepares and
 replays it using Burn NdArray and host kernels. Conversion and execution are enabled
 together by this single feature.

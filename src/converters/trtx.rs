@@ -48,6 +48,10 @@ use trtx::{
     ResizeRoundMode, ScatterMode, TopKOperation, UnaryOperation,
 };
 
+// Shared by engine conversion and runtime execution.
+pub(crate) static LOGGER: std::sync::LazyLock<trtx::Logger> =
+    std::sync::LazyLock::new(|| trtx::Logger::log_crate().unwrap());
+
 /// TensorRT native converter
 pub struct TrtxConverter;
 
@@ -1015,7 +1019,7 @@ impl TrtxConverter {
                     let i32_bytes: Vec<u8> = match operand.descriptor.data_type {
                         DataType::Int4 => unpack_int4(data, element_count)
                             .into_iter()
-                            .flat_map(|v| (v as i32).to_le_bytes())
+                            .flat_map(|v| v.to_le_bytes())
                             .collect(),
                         DataType::Uint4 => unpack_uint4(data, element_count)
                             .into_iter()
@@ -1269,12 +1273,6 @@ impl TrtxConverter {
             "maxPool2d" => {
                 Self::add_pooling_op(graph, network, tensor_map, operation, PoolingType::kMAX)?
             }
-            "globalAveragePool" => {
-                Self::add_global_pooling_op(network, tensor_map, operation, PoolingType::kAVERAGE)?
-            }
-            "globalMaxPool" => {
-                Self::add_global_pooling_op(network, tensor_map, operation, PoolingType::kMAX)?
-            }
 
             // Normalization operations
             "batchNormalization" => {
@@ -1309,7 +1307,7 @@ impl TrtxConverter {
             )?,
             "reduceL1" => Self::add_reduce_l1_op(network, tensor_map, operation)?,
             "reduceL2" => Self::add_reduce_l2_op(graph, network, tensor_map, operation)?,
-            "reduceLogSum" => Self::add_reduce_log_sum_op(network, tensor_map, operation)?,
+            "reduceLogSum" => Self::add_reduce_log_sum_op(graph, network, tensor_map, operation)?,
             "reduceLogSumExp" => Self::add_reduce_log_sum_exp_op(network, tensor_map, operation)?,
             "reduceSumSquare" => Self::add_reduce_sum_square_op(network, tensor_map, operation)?,
 
@@ -5395,130 +5393,6 @@ impl TrtxConverter {
         Ok(())
     }
 
-    /// Add global pooling operation
-    fn add_global_pooling_op<'a>(
-        network: &mut trtx::NetworkDefinition<'a>,
-        tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
-        operation: &Operation,
-        pool_type: PoolingType,
-    ) -> Result<(), GraphError> {
-        let (input_id, opts_ref) = match operation {
-            Operation::GlobalAveragePool { input, options, .. } => (*input, options.as_ref()),
-            Operation::GlobalMaxPool { input, options, .. } => (*input, options.as_ref()),
-            _ => {
-                return Err(GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: "add_global_pooling_op: expected globalAveragePool or globalMaxPool"
-                        .to_string(),
-                });
-            }
-        };
-
-        let default_pool = MLPool2dOptions::default();
-        let opts = opts_ref.unwrap_or(&default_pool);
-        let layout = match opts.layout.as_str() {
-            "" => "nchw",
-            s => s,
-        };
-
-        let input = tensor_map
-            .get(&input_id)
-            .ok_or_else(|| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Input operand {} not found", input_id),
-            })?;
-
-        let nhwc_to_nchw: Option<trtx::Tensor<'a>> = if layout == "nhwc" {
-            let mut shuffle =
-                network
-                    .add_shuffle(input)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("globalPool NHWC->NCHW shuffle: {e}"),
-                    })?;
-            shuffle
-                .set_first_transpose(network, &[0, 3, 1, 2])
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("globalPool set_first_transpose NHWC: {e}"),
-                })?;
-            Some(
-                shuffle
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("globalPool NHWC shuffle output: {e}"),
-                    })?,
-            )
-        } else {
-            None
-        };
-        let pool_in = nhwc_to_nchw.as_ref().unwrap_or(input);
-
-        let input_dims =
-            pool_in
-                .dimensions(&*network)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Failed to get input dimensions: {}", e),
-                })?;
-
-        if input_dims.len() < 4 {
-            return Err(GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!(
-                    "Global pooling requires 4D input, got {}D",
-                    input_dims.len()
-                ),
-            });
-        }
-
-        let window: [i64; 2] = [input_dims[2], input_dims[3]];
-
-        let layer = network
-            .add_pooling(pool_in, pool_type, &window)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to add global pooling: {}", e),
-            })?;
-
-        let pooled_nchw = layer
-            .output(&*network, 0)
-            .map_err(|e| GraphError::ConversionFailed {
-                format: "trtx".to_string(),
-                reason: format!("Failed to get layer output: {}", e),
-            })?;
-
-        let output = if layout == "nhwc" {
-            let mut shuffle =
-                network
-                    .add_shuffle(&pooled_nchw)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("globalPool NCHW->NHWC shuffle: {e}"),
-                    })?;
-            shuffle
-                .set_first_transpose(network, &[0, 2, 3, 1])
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("globalPool set_first_transpose NCHW: {e}"),
-                })?;
-            shuffle
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("globalPool NCHW shuffle output: {e}"),
-                })?
-        } else {
-            pooled_nchw
-        };
-
-        let output_ids = operation.output_operands_slice();
-        let output_id = output_ids[0];
-        tensor_map.insert(output_id, output);
-        Ok(())
-    }
-
     /// Add matrix multiply operation.
     /// TensorRT IMatrixMultiplyLayer requires both inputs to have the same number of dimensions;
     /// if ranks differ, unsqueeze the lower-rank input by prepending 1s.
@@ -6212,12 +6086,12 @@ impl TrtxConverter {
 
         let scale_broadcast_shape: Vec<i64> = if layout == "nchw" && !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
-            s[1] = input_dims[1] as i64;
+            s[1] = input_dims[1];
             s
         } else if !input_dims.is_empty() {
             let mut s = vec![1i64; input_dims.len()];
             let last = input_dims.len() - 1;
-            s[last] = input_dims[last] as i64;
+            s[last] = input_dims[last];
             s
         } else {
             vec![1]
@@ -6977,7 +6851,9 @@ impl TrtxConverter {
     }
 
     /// Add reduceLogSum operation: log(sum(x)). Axes optional; empty axes -> output = log(x).
+    /// Keep float16 sums and logarithms in float32 so the intermediate sum cannot overflow.
     fn add_reduce_log_sum_op<'a>(
+        graph: &GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
         tensor_map: &mut HashMap<u32, trtx::Tensor<'a>>,
         operation: &Operation,
@@ -7022,18 +6898,23 @@ impl TrtxConverter {
             return Ok(());
         }
 
-        let mut axes_mask: u32 = 0;
-        for &axis in &axes {
-            axes_mask |= 1 << axis;
-        }
-
         let keep_dims = opts.map(|o| o.keep_dimensions).unwrap_or(false);
+
+        let input_dtype = graph
+            .operand(operation.input_operands()[0])
+            .map(|o| o.descriptor.data_type)
+            .unwrap_or(DataType::Float32);
+        let sum_input = if input_dtype == DataType::Float16 {
+            Self::cast_to_float32(network, input)?
+        } else {
+            *input
+        };
 
         let sum_layer = network
             .add_reduce(
-                input,
+                &sum_input,
                 ReduceOperation::kSUM,
-                Axes::from_bits(axes_mask),
+                Axes::from_slice(&axes),
                 keep_dims,
             )
             .map_err(|e| GraphError::ConversionFailed {
@@ -7063,6 +6944,12 @@ impl TrtxConverter {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get layer output: {}", e),
             })?;
+
+        let output = if input_dtype == DataType::Float16 {
+            Self::cast_to_float16(network, &output)?
+        } else {
+            output
+        };
 
         let output_ids = operation.output_operands_slice();
         let output_id = output_ids[0];
@@ -7394,7 +7281,7 @@ impl TrtxConverter {
             .zip(strides.iter())
             .map(|(sz, st): (&i32, &i32)| {
                 if *st == 0 {
-                    0_i32 // avoid div-by-zero; validator should reject elsewhere
+                    0_i32 // avoid div-by-zero; the builder rejects zero strides
                 } else if *st == 1 {
                     *sz
                 } else {
@@ -13967,10 +13854,10 @@ impl TrtxConverter {
             };
             vec![
                 (input_shape[axes[0]].max(1) as f64 * f64::from(s0))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
                 (input_shape[axes[1]].max(1) as f64 * f64::from(s1))
-                    .round()
+                    .floor()
                     .max(1.0) as i64,
             ]
         };
@@ -14908,7 +14795,7 @@ impl GraphConverter for TrtxConverter {
         }
 
         // Create TensorRT logger, builder, and network
-        let logger = &crate::backends::trtx::LOGGER;
+        let logger = &LOGGER;
 
         let mut builder = trtx::Builder::new(logger).map_err(|e| GraphError::ConversionFailed {
             format: "trtx".to_string(),

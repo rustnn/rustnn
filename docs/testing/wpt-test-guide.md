@@ -43,6 +43,9 @@ make test-wpt-coreml
 # Compare the opt-in CoreML storage paths with the default baseline
 WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
 WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
+
+# Compare the CoreML float16 lowerings (native is the default) on one requested device
+WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.
@@ -389,7 +392,7 @@ A scheduled workflow (`.github/workflows/wpt-sync.yml`) runs these and opens a P
 
 ### Burn CPU
 
-`make test-wpt-burn-cpu` uses `burn-runtime-cpu` and selects `Backend::BurnCpu` through the
+`make test-wpt-burn-cpu` uses `burn-cpu-runtime` and selects `Backend::BurnCpu` through the
 shared MLContext runner. `TEST_FILTER=relu` limits trials. Regenerate
 `tests/wpt_conformance/burn-cpu_expected_failures.txt` with `make wpt-sync-burn-cpu`.
 Direct Cargo runs use `WPT_BACKEND=burn-cpu`. No GPU or external runtime is required.

@@ -626,7 +626,7 @@ fn apply_unary<B: Backend, const D: usize>(t: &Tensor<B, D>, op: UnaryDeviceOp) 
     }
 }
 
-#[cfg(all(test, feature = "burn-runtime-cpu"))]
+#[cfg(all(test, feature = "burn-cpu-runtime"))]
 mod tests {
     use super::*;
     use burn_ndarray::NdArray;
