@@ -14,16 +14,13 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
-#[cfg(all(
-    target_os = "linux",
-    not(any(feature = "cufile", feature = "cufile-per-constant"))
-))]
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
 use std::os::fd::AsRawFd;
 use std::rc::Rc;
 use std::sync::LazyLock;
 use std::sync::RwLock;
 
-#[cfg(any(feature = "cufile", feature = "cufile-per-constant"))]
+#[cfg(feature = "cufile")]
 use cudarc::cufile::safe::Cufile;
 use cudarc::driver::CudaEvent;
 use cudarc::driver::CudaStream;
@@ -70,9 +67,6 @@ pub use trtx::trtx_sys::{
 };
 
 const TRTX_JSON_DUMP_PATH_ENV_VAR: &str = "TRTX_JSON_DUMP_PATH";
-
-#[cfg(all(feature = "cufile", feature = "cufile-per-constant"))]
-compile_error!("features `cufile` and `cufile-per-constant` are mutually exclusive");
 
 // TODO: also used in trtexec-rs. Should be part of trtx API?
 enum HostMemoryOrVec<'memory> {
@@ -305,10 +299,7 @@ impl TrtxTensor {
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(any(feature = "cufile", feature = "cufile-per-constant"))
-))]
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
 #[derive(Clone, Copy)]
 struct FileReadChunk {
     destination_offset: usize,
@@ -327,8 +318,10 @@ fn upload_file_ref_constants(
     io_config: &IoConfig,
 ) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
     match io_config.algorithm {
-        IoAlgorithm::ReadDirect => todo!(),
-        IoAlgorithm::MemMap => todo!(),
+        IoAlgorithm::ReadDirect => {
+            upload_file_ref_constants_read_direct(cuda_context, file_refs, io_config)
+        }
+        IoAlgorithm::MemMap => upload_file_ref_constants_memmap(cuda_context, file_refs),
         #[cfg(all(target_os = "linux", feature = "io-uring"))]
         IoAlgorithm::IoUring { uring_entries } => upload_file_ref_constants_io_uring(
             cuda_context,
@@ -340,8 +333,339 @@ fn upload_file_ref_constants(
         #[cfg(all(target_os = "linux", feature = "cufile"))]
         IoAlgorithm::CuFile => upload_file_ref_constants_cufile(cuda_context, file_refs),
         #[cfg(all(target_os = "linux", feature = "cufile"))]
-        IoAlgorithm::CuFilePerConstant => upload_file_ref_constants_cufile(cuda_context, file_refs),
+        IoAlgorithm::CuFilePerConstant => {
+            upload_file_ref_constants_cufile_per_constant(cuda_context, file_refs)
+        }
     }
+}
+
+// Cache handles and metadata once per path, rather than once per constant. Validate all
+// ranges before allocating destinations or queuing any copies.
+struct FileUploadSource {
+    file: std::fs::File,
+    len: usize,
+}
+
+fn open_file_upload_sources(
+    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
+    direct: bool,
+) -> crate::error::Result<HashMap<std::path::PathBuf, FileUploadSource>> {
+    let mut sources = HashMap::new();
+    for entry @ (_, file_ref, _) in file_refs {
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            sources.entry(file_ref.path.clone())
+        {
+            let mut options = std::fs::OpenOptions::new();
+            options.read(true);
+            #[cfg(target_os = "linux")]
+            if direct {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(libc::O_DIRECT);
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _ = direct;
+            let file = options
+                .open(&file_ref.path)
+                .map_err(|error| crate::error::GraphError::io(&file_ref.path, error))?;
+            let len = file
+                .metadata()
+                .map_err(|error| crate::error::GraphError::io(&file_ref.path, error))?
+                .len();
+            slot.insert(FileUploadSource {
+                file,
+                len: usize::try_from(len).map_err(graph_build_error)?,
+            });
+        }
+        validate_file_ref_with_len(entry, sources[&file_ref.path].len as u64)?;
+    }
+    Ok(sources)
+}
+
+fn file_upload_order(file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)]) -> Vec<usize> {
+    let mut order = (0..file_refs.len()).collect::<Vec<_>>();
+    order.sort_unstable_by(|&a, &b| {
+        let a = &file_refs[a].1;
+        let b = &file_refs[b].1;
+        a.path.cmp(&b.path).then_with(|| a.offset.cmp(&b.offset))
+    });
+    order
+}
+
+// Declared after mappings / host buffers so error cleanup drains copies before releasing
+// their source memory. On success there is exactly one final stream synchronization.
+struct FileUploadStream {
+    stream: Arc<CudaStream>,
+    drained: bool,
+}
+
+impl FileUploadStream {
+    fn finish(&mut self) -> crate::error::Result<()> {
+        self.stream.synchronize().map_err(graph_build_error)?;
+        self.drained = true;
+        Ok(())
+    }
+}
+
+impl Drop for FileUploadStream {
+    fn drop(&mut self) {
+        if !self.drained
+            && let Err(error) = self.stream.synchronize()
+        {
+            warn!("Failed to drain constant upload stream: {error}");
+        }
+    }
+}
+
+fn allocate_file_upload_tensors(
+    stream: &Arc<CudaStream>,
+    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
+) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
+    // Allocate before uploading: synchronous allocation on older CUDA devices must not
+    // interrupt an in-flight batch. All allocations and copies use the same stream.
+    file_refs
+        .iter()
+        .map(|(constant_id, file_ref, _)| {
+            // SAFETY: The upload paths initialize every byte before returning these tensors.
+            let memory = unsafe { stream.alloc::<u8>(file_ref.len) }.map_err(graph_build_error)?;
+            Ok((
+                *constant_id,
+                TrtxTensorStorage::TrtxTensor(TrtxTensor {
+                    memory,
+                    stream: Arc::clone(stream),
+                }),
+            ))
+        })
+        .collect()
+}
+
+fn upload_file_ref_constants_memmap(
+    cuda_context: &Arc<CudaContext>,
+    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
+) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
+    if file_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sources = open_file_upload_sources(file_refs, false)?;
+    let mut mappings = HashMap::with_capacity(sources.len());
+    for (path, source) in &sources {
+        if source.len != 0 {
+            // SAFETY: FileRef sources must remain unchanged during graph building. Mappings
+            // outlive the upload guard, including during error cleanup.
+            let mapping = unsafe { memmap2::MmapOptions::new().map(&source.file) }
+                .map_err(|error| crate::error::GraphError::io(path, error))?;
+            mappings.insert(path, mapping);
+        }
+    }
+    let mut upload = FileUploadStream {
+        stream: cuda_context.new_stream().map_err(graph_build_error)?,
+        drained: false,
+    };
+    let mut uploaded = allocate_file_upload_tensors(&upload.stream, file_refs)?;
+    for index in file_upload_order(file_refs) {
+        let file_ref = &file_refs[index].1;
+        if file_ref.len == 0 {
+            continue;
+        }
+        let source = &mappings[&file_ref.path][file_ref.offset..file_ref.offset + file_ref.len];
+        let TrtxTensorStorage::TrtxTensor(tensor) = &mut uploaded[index].1 else {
+            unreachable!("file uploads allocate CUDA tensors");
+        };
+        upload
+            .stream
+            .memcpy_htod(source, &mut tensor.memory)
+            .map_err(graph_build_error)?;
+    }
+    upload.finish()?;
+    Ok(uploaded)
+}
+
+struct FileUploadBuffer {
+    _storage: TrtxTensorStorage,
+    // Aligned pointer into the pinned allocation owned by _storage. Access is protected
+    // by completion, recorded after the last copy using this read window.
+    ptr: *mut u8,
+    completion: CudaEvent,
+}
+
+struct FileReadWindow<'a> {
+    path: &'a std::path::Path,
+    offset: usize,
+    len: usize,
+    prefix: usize,
+    buffer_index: usize,
+}
+
+const DIRECT_READ_ALIGNMENT: usize = 4096;
+
+fn direct_read_range(offset: usize, len: usize) -> std::io::Result<(usize, usize, usize)> {
+    let prefix = offset % DIRECT_READ_ALIGNMENT;
+    let read_len = prefix
+        .checked_add(len)
+        .and_then(|size| size.checked_next_multiple_of(DIRECT_READ_ALIGNMENT))
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "read size overflow")
+        })?;
+    Ok((offset - prefix, prefix, read_len))
+}
+
+fn upload_file_ref_constants_read_direct(
+    cuda_context: &Arc<CudaContext>,
+    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
+    config: &IoConfig,
+) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    if config.num_upload_buffers == 0 || config.upload_buffer_size == 0 {
+        return Err(graph_build_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "num_upload_buffers and upload_buffer_size must be greater than zero",
+        )));
+    }
+    if file_refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Allow both an unaligned file offset and an unaligned pinned allocation address.
+    let allocation_size = direct_read_range(DIRECT_READ_ALIGNMENT - 1, config.upload_buffer_size)
+        .map_err(graph_build_error)?
+        .2
+        .checked_add(DIRECT_READ_ALIGNMENT - 1)
+        .ok_or_else(|| {
+            graph_build_error(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "upload buffer size overflow",
+            ))
+        })?;
+    let mut sources = open_file_upload_sources(file_refs, true)?;
+    let stream = cuda_context.new_stream().map_err(graph_build_error)?;
+    let mut buffers = Vec::with_capacity(config.num_upload_buffers);
+    for _ in 0..config.num_upload_buffers {
+        let mut host =
+            HostTensor::new_with_stream(cuda_context, allocation_size, Arc::clone(&stream))
+                .map_err(graph_build_error)?;
+        // Obtain the pointer once, before any upload is queued. PinnedHostSlice accessors
+        // synchronize its internal event, which is unnecessary for each subsequent window.
+        let ptr = host.memory.as_mut_ptr().map_err(graph_build_error)?;
+        let ptr = ptr.wrapping_add(ptr.align_offset(DIRECT_READ_ALIGNMENT));
+        buffers.push(FileUploadBuffer {
+            _storage: TrtxTensorStorage::HostTensor(host),
+            ptr,
+            completion: cuda_context.new_event(None).map_err(graph_build_error)?,
+        });
+    }
+    let mut upload = FileUploadStream {
+        stream,
+        drained: false,
+    };
+    let mut uploaded = allocate_file_upload_tensors(&upload.stream, file_refs)?;
+    let mut window: Option<FileReadWindow<'_>> = None;
+    let mut next_buffer = 0;
+    for index in file_upload_order(file_refs) {
+        let file_ref = &file_refs[index].1;
+        let source_file = sources
+            .get_mut(&file_ref.path)
+            .expect("validated upload source");
+        let TrtxTensorStorage::TrtxTensor(tensor) = &mut uploaded[index].1 else {
+            unreachable!("file uploads allocate CUDA tensors");
+        };
+        let mut offset = 0;
+        while offset < file_ref.len {
+            let file_offset = file_ref.offset + offset; // validated range cannot overflow
+            if !window.as_ref().is_some_and(|cached| {
+                cached.path == file_ref.path
+                    && file_offset >= cached.offset
+                    && file_offset - cached.offset < cached.len
+            }) {
+                if let Some(previous) = window.take() {
+                    // One event per read window, even when it supplies many tensors.
+                    buffers[previous.buffer_index]
+                        .completion
+                        .record(&upload.stream)
+                        .map_err(graph_build_error)?;
+                }
+                let buffer = &buffers[next_buffer];
+                if !buffer
+                    .completion
+                    .try_is_complete()
+                    .map_err(graph_build_error)?
+                {
+                    // Wait only for this buffer's last use, not later work on the stream.
+                    buffer.completion.synchronize().map_err(graph_build_error)?;
+                }
+                let len = config.upload_buffer_size.min(source_file.len - file_offset);
+                let (read_offset, prefix, read_len) = if cfg!(target_os = "linux") {
+                    direct_read_range(file_offset, len).map_err(graph_build_error)?
+                } else {
+                    (file_offset, 0, len)
+                };
+                // SAFETY: The allocation includes alignment padding and read_len bytes.
+                // The completion event ensures CUDA no longer reads this buffer.
+                let target = unsafe { std::slice::from_raw_parts_mut(buffer.ptr, read_len) };
+                source_file
+                    .file
+                    .seek(SeekFrom::Start(read_offset as u64))
+                    .map_err(|error| crate::error::GraphError::io(&file_ref.path, error))?;
+                let bytes_read = if cfg!(target_os = "linux") {
+                    // Padding may extend beyond EOF, but the payload must be complete.
+                    loop {
+                        match source_file.file.read(target) {
+                            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                                continue;
+                            }
+                            result => break result,
+                        }
+                    }
+                    .map_err(|error| crate::error::GraphError::io(&file_ref.path, error))?
+                } else {
+                    source_file
+                        .file
+                        .read_exact(target)
+                        .map_err(|error| crate::error::GraphError::io(&file_ref.path, error))?;
+                    read_len
+                };
+                if bytes_read < prefix + len {
+                    return Err(crate::error::GraphError::io(
+                        &file_ref.path,
+                        std::io::Error::new(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "direct read did not contain the requested tensor bytes",
+                        ),
+                    )
+                    .into());
+                }
+                // Read ahead across constant boundaries and also reuse any alignment tail.
+                window = Some(FileReadWindow {
+                    path: &file_ref.path,
+                    offset: file_offset,
+                    len: bytes_read - prefix,
+                    prefix,
+                    buffer_index: next_buffer,
+                });
+                next_buffer = (next_buffer + 1) % buffers.len();
+            }
+            let cached = window.as_ref().expect("read window covers this offset");
+            let source_offset = file_offset - cached.offset;
+            let len = (file_ref.len - offset).min(cached.len - source_offset);
+            // SAFETY: This range contains initialized bytes from the cached read. The buffer
+            // is immutable until its completion event permits reuse; the guard drains all
+            // outstanding copies before the pinned allocation can be dropped.
+            let source = unsafe {
+                std::slice::from_raw_parts(
+                    buffers[cached.buffer_index]
+                        .ptr
+                        .add(cached.prefix + source_offset),
+                    len,
+                )
+            };
+            let mut destination = tensor.memory.slice_mut(offset..offset + len);
+            upload
+                .stream
+                .memcpy_htod(source, &mut destination)
+                .map_err(graph_build_error)?;
+            offset += len;
+        }
+    }
+    upload.finish()?;
+    Ok(uploaded)
 }
 
 #[cfg(all(target_os = "linux", feature = "io-uring"))]
@@ -709,12 +1033,19 @@ fn upload_file_ref_constants_cufile_per_constant(
     Ok(uploaded_tensors)
 }
 
-#[cfg(all(
-    target_os = "linux",
-    any(feature = "cufile", feature = "cufile-per-constant")
-))]
+#[cfg(any(test, all(target_os = "linux", feature = "cufile")))]
 fn validate_file_ref(
+    entry: &(u32, FileRef, Option<crate::OperandDescriptor>),
+) -> crate::error::Result<()> {
+    let file_len = std::fs::metadata(&entry.1.path)
+        .map_err(|error| crate::error::GraphError::io(&entry.1.path, error))?
+        .len();
+    validate_file_ref_with_len(entry, file_len)
+}
+
+fn validate_file_ref_with_len(
     (constant_id, file_ref, descriptor): &(u32, FileRef, Option<crate::OperandDescriptor>),
+    file_len: u64,
 ) -> crate::error::Result<()> {
     let descriptor =
         descriptor
@@ -737,25 +1068,23 @@ fn validate_file_ref(
         }
         .into());
     }
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-fn upload_file_ref_constants(
-    _cuda_context: &Arc<CudaContext>,
-    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
-    _uring_entries: u32,
-    _num_upload_buffers: usize,
-    _upload_buffer_size: usize,
-) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
-    if file_refs.is_empty() {
-        Ok(Vec::new())
-    } else {
-        Err(graph_build_error(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "FileRef uploads through io_uring or cuFile are only supported on Linux",
-        )))
+    let end = file_ref.offset.checked_add(file_ref.len).ok_or_else(|| {
+        graph_build_error(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "FileRef range overflow",
+        ))
+    })?;
+    if end as u64 > file_len {
+        return Err(crate::error::GraphError::io(
+            &file_ref.path,
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "FileRef exceeds file size",
+            ),
+        )
+        .into());
     }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -772,8 +1101,16 @@ unsafe impl Sync for HostTensor {}
 
 impl HostTensor {
     fn new(cuda_ctx: &Arc<CudaContext>, size: usize) -> TrtxResult<Self> {
-        debug!("Allocating pinned host tensor of size {size}");
         let stream = cuda_ctx.new_stream()?;
+        Self::new_with_stream(cuda_ctx, size, stream)
+    }
+
+    fn new_with_stream(
+        cuda_ctx: &Arc<CudaContext>,
+        size: usize,
+        stream: Arc<CudaStream>,
+    ) -> TrtxResult<Self> {
+        debug!("Allocating pinned host tensor of size {size}");
         let memory = unsafe { cuda_ctx.alloc_pinned::<u8>(size.max(1))? };
         let host_ptr = memory.as_ptr()?;
         let mut device_ptr: sys::CUdeviceptr = 0;
@@ -810,7 +1147,7 @@ pub(crate) enum TrtxTensorStorage {
     TrtxTensor(TrtxTensor),
     HostTensor(HostTensor),
     #[cfg(feature = "cufile")]
-    SharedCudaTensor(SharedCudaTensor),
+    SharedCudaTensor(SharedCudaTensor), // multiple tensors share view to one big buffer
     Destroyed,
 }
 
@@ -980,9 +1317,9 @@ pub(crate) enum IoAlgorithm {
     IoUring {
         uring_entries: u32,
     },
-    #[cfg(feature = "cufile")]
+    #[cfg(all(target_os = "linux", feature = "cufile"))]
     CuFile,
-    #[cfg(feature = "cufile-per-constant")]
+    #[cfg(all(target_os = "linux", feature = "cufile"))]
     CuFilePerConstant,
 }
 
@@ -1975,8 +2312,110 @@ impl ListDevices for TrtxContext<'_> {
 #[cfg(test)]
 #[cfg(feature = "trtx-runtime")]
 mod tests {
+    use super::*;
     use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
     use crate::{backends::trtx::TrtxContext, mlcontext::ListDevices};
+
+    fn file_entry(
+        path: &std::path::Path,
+        offset: usize,
+        len: usize,
+    ) -> (u32, FileRef, Option<crate::OperandDescriptor>) {
+        (
+            0,
+            FileRef {
+                path: path.to_owned(),
+                offset,
+                len,
+                label: None,
+            },
+            Some(crate::OperandDescriptor {
+                data_type: crate::graph::DataType::Uint8,
+                shape: vec![crate::graph::Dimension::Static(len as u32)],
+                pending_permutation: Vec::new(),
+            }),
+        )
+    }
+
+    #[test]
+    fn file_upload_rejects_invalid_ranges() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), [0u8; 8]).unwrap();
+        assert!(validate_file_ref(&file_entry(file.path(), 7, 2)).is_err());
+        assert!(validate_file_ref(&file_entry(file.path(), usize::MAX, 2)).is_err());
+        let mut entry = file_entry(file.path(), 0, 4);
+        entry.1.len = 3;
+        assert!(validate_file_ref(&entry).is_err());
+        entry.2 = None;
+        assert!(validate_file_ref(&entry).is_err());
+        assert!(direct_read_range(1, usize::MAX).is_err());
+    }
+
+    #[test]
+    fn file_upload_algorithms_preserve_bytes() {
+        let devices = TrtxContext::list_devices();
+        let Some(device) = devices.first() else {
+            eprintln!("Skipping file upload test: no CUDA device available");
+            return;
+        };
+        let cuda = CudaContext::new(*device.as_trtx_device().unwrap() as usize).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("weights.bin");
+        let other = directory.path().join("other.bin");
+        let bytes = (0..20003).map(|i| (i % 251) as u8).collect::<Vec<_>>();
+        std::fs::write(&path, &bytes).unwrap();
+        std::fs::write(&other, &bytes).unwrap();
+        let mut entries = vec![
+            file_entry(&path, 3, 9001),
+            file_entry(&path, 8191, bytes.len() - 8191),
+            file_entry(&other, 17, 41),
+        ];
+        // Adjacent constants should share a read-ahead window. Scramble their order to
+        // verify that sequential file processing preserves the caller's result order.
+        for index in (0..40).rev() {
+            entries.push(file_entry(&path, 10003 + index * 31, 31));
+        }
+        for (id, entry) in entries.iter_mut().enumerate() {
+            entry.0 = id as u32;
+        }
+        for algorithm in [IoAlgorithm::MemMap, IoAlgorithm::ReadDirect] {
+            for num_upload_buffers in [1, 3] {
+                for upload_buffer_size in [1, 1023, 65536] {
+                    let config = IoConfig {
+                        algorithm: if algorithm == IoAlgorithm::MemMap {
+                            IoAlgorithm::MemMap
+                        } else {
+                            IoAlgorithm::ReadDirect
+                        },
+                        num_upload_buffers,
+                        upload_buffer_size,
+                    };
+                    let uploaded = upload_file_ref_constants(&cuda, &entries, &config).unwrap();
+                    assert_eq!(uploaded.len(), entries.len());
+                    for ((id, storage), (expected_id, file_ref, _)) in uploaded.iter().zip(&entries)
+                    {
+                        assert_eq!(id, expected_id);
+                        let TrtxTensorStorage::TrtxTensor(tensor) = storage else {
+                            panic!("expected CUDA tensor");
+                        };
+                        let actual = tensor.stream.clone_dtoh(&tensor.memory).unwrap();
+                        assert_eq!(
+                            actual,
+                            bytes[file_ref.offset..file_ref.offset + file_ref.len]
+                        );
+                    }
+                }
+            }
+        }
+        for (num_upload_buffers, upload_buffer_size) in [(0, 1024), (2, 0)] {
+            let config = IoConfig {
+                algorithm: IoAlgorithm::ReadDirect,
+                num_upload_buffers,
+                upload_buffer_size,
+            };
+            assert!(upload_file_ref_constants(&cuda, &entries, &config).is_err());
+        }
+    }
 
     #[test]
     fn test_context_creation() {
