@@ -1,0 +1,4 @@
+SPDX-License-Identifier: Apache-2.0
+
+Derived from https://media.githubusercontent.com/media/onnx/models/refs/heads/main/Computer_Vision/resnet50_Opset16_timm/resnet50_Opset16.onnx
+from repo https://github.com/onnx/models with license https://github.com/onnx/models/blob/main/LICENSE
