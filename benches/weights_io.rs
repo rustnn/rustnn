@@ -124,9 +124,7 @@ fn compile_model(webnn_string: &str, weights_path: &Path, backend: Backend, reso
 fn context_options(backend: Backend) -> MLContextOptions {
     let (power_preference, accelerated) = match backend {
         Backend::Trtx => (MLPowerPreference::HighPerformance, true),
-        Backend::Onnx | Backend::Litert | Backend::Coreml | Backend::Cann => {
-            (MLPowerPreference::Default, false)
-        }
+        _ => (MLPowerPreference::Default, false),
     };
 
     MLContextOptions::new(power_preference, accelerated).with_rustnn_backend_hint(backend)
