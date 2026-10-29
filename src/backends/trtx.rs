@@ -321,11 +321,31 @@ fn graph_build_error(source: impl std::error::Error + Send + Sync + 'static) -> 
     }
 }
 
-#[cfg(all(
-    target_os = "linux",
-    not(any(feature = "cufile", feature = "cufile-per-constant"))
-))]
 fn upload_file_ref_constants(
+    cuda_context: &Arc<CudaContext>,
+    file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
+    io_config: &IoConfig,
+) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
+    match io_config.algorithm {
+        IoAlgorithm::ReadDirect => todo!(),
+        IoAlgorithm::MemMap => todo!(),
+        #[cfg(all(target_os = "linux", feature = "io-uring"))]
+        IoAlgorithm::IoUring { uring_entries } => upload_file_ref_constants_io_uring(
+            cuda_context,
+            file_refs,
+            uring_entries,
+            io_config.num_upload_buffers,
+            io_config.upload_buffer_size,
+        ),
+        #[cfg(all(target_os = "linux", feature = "cufile"))]
+        IoAlgorithm::CuFile => upload_file_ref_constants_cufile(cuda_context, file_refs),
+        #[cfg(all(target_os = "linux", feature = "cufile"))]
+        IoAlgorithm::CuFilePerConstant => upload_file_ref_constants_cufile(cuda_context, file_refs),
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "io-uring"))]
+fn upload_file_ref_constants_io_uring(
     cuda_context: &Arc<CudaContext>,
     file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
     uring_entries: u32,
@@ -510,12 +530,9 @@ fn upload_file_ref_constants(
 }
 
 #[cfg(all(target_os = "linux", feature = "cufile"))]
-fn upload_file_ref_constants(
+fn upload_file_ref_constants_cufile(
     cuda_context: &Arc<CudaContext>,
     file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
-    _uring_entries: u32,
-    _num_upload_buffers: usize,
-    _upload_buffer_size: usize,
 ) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
     use std::collections::BTreeMap;
     use std::os::unix::fs::OpenOptionsExt;
@@ -634,13 +651,10 @@ fn upload_file_ref_constants(
     Ok(uploaded_tensors)
 }
 
-#[cfg(all(target_os = "linux", feature = "cufile-per-constant"))]
-fn upload_file_ref_constants(
+#[cfg(all(target_os = "linux", feature = "cufile"))]
+fn upload_file_ref_constants_cufile_per_constant(
     cuda_context: &Arc<CudaContext>,
     file_refs: &[(u32, FileRef, Option<crate::OperandDescriptor>)],
-    _uring_entries: u32,
-    _num_upload_buffers: usize,
-    _upload_buffer_size: usize,
 ) -> crate::error::Result<Vec<(u32, TrtxTensorStorage)>> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -957,7 +971,39 @@ impl Drop for TrtxContext<'_> {
     }
 }
 
-#[allow(dead_code)]
+#[derive(Debug, Eq, PartialEq, Default)]
+pub(crate) enum IoAlgorithm {
+    #[default]
+    ReadDirect,
+    MemMap,
+    #[cfg(all(target_os = "linux", feature = "io-uring"))]
+    IoUring {
+        uring_entries: u32,
+    },
+    #[cfg(feature = "cufile")]
+    CuFile,
+    #[cfg(feature = "cufile-per-constant")]
+    CuFilePerConstant,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct IoConfig {
+    algorithm: IoAlgorithm,
+    num_upload_buffers: usize,
+    upload_buffer_size: usize,
+}
+
+impl Default for IoConfig {
+    fn default() -> Self {
+        // TODO: determine good defaults
+        Self {
+            algorithm: Default::default(),
+            num_upload_buffers: 4,
+            upload_buffer_size: 16 * 1024 * 1024,
+        }
+    }
+}
+
 pub(crate) struct TrtxBuilder<'builder> {
     network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
     builder: Arc<Mutex<trtx::Builder<'builder>>>,
@@ -971,6 +1017,7 @@ pub(crate) struct TrtxBuilder<'builder> {
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
+    io_config: IoConfig,
 }
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -1017,10 +1064,6 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         &mut self,
         mut graph: GraphInfo,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        let uring_entries = 8;
-        let num_upload_buffers = 4;
-        let upload_buffer_size = 16 * 1024 * 1024;
-
         let baked = TrtxConverter::gather_baked_constant_operand_ids(&graph);
         for &id in &baked {
             let Some(reference) = graph.constant_operand_ids_to_handles.get(&id) else {
@@ -1044,6 +1087,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                             message: format!("Invalid baked tensor reference {id_ref:?}"),
                         }
                     })?;
+                    // TODO: please note that were getting
                     match tensor {
                         TrtxTensorStorage::TrtxTensor(tensor) => {
                             tensor.stream.clone_dtoh(&tensor.memory)?
@@ -1097,8 +1141,15 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
 
         let (engine_sender, engine_receiver) = std::sync::mpsc::sync_channel(1);
         let (upload_sender, upload_receiver) = std::sync::mpsc::sync_channel(1);
-        rayon::scope(|scope| {
-            scope.spawn(|_| {
+
+        // could consider rayon::scope for using rayon's thread pool if we were to use rayon elsewhere
+
+        // create a thread scope to build and load weights in parallel
+        // currently trtx-specific, but resolving unresolved constants could also move into generic
+        // part when more backends support weightless building. This way .webnn-parsing and
+        // .safetensor loading could happen in parallel
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
                 let result = (|| -> crate::error::Result<HostMemoryOrVec<'_>> {
                     let mut engine_bytes: Option<HostMemoryOrVec<'_>> = None;
                     let mut hash_key = None;
@@ -1160,16 +1211,10 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 let _ = engine_sender.send(result);
             });
 
-            scope.spawn(|_| {
-                let result = upload_file_ref_constants(
-                    &self.cuda_context,
-                    &file_refs,
-                    uring_entries,
-                    num_upload_buffers,
-                    upload_buffer_size,
-                );
-                let _ = upload_sender.send(result);
-            });
+            //scope.spawn(|| { // do in main thread for now
+            let result = upload_file_ref_constants(&self.cuda_context, &file_refs, &self.io_config);
+            let _ = upload_sender.send(result);
+            //});
         });
 
         let engine_bytes = engine_receiver.recv().map_err(graph_build_error)??;
@@ -1447,6 +1492,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
+            io_config: Default::default(),
         }))
     }
 

@@ -4421,7 +4421,6 @@ dependencies = [
  "prost-build",
  "prost-types",
  "rand 0.10.3",
- "rayon",
  "regex",
  "reqwest",
  "safetensors 0.8.0",
