@@ -41,7 +41,8 @@ delegate does not support.
 An operation the converter cannot lower fails the conversion with
 `unsupported operation: <operation>`, which is how the recurrent operations (`gru`,
 `gruCell`, `lstm`, `lstmCell`) and `scatterElements` with non-constant indices are reported.
-`datatype_to_tflite` rejects data types the TFLite schema lacks, which is `uint4` today; the
+`datatype_to_tflite` rejects data types the TFLite schema lacks, which is `uint4`,
+`float8e4m3`, `bfloat16` today; the
 WPT harness skips trials whose dtypes its own list omits.
 
 Two limits come from the runtime rather than from the schema. No operand can be `uint64`: the

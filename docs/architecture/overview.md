@@ -49,7 +49,7 @@ loads, validates and converts stored graphs without a context.
 | `src/operator_options.rs` | `ML*Options` structs mirroring the spec dictionaries, `MLDimension` |
 | `src/operator_enums.rs` | `MLOperandDataType` and the other spec enums |
 | `src/shape_inference.rs` | Output shape and data type rules per operation |
-| `src/graph.rs` | `GraphInfo`, `Operand`, `OperandDescriptor`, `Dimension`, `DataType`, 4-bit packing, hashing for caches |
+| `src/graph.rs` | `GraphInfo`, `Operand`, `OperandDescriptor`, `Dimension`, `DataType` (alias of `MLOperandDataType`), 4-bit packing, hashing for caches |
 | `src/runtime_checks.rs` | Shape checks of tensor bindings at dispatch, including dynamic dimensions |
 | `src/loader.rs`, `src/webnn_json.rs`, `src/webnn_save.rs` | `.webnn` text and JSON import through the `webnn-graph` crate, export, `.safetensors` weights |
 | `src/converters/` | `GraphConverter` trait, `ConverterRegistry`, one converter per format (`onnx.rs`, `coreml_mlprogram.rs`, `trtx.rs` with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs`, `litert.rs`, `cann.rs`, `webnn.rs` for the browser) and shared helpers (`pool2d_shared.rs`, `weight_file_builder.rs`) |

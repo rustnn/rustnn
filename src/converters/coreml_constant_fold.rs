@@ -140,7 +140,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
     let destination_shape = destination.descriptor.static_shape()?;
     let source_type = source.descriptor.data_type;
     let destination_type = destination.descriptor.data_type;
-    if is_packed(source_type) || is_packed(destination_type) {
+    if is_unsupported_scalar_type(source_type) || is_unsupported_scalar_type(destination_type) {
         return None;
     }
     let data = &graph.constant_operand_ids_to_handles.get(&input)?.data;
@@ -194,7 +194,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
             data.clone()
         }
         Operation::Cast { data_type, .. } => {
-            if DataType::from(*data_type) != destination_type || source_shape != destination_shape {
+            if *data_type != destination_type || source_shape != destination_shape {
                 return None;
             }
             // A fold never grows the stored payload: a widening cast (float16 weights read
@@ -216,8 +216,11 @@ fn is_quantized_storage(data_type: DataType) -> bool {
     )
 }
 
-fn is_packed(data_type: DataType) -> bool {
-    matches!(data_type, DataType::Int4 | DataType::Uint4)
+fn is_unsupported_scalar_type(data_type: DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3
+    )
 }
 
 fn is_permutation(permutation: &[usize], rank: usize) -> bool {
@@ -299,7 +302,9 @@ fn read_scalars(data: &[u8], data_type: DataType) -> Vec<Scalar> {
             DataType::Uint8 => Scalar::Int(u8::from_le_bytes(chunk.try_into().unwrap()) as i128),
             DataType::Int64 => Scalar::Int(i64::from_le_bytes(chunk.try_into().unwrap()) as i128),
             DataType::Uint64 => Scalar::Int(u64::from_le_bytes(chunk.try_into().unwrap()) as i128),
-            DataType::Int4 | DataType::Uint4 => unreachable!("packed types are rejected earlier"),
+            DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
+                unreachable!("unsupported scalar types are rejected earlier")
+            }
         })
         .collect()
 }
@@ -377,7 +382,9 @@ fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
                 let value = int_value(scalar, 0, u64::MAX as i128)? as u64;
                 out.extend_from_slice(&value.to_le_bytes());
             }
-            DataType::Int4 | DataType::Uint4 => return None,
+            DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
+                return None;
+            }
         }
     }
     Some(out)
@@ -700,7 +707,7 @@ mod tests {
     }
 
     fn cast_graph(from: DataType, to: MLOperandDataType, data: Vec<u8>) -> GraphInfo {
-        let to_type = DataType::from(to);
+        let to_type = to;
         let mut graph = GraphInfo {
             operands: vec![
                 operand(OperandKind::Input, to_type, &[4], "x"),

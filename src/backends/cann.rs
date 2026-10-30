@@ -316,6 +316,18 @@ impl fmt::Debug for CannBuilder {
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CannBuilder {
     fn build(&mut self, graph_info: GraphInfo) -> Result<MLGraph<'context>> {
+        for operand in &graph_info.operands {
+            if matches!(
+                operand.descriptor.data_type,
+                crate::DataType::Bfloat16 | crate::DataType::Float8e4m3
+            ) {
+                return Err(crate::GraphError::UnsupportedDataType {
+                    data_type: operand.descriptor.data_type,
+                    backend: crate::backend_selection::Backend::Cann,
+                }
+                .into());
+            }
+        }
         // Record the input/output names in the model's canonical order. Names
         // are guaranteed present: MLGraph::new() below runs io_binding_maps(),
         // which errors on missing or duplicate names.
@@ -364,6 +376,37 @@ mod tests {
     use crate::backend_selection::DeviceType;
     use crate::mlcontext::{MLBackendContext, MLTensorDescriptor};
     use crate::operator_enums::MLOperandDataType;
+
+    #[test]
+    fn build_rejects_unsupported_float_intermediates() {
+        use crate::mlcontext::{
+            MLBackendBuilder, MLGraphBuilder, MLNamedOperands, MLOperandDescriptor,
+        };
+
+        for dtype in [crate::DataType::Bfloat16, crate::DataType::Float8e4m3] {
+            let mut builder = MLGraphBuilder::new_uncompiled();
+            let x = builder
+                .input(
+                    "x",
+                    &MLOperandDescriptor::new(crate::DataType::Float32, vec![1]),
+                )
+                .unwrap();
+            let intermediate = builder.cast(x, dtype).unwrap();
+            let y = builder
+                .cast(intermediate, crate::DataType::Float32)
+                .unwrap();
+            let graph = builder
+                .finish_graph_info(&MLNamedOperands::from([("y", y)]))
+                .unwrap();
+            let error = super::CannBuilder { graph: None }.build(graph).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("does not support data type {dtype:?}")),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn test_context_new() {

@@ -91,9 +91,7 @@ impl CannSession {
                     .map(|&id| {
                         let desc = &graph.operands[id as usize].descriptor;
                         let shape = desc.static_shape()?;
-                        let dtype = MLOperandDataType::try_from(desc.data_type)
-                            .map(ml_operand_to_cann_dtype)
-                            .unwrap_or(0);
+                        let dtype = ml_operand_to_cann_dtype(desc.data_type);
                         Some((shape, dtype))
                     })
                     .collect()

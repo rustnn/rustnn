@@ -91,7 +91,7 @@ fn proven_copy_input(graph: &GraphInfo, operation: &Operation, output: u32) -> O
     }
     let is_copy = match operation {
         Operation::Identity { .. } => true,
-        Operation::Cast { data_type, .. } => DataType::from(*data_type) == source.data_type,
+        Operation::Cast { data_type, .. } => *data_type == source.data_type,
         Operation::Transpose { options, .. } => {
             let permutation = options
                 .as_ref()
@@ -893,10 +893,16 @@ impl CoremlMlProgramConverter {
         })
     }
 
-    fn interface_mil_data_type(data_type: &DataType) -> i32 {
+    fn interface_mil_data_type(data_type: &DataType) -> Result<i32, GraphError> {
         use crate::protos::coreml::mil_spec::DataType as MilDataType;
 
-        match data_type {
+        Ok(match data_type {
+            DataType::Bfloat16 | DataType::Float8e4m3 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".into(),
+                    reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+                });
+            }
             DataType::Float32 => MilDataType::Float32 as i32,
             DataType::Float16 => MilDataType::Float16 as i32,
             DataType::Int32 => MilDataType::Int32 as i32,
@@ -907,7 +913,7 @@ impl CoremlMlProgramConverter {
             | DataType::Uint32
             | DataType::Int64
             | DataType::Uint64 => MilDataType::Float32 as i32,
-        }
+        })
     }
 
     fn cast_dtype_string_for_mil_type(data_type: i32) -> Result<&'static str, GraphError> {
@@ -927,6 +933,10 @@ impl CoremlMlProgramConverter {
 
     fn cast_dtype_string_for_graph_type(data_type: &DataType) -> Result<&'static str, GraphError> {
         match data_type {
+            DataType::Bfloat16 | DataType::Float8e4m3 => Err(GraphError::ConversionFailed {
+                format: "coreml".into(),
+                reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+            }),
             DataType::Float32 => Ok("fp32"),
             DataType::Float16 => Ok("fp16"),
             DataType::Int32 => Ok("int32"),
@@ -992,6 +1002,12 @@ impl CoremlMlProgramConverter {
         use crate::protos::coreml::mil_spec::DataType as MilDataType;
 
         Ok(match data_type {
+            DataType::Bfloat16 | DataType::Float8e4m3 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".into(),
+                    reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+                });
+            }
             DataType::Int4 | DataType::Uint4 => {
                 return Err(GraphError::ConversionFailed {
                     format: "coreml".to_string(),
@@ -1071,6 +1087,12 @@ impl CoremlMlProgramConverter {
 
         // Create tensor value from constant data
         let tensor_value = match operand.descriptor.data_type {
+            DataType::Bfloat16 | DataType::Float8e4m3 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".into(),
+                    reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+                });
+            }
             crate::graph::DataType::Float32 => {
                 // Convert raw bytes to f32 values
                 let float_count = constant_data.data.len() / 4;
@@ -6252,6 +6274,12 @@ impl CoremlMlProgramConverter {
                 // Add dtype parameter (required)
                 let to_type = to;
                 let dtype_string = match to_type {
+                    MLOperandDataType::Bfloat16 | MLOperandDataType::Float8e4m3 => {
+                        return Err(GraphError::ConversionFailed {
+                            format: "coreml".into(),
+                            reason: "bfloat16/float8e4m3 cast targets are unsupported".into(),
+                        });
+                    }
                     MLOperandDataType::Float32 => "fp32",
                     MLOperandDataType::Float16 => "fp16",
                     MLOperandDataType::Int32 => "int32",
@@ -6526,6 +6554,12 @@ impl CoremlMlProgramConverter {
         // CoreML feature descriptions (I/O) ONLY support: DOUBLE, FLOAT32, FLOAT16, INT32
         // Even though Int8 exists in protobuf enum, CoreML runtime rejects it
         let array_data_type = match descriptor.data_type {
+            DataType::Bfloat16 | DataType::Float8e4m3 => {
+                return Err(GraphError::ConversionFailed {
+                    format: "coreml".into(),
+                    reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+                });
+            }
             DataType::Float32 => {
                 crate::protos::coreml::specification::array_feature_type::ArrayDataType::Float32
             }
@@ -6674,7 +6708,7 @@ impl CoremlMlProgramConverter {
                 let interface_mil_type = if Self::is_wide_int(&operand.descriptor.data_type) {
                     crate::protos::coreml::mil_spec::DataType::Int32 as i32
                 } else {
-                    Self::interface_mil_data_type(&operand.descriptor.data_type)
+                    Self::interface_mil_data_type(&operand.descriptor.data_type)?
                 };
                 if graph_mil_type != interface_mil_type {
                     let output_name = operand_name(graph_info, output_id);
@@ -6697,7 +6731,7 @@ impl CoremlMlProgramConverter {
                 graph_info,
                 input_id,
                 input_name,
-                Self::interface_mil_data_type(&operand.descriptor.data_type),
+                Self::interface_mil_data_type(&operand.descriptor.data_type)?,
             )?;
             main_function.inputs.push(value_type);
         }
@@ -6726,7 +6760,7 @@ impl CoremlMlProgramConverter {
             } else {
                 Self::mil_data_type(&operand.descriptor.data_type)?
             };
-            let interface_mil_type = Self::interface_mil_data_type(&operand.descriptor.data_type);
+            let interface_mil_type = Self::interface_mil_data_type(&operand.descriptor.data_type)?;
             if graph_mil_type != interface_mil_type {
                 let input_name = operand_name(graph_info, input_id);
                 let graph_input_name = format!("{}_graph", input_name);
@@ -12057,7 +12091,7 @@ impl CoremlMlProgramConverter {
             let graph_output_name =
                 Self::output_name_for_operand(graph_info, output_id, &operand_name_overrides);
             let graph_mil_type = Self::graph_value_mil_type(&operand.descriptor.data_type)?;
-            let interface_mil_type = Self::interface_mil_data_type(&operand.descriptor.data_type);
+            let interface_mil_type = Self::interface_mil_data_type(&operand.descriptor.data_type)?;
             // Wide ints and argmin/argmax proxy outputs use int32 at the interface
             // (not float32); the executor widens int32 -> int64/uint64 on readback.
             let effective_interface_type = if int32_proxy_output_names.contains(&output_name)
@@ -14487,7 +14521,7 @@ mod tests {
                 output_operands: vec![1],
                 operations: vec![Operation::Cast {
                     input: 0,
-                    data_type: MLOperandDataType::try_from(output_type).unwrap(),
+                    data_type: output_type,
                     options: None,
                     outputs: vec![1],
                 }],

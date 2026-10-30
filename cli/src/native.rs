@@ -116,7 +116,7 @@ fn create_tensors(
         .map(|(name, descriptor)| {
             let shape = descriptor.static_or_max_shape();
             let descriptor = MLTensorDescriptor::new(
-                descriptor.data_type.try_into()?,
+                descriptor.data_type,
                 shape.into_iter().map(u64::from).collect(),
             );
             let tensor = context.create_tensor(&if input {
@@ -152,12 +152,19 @@ fn output_preview(data_type: DataType, bytes: &[u8], elements: usize) -> String 
             .map(|v| half::f16::from_le_bytes(v.try_into().unwrap()).to_string())
             .collect::<Vec<_>>()
             .join(", "),
+        DataType::Bfloat16 => bytes
+            .chunks_exact(2)
+            .take(limit)
+            .map(|v| half::bf16::from_le_bytes(v.try_into().unwrap()).to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
         DataType::Int64 => values!(i64),
         DataType::Uint64 => values!(u64),
         DataType::Int32 => values!(i32),
         DataType::Uint32 => values!(u32),
         DataType::Int8 => values!(i8),
         DataType::Uint8 => values!(u8),
+        DataType::Float8e4m3 => values!(u8),
         DataType::Int4 | DataType::Uint4 => {
             let signed = data_type == DataType::Int4;
             bytes

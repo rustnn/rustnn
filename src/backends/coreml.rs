@@ -314,15 +314,12 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> crate::error::Result<MLTensor> {
         let n = tensor_byte_len(descriptor);
-        let storage = CoremlTensorStorage::new(
-            descriptor.data_type().into(),
-            n,
-            self.options.reuse_tensor_storage,
-        )
-        .map_err(|e| Error::TensorCreationError {
-            source: e.into(),
-            descriptor: descriptor.clone(),
-        })?;
+        let storage =
+            CoremlTensorStorage::new(descriptor.data_type(), n, self.options.reuse_tensor_storage)
+                .map_err(|e| Error::TensorCreationError {
+                    source: e.into(),
+                    descriptor: descriptor.clone(),
+                })?;
         self.statistics.native_allocations += u64::from(storage.is_native());
         self.tensors.push(CoremlTensor { storage });
         Ok(MLTensor {

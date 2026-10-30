@@ -49,6 +49,8 @@ enum class MLOperandDataType {
   Uint8 = RustnnDataType_Uint8,
   Int4 = RustnnDataType_Int4,
   Uint4 = RustnnDataType_Uint4,
+  Bfloat16 = RustnnDataType_Bfloat16,
+  Float8e4m3 = RustnnDataType_Float8e4m3,
 };
 
 /// Power preference used for automatic backend selection.

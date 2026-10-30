@@ -73,6 +73,8 @@ pub enum RustnnDataType {
     Uint8 = 7,
     Int4 = 8,
     Uint4 = 9,
+    Bfloat16 = 10,
+    Float8e4m3 = 11,
 }
 
 #[repr(C)]
@@ -160,6 +162,8 @@ impl From<RustnnDataType> for MLOperandDataType {
         match value {
             RustnnDataType::Float32 => Self::Float32,
             RustnnDataType::Float16 => Self::Float16,
+            RustnnDataType::Bfloat16 => Self::Bfloat16,
+            RustnnDataType::Float8e4m3 => Self::Float8e4m3,
             RustnnDataType::Int32 => Self::Int32,
             RustnnDataType::Uint32 => Self::Uint32,
             RustnnDataType::Int64 => Self::Int64,
@@ -177,6 +181,8 @@ impl From<MLOperandDataType> for RustnnDataType {
         match value {
             MLOperandDataType::Float32 => Self::Float32,
             MLOperandDataType::Float16 => Self::Float16,
+            MLOperandDataType::Bfloat16 => Self::Bfloat16,
+            MLOperandDataType::Float8e4m3 => Self::Float8e4m3,
             MLOperandDataType::Int32 => Self::Int32,
             MLOperandDataType::Uint32 => Self::Uint32,
             MLOperandDataType::Int64 => Self::Int64,
