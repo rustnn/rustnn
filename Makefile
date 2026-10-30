@@ -150,7 +150,7 @@ fetch-wpt:
 	node scripts/fetch_wpt.mjs
 
 require-wpt-cache:
-	@test -d .cache/wpt/webnn || (echo "WPT cache is missing; run 'make fetch-wpt' first." >&2; exit 1)
+	@test -d "$(if $(WPT_DIR),$(WPT_DIR),.cache/wpt)/webnn" || (echo "WPT cache is missing; set WPT_DIR or run 'make fetch-wpt' first." >&2; exit 1)
 
 # Download Chrome for Testing's newest driver compatible with the Chrome on PATH.
 # Set CHROME=... to select a different installed Chrome binary, or
@@ -216,8 +216,10 @@ test-wpt-coreml:
 	WPT_BACKEND=coreml $(CARGO) test --test run_wpt_conformance --features coreml-runtime -- $(if $(TEST_FILTER),$(TEST_FILTER),coreml) --test-threads 1
 	$(MAKE) test-wpt-tolerance-parity
 
-.PHONY: test-wpt-burn-cpu wpt-sync-burn-cpu test-wpt-tolerance test-wpt-tolerance-parity
-test-wpt-tolerance:
+.PHONY: test-wpt-burn-cpu wpt-sync-burn-cpu test-wpt-tolerance test-wpt-tolerance-parity test-wpt-source-tolerance
+test-wpt-source-tolerance:
+	node --test scripts/wpt_bridge/source-tolerance.test.mjs scripts/wpt_bridge/wpt-tolerance-env.test.mjs
+test-wpt-tolerance: test-wpt-source-tolerance
 	$(CARGO) test --test test_wpt_tolerance --test test_wpt_report
 
 test-wpt-tolerance-parity: require-wpt-cache

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 import { createWptHarnessStubs } from './wpt-tolerance-env.mjs';
+import { normalizeSourceTolerance } from './source-tolerance.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,7 +45,8 @@ export function loadWptConformanceFile(
     registration.resolveTolerance =
       typeof toleranceFunc === 'function'
         ? (graphResources, intermediateOperands = {}) =>
-            toleranceFunc(graphResources, intermediateOperands)
+            normalizeSourceTolerance(
+              toleranceFunc(graphResources, intermediateOperands), graphResources)
         : null;
   };
 

@@ -612,6 +612,102 @@ fn strict_half_inputs_and_constants_use_source_rounding_without_changing_default
 }
 
 #[test]
+fn strict_half_conversion_retains_binary64_inputs_at_midpoint_boundaries() {
+    let midpoint = 1.00048828125;
+    let values = [
+        (midpoint - 2.0f64.powi(-40), 0x3c00),
+        (midpoint, 0x3c00),
+        (midpoint + 2.0f64.powi(-40), 0x3c01),
+        (-midpoint + 2.0f64.powi(-40), 0xbc00),
+        (-midpoint, 0xbc00),
+        (-midpoint - 2.0f64.powi(-40), 0xbc01),
+        (2.0f64.powi(-25), 0x0000),
+        (2.0f64.powi(-25) * (1.0 + 2.0f64.powi(-20)), 0x0001),
+        (2.0f64.powi(-25) * (1.0 - 2.0f64.powi(-20)), 0x0000),
+        (65520.0 - 2.0f64.powi(-20), 0x7bff),
+        (65520.0, 0x7c00),
+        (-65520.0 + 2.0f64.powi(-20), 0xfbff),
+        (-65520.0, 0xfc00),
+        (0.0, 0x0000),
+        (-0.0, 0x8000),
+    ];
+    for &(value, bits) in &values {
+        assert_eq!(wpt_tensor::wpt_half_bits(value), bits, "{value:?}");
+    }
+    for constant in [false, true] {
+        let spec = wpt_types::WptTensorSpec {
+            data: serde_json::json!(values.map(|(value, _)| value)),
+            shape: vec![values.len() as u32],
+            data_type: "float16".into(),
+            constant,
+            descriptor: None,
+        };
+        let expected: Vec<u16> = values.iter().map(|&(_, bits)| bits).collect();
+        assert_eq!(wpt_tensor::tensor_f16_bits_with_mode(&spec, true), expected);
+        assert_eq!(
+            wpt_tensor::tensor_spec_to_bytes_with_mode(&spec, true).unwrap(),
+            expected
+                .iter()
+                .flat_map(|bits| bits.to_ne_bytes())
+                .collect::<Vec<_>>()
+        );
+        let compatibility: Vec<_> = values
+            .iter()
+            .map(|&(value, _)| half::f16::from_f32(value as f32).to_bits())
+            .collect();
+        assert_eq!(
+            wpt_tensor::tensor_f16_bits_with_mode(&spec, false),
+            compatibility
+        );
+    }
+    let scalar = wpt_types::WptTensorSpec {
+        data: serde_json::json!(midpoint - 2.0f64.powi(-40)),
+        shape: vec![3],
+        data_type: "float16".into(),
+        constant: false,
+        descriptor: None,
+    };
+    assert_eq!(
+        wpt_tensor::tensor_f16_bits_with_mode(&scalar, true),
+        [0x3c00; 3]
+    );
+    assert_eq!(
+        wpt_tensor::tensor_spec_to_bytes_with_mode(&scalar, true).unwrap(),
+        [0x3c00u16; 3]
+            .iter()
+            .flat_map(|bits| bits.to_ne_bytes())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn strict_half_ulp_ordering_is_numerical_across_zero_and_sign() {
+    let minimum = half::f16::from_bits(1).to_f32();
+    assert_eq!(tolerance::upstream_ulp_distance(-minimum, 0.0, true), 1);
+    assert_eq!(
+        tolerance::upstream_ulp_distance(-minimum, minimum as f64, true),
+        2
+    );
+    assert_eq!(tolerance::upstream_ulp_distance(-1.0, 1.0, true), 30720);
+    for (actual, expected, budget) in [(-minimum, 0.0, 1), (-minimum, minimum as f64, 2)] {
+        assert!(
+            tolerance::validate_upstream_result(
+                &[actual],
+                &[expected],
+                ToleranceKind::Ulp,
+                budget,
+                true
+            )
+            .0
+        );
+    }
+    // The actual payload is decoded, never compared as a Uint16 against a JS Number.
+    assert!(
+        !tolerance::validate_upstream_result(&[minimum], &[1.0], ToleranceKind::Ulp, 0, true).0
+    );
+}
+
+#[test]
 fn strict_unsigned_integer_budgets_survive_signed_storage_boundaries() {
     let actual = tolerance::unsigned_32_values(&[i32::MIN]);
     let expected = tolerance::unsigned_32_values(&[i32::MAX]);
@@ -745,7 +841,10 @@ fn strict_comparator_matches_upstream_javascript() {
         if let Some(next) = bits.checked_add(1).map(half::f16::from_bits)
             && next.is_finite()
         {
-            cases.push((value.to_f32(), (value.to_f64() + next.to_f64()) * 0.5, true));
+            let midpoint = (value.to_f64() + next.to_f64()) * 0.5;
+            cases.push((value.to_f32(), midpoint, true));
+            cases.push((value.to_f32(), midpoint.next_down(), true));
+            cases.push((value.to_f32(), midpoint.next_up(), true));
         }
     }
     let input: Vec<_> = cases.iter().map(|&(actual, expected, float16)| {
@@ -773,8 +872,9 @@ const result = vm.runInContext(`cases.map(c => {
  return Number(ulpDistance(actual, c.expected, c.float16 ? 'float16' : 'float32'));
 })`, context);
 // ATOL is applied by testharness.js, not utils.js: check JS Number arithmetic.
+const halfConversions = vm.runInContext(`cases.filter(c => c.float16).map(c => toHalf(c.expected))`, context);
 const atol = input.atol.map(c => Math.abs(c.actual - c.expected) <= c.budget);
-process.stdout.write(JSON.stringify({ulp: result, atol}));
+process.stdout.write(JSON.stringify({ulp: result, halfConversions, atol}));
 "#;
     let payload = serde_json::json!({"ulp": input, "atol": atol_input});
     let mut child = std::process::Command::new("node")
@@ -812,6 +912,18 @@ process.stdout.write(JSON.stringify({ulp: result, atol}));
         )
         .unwrap();
     }
+    let conversions: Vec<u16> = serde_json::from_value(results["halfConversions"].clone()).unwrap();
+    for ((_, expected, _), upstream) in cases.iter().filter(|case| case.2).zip(&conversions) {
+        assert_eq!(
+            wpt_tensor::wpt_half_bits(*expected),
+            *upstream,
+            "binary64 {expected:?}"
+        );
+    }
+    assert_eq!(
+        cases.iter().filter(|case| case.2).count(),
+        conversions.len()
+    );
     let distances: Vec<u32> = serde_json::from_value(results["ulp"].clone()).unwrap();
     assert_eq!(cases.len(), distances.len());
     for ((actual, expected, float16), upstream) in cases.into_iter().zip(distances) {
@@ -859,16 +971,42 @@ fn strict_comparator_matches_upstream_javascript_intermediate_budgets() {
     )
     .unwrap();
     assert_eq!(source.value, 18);
-    // This source callback omits an int32 budget. Do not substitute the
-    // float32 allowance, compatibility default, or an invented exact budget.
-    let error = wpt_js_loader::resolve_source_tolerance(
+    // The callback omits an int32 budget, but the browser comparator accepts
+    // equal integers before checking that budget and rejects unequal ones.
+    // Preserve that behavior instead of using the float allowance or failing
+    // before comparing the actual result.
+    let source = wpt_js_loader::resolve_source_tolerance(
         "div.https.any.js",
         "div int32 4D tensors",
         &json!({}),
     )
-    .unwrap_err();
-    assert!(
-        error.contains("Upstream tolerance callback returned no finite budget"),
-        "{error}"
-    );
+    .unwrap();
+    assert_eq!(source.metric_type, "ULP");
+    assert_eq!(source.value, 0);
+    // This composite callback adds GEMM's undefined int8 entry and yields NaN.
+    // The browser still accepts equal integers and rejects unequal ones; use
+    // the same exact comparison with real inferred intermediate descriptors.
+    let source = wpt_js_loader::resolve_source_tolerance(
+        "qdq_subgraph.https.any.js",
+        "per-channel quantized gemm with non-zero quantized dimension of the filter",
+        &json!({
+            "dequantizedInputA": {"shape": [2, 2], "dataType": "float32"},
+            "dequantizedInputB": {"shape": [5, 2], "dataType": "float32"},
+            "gemmOutput": {"shape": [2, 5], "dataType": "float32"},
+            "output": {"shape": [2, 5], "dataType": "int8"}
+        }),
+    )
+    .unwrap();
+    assert_eq!(source.metric_type, "ULP");
+    assert_eq!(source.value, 0);
+    for data_type in ["float16", "float32"] {
+        let source = wpt_js_loader::resolve_source_tolerance(
+            "div.https.any.js",
+            &format!("div {data_type} 1D tensors"),
+            &json!({}),
+        )
+        .unwrap();
+        assert_eq!(source.metric_type, "ULP");
+        assert_eq!(source.value, 2);
+    }
 }
