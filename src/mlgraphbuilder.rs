@@ -8,6 +8,10 @@
 //! required operands and arguments; optional operand fields use [`crate::operator_options::OperandIndex`].
 //! Shape inference runs when an operation is recorded, so shape errors surface immediately as
 //! [`GraphBuilderError::ShapeInferenceError`].
+//! Allowed operand types and `SameAs` relationships are checked centrally; violations
+//! return [`GraphBuilderError::AllowedDataTypes`]. The context's
+//! [`crate::mlcontextoptions::MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`]
+//! setting skips these type checks with warnings, while preserving shape validation.
 //!
 //! [`MLGraphBuilder::new`] binds the builder to an [`MLContext`] and [`MLGraphBuilder::build`]
 //! compiles for that context's backend. [`MLGraphBuilder::new_uncompiled`] records a graph
@@ -100,30 +104,6 @@ fn get_operands<'graph>(
         .collect()
 }
 
-fn check_same_data_type(
-    inputs: &[MLOperand],
-    operation: &Operation,
-    operands: &[&Operand],
-) -> Result<DataType> {
-    let data_type = operands[0].descriptor.data_type;
-    if operands
-        .iter()
-        .skip(1)
-        .any(|o| o.descriptor.data_type != data_type)
-    {
-        return Err(Box::new(ShapeInferenceError::InconsistentDataTypes {
-            operation: operation.clone(),
-            inputs: inputs
-                .iter()
-                .copied()
-                .zip(operands.iter().map(|&o| o.clone()))
-                .collect(),
-        })
-        .into());
-    }
-    Ok(data_type)
-}
-
 fn slice_shape(
     input: MLOperand,
     operation: &Operation,
@@ -171,7 +151,7 @@ fn concat_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-    let data_type = check_same_data_type(inputs, operation, &operands)?;
+    let data_type = operands[0].descriptor.data_type;
 
     let shape = if operands.iter().all(|s| s.descriptor.shape.is_empty()) && axis == 0 {
         vec![Dimension::Static(operands.len() as u32)]
@@ -264,7 +244,7 @@ fn matmul_shape(
 ) -> Result<OperandDescriptor> {
     let a_op = get_operand(a, graph)?;
     let b_op = get_operand(b, graph)?;
-    let data_type = check_same_data_type(&[a, b], operation, &[a_op, b_op])?;
+    let data_type = a_op.descriptor.data_type;
     let shape = infer_shape_err(
         "matmul",
         operation,
@@ -286,7 +266,7 @@ fn gemm_shape(
 ) -> Result<OperandDescriptor> {
     let a_op = get_operand(a, graph)?;
     let b_op = get_operand(b, graph)?;
-    let data_type = check_same_data_type(&[a, b], operation, &[a_op, b_op])?;
+    let data_type = a_op.descriptor.data_type;
     let opts = options.cloned().unwrap_or_default();
     let mut shape = infer_shape_err(
         "gemm",
@@ -443,8 +423,6 @@ fn scatter_nd_shape(
     let indices_op = get_operand(indices, graph)?;
     let updates_op = get_operand(updates, graph)?;
 
-    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
-
     let fully_static =
         |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
     if fully_static(&input_op.descriptor.shape)
@@ -477,8 +455,6 @@ fn scatter_elements_shape(
     let input_op = get_operand(input, graph)?;
     let indices_op = get_operand(indices, graph)?;
     let updates_op = get_operand(updates, graph)?;
-
-    check_same_data_type(&[input, updates], operation, &[input_op, updates_op])?;
 
     let fully_static =
         |shape: &[Dimension]| shape.iter().all(|d| matches!(d, Dimension::Static(_)));
@@ -850,20 +826,6 @@ fn where_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-    if operands[0].descriptor.data_type != DataType::Uint8 {
-        return Err(Box::new(ShapeInferenceError::NonUint8Condition {
-            operation: operation.clone(),
-            inputs: inputs
-                .iter()
-                .copied()
-                .zip(operands.iter().map(|&o| o.clone()))
-                .collect(),
-        })
-        .into());
-    }
-
-    check_same_data_type(&inputs[1..], operation, &operands[1..])?;
-
     let mut output_shape = crate::shape_inference::broadcast_shapes_dimensions(
         &operands[1].descriptor.shape,
         &operands[2].descriptor.shape,
@@ -908,8 +870,6 @@ fn same_shape(
     graph: &GraphInfo,
 ) -> Result<OperandDescriptor> {
     let operands = get_operands(inputs, graph)?;
-
-    check_same_data_type(inputs, operation, &operands)?;
 
     let mut output_descriptor = operands[0].descriptor.clone();
     for op in operands.iter().skip(1) {
@@ -1027,7 +987,7 @@ fn validate_quantization_parameters(
         .map(|id| get_operand(MLOperand { id: id as usize }, graph))
         .transpose()?
         .map(|operand| &operand.descriptor);
-    check_quantization_parameters(is_quantize, input, scale, zero_point).map_err(|source| {
+    check_quantization_parameters(input, scale, zero_point).map_err(|source| {
         Box::new(ShapeInferenceError::InferError {
             op_name: if is_quantize {
                 "quantizeLinear"
@@ -1044,85 +1004,19 @@ fn validate_quantization_parameters(
     })
 }
 
-/// The data type and shape rules that the scale and optional zero point of a `quantizeLinear`
-/// (`is_quantize`) or `dequantizeLinear` must meet against its input. The builder applies them
-/// when it records the operation, including operations replayed during graph import.
-///
-/// The data types follow the specification's tensor-limits tables, which change as WebNN
-/// evolves; compare against them when updating this function:
-/// [quantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-quantizelinear),
-/// [dequantizeLinear](https://www.w3.org/TR/webnn/#tensor-limits-dequantizelinear)
-/// (editor's draft source:
-/// <https://github.com/webmachinelearning/webnn/blob/main/index.bs>). Deliberate differences:
-/// int4 and uint4 are accepted as rustnn's packed 4-bit weight types, an int32 quantize input
-/// is accepted as an extension, and the float8e4m3 and bfloat16 types of the current draft
-/// have no rustnn data type yet.
 pub(crate) fn check_quantization_parameters(
-    is_quantize: bool,
     input: &OperandDescriptor,
     scale: &OperandDescriptor,
     zero_point: Option<&OperandDescriptor>,
 ) -> std::result::Result<(), QuantizationParameterError> {
     use QuantizationParameterError as E;
-    if !matches!(scale.data_type, DataType::Float16 | DataType::Float32) {
-        return Err(E::ScaleDataType {
-            found: scale.data_type,
-        });
-    }
-    let integer_type = |dtype| {
-        matches!(
-            dtype,
-            DataType::Int4
-                | DataType::Uint4
-                | DataType::Int8
-                | DataType::Uint8
-                | DataType::Int32
-                | DataType::Uint32
-        )
-    };
-    if is_quantize {
-        if !matches!(
-            input.data_type,
-            DataType::Float16 | DataType::Float32 | DataType::Int32
-        ) {
-            return Err(E::QuantizeInputDataType {
-                found: input.data_type,
-            });
-        }
-    } else if !integer_type(input.data_type) {
-        return Err(E::DequantizeInputDataType {
-            found: input.data_type,
-        });
-    }
-    // Retain the existing int32 quantize extension, while requiring matching
-    // floating-point input/scale dtypes for the WebNN operation.
-    if is_quantize
-        && matches!(input.data_type, DataType::Float16 | DataType::Float32)
-        && input.data_type != scale.data_type
+    if let Some(zero_point) = zero_point
+        && zero_point.shape != scale.shape
     {
-        return Err(E::ScaleInputDataTypeMismatch {
-            scale: scale.data_type,
-            input: input.data_type,
+        return Err(E::ZeroPointShapeMismatch {
+            zero_point: zero_point.shape.clone(),
+            scale: scale.shape.clone(),
         });
-    }
-    if let Some(zero_point) = zero_point {
-        if !integer_type(zero_point.data_type) {
-            return Err(E::ZeroPointDataType {
-                found: zero_point.data_type,
-            });
-        }
-        if !is_quantize && zero_point.data_type != input.data_type {
-            return Err(E::ZeroPointInputDataTypeMismatch {
-                zero_point: zero_point.data_type,
-                input: input.data_type,
-            });
-        }
-        if zero_point.shape != scale.shape {
-            return Err(E::ZeroPointShapeMismatch {
-                zero_point: zero_point.shape.clone(),
-                scale: scale.shape.clone(),
-            });
-        }
     }
     if scale.shape.len() != input.shape.len() {
         return Err(E::ScaleRankMismatch {
@@ -1550,8 +1444,27 @@ fn infer_descriptors_unchecked(
 pub(crate) fn infer_operation_descriptors(
     operation: &Operation,
     graph: &GraphInfo,
+    bypass_allowed_data_types_checks: bool,
+    allow_int4_uint4: bool,
 ) -> Result<Vec<OperandDescriptor>> {
+    for (_, id) in crate::operation_type_support::named_input_operands(operation) {
+        get_operand(MLOperand { id: id as usize }, graph)?;
+    }
+    crate::operation_type_support::check_allowed_data_types_with_policy(
+        operation,
+        graph,
+        bypass_allowed_data_types_checks,
+        allow_int4_uint4,
+    )?;
     let descriptors = infer_descriptors_unchecked(operation, graph)?;
+    if !bypass_allowed_data_types_checks {
+        crate::operation_type_support::check_output_data_types(
+            operation,
+            graph,
+            &descriptors,
+            allow_int4_uint4,
+        )?;
+    }
     let expected = operation.output_operands().len();
     if descriptors.len() != expected {
         return Err(GraphBuilderError::InconsistentGraphInfo {
@@ -2154,6 +2067,23 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         }
     }
 
+    /// Record a backend-independent graph with context data type policies.
+    ///
+    /// Only allowed-type bypass and packed 4-bit settings are used; this creates
+    /// no backend. The other contracts of [`Self::new_uncompiled`] apply.
+    pub fn new_uncompiled_with_options(
+        options: &crate::mlcontextoptions::MLContextOptions,
+    ) -> MLGraphBuilder<'static, 'static> {
+        MLGraphBuilder {
+            backend: Box::new(UncompiledBackendBuilder),
+            recorder: Some(
+                GraphRecorder::new()
+                    .with_bypass_allowed_data_types_checks(options.bypass_allowed_data_types_checks)
+                    .with_allow_int4_uint4(options.allow_int4_uint4),
+            ),
+        }
+    }
+
     /// Create a builder whose [`Self::build`] compiles for the backend of `context`.
     /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constructor>
     pub fn new(context: &'_ mut MLContext<'context>) -> crate::error::Result<Self>
@@ -2163,7 +2093,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         let backend = context.backend.create_builder()?;
         Ok(Self {
             backend,
-            recorder: Some(GraphRecorder::new()),
+            recorder: Some(
+                GraphRecorder::new()
+                    .with_bypass_allowed_data_types_checks(context.bypass_allowed_data_types_checks)
+                    .with_allow_int4_uint4(context.allow_int4_uint4),
+            ),
         })
     }
 
@@ -3270,6 +3204,11 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     );
 
     /// Concatenates `inputs` along `axis`; all other dimensions must match.
+    ///
+    /// All inputs must have the same data type. A mismatch returns
+    /// [`crate::error::AllowedDataTypesError::InconsistentConcatInput`] with the
+    /// zero-based input index and expected and actual types; cast inputs explicitly
+    /// to a common type. The context's type-check bypass also bypasses this check.
     /// <https://www.w3.org/TR/webnn/#api-mlgraphbuilder-concat>
     pub fn concat(&mut self, inputs: &[MLOperand], axis: u32) -> Result<MLOperand> {
         self.concat_with_options(inputs, axis, MLOperatorOptions::default())
@@ -3456,6 +3395,45 @@ mod test {
         },
         operators::Operation,
     };
+
+    #[test]
+    fn concat_reports_mismatched_input_types() {
+        use crate::error::{AllowedDataTypesError, GraphBuilderError};
+        use crate::operator_enums::MLOperandDataType;
+
+        for shape in [vec![2], vec![]] {
+            let mut builder = MLGraphBuilder::new_uncompiled();
+            let a = builder
+                .input(
+                    "a",
+                    &MLOperandDescriptor::new(MLOperandDataType::Float32, shape.clone()),
+                )
+                .unwrap();
+            let b = builder
+                .input(
+                    "b",
+                    &MLOperandDescriptor::new(MLOperandDataType::Int32, shape),
+                )
+                .unwrap();
+            let error = builder.concat(&[a, a, b], 0).unwrap_err();
+            assert!(matches!(
+                error,
+                GraphBuilderError::AllowedDataTypes(
+                    AllowedDataTypesError::InconsistentConcatInput {
+                        input_index: 2,
+                        expected_dtype: MLOperandDataType::Float32,
+                        used_dtype: MLOperandDataType::Int32,
+                    }
+                )
+            ));
+            assert_eq!(
+                error.to_string(),
+                "concat input 2 has data type Int32, but input 0 has Float32; all concat inputs must have the same data type (cast inputs explicitly)"
+            );
+            // A rejected operation leaves the builder usable.
+            builder.concat(&[a, a], 0).unwrap();
+        }
+    }
 
     #[test]
     fn conv2d_bias_through_options_uses_operand_index() {
@@ -3871,7 +3849,9 @@ mod test {
     #[test]
     fn rustnn_save_webnn_round_trips_packed_4bit_constants_and_executes() {
         let _ = pretty_env_logger::try_init();
-        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+        let options = MLContextOptions::new(MLPowerPreference::Default, false)
+            .with_rustnn_allow_int4_uint4(true);
+        let context = MLContext::create(&options);
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
             return;
         }
@@ -3933,7 +3913,8 @@ mod test {
             safetensors::Dtype::F32
         );
 
-        let loaded = crate::load_graph_from_path(&webnn_path).unwrap();
+        let loaded =
+            crate::loader::load_graph_from_path_with_options(&webnn_path, &options).unwrap();
         assert_eq!(
             loaded.operands[0].descriptor.data_type,
             crate::graph::DataType::Uint4

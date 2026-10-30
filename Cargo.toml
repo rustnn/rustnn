@@ -21,7 +21,6 @@ exclude = [
     "site/*",
     "/docs/archive/**",
     "/docs/logo/**",
-    "/docs/reference/webnn-index.bs",
     "tests/*",
     "examples/*",
     ".github/*",

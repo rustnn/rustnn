@@ -7,6 +7,10 @@
 //! [`MLContextOptions`] carries the two WebNN hints (`powerPreference`, `accelerated`) plus
 //! rustnn extensions: a backend or device hint that overrides automatic selection, and
 //! [`RustNNOptions`] with per-backend tuning such as [`TrtxOptions`].
+//! [`MLContextOptions::with_rustnn_bypass_allowed_data_types_checks`] permits
+//! backend type extensions while recording, with a warning for every bypassed operation.
+//! [`MLContextOptions::with_rustnn_allow_int4_uint4`] permits packed integer
+//! extensions while retaining all other type validation.
 //! [`BackendStatistics`] holds optional, backend-specific diagnostic snapshots.
 
 use crate::mlcontext::{Backend, BackendDevice};
@@ -37,6 +41,8 @@ pub struct MLContextOptions {
     pub(crate) device_hint: Option<BackendDevice>,
     pub(crate) backend_hint: Option<Backend>,
     pub(crate) rustnn_options: RustNNOptions,
+    pub(crate) bypass_allowed_data_types_checks: bool,
+    pub(crate) allow_int4_uint4: bool,
 }
 
 impl MLContextOptions {
@@ -48,6 +54,8 @@ impl MLContextOptions {
             device_hint: None,
             backend_hint: None,
             rustnn_options: RustNNOptions::default(),
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
         }
     }
 
@@ -87,6 +95,28 @@ impl MLContextOptions {
     /// Attach backend-specific tuning options.
     pub fn with_rustnn_options(mut self, options: RustNNOptions) -> Self {
         self.rustnn_options = options;
+        self
+    }
+
+    /// Bypass specification operand data type checks while recording operations.
+    ///
+    /// Defaults to `false`. When enabled, each checked operation emits a warning.
+    /// Shape, rank, operand-reference, and backend constraints still apply.
+    pub fn with_rustnn_bypass_allowed_data_types_checks(mut self, bypass: bool) -> Self {
+        self.bypass_allowed_data_types_checks = bypass;
+        self
+    }
+
+    /// Allow packed int4/uint4 where the spec permits int8/uint8, respectively.
+    ///
+    /// Defaults to `false`. This enables packed integer backend extensions without
+    /// bypassing other data type checks, `SameAs` equality, or shape validation.
+    /// Unrestricted spec operands already accept every rustnn data type.
+    ///
+    /// This option will be removed in a future version of RustNN when
+    /// uint4/int4 are a regular part of the WebNN spec.
+    pub fn with_rustnn_allow_int4_uint4(mut self, allow: bool) -> Self {
+        self.allow_int4_uint4 = allow;
         self
     }
 }

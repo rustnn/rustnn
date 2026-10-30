@@ -111,6 +111,24 @@ fn map_weight_resolve_error(err: WeightResolveError) -> GraphError {
     )
 )]
 pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphError> {
+    load_graph_from_path_with_options(
+        path,
+        &crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        ),
+    )
+}
+
+/// Load a graph with the context's allowed data type check policy.
+///
+/// Only the data type policies are used; no backend is selected or compiled.
+/// Use this for backend extensions such as packed 4-bit quantization whose
+/// operand types are outside the current specification tables.
+pub fn load_graph_from_path_with_options(
+    path: impl AsRef<Path>,
+    options: &crate::mlcontextoptions::MLContextOptions,
+) -> Result<GraphInfo, GraphError> {
     let path_ref = path.as_ref();
     let contents = fs::read_to_string(path_ref).map_err(|err| GraphError::io(path_ref, err))?;
 
@@ -149,7 +167,7 @@ pub fn load_graph_from_path(path: impl AsRef<Path>) -> Result<GraphInfo, GraphEr
     webnn_graph::external_weights::resolve_external_weights(&mut graph_json, path_ref, None, None)
         .map_err(map_weight_resolve_error)?;
 
-    let graph = webnn_json::from_graph_json_owned(graph_json)?;
+    let graph = webnn_json::from_graph_json_owned_with_options(graph_json, options)?;
     tracing::info!(
         operands = graph.operands.len(),
         operations = graph.operations.len()

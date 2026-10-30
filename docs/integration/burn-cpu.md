@@ -43,6 +43,11 @@ Tensors may have at most eight dimensions. Quantization and dequantization suppo
 and block quantization. Tensor storage places even indices in the low nibble and odd indices
 in the high nibble. Decoding ignores unused padding; output packing zeroes the unused high
 nibble for odd lengths.
+Packed 4-bit quantization is a rustnn extension outside the generated spec type
+tables. Recording it requires
+`MLContextOptions::with_rustnn_allow_int4_uint4(true)`. Other data type rules
+remain enforced. To reload such a saved graph, pass the same
+options to `loader::load_graph_from_path_with_options`.
 Integer arithmetic and comparisons use exact signed or unsigned host payloads, including
 32-bit and 64-bit values. Shape changes, selection, padding, gather/scatter and other data
 movement preserve those payloads. Integer indices never pass through float32. Arithmetic
