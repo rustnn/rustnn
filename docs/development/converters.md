@@ -131,6 +131,10 @@ Rules that hold for every converter:
 - A power of two scalar constants promotes one argument to `[1]` so MIL infers the
   scalar result using the same boundary representation. Scalar constants used by other
   operations retain their native rank.
+- Height-only NCHW/IOHW transposed convolutions with singleton width use an equivalent
+  width-only kernel, reshaping the operands and swapping spatial attributes before restoring
+  the output shape. This avoids incorrect repeated values in the native height-only kernel.
+  This adaptation currently applies to static shapes.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
 - `transpose`, `reshape` and `cast` of a constant are folded into a new constant before

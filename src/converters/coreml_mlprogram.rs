@@ -12076,9 +12076,103 @@ impl CoremlMlProgramConverter {
                 continue;
             }
 
-            let mil_op =
+            let mut mil_op =
                 self.convert_operation_with_overrides(graph_info, op, &operand_name_overrides)?;
+            let mut restore_spatial_shape = None;
+            if let Operation::ConvTranspose2d { options, .. } = op {
+                let ids = op.input_operands();
+                let input = graph_info.operand(ids[0]).unwrap();
+                let filter = graph_info.operand(ids[1]).unwrap();
+                let output = graph_info.operand(op.output_operand().unwrap()).unwrap();
+                let input_shape = input.descriptor.static_or_max_shape();
+                let filter_shape = filter.descriptor.static_or_max_shape();
+                let output_shape = output.descriptor.static_or_max_shape();
+                let native_layout = options.as_ref().is_none_or(|options| {
+                    options.input_layout.as_str() == "nchw"
+                        && options.filter_layout.as_str() == "iohw"
+                });
+                // Apple's height-only transposed convolution repeats values within each
+                // stride when width is one. The equivalent width-only kernel is correct.
+                if native_layout
+                    && input.descriptor.static_shape().is_some()
+                    && filter.descriptor.static_shape().is_some()
+                    && output.descriptor.static_shape().is_some()
+                    && input_shape.len() == 4
+                    && input_shape[3] == 1
+                    && filter_shape.len() == 4
+                    && filter_shape[3] == 1
+                    && output_shape.len() == 4
+                    && output_shape[3] == 1
+                    && input_shape[2] > 1
+                {
+                    let names =
+                        Self::input_names_for_operation(graph_info, op, &operand_name_overrides);
+                    for (index, (name, mut shape, dtype)) in [
+                        (&names[0], input_shape, &input.descriptor.data_type),
+                        (&names[1], filter_shape, &filter.descriptor.data_type),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        shape.swap(2, 3);
+                        let rotated = Self::rnn_reshape(
+                            &mut main_block,
+                            name,
+                            &shape,
+                            format!("{}_spatial_width_{}", name, op.output_operand().unwrap()),
+                            Self::graph_value_mil_type(dtype)?,
+                        );
+                        mil_op.inputs.insert(
+                            if index == 0 { "x" } else { "weight" }.into(),
+                            Self::create_argument(&rotated),
+                        );
+                    }
+                    let defaults = crate::operator_options::MLConvTranspose2dOptions::default();
+                    let options = options.as_ref().unwrap_or(&defaults);
+                    for (name, values, default) in [
+                        ("strides", &options.strides, vec![1, 1]),
+                        ("dilations", &options.dilations, vec![1, 1]),
+                        ("pad", &options.padding, vec![0, 0, 0, 0]),
+                    ] {
+                        let mut values = if values.is_empty() {
+                            default
+                        } else {
+                            values.clone()
+                        };
+                        if values.len() == 2 {
+                            values.swap(0, 1);
+                        } else {
+                            values.rotate_left(2);
+                        }
+                        mil_op
+                            .inputs
+                            .insert(name.into(), Self::create_immediate_int_array(&values));
+                    }
+                    let mut rotated_shape = output_shape.clone();
+                    rotated_shape.swap(2, 3);
+                    let original_name = mil_op.outputs[0].name.clone();
+                    let rotated_name = format!("{}_spatial_width", original_name);
+                    mil_op.outputs[0] = Self::value_type_for_static_shape(
+                        rotated_name.clone(),
+                        Self::graph_value_mil_type(&output.descriptor.data_type)?,
+                        &rotated_shape,
+                    );
+                    mil_op.inputs.insert(
+                        "output_shape".into(),
+                        Self::create_immediate_int_array(&rotated_shape),
+                    );
+                    restore_spatial_shape = Some((
+                        rotated_name,
+                        original_name,
+                        output_shape,
+                        Self::graph_value_mil_type(&output.descriptor.data_type)?,
+                    ));
+                }
+            }
             main_block.operations.push(mil_op);
+            if let Some((rotated, original, shape, dtype)) = restore_spatial_shape {
+                Self::rnn_reshape(&mut main_block, &rotated, &shape, original, dtype);
+            }
 
             // Flush any transpose ops that were waiting for this operation's output, and
             // activate the corresponding operand-name override so that later operations
