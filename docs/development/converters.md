@@ -119,6 +119,10 @@ Rules that hold for every converter:
   float32.
 - Comparison results are `uint8`; `reduceLogSumExp` uses the max-shifted form; reductions with
   empty `axes` and `resample2d` on arbitrary axes are lowered explicitly.
+- Normalization affine parameters use native constants or rank-aligned reshapes with
+  elementwise broadcasting. Keep their representation independent of the activation tensor's
+  element count: activation-sized integer gather maps become enormous textual MIL literals
+  during CoreML compilation and model loading.
 - Gather-family index normalization uses active indexed dimensions, not their declared maxima.
   Scalar `gather` indices stay as one-element vectors through normalization and gathering;
   an axis-specific squeeze removes only the indexed dimension afterward. This avoids native
