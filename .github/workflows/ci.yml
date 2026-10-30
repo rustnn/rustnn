@@ -96,6 +96,7 @@ jobs:
         run: cargo check --no-default-features
 
       - name: Check isolated converter features
+        if: runner.os == 'Linux' # should be the same on MacOS, do Linux-only to save MacOS CI time
         run: make check-converters
 
       - name: Run cargo check (onnx-runtime without dynamic-inputs)
