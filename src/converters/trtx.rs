@@ -129,8 +129,14 @@ impl TrtxConverter {
         match dtype {
             DataType::Float32 => Ok(TrtDataType::kFLOAT),
             DataType::Float16 => Ok(TrtDataType::kHALF),
-            DataType::Bfloat16 => Ok(TrtDataType::kBF16),
-            DataType::Float8e4m3 => Ok(TrtDataType::kFP8),
+            DataType::Bfloat16 => Err(GraphError::UnsupportedDataType {
+                data_type: dtype,
+                backend: crate::mlcontext::Backend::Trtx,
+            }),
+            DataType::Float8e4m3 => Err(GraphError::UnsupportedDataType {
+                data_type: dtype,
+                backend: crate::mlcontext::Backend::Trtx,
+            }),
             DataType::Int8 => Ok(TrtDataType::kINT8),
             DataType::Int32 => Ok(TrtDataType::kINT32),
             DataType::Uint8 => Ok(TrtDataType::kUINT8),
