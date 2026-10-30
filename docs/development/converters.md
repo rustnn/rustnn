@@ -128,6 +128,9 @@ Rules that hold for every converter:
   an axis-specific squeeze removes only the indexed dimension afterward. This avoids native
   scalar-index gather failures while retaining dynamic extents and unrelated singleton axes.
   A scalar result keeps the `[1]` CoreML boundary representation without changing the WebNN rank.
+- A power of two scalar constants promotes one argument to `[1]` so MIL infers the
+  scalar result using the same boundary representation. Scalar constants used by other
+  operations retain their native rank.
 - Float16 weights go to the weight blob written by `weight_file_builder.rs` and returned as
   `weights_data`.
 - `transpose`, `reshape` and `cast` of a constant are folded into a new constant before

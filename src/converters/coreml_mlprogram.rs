@@ -12029,6 +12029,53 @@ impl CoremlMlProgramConverter {
                 }
             }
 
+            // Constant scalars remain rank zero in MIL, while WebNN scalar results
+            // use [1]. Promote one argument so pow infers that same result rank.
+            if matches!(op, Operation::Pow { .. })
+                && op.output_operand().is_some_and(|id| {
+                    graph_info
+                        .operand(id)
+                        .is_some_and(|operand| operand.descriptor.shape.is_empty())
+                })
+                && op.input_operands().iter().all(|&id| {
+                    graph_info.operand(id).is_some_and(|operand| {
+                        operand.kind == OperandKind::Constant && operand.descriptor.shape.is_empty()
+                    })
+                })
+            {
+                let input = op.input_operands()[0];
+                let mut input_names =
+                    Self::input_names_for_operation(graph_info, op, &operand_name_overrides);
+                input_names[0] = Self::rnn_reshape(
+                    &mut main_block,
+                    &input_names[0],
+                    &[1],
+                    format!(
+                        "{}_pow_vector_{}",
+                        input_names[0],
+                        op.output_operand().unwrap()
+                    ),
+                    Self::graph_value_mil_type(
+                        &graph_info.operand(input).unwrap().descriptor.data_type,
+                    )?,
+                );
+                let (_, output) = Self::create_output_value(
+                    graph_info,
+                    op.output_operand().unwrap(),
+                    &operand_name_overrides,
+                )?;
+                main_block
+                    .operations
+                    .push(self.convert_operation_with_input_names_and_outputs(
+                        graph_info,
+                        op,
+                        &input_names,
+                        vec![output],
+                        mil_ops::POW,
+                    )?);
+                continue;
+            }
+
             let mil_op =
                 self.convert_operation_with_overrides(graph_info, op, &operand_name_overrides)?;
             main_block.operations.push(mil_op);
