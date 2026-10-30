@@ -2409,9 +2409,30 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
     //
     // https://www.w3.org/TR/webnn/#api-mlgraphbuilder-constant
 
-    /// Constant from an existing [`MLTensor`]. Not implemented yet.
-    pub fn constant_from_tensor(&mut self, _tensor: MLTensor) -> crate::error::Result<MLOperand> {
-        todo!("not implemented yet. requires backend integration")
+    /// Constant backed by an existing tensor.
+    pub fn constant_from_tensor(&mut self, tensor: MLTensor) -> crate::error::Result<MLOperand> {
+        let recorder = self
+            .recorder
+            .as_mut()
+            .ok_or(GraphBuilderError::GraphAlreadyBuilt)?;
+        let id = recorder.add_constant(
+            None,
+            OperandDescriptor {
+                data_type: tensor.data_type().into(),
+                shape: tensor
+                    .shape()
+                    .iter()
+                    .map(|&d| Dimension::Static(d as u32))
+                    .collect(),
+                pending_permutation: vec![],
+            },
+            crate::graph::ConstantReference::IdRef(crate::graph::IdRef {
+                id: tensor.id as u64,
+                label: None,
+            }),
+        );
+        self.backend.register_constant(recorder.graph_mut(), id)?;
+        Ok(MLOperand { id: id as usize })
     }
 
     /// Constant from an owned vector of plain-old-data values; the byte size must match
@@ -2501,6 +2522,15 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
         value: T,
     ) -> crate::error::Result<MLOperand> {
         self.constant_from_slice::<T>(&MLOperandDescriptor::new(data_type, vec![]), &[value])
+    }
+
+    /// Creates a scalar constant from a single value.
+    pub fn constant_from_scalar<T: NoUninit>(
+        &mut self,
+        data_type: MLOperandDataType,
+        scalar: T,
+    ) -> crate::error::Result<MLOperand> {
+        self.constant_from_slice(&MLOperandDescriptor::new(data_type, vec![]), &[scalar])
     }
 
     // internal methods
@@ -3443,6 +3473,7 @@ impl<'context, 'builder> MLGraphBuilder<'context, 'builder> {
 
 #[cfg(test)]
 mod test {
+
     use log::warn;
 
     use crate::{
@@ -3538,6 +3569,7 @@ mod test {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            warn!("Skipping add_inputs");
             return;
         };
 
@@ -3583,6 +3615,7 @@ mod test {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            warn!("Skipping unused_incompatible_inputs");
             return;
         };
 
@@ -3676,6 +3709,7 @@ mod test {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            warn!("Skipping add_mat_plus_scalar");
             return;
         };
 
@@ -3752,10 +3786,109 @@ mod test {
     }
 
     #[test]
-    fn quantize_dequantize_linear_output_dtype() {
+    fn constant_from_tensor() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(
+            &MLContextOptions::new(MLPowerPreference::Default, true)
+                .with_rustnn_backend_hint(Backend::Trtx),
+        );
+        let trtx_enabled = cfg!(feature = "trtx-runtime");
+        if matches!(
+            context,
+            Err(crate::error::Error::NoBackendAvailableForBackendHint { .. })
+        ) | !trtx_enabled
+        {
+            warn!("Skipping constant_from_tensor");
+            return;
+        }
+
+        let mut context = context.unwrap();
+        let mat_desc = MLOperandDescriptor::new(
+            crate::operator_enums::MLOperandDataType::Float32,
+            [2, 2].to_vec(),
+        );
+
+        let mut tensor_desc = MLTensorDescriptor::from_operand_descriptor(&mat_desc);
+        tensor_desc.set_readable(true);
+        tensor_desc.set_writable(true);
+        let tensor = context.create_tensor(&tensor_desc).unwrap();
+        context
+            .write_tensor(&tensor, &[3.0f32, 3., 3., 3.])
+            .unwrap();
+
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder.input("a", &mat_desc).unwrap();
+        let b = builder.constant_from_tensor(tensor).unwrap();
+        assert_eq!(builder.rustnn_operand_shape(b).unwrap(), mat_desc.shape());
+        let output = builder.add(a, b).unwrap();
+
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert("out", output);
+        let mut graph = builder.build(&outputs).unwrap();
+
+        let mut a_desc = MLTensorDescriptor::from_operand_descriptor(&mat_desc);
+        a_desc.set_writable(true);
+        a_desc.set_readable(true);
+        let a = context.create_tensor(&a_desc).unwrap();
+        let output = context.create_tensor(&a_desc).unwrap();
+
+        context.write_tensor(&a, &[1.0f32, 2., 3., 4.]).unwrap();
+
+        let mut inputs = std::collections::BTreeMap::new();
+        inputs.insert("a", &a);
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert("out", &output);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut output_cpu = vec![0.0f32; 4];
+        context.read_tensor(&output, &mut output_cpu).unwrap();
+        assert_eq!(output_cpu, &[4.0f32, 5., 6., 7.]);
+    }
+
+    #[test]
+    fn test_scalar_constants() {
         let _ = pretty_env_logger::try_init();
         let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
         if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) {
+            warn!("Skipping test_scalar_constants");
+            return;
+        }
+
+        let mut context = context.unwrap();
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let a = builder
+            .constant_from_scalar(crate::operator_enums::MLOperandDataType::Float32, 1.0f32)
+            .unwrap();
+        let b = builder
+            .constant_from_scalar(crate::operator_enums::MLOperandDataType::Float32, 2.0f32)
+            .unwrap();
+
+        let out = builder.add(a, b).unwrap();
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert("out", out);
+        let mut graph = builder.build(&outputs).unwrap();
+
+        let mut desc =
+            MLTensorDescriptor::new(crate::operator_enums::MLOperandDataType::Float32, vec![]);
+        desc.set_readable(true);
+        let output = context.create_tensor(&desc).unwrap();
+        let inputs = std::collections::BTreeMap::new();
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert("out", &output);
+        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+        let mut output_data = vec![42.0f32];
+        context.read_tensor(&output, &mut output_data).unwrap();
+
+        assert_eq!(output_data[0], 3.0f32);
+    }
+
+    #[test]
+    fn quantize_dequantize_linear_output_dtype() {
+        let _ = pretty_env_logger::try_init();
+        let context = MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, true));
+        let trtx_enabled = cfg!(feature = "trtx-runtime");
+        // not supported by trtx yet
+        if matches!(context, Err(crate::error::Error::NoBackendAvailable { .. })) | trtx_enabled {
+            warn!("Skipping quantize_dequantize_linear_output_dtype");
             return;
         }
 
@@ -3865,7 +3998,7 @@ mod test {
             .iter()
             .flat_map(|f| f.to_le_bytes())
             .collect();
-        assert_eq!(constant.data, expected);
+        assert_eq!(constant.as_owned_data().unwrap().data, expected);
     }
 
     #[test]
@@ -3939,13 +4072,25 @@ mod test {
             crate::graph::DataType::Uint4
         );
         assert_eq!(loaded.operands[0].descriptor.static_or_max_shape(), vec![3]);
-        assert_eq!(loaded.constant_operand_ids_to_handles[&0].data, uint4_bytes);
+        assert_eq!(
+            loaded.constant_operand_ids_to_handles[&0]
+                .as_owned_data()
+                .unwrap()
+                .data,
+            uint4_bytes
+        );
         assert_eq!(
             loaded.operands[1].descriptor.data_type,
             crate::graph::DataType::Int4
         );
         assert_eq!(loaded.operands[1].descriptor.static_or_max_shape(), vec![4]);
-        assert_eq!(loaded.constant_operand_ids_to_handles[&1].data, int4_bytes);
+        assert_eq!(
+            loaded.constant_operand_ids_to_handles[&1]
+                .as_owned_data()
+                .unwrap()
+                .data,
+            int4_bytes
+        );
 
         let mut graph = context.rustnn_build_graph(loaded).unwrap();
         let mut output_tensor_desc = MLTensorDescriptor::from_operand_descriptor(&output_desc);

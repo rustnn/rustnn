@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use rustnn::load_graph_from_path;
 use rustnn::mlcontext::{
     MLContext, MLContextOptions, MLGraphBuilder, MLNamedTensors, MLPowerPreference,
     MLTensorDescriptor,
@@ -234,7 +233,13 @@ fn run() -> Result<(), String> {
     }
 
     println!("Loading graph: {}", args.model.display());
-    let graph = load_graph_from_path(&args.model).map_err(|e| format!("load graph: {e}"))?;
+    let graph = rustnn::loader::load_graph_from_path_with_options(
+        &args.model,
+        &rustnn::loader::GraphLoadOptions {
+            resolve_external_weights: true,
+        },
+    )
+    .map_err(|e| format!("load graph: {e}"))?;
 
     let (inputs, outputs) = graph
         .io_binding_maps()

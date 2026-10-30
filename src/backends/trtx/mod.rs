@@ -7,20 +7,22 @@
 //! include a hash of the converter sources so converter edits invalidate stale engines.
 //! Behaviour is tuned with [`TrtxOptions`]; `TRTX_JSON_DUMP_PATH` dumps engine layer JSON.
 //!
-#![doc = include_str!("../../docs/integration/tensorrt.md")]
+#![doc = include_str!("../../../docs/integration/tensorrt.md")]
 
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::LazyLock;
+use std::sync::RwLock;
 
-use cudarc::driver::CudaSlice;
+use cudarc::driver::CudaEvent;
 use cudarc::driver::CudaStream;
+use cudarc::driver::DevicePtr;
 use cudarc::driver::{CudaContext, DriverError, result, sys};
-use cudarc::driver::{CudaEvent, DevicePtrMut};
+use cudarc::driver::{CudaSlice, PinnedHostSlice};
 use log::debug;
 use log::info;
 use log::trace;
@@ -44,12 +46,16 @@ use crate::error::Error;
 
 use crate::error::GraphBuilderError;
 use crate::graph::WeightsToHash;
+use crate::mlcontext::ListDevices;
 use crate::mlcontext::MLTensor;
 use crate::mlcontext::RustNNOptions;
-use crate::mlcontext::{ListDevices, MLOperand};
 use crate::mlcontext::{MLBackendBuilder, MLGraph, MLNamedTensors};
 use crate::mlcontext::{MLBackendContext, MLBackendGraph};
 use crate::mlcontextoptions::TrtxOptions;
+
+// Keep the I/O experiments separate while retaining access to backend-owned storage.
+mod io_playground;
+use io_playground::{IoConfig, upload_file_ref_constants};
 
 /// Reexport [trtx::dynamically_load_tensorrt] so RustNN users (like pywebnn) can hint to location
 /// of TensorRT library without adding trtx as dependency themselves
@@ -66,6 +72,12 @@ enum HostMemoryOrVec<'memory> {
     HostMemory(HostMemory<'memory>),
     Cow(Cow<'memory, [u8]>),
 }
+
+// SAFETY: `HostMemory` uniquely owns the serialized TensorRT plan. After
+// `build_serialized_network` returns, this code only moves that ownership to the calling thread,
+// where the bytes are read and the allocation is eventually dropped. No thread accesses it
+// concurrently, and the builder outlives the scoped worker and the returned host memory.
+unsafe impl Send for HostMemoryOrVec<'_> {}
 
 impl<'memory> AsRef<[u8]> for HostMemoryOrVec<'memory> {
     fn as_ref(&self) -> &[u8] {
@@ -129,7 +141,7 @@ pub enum TrtxError {
     )]
     ConstantRefitFailed {
         operand_id: u32,
-        operand: crate::Operand,
+        operand: Box<crate::Operand>,
         consumers: Vec<String>,
         #[source]
         source: trtx::Error,
@@ -286,10 +298,117 @@ impl TrtxTensor {
     }
 }
 
+fn graph_build_error(source: impl std::error::Error + Send + Sync + 'static) -> Error {
+    Error::GraphBuildError {
+        source: Box::new(source),
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct HostTensor {
+    memory: PinnedHostSlice<u8>,
+    stream: Arc<CudaStream>,
+    gpu_ptr: Option<*mut c_void>,
+}
+
+// Access to HostTensor is serialized by the context's RwLock, and the pointer
+// is only an alias into `memory`, whose allocation is owned by this struct.
+unsafe impl Send for HostTensor {}
+unsafe impl Sync for HostTensor {}
+
+impl HostTensor {
+    fn new(cuda_ctx: &Arc<CudaContext>, size: usize) -> TrtxResult<Self> {
+        let stream = cuda_ctx.new_stream()?;
+        Self::new_with_stream(cuda_ctx, size, stream)
+    }
+
+    fn new_with_stream(
+        cuda_ctx: &Arc<CudaContext>,
+        size: usize,
+        stream: Arc<CudaStream>,
+    ) -> TrtxResult<Self> {
+        debug!("Allocating pinned host tensor of size {size}");
+        let memory = unsafe { cuda_ctx.alloc_pinned::<u8>(size.max(1))? };
+        let host_ptr = memory.as_ptr()?;
+        let mut device_ptr: sys::CUdeviceptr = 0;
+        let gpu_ptr = unsafe {
+            sys::cuPointerGetAttribute(
+                (&mut device_ptr as *mut sys::CUdeviceptr).cast(),
+                sys::CUpointer_attribute::CU_POINTER_ATTRIBUTE_DEVICE_POINTER,
+                host_ptr as sys::CUdeviceptr,
+            )
+        }
+        .result()
+        .ok()
+        .and_then(|()| (device_ptr != 0).then_some(device_ptr as *mut c_void));
+
+        Ok(Self {
+            memory,
+            stream,
+            gpu_ptr,
+        })
+    }
+}
+
+#[cfg(feature = "cufile")]
+#[derive(Debug)]
+pub(crate) struct SharedCudaTensor {
+    memory: Arc<CudaSlice<u8>>,
+    offset: usize,
+    len: usize,
+    stream: Arc<CudaStream>,
+}
+
+#[derive(Debug)]
+pub(crate) enum TrtxTensorStorage {
+    TrtxTensor(TrtxTensor),
+    HostTensor(HostTensor),
+    #[cfg(feature = "cufile")]
+    SharedCudaTensor(SharedCudaTensor), // multiple tensors share view to one big buffer
+    Destroyed,
+}
+
+impl TrtxTensorStorage {
+    fn stream(&self) -> Option<&Arc<CudaStream>> {
+        match self {
+            Self::TrtxTensor(tensor) => Some(&tensor.stream),
+            Self::HostTensor(tensor) => Some(&tensor.stream),
+            #[cfg(feature = "cufile")]
+            Self::SharedCudaTensor(tensor) => Some(&tensor.stream),
+            Self::Destroyed => None,
+        }
+    }
+
+    fn gpu_ptr(&self) -> Option<*mut c_void> {
+        match self {
+            Self::TrtxTensor(tensor) => {
+                Some(tensor.memory.device_ptr(&tensor.stream).0 as *mut c_void)
+            }
+            Self::HostTensor(tensor) => tensor.gpu_ptr,
+            #[cfg(feature = "cufile")]
+            Self::SharedCudaTensor(tensor) => Some(
+                (tensor.memory.device_ptr(&tensor.stream).0 as usize + tensor.offset)
+                    as *mut c_void,
+            ),
+            Self::Destroyed => None,
+        }
+    }
+
+    fn num_bytes(&self) -> usize {
+        match self {
+            Self::TrtxTensor(tensor) => tensor.memory.num_bytes(),
+            Self::HostTensor(tensor) => tensor.memory.num_bytes(),
+            #[cfg(feature = "cufile")]
+            Self::SharedCudaTensor(tensor) => tensor.len,
+            Self::Destroyed => 0,
+        }
+    }
+}
+
 pub(crate) struct TrtxContext<'context> {
     cuda_ctx: Arc<CudaContext>,
     device_cache_id: String,
-    tensors: Vec<TrtxTensor>,
+    tensors: Arc<RwLock<Vec<TrtxTensorStorage>>>,
     events: Vec<CudaEvent>,
     runtime: Arc<Mutex<trtx::Runtime<'context>>>,
     config: Arc<Mutex<trtx::BuilderConfig<'context>>>, // needs to be destroyed before builder
@@ -332,7 +451,7 @@ impl<'context> TrtxContext<'context> {
         Ok(Self {
             cuda_ctx,
             device_cache_id,
-            tensors: vec![],
+            tensors: Default::default(),
             events: vec![],
             runtime,
             builder: Arc::new(builder.into()),
@@ -406,7 +525,6 @@ impl Drop for TrtxContext<'_> {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct TrtxBuilder<'builder> {
     network: Mutex<Option<trtx::NetworkDefinition<'builder>>>,
     builder: Arc<Mutex<trtx::Builder<'builder>>>,
@@ -414,11 +532,12 @@ pub(crate) struct TrtxBuilder<'builder> {
     cuda_context: Arc<CudaContext>,
     runtime: Arc<Mutex<trtx::Runtime<'builder>>>,
     device_cache_id: String,
-    operands: HashMap<String, MLOperand>,
+    tensors: Arc<RwLock<Vec<TrtxTensorStorage>>>,
     caching_enabled: bool,
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
+    io_config: IoConfig,
 }
 
 impl std::fmt::Debug for TrtxBuilder<'_> {
@@ -463,80 +582,179 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
     /*async */
     fn build(
         &mut self,
-        graph: GraphInfo,
+        mut graph: GraphInfo,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
-        let mut engine_bytes: Option<HostMemoryOrVec> = None;
-        let mut hash_key: Option<String> = None;
-
-        let non_refittable_constants =
-            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
-        // Dead constants (no consumer) are eliminated by the TensorRT builder and
-        // have no refit prototype; they are neither marked refittable nor refitted.
-        // They do not take part in the caching decision: their values cannot
-        // influence the engine's outputs.
-        let unused_constants =
-            crate::converters::TrtxConverter::unused_constant_operand_ids(&graph);
-
-        // no caching for non_refittable_constants for now, non_refittable_constants will end up in
-        // the engine and potentially grow our cache to much. We should only consider including
-        // weights into engines for very small constants
-        if self.caching_enabled && non_refittable_constants.is_empty() {
-            let key =
-                // if deciding to do hashing for non_refittable_constants
-                //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
-                graph.hash_identifier(&TRTX_SUFFIX_ENGINES, WeightsToHash::None);
-            if let Ok(cache) = ENGINE_CACHE.as_ref()
-                && let Ok(engine) = cache.get(&key)
-            {
-                debug!("Using cached engine of size {}", engine.len());
-                engine_bytes = Some(engine.into());
-            } else {
-                debug!("Could not get cached engine. Rebuilding from network defintion...");
-            }
-            hash_key = Some(key);
+        let baked = TrtxConverter::gather_baked_constant_operand_ids(&graph);
+        for &id in &baked {
+            let Some(reference) = graph.constant_operand_ids_to_handles.get(&id) else {
+                continue;
+            };
+            let data = match reference {
+                crate::graph::ConstantReference::FileRef(file_ref) => {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut file =
+                        std::fs::File::open(&file_ref.path).map_err(graph_build_error)?;
+                    file.seek(SeekFrom::Start(file_ref.offset as u64))
+                        .map_err(graph_build_error)?;
+                    let mut data = vec![0; file_ref.len];
+                    file.read_exact(&mut data).map_err(graph_build_error)?;
+                    data
+                }
+                crate::graph::ConstantReference::IdRef(id_ref) => {
+                    let tensors = self.tensors.read().unwrap();
+                    let tensor = tensors.get(id_ref.id as usize).ok_or_else(|| {
+                        GraphBuilderError::InconsistentGraphInfo {
+                            message: format!("Invalid baked tensor reference {id_ref:?}"),
+                        }
+                    })?;
+                    // TODO: please note that were getting
+                    match tensor {
+                        TrtxTensorStorage::TrtxTensor(tensor) => {
+                            tensor.stream.clone_dtoh(&tensor.memory)?
+                        }
+                        TrtxTensorStorage::HostTensor(tensor) => {
+                            tensor.stream.synchronize()?;
+                            tensor.memory.as_slice()?.to_vec()
+                        }
+                        #[cfg(feature = "cufile")]
+                        TrtxTensorStorage::SharedCudaTensor(tensor) => tensor.stream.clone_dtoh(
+                            &tensor
+                                .memory
+                                .slice(tensor.offset..tensor.offset + tensor.len),
+                        )?,
+                        TrtxTensorStorage::Destroyed => {
+                            return Err(GraphBuilderError::InconsistentGraphInfo {
+                                message: format!("Baked tensor {id_ref:?} is destroyed"),
+                            }
+                            .into());
+                        }
+                    }
+                }
+                _ => continue,
+            };
+            graph.constant_operand_ids_to_handles.insert(
+                id,
+                crate::graph::ConstantReference::OwnedData(crate::ConstantData {
+                    data,
+                    label: None,
+                }),
+            );
         }
 
-        if engine_bytes.is_none() {
-            if self.fail_on_cache_miss && self.caching_enabled {
-                return Err(TrtxError::TrtxEngineCacheMiss {
-                    cache_key: hash_key,
-                }
-                .into());
-            }
-            let mut network = self
-                .network
-                .lock()
-                .unwrap()
-                .take()
-                .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
-            crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
-            let non_refittable_constants =
-                crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
-            for constant_id in graph.constant_operand_ids_to_handles.keys() {
-                if !non_refittable_constants.contains(constant_id)
-                    && !unused_constants.contains(constant_id)
-                {
-                    network.mark_weights_refittable(&format!("{constant_id}"))?;
-                }
-            }
+        let unused_constants = TrtxConverter::unused_constant_operand_ids(&graph);
+        let file_refs = graph
+            .constant_operand_ids_to_handles
+            .iter()
+            .filter(|(id, _)| !unused_constants.contains(id))
+            .filter_map(|(&constant_id, constant_ref)| match constant_ref {
+                crate::graph::ConstantReference::FileRef(file_ref) => Some((
+                    constant_id,
+                    file_ref.clone(),
+                    graph
+                        .operands
+                        .get(constant_id as usize)
+                        .map(|operand| operand.descriptor.clone()),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
 
-            let host_mem = self
-                .builder
-                .lock()
-                .unwrap()
-                .build_serialized_network(&mut network, &mut self.config.lock().unwrap())
-                .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
-            if let Ok(cache) = ENGINE_CACHE.as_ref()
-                && let Some(key) = hash_key
-                && let Err(error) = cache.set(&key, &host_mem)
-            {
-                warn!("Failed to write engine to cache: {error}");
+        let (engine_sender, engine_receiver) = std::sync::mpsc::sync_channel(1);
+        let (upload_sender, upload_receiver) = std::sync::mpsc::sync_channel(1);
+
+        // could consider rayon::scope for using rayon's thread pool if we were to use rayon elsewhere
+
+        // create a thread scope to build and load weights in parallel
+        // currently trtx-specific, but resolving unresolved constants could also move into generic
+        // part when more backends support weightless building. This way .webnn-parsing and
+        // .safetensor loading could happen in parallel
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let result = (|| -> crate::error::Result<HostMemoryOrVec<'_>> {
+                    let mut engine_bytes: Option<HostMemoryOrVec<'_>> = None;
+                    let mut hash_key = None;
+
+                    if self.caching_enabled {
+                        let key = graph.hash_identifier(&TRTX_SUFFIX_ENGINES, WeightsToHash::Some(&crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph)));
+                        if let Ok(cache) = ENGINE_CACHE.as_ref()
+                            && let Ok(engine) = cache.get(&key)
+                        {
+                            debug!("Using cached engine of size {}", engine.len());
+                            engine_bytes = Some(engine.into());
+                        } else {
+                            debug!(
+                                "Could not get cached engine. Rebuilding from network definition..."
+                            );
+                        }
+                        hash_key = Some(key);
+                    }
+
+                    if engine_bytes.is_none() {
+                        if self.fail_on_cache_miss && self.caching_enabled {
+                            return Err(TrtxError::TrtxEngineCacheMiss { cache_key: hash_key }.into());
+                        }
+                        let mut network = self.network.lock().unwrap().take().expect(
+                            "Frontend API should prevent TrtxBuilder::build to be called twice",
+                        );
+                        crate::converters::TrtxConverter::build_network_with_placeholders(&graph, &mut network)?;
+                        let non_refittable_constants =
+                            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(
+                                &graph,
+                            );
+                        for constant_id in graph.constant_operand_ids_to_handles.keys() {
+                            if !non_refittable_constants.contains(constant_id)
+                                && !crate::converters::TrtxConverter::unused_constant_operand_ids(&graph).contains(constant_id) {
+                                network.mark_weights_refittable(&format!("{constant_id}"))?;
+                            }
+                        }
+
+                        let host_mem = self
+                            .builder
+                            .lock()
+                            .unwrap()
+                            .build_serialized_network(
+                                &mut network,
+                                &mut self.config.lock().unwrap(),
+                            )
+                            .map_err(graph_build_error)?;
+                        if let Ok(cache) = ENGINE_CACHE.as_ref()
+                            && let Some(key) = hash_key
+                            && let Err(error) = cache.set(&key, &host_mem)
+                        {
+                            warn!("Failed to write engine to cache: {error}");
+                        }
+                        engine_bytes = Some(host_mem.into());
+                    }
+
+                    Ok(engine_bytes.expect("already got cached engine or tried building engine"))
+                })();
+                let _ = engine_sender.send(result);
+            });
+
+            //scope.spawn(|| { // do in main thread for now
+            let result = upload_file_ref_constants(&self.cuda_context, &file_refs, &self.io_config);
+            let _ = upload_sender.send(result);
+            //});
+        });
+
+        let engine_bytes = engine_receiver.recv().map_err(graph_build_error)??;
+        let uploaded_tensors = upload_receiver.recv().map_err(graph_build_error)??;
+        let mut uploaded_tensor_ids = HashSet::new();
+        if !uploaded_tensors.is_empty() {
+            let mut tensors = self.tensors.write().unwrap();
+            for (constant_id, tensor) in uploaded_tensors {
+                let tensor_id = tensors.len() as u64;
+                tensors.push(tensor);
+                uploaded_tensor_ids.insert(tensor_id);
+                graph.constant_operand_ids_to_handles.insert(
+                    constant_id,
+                    crate::graph::ConstantReference::IdRef(crate::graph::IdRef {
+                        id: tensor_id,
+                        label: None,
+                    }),
+                );
             }
-            engine_bytes = Some(host_mem.into());
         }
-
-        let engine_bytes =
-            engine_bytes.expect("already got cached engine or tried building engine");
 
         self.cuda_context.bind_to_thread()?;
         let mut engine = self
@@ -548,12 +766,10 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
 
         if let Ok(dump_dir) = std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR) {
             let mut key = graph.hash_identifier(
-                &format!(
-                    "{}_{:x}",
-                    TRTX_SUFFIX_ENGINES.as_str(),
-                    self.config.lock().unwrap().flags()
+                &TRTX_SUFFIX_ENGINES,
+                WeightsToHash::Some(
+                    &crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph),
                 ),
-                WeightsToHash::Some(&non_refittable_constants),
             );
             key.push_str(".json");
             let inspector = engine.create_engine_inspector()?;
@@ -567,73 +783,134 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             }
         }
 
-        // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
         let mut refitter = Refitter::new(&engine, &LOGGER)?;
-
-        for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
-            if non_refittable_constants.contains(id) || unused_constants.contains(id) {
-                continue;
-            }
-            let operand = graph.operands.get(*id as usize);
-            if let Some(operand) = operand.as_ref() {
-                let trt_type = TrtxConverter::webnn_to_trt_dtype(operand.descriptor.data_type)?;
-                let element_count = operand.descriptor.element_count().ok_or_else(|| {
-                    std::convert::Into::<crate::error::Error>::into(
-                        GraphBuilderError::InconsistentGraphInfo {
-                            message: format!(
-                                "Constant with dynamic size: id={id} operand={operand:#?}"
-                            ),
-                        },
-                    )
-                })?;
-                let expected_bytes = element_count * trt_type.size_bits() / 8;
-                if constant.data.len() != expected_bytes {
+        let max_weights = i32::try_from(graph.constant_operand_ids_to_handles.len())
+            .map_err(graph_build_error)?;
+        let mut remaining: std::collections::BTreeSet<String> =
+            refitter.all_weights(max_weights)?.into_iter().collect();
+        let stream = self.cuda_context.new_stream()?;
+        while let Some(seed) = remaining.first().cloned() {
+            let mut group = vec![seed];
+            // Owned weights are uploaded for this group. Tensor references already reside on GPU.
+            let mut source_buffers = Vec::new();
+            let mut supplied = HashSet::new();
+            loop {
+                for name in &group {
+                    if !supplied.insert(name.clone()) {
+                        continue;
+                    }
+                    let id: u32 = name.parse().map_err(graph_build_error)?;
+                    let reference = graph
+                        .constant_operand_ids_to_handles
+                        .get(&id)
+                        .ok_or(GraphBuilderError::MissingConstantId { id })?;
+                    let mut prototype = refitter.weights_prototype(name);
+                    let tensors = self.tensors.read().unwrap();
+                    prototype.values = if let Some(id_ref) = reference.as_id_ref() {
+                        let tensor = tensors.get(id_ref.id as usize).ok_or_else(|| {
+                            GraphBuilderError::InconsistentGraphInfo {
+                                message: format!("Invalid tensor reference {id_ref:?}"),
+                            }
+                        })?;
+                        let expected = graph.operands[id as usize]
+                            .descriptor
+                            .byte_length()
+                            .ok_or_else(|| GraphBuilderError::InconsistentGraphInfo {
+                                message: format!("Dynamic constant {id}"),
+                            })?;
+                        if tensor.num_bytes() < expected {
+                            return Err(GraphBuilderError::InconsistentGraphInfo {
+                                message: format!(
+                                    "Weight {name} has {} bytes, expected at least {expected}",
+                                    tensor.num_bytes()
+                                ),
+                            }
+                            .into());
+                        }
+                        if let Some(source_stream) = tensor.stream() {
+                            source_stream.synchronize()?;
+                        }
+                        tensor
+                            .gpu_ptr()
+                            .ok_or_else(|| GraphBuilderError::InconsistentGraphInfo {
+                                message: format!(
+                                    "Weight {name} is destroyed or not GPU-accessible"
+                                ),
+                            })?
+                            .cast_const()
+                    } else {
+                        let data = graph.constant_data(id)?;
+                        if graph.operands[id as usize].descriptor.byte_length() != Some(data.len())
+                        {
+                            return Err(GraphBuilderError::InconsistentGraphInfo {
+                                message: format!(
+                                    "Weight {name} has an invalid byte length: {}",
+                                    data.len()
+                                ),
+                            }
+                            .into());
+                        }
+                        let buffer = stream.clone_htod(data)?;
+                        let ptr = buffer.device_ptr(&stream).0 as *const c_void;
+                        source_buffers.push(buffer);
+                        ptr
+                    };
+                    stream.synchronize()?;
+                    // Sources remain alive until the synchronous refit completes and are then unset.
+                    unsafe {
+                        refitter
+                            .set_named_weights_with_location(
+                                name,
+                                prototype,
+                                trtx::TensorLocation::kDEVICE.into(),
+                            )
+                            .map_err(|source| TrtxError::ConstantRefitFailed {
+                                operand_id: id,
+                                operand: Box::new(graph.operands[id as usize].clone()),
+                                consumers: graph
+                                    .operations
+                                    .iter()
+                                    .filter(|op| op.all_input_operands().contains(&id))
+                                    .map(|op| op.op_type().to_string())
+                                    .collect(),
+                                source,
+                            })?;
+                    }
+                    remaining.remove(name);
+                }
+                let missing = refitter.missing_weights(max_weights)?;
+                if missing.is_empty() {
+                    break;
+                }
+                if missing.iter().all(|name| supplied.contains(name)) {
                     return Err(GraphBuilderError::InconsistentGraphInfo {
-                        message: format!(
-                            "Weight size mismatch: expected {expected_bytes} bytes, got {} bytes",
-                            constant.data.len()
-                        ),
+                        message: format!("TensorRT still requires supplied weights: {missing:?}"),
                     }
                     .into());
                 }
-                let weight_name = format!("{id}");
-                trace!("Trying to refit weight {weight_name}");
-                unsafe {
-                    refitter.set_named_weights_with_location(
-                        &weight_name, // TODO: add API to name weights to trtx
-                        trtx::trtx_sys::Weights {
-                            type_: trt_type.into(),
-                            values: constant.data.as_ptr() as *const std::ffi::c_void,
-                            count: element_count as i64,
-                        },
-                        // TODO: register and upload during build, refit with device location
-                        trtx::trtx_sys::nvinfer1::TensorLocation::kHOST,
-                    )
-                }
-                .map_err(|source| {
-                    let consumers: Vec<String> = graph
-                        .operations
-                        .iter()
-                        .filter(|op| op.all_input_operands().contains(id))
-                        .map(|op| op.op_type().to_string())
-                        .collect();
-                    TrtxError::ConstantRefitFailed {
-                        operand_id: *id,
-                        operand: (*operand).clone(),
-                        consumers,
-                        source,
-                    }
-                })?;
-            } else {
-                return Err(GraphBuilderError::InconsistentGraphInfo {
-                    message: format!(
-                        "Inconsistent GraphInfo: Constant operation with {id} is missing operations"
-                    ),
-                }
-                .into());
+                group.extend(missing.into_iter().filter(|name| !supplied.contains(name)));
             }
+            refitter.refit_cuda_engine()?;
+            for name in &group {
+                if !refitter.unset_named_weights(name) {
+                    return Err(GraphBuilderError::InconsistentGraphInfo {
+                        message: format!("Could not unset refit weight {name}"),
+                    }
+                    .into());
+                }
+            }
+            // Release only internal file-upload buffers; caller-owned tensors remain usable.
+            let mut tensors = self.tensors.write().unwrap();
+            for name in &group {
+                let id: u32 = name.parse().map_err(graph_build_error)?;
+                if let Some(id_ref) = graph.constant_operand_ids_to_handles[&id].as_id_ref()
+                    && uploaded_tensor_ids.remove(&id_ref.id)
+                {
+                    tensors[id_ref.id as usize] = TrtxTensorStorage::Destroyed;
+                }
+            }
+            drop(source_buffers);
         }
-        refitter.refit_cuda_engine()?;
 
         let runtime_config = engine
             .create_runtime_config()
@@ -719,7 +996,9 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
                 })?,
         )
         .into();
-        //self.networks.push(network);
+
+        let tensors = Arc::clone(&self.tensors);
+
         Ok(Box::new(TrtxBuilder {
             network,
             builder: Arc::clone(&self.builder),
@@ -727,11 +1006,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             runtime: Arc::clone(&self.runtime),
             device_cache_id: self.device_cache_id.clone(),
             cuda_context: Arc::clone(&self.cuda_ctx),
-            operands: HashMap::new(),
+            tensors,
             caching_enabled: self.options.engine_caching,
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
+            io_config: Default::default(),
         }))
     }
 
@@ -741,34 +1021,50 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
     ) -> crate::error::Result<crate::mlcontext::MLTensor> {
         let size = descriptor.rustnn_required_bytes();
 
-        let tensor = TrtxTensor::new(&self.cuda_ctx, size).map_err(|e| {
+        let tensor = HostTensor::new(&self.cuda_ctx, size).map_err(|e| {
             crate::error::Error::TensorCreationError {
                 source: e.into(),
                 descriptor: descriptor.clone(),
             }
         })?;
-        self.tensors.push(tensor);
-        Ok(MLTensor {
-            id: self.tensors.len() - 1,
-            constant: false,
-            descriptor: descriptor.clone(),
-        })
+        let mut lock = self.tensors.write().unwrap();
+        lock.push(TrtxTensorStorage::HostTensor(tensor));
+        Ok(MLTensor::new(lock.len() - 1, descriptor.clone()))
     }
 
     fn create_constant_tensor(
         &mut self,
-        descriptor: &crate::mlcontext::MLTensorDescriptor,
+        descriptor: &crate::mlcontext::MLOperandDescriptor,
         input_data: &[u8],
-    ) -> crate::error::Result<crate::mlcontext::MLTensor> {
-        let mut tensor = self.create_tensor(descriptor)?;
-        tensor.constant = true;
-        self.write_tensor(&tensor, input_data).map_err(|e| {
-            crate::error::Error::TensorCreationError {
+    ) -> crate::error::Result<MLTensor> {
+        let tensor_descriptor =
+            crate::mlcontext::MLTensorDescriptor::from_operand_descriptor(descriptor);
+        let backend_tensor = TrtxTensor::new(&self.cuda_ctx, input_data.len()).map_err(|e| {
+            Error::TensorCreationError {
                 source: e.into(),
-                descriptor: descriptor.clone(),
+                descriptor: tensor_descriptor.clone(),
             }
-        })?; // need to free tensor in case of error
+        })?;
+        let id = {
+            let mut lock = self.tensors.write().unwrap();
+            lock.push(TrtxTensorStorage::TrtxTensor(backend_tensor));
+            lock.len() - 1
+        };
+        let mut tensor = MLTensor::new(id, tensor_descriptor.clone());
+        tensor.constant = true;
+        self.write_tensor(&tensor, input_data)
+            .map_err(|e| Error::TensorCreationError {
+                source: e.into(),
+                descriptor: tensor_descriptor,
+            })?;
         Ok(tensor)
+    }
+
+    fn destroy_tensor(&mut self, tensor: &MLTensor) -> crate::error::Result<()> {
+        if let Some(slot) = self.tensors.write().unwrap().get_mut(tensor.id) {
+            *slot = TrtxTensorStorage::Destroyed;
+        }
+        Ok(())
     }
 
     fn read_tensor(
@@ -776,20 +1072,68 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         array: &mut [u8],
     ) -> crate::error::Result<()> {
-        let cuda_tensor = &self.tensors[tensor.id];
-        let stream = &cuda_tensor.stream;
-        debug!(
-            "Downloading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            array.as_ptr(),
-            array.len(),
-        );
-        stream.context().bind_to_thread()?;
-        stream
-            .memcpy_dtoh(&cuda_tensor.memory, array)
-            .to_read_tensor_result(|| tensor.clone())?;
-        stream
-            .synchronize()
-            .to_read_tensor_result(|| tensor.clone())?;
+        let lock = self.tensors.read().unwrap();
+        let storage = &lock[tensor.id];
+        debug!("Reading tensor {storage:?} into {} bytes", array.len());
+        if matches!(storage, TrtxTensorStorage::Destroyed) {
+            return Err(Error::TensorDestroyed {
+                tensor: tensor.clone(),
+            });
+        }
+        if array.len() > storage.num_bytes() {
+            return Err(Error::TensorReadError {
+                source: format!(
+                    "read exceeds tensor storage: {} bytes > {}",
+                    array.len(),
+                    storage.num_bytes()
+                )
+                .into(),
+                tensor: tensor.clone(),
+            });
+        }
+        match storage {
+            TrtxTensorStorage::TrtxTensor(cuda_tensor) => {
+                cuda_tensor
+                    .stream
+                    .memcpy_dtoh(&cuda_tensor.memory, array)
+                    .to_read_tensor_result(|| tensor.clone())?;
+                cuda_tensor
+                    .stream
+                    .synchronize()
+                    .to_read_tensor_result(|| tensor.clone())?;
+            }
+            TrtxTensorStorage::HostTensor(host_tensor) => {
+                host_tensor
+                    .stream
+                    .synchronize()
+                    .to_read_tensor_result(|| tensor.clone())?;
+                array.copy_from_slice(
+                    &host_tensor
+                        .memory
+                        .as_slice()
+                        .to_read_tensor_result(|| tensor.clone())?[..array.len()],
+                );
+            }
+            #[cfg(feature = "cufile")]
+            TrtxTensorStorage::SharedCudaTensor(cuda_tensor) => {
+                let source = cuda_tensor
+                    .memory
+                    .slice(cuda_tensor.offset..cuda_tensor.offset + array.len());
+                cuda_tensor
+                    .stream
+                    .memcpy_dtoh(&source, array)
+                    .to_read_tensor_result(|| tensor.clone())?;
+                cuda_tensor
+                    .stream
+                    .synchronize()
+                    .to_read_tensor_result(|| tensor.clone())?;
+            }
+            TrtxTensorStorage::Destroyed => {
+                return Err(Error::TensorDestroyed {
+                    tensor: tensor.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -798,20 +1142,60 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         tensor: &crate::mlcontext::MLTensor,
         array: &[u8],
     ) -> crate::error::Result<()> {
-        let cuda_tensor = &mut self.tensors[tensor.id];
-        let stream = &cuda_tensor.stream;
-        stream.context().bind_to_thread()?;
-        debug!(
-            "Uploading tensor {cuda_tensor:?} to array (ptr={:?}, size={:?})",
-            array.as_ptr(),
-            array.len(),
-        );
-        stream
-            .memcpy_htod(array, &mut cuda_tensor.memory)
-            .to_write_tensor_result(|| tensor.clone())?;
-        stream
-            .synchronize()
-            .to_write_tensor_result(|| tensor.clone())?;
+        let mut lock = self.tensors.write().unwrap();
+        let storage = &mut lock[tensor.id];
+        debug!("Writing {} bytes into tensor {storage:?}", array.len());
+        if matches!(storage, TrtxTensorStorage::Destroyed) {
+            return Err(Error::TensorDestroyed {
+                tensor: tensor.clone(),
+            });
+        }
+        if array.len() > storage.num_bytes() {
+            return Err(Error::TensorWriteError {
+                source: format!(
+                    "write exceeds tensor storage: {} bytes > {}",
+                    array.len(),
+                    storage.num_bytes()
+                )
+                .into(),
+                tensor: tensor.clone(),
+            });
+        }
+        match storage {
+            TrtxTensorStorage::TrtxTensor(cuda_tensor) => {
+                cuda_tensor
+                    .stream
+                    .memcpy_htod(array, &mut cuda_tensor.memory)
+                    .to_write_tensor_result(|| tensor.clone())?;
+                cuda_tensor
+                    .stream
+                    .synchronize()
+                    .to_write_tensor_result(|| tensor.clone())?;
+            }
+            TrtxTensorStorage::HostTensor(host_tensor) => {
+                host_tensor
+                    .stream
+                    .synchronize()
+                    .to_write_tensor_result(|| tensor.clone())?;
+                host_tensor
+                    .memory
+                    .as_mut_slice()
+                    .to_write_tensor_result(|| tensor.clone())?[..array.len()]
+                    .copy_from_slice(array);
+            }
+            #[cfg(feature = "cufile")]
+            TrtxTensorStorage::SharedCudaTensor(_) => {
+                return Err(Error::TensorWriteError {
+                    source: "cuFile-backed shared constant tensors are read-only".into(),
+                    tensor: tensor.clone(),
+                });
+            }
+            TrtxTensorStorage::Destroyed => {
+                return Err(Error::TensorDestroyed {
+                    tensor: tensor.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -839,36 +1223,55 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             Vec::new()
         };
         for (input, tensor) in inputs.iter() {
-            let cuda_tensor = &mut self.tensors[tensor.id];
-
-            let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            let lock = self.tensors.read().unwrap();
+            let storage = &lock[tensor.id];
+            let ptr = storage.gpu_ptr().ok_or_else(|| Error::GraphDispatchError {
+                source: format!(
+                    "input '{input}' tensor is destroyed or its host pointer is not GPU-accessible"
+                )
+                .into(),
+            })?;
+            let stream = storage.stream().ok_or_else(|| Error::TensorDestroyed {
+                tensor: (*tensor).clone(),
+            })?;
             if cuda_graphs_enabled {
                 io_pointers.push((false, (*input).to_owned(), ptr as usize));
             }
             unsafe {
                 graph
                     .exec
-                    .set_input_tensor_address(input, ptr as *mut c_void)
+                    .set_input_tensor_address(input, ptr)
                     .to_dispatch_result()?
             };
-            let event = cuda_tensor.stream.record_event(None).to_dispatch_result()?;
+            let event = stream.record_event(None).to_dispatch_result()?;
             inference_stream.wait(&event).to_dispatch_result()?;
             self.events.push(event);
         }
         for (output, tensor) in outputs.iter() {
-            let cuda_tensor = &mut self.tensors[tensor.id];
-
-            let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
+            let lock = self.tensors.read().unwrap();
+            let storage = &lock[tensor.id];
+            let ptr = storage.gpu_ptr().ok_or_else(|| Error::GraphDispatchError {
+                source: format!(
+                    "output '{output}' tensor is destroyed or its host pointer is not GPU-accessible"
+                )
+                .into(),
+            })?;
             if cuda_graphs_enabled {
                 io_pointers.push((true, (*output).to_owned(), ptr as usize));
             }
             unsafe {
                 graph
                     .exec
-                    .set_output_tensor_address(output, ptr as *mut c_void)
+                    .set_output_tensor_address(output, ptr)
                     .to_dispatch_result()?
             };
-            let event = cuda_tensor.stream.record_event(None).to_dispatch_result()?;
+            let event = storage
+                .stream()
+                .ok_or_else(|| Error::GraphDispatchError {
+                    source: "Destroyed output tensor".into(),
+                })?
+                .record_event(None)
+                .to_dispatch_result()?;
             inference_stream.wait(&event).to_dispatch_result()?;
             self.events.push(event);
         }
@@ -912,9 +1315,12 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         graph.inference_count = graph.inference_count.saturating_add(1);
         let inference_done = inference_stream.record_event(None).to_dispatch_result()?;
         for tensor in outputs.values() {
-            let cuda_tensor = &mut self.tensors[tensor.id];
-            cuda_tensor
-                .stream
+            let lock = self.tensors.read().unwrap();
+            lock[tensor.id]
+                .stream()
+                .ok_or_else(|| Error::TensorDestroyed {
+                    tensor: (*tensor).clone(),
+                })?
                 .wait(&inference_done)
                 .to_dispatch_result()?;
         }
@@ -932,15 +1338,44 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         new_desc.set_shape(new_shape.to_vec());
 
         let new_bytes = new_desc.rustnn_required_bytes();
-        let cuda_tensor = &mut self.tensors[tensor.id];
+        let mut lock = self.tensors.write().unwrap();
+        let storage = &mut lock[tensor.id];
         debug!(
-            "Resizing tensor {cuda_tensor:?} old desc: {:?}, new shape {new_shape:?}, new bytes {new_bytes}",
+            "Resizing tensor {storage:?} old desc: {:?}, new shape {new_shape:?}, new bytes {new_bytes}",
             tensor.descriptor.shape()
         );
 
-        if new_bytes > cuda_tensor.memory.num_bytes() {
+        if new_bytes > storage.num_bytes() {
             debug!("Need to reallocate for new size {new_bytes} bytes");
-            cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? }
+            match storage {
+                TrtxTensorStorage::TrtxTensor(cuda_tensor) => {
+                    cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? };
+                }
+                TrtxTensorStorage::HostTensor(_) => {
+                    *storage = TrtxTensorStorage::HostTensor(
+                        HostTensor::new(&self.cuda_ctx, new_bytes).map_err(|source| {
+                            Error::GraphDispatchError {
+                                source: source.into(),
+                            }
+                        })?,
+                    );
+                }
+                #[cfg(feature = "cufile")]
+                TrtxTensorStorage::SharedCudaTensor(_) => {
+                    *storage = TrtxTensorStorage::TrtxTensor(
+                        TrtxTensor::new(&self.cuda_ctx, new_bytes).map_err(|source| {
+                            Error::GraphDispatchError {
+                                source: source.into(),
+                            }
+                        })?,
+                    );
+                }
+                TrtxTensorStorage::Destroyed => {
+                    return Err(Error::TensorDestroyed {
+                        tensor: tensor.clone(),
+                    });
+                }
+            }
         }
         tensor.descriptor = new_desc;
         Ok(())
@@ -964,8 +1399,37 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             });
         }
 
-        let cuda_tensor = &mut self.tensors[tensor.id];
-        cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? };
+        let mut lock = self.tensors.write().unwrap();
+        let storage = &mut lock[tensor.id];
+        match storage {
+            TrtxTensorStorage::TrtxTensor(cuda_tensor) => {
+                cuda_tensor.memory = unsafe { cuda_tensor.stream.alloc(new_bytes)? };
+            }
+            TrtxTensorStorage::HostTensor(_) => {
+                *storage = TrtxTensorStorage::HostTensor(
+                    HostTensor::new(&self.cuda_ctx, new_bytes).map_err(|source| {
+                        Error::GraphDispatchError {
+                            source: source.into(),
+                        }
+                    })?,
+                );
+            }
+            #[cfg(feature = "cufile")]
+            TrtxTensorStorage::SharedCudaTensor(_) => {
+                *storage = TrtxTensorStorage::TrtxTensor(
+                    TrtxTensor::new(&self.cuda_ctx, new_bytes).map_err(|source| {
+                        Error::GraphDispatchError {
+                            source: source.into(),
+                        }
+                    })?,
+                );
+            }
+            TrtxTensorStorage::Destroyed => {
+                return Err(Error::TensorDestroyed {
+                    tensor: tensor.clone(),
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -1090,7 +1554,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic = "assertion failed: dst.len() >= src.len()"]
     fn test_write_too_large_tensor() {
         let _ = pretty_env_logger::try_init();
         let devices = TrtxContext::list_devices();
@@ -1107,8 +1570,12 @@ mod tests {
         desc.set_readable(true);
         desc.set_writable(true);
         let tensor = context.create_tensor(&desc).unwrap();
-        context
+        let error = context
             .write_tensor(&tensor, bytemuck::cast_slice(&too_big))
             .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::Error::TensorWriteError { .. }
+        ));
     }
 }
