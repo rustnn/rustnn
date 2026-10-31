@@ -40,6 +40,7 @@ lines to most of these situations.
 | `Error::WriteToNonWritableTensor` / `ReadToNonReadableTensor` | Create the tensor with `to_writable()` or `to_readable()` |
 | `Error::TensorCapacityError` | `rustnn_set_tensor_capacity` requested less storage than the active shape. Resize it first; rejection leaves shape and values unchanged on every backend |
 | Wrong results after editing a converter (TensorRT) | A cached engine from before the edit is unlikely (the cache key includes the converter sources) but possible for local uncommitted files; delete `<cache_dir>/rustnn/trtx` |
+| CoreML build still compiles for seconds with `compiled_bundle_cache` set, or `CoremlLoadDiagnostics::cache` is `Error(...)` | The outcome message names the step (`publish failed`, `cached bundle rebuilt`, `cache unusable`) and `RUST_LOG=warn` prints the cause; check that the directory is writable and has space. `Disabled` for a graph with inputs means the option was not set on this context. Deleting the directory or any `<key>` entry is safe; see [Compiled-bundle cache](../integration/coreml.md#compiled-bundle-cache) |
 
 ## Tests and tooling
 

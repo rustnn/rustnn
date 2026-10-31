@@ -69,7 +69,9 @@ establishes placement, energy savings or prediction-time fallback; use separate 
    children expose live values only and reuse the original weight storage; the public WebNN
    graph, types and shapes are unchanged.
 3. `MLGraphBuilder::build` compiles the model with `MLModel` and keeps the compiled model;
-   `dispatch` binds `MLMultiArray`s over the tensor storage and runs a prediction.
+   `dispatch` binds `MLMultiArray`s over the tensor storage and runs a prediction. With
+   [`CoremlOptions::compiled_bundle_cache`](#compiled-bundle-cache) set, the compiled
+   `.mlmodelc` is kept on disk and the next build of the same graph loads it instead.
 4. The `_with_weights` one-shot executors accept that blob and try compute-unit
    configurations in turn. Converter-only users can generate protobufs and weights on
    any host with `coreml-converter`; execution requires `coreml-runtime` on Apple platforms.
@@ -99,6 +101,75 @@ selected with `RustNNOptions::coreml.float16_precision`:
 
 `docs/development/converters.md` lists the lowering rules for both. The WPT harness selects the
 lowering with `WPT_COREML_FLOAT16=native|exact` and the device with `WPT_COREML_DEVICE`.
+
+## Compiled-bundle cache
+
+`MLModel.compileModel` is the slow step of a build on small devices: tens of seconds for a
+language model on an A12 or A13, and the step whose memory peak kills a model before the
+first prediction. `RustNNOptions::coreml.compiled_bundle_cache = Some(dir)` keeps the compiled
+`.mlmodelc` of every graph that `MLGraphBuilder::build` compiles and loads it from `dir` on the
+next build of the same graph, with `MLModel(contentsOf:configuration:)` and no compiler call.
+The option defaults to `None` (no cache, today's behavior); rustnn chooses no location on its
+own. On iOS and watchOS use a path under `Library/Caches`, which is what App Store review
+expects for purgeable data.
+
+What is cached is rustnn's compile step. Core ML's own per-device specialization of a loaded
+model (the MLE5 program library) is cached by the OS separately and is not controlled here.
+
+| Path | Content |
+|---|---|
+| `<dir>/<key>/bundle.mlmodelc` | The compiled bundle, copied from the compiler's output |
+| `<dir>/<key>/manifest.json` | The key inputs by name, the crate version, the OS build, the write time and the bundle's byte count |
+| `<dir>/<key>.partial-<pid>` | A staging directory while an entry is written; removed on publish or failure |
+
+The key is a SeaHash over these inputs, each of which the manifest records:
+
+- the graph: `GraphInfo::hash_identifier` over operands (names included), operations and every
+  constant's bytes. The emitted MIL protobuf is not the input because its map fields encode
+  from hash maps, so two conversions of one graph differ in byte order;
+- the emitted weights blob and the emitted program's size;
+- the compute-unit policy of the requested device and `float16_precision`;
+- the compile route (`native`, the `MLModel.compileModel` route; an in-process `.mlmodelc`
+  emitter would key its bundles under another name);
+- the crate version, a hash of the CoreML converter sources and the compile shim computed by
+  `build.rs`, and the OS build string from `NSProcessInfo`.
+
+Entries are written into the staging directory and published with one `rename`, so a reader
+sees no entry, a partial entry (a writer that died before the manifest) or a complete one. A
+partial entry is a miss and is replaced; a complete entry whose bundle fails to load, or whose
+manifest records other key inputs, is removed and rebuilt once. The cache never fails a build:
+every failure is logged at warn level and the graph compiles as without a cache. rustnn never
+evicts entries; each is about the size of the graph's weights, and deleting `dir` or any entry
+is safe at any time.
+
+Only the URL compile route yields a bundle. With the cache enabled, graphs with inputs
+therefore compile from a URL under either float16 lowering (`CoremlLoadRoute::CompiledUrl`),
+while input-free programs of proven constant copies keep the in-memory route for the BNNS
+reason above and report the cache as disabled. `CoremlLoadDiagnostics::cache` reports one
+`CacheOutcome` per build: `Disabled`, `Hit`, `Miss`, or `Error(message)` when the cache was
+enabled but could not serve or store the entry.
+
+```rust,ignore
+let mut options = RustNNOptions::default();
+options.coreml.compiled_bundle_cache = Some(caches_dir.join("rustnn-coreml"));
+let mut context = MLContext::create(
+    &MLContextOptions::new(MLPowerPreference::Default, false)
+        .with_rustnn_backend_hint(Backend::Coreml)
+        .with_rustnn_options(options),
+)?;
+// ... build the graph ...
+if let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() {
+    log::info!("compiled-bundle cache: {:?}", diagnostics.cache);
+}
+```
+
+Measured on the fork's native source-session path with the same staging and rename design
+(2026-10-20, SmolLM2 bundles, app v134; re-measure on this path): cold to warm load 16.4 s to
+1.3 s on an A13 (iPhone SE 2nd generation), 22.4 s to 1.7 s on an A12 (iPhone XS Max), 39.5 s
+to 2.3 s on an A10X (Apple TV 4K), 43.9 s to 1.1 s on an Apple Watch Series 10, with identical
+transcripts. `tests/test_coreml_bundle_cache.rs` checks the miss-then-hit sequence, identical
+results, the rebuild of partial, corrupt and foreign entries and an unwritable directory on
+macOS.
 
 ## Tensor names
 

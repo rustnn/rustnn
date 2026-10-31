@@ -18,10 +18,10 @@ use crate::backend_selection::DeviceType;
 use crate::converters::CoremlMlProgramConverter;
 use crate::error::Error;
 use crate::executors::coreml::{
-    CompiledCoremlModel, CoremlByteInput, CoremlTensorBinding, CoremlTensorStorage, compile_model,
-    run_coreml_bytes, run_coreml_tensors,
+    BundleCacheRequest, CompiledCoremlModel, CoremlByteInput, CoremlTensorBinding,
+    CoremlTensorStorage, compile_model_cached, run_coreml_bytes, run_coreml_tensors,
 };
-use crate::graph::DataType;
+use crate::graph::{DataType, WeightsToHash};
 use crate::mlcontext::RustNNOptions;
 use crate::mlcontext::{
     MLBackendBuilder, MLBackendContext, MLBackendGraph, MLGraph, MLNamedTensors, MLTensor,
@@ -88,6 +88,8 @@ impl fmt::Debug for CoremlGraph {
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
     float16_precision: CoremlFloat16Precision,
+    /// `CoremlOptions::compiled_bundle_cache`; `None` compiles every build.
+    compiled_bundle_cache: Option<std::path::PathBuf>,
 }
 
 impl fmt::Debug for CoremlBuilder {
@@ -95,8 +97,16 @@ impl fmt::Debug for CoremlBuilder {
         f.debug_struct("CoremlBuilder")
             .field("device_type", &self.device_type)
             .field("float16_precision", &self.float16_precision)
+            .field("compiled_bundle_cache", &self.compiled_bundle_cache)
             .finish()
     }
+}
+
+/// Name of the compile route of this build, part of the compiled-bundle cache key. Only the
+/// native `MLModel.compileModel` route exists today; a route option that adds an in-process
+/// `.mlmodelc` emitter keys its bundles under another name.
+fn compile_route_name() -> &'static str {
+    "native"
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder {
@@ -114,19 +124,35 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // for the exact lowering to change, and the URL compiler evaluates such a program
         // itself, so it follows the Native rule: through the URL compiler, iOS and tvOS 26
         // and 27 return 0 for WPT's data-free uint8 clamp that saturates to 255.
+        // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
+        // cache enabled every program with inputs compiles from a URL; the data-free
+        // constant-copy programs keep the in-memory route for the BNNS reason above.
         let use_asset = match self.float16_precision {
             CoremlFloat16Precision::Exact
                 if !graph_info.input_operands.is_empty() || has_float16_operand(&graph_info) =>
             {
                 CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
             }
+            _ if self.compiled_bundle_cache.is_some() => {
+                CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
+            }
             _ => supports_in_memory_asset(&graph_info),
         };
-        let model = compile_model(
+        let cache = self
+            .compiled_bundle_cache
+            .as_deref()
+            .map(|directory| BundleCacheRequest {
+                directory,
+                graph_hash: graph_info.hash_identifier("coreml", WeightsToHash::All),
+                route: compile_route_name(),
+                float16_precision: self.float16_precision,
+            });
+        let model = compile_model_cached(
             converted.data,
             converted.weights_data,
             self.device_type,
             use_asset,
+            cache,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         MLGraph::new(
@@ -309,6 +335,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         Ok(Box::new(CoremlBuilder {
             device_type: self.device_type,
             float16_precision: self.options.float16_precision,
+            compiled_bundle_cache: self.options.compiled_bundle_cache.clone(),
         }))
     }
 
