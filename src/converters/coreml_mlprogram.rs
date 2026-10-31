@@ -14086,6 +14086,7 @@ mod tests {
                 converted.weights_data,
                 DeviceType::Cpu,
                 false,
+                crate::mlcontextoptions::CoremlCompileRoute::Native,
             )
             .expect("compile integer-mask select locally");
             let when_true = [10.0f32, 20.0];

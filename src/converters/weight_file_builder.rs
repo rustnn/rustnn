@@ -175,10 +175,7 @@ impl WeightFileBuilder {
 
 /// Index complete records before accepting metadata byte references. An aligned
 /// address inside another payload is not a record, even if it resembles a header.
-#[cfg(all(
-    feature = "coreml-runtime",
-    any(target_os = "macos", target_os = "ios", test)
-))]
+#[cfg(all(feature = "coreml-runtime", any(target_vendor = "apple", test)))]
 pub(crate) fn weight_ranges(
     bytes: &[u8],
 ) -> Result<HashMap<u64, std::ops::Range<usize>>, GraphError> {

@@ -186,6 +186,35 @@ pub enum CoremlFloat16Precision {
     Exact,
 }
 
+/// How the CoreML backend turns the lowered MLProgram into a loadable model (rustnn extension).
+///
+/// This selects the compile step only; the converter, the numerical lowering and the
+/// compute-unit policy are unchanged. The successful route is reported as
+/// `CoremlLoadRoute` in the graph's load diagnostics. See the "Compile routes" section of
+/// the CoreML integration guide.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub enum CoremlCompileRoute {
+    /// [`Native`](Self::Native) where Apple's compiler exists, otherwise
+    /// [`RustExport`](Self::RustExport). On watchOS the public `MLModel.compileModel`
+    /// API does not exist, so `Auto` selects `RustExport` there; the build then needs the
+    /// `coreml-export` feature. With that feature enabled on any other Apple target, `Auto`
+    /// also retries through `RustExport` when the native compile step fails, and records the
+    /// native failure in the load diagnostics.
+    #[default]
+    Auto,
+    /// Compile with Apple's `MLModel` (in memory through `MLModelAsset`, or from a temporary
+    /// `.mlmodel`/`.mlpackage` URL). This is the only route without the `coreml-export`
+    /// feature.
+    Native,
+    /// Write the `.mlmodelc` bundle in this process with the pure-Rust `mlmodelc-export`
+    /// crate and load it with `MLModel(contentsOf:)`. Requires the `coreml-export` feature;
+    /// without it, `build` fails. The bundle contains source MIL, which Core ML compiles for
+    /// the device at load time. This is the route for watchOS and other targets where
+    /// `MLModel.compileModel` is unavailable.
+    RustExport,
+}
+
 /// CoreML tensor storage and lowering options; see the CoreML integration guide.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
@@ -200,6 +229,9 @@ pub struct CoremlOptions {
     pub output_backings: bool,
     /// Float16 lowering. Defaults to [`CoremlFloat16Precision::Native`].
     pub float16_precision: CoremlFloat16Precision,
+    /// Compile step. Defaults to [`CoremlCompileRoute::Auto`], which keeps the native
+    /// compiler wherever it exists.
+    pub compile_route: CoremlCompileRoute,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -209,6 +241,7 @@ impl Default for CoremlOptions {
             reuse_tensor_storage: false,
             output_backings: true,
             float16_precision: CoremlFloat16Precision::Native,
+            compile_route: CoremlCompileRoute::Auto,
         }
     }
 }

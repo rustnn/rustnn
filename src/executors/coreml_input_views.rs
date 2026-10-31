@@ -1,6 +1,6 @@
 //! Bind converter-private flat Half views without changing public WebNN inputs.
 
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::ptr;
@@ -17,10 +17,10 @@ use super::{
 };
 use crate::error::GraphError;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 use super::nsarray_to_strings;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 pub(crate) const METADATA_KEY: &str = "rustnn.webnn.compact_input_views";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub(crate) struct Binding {
     pub(crate) view: String,
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 fn parse(json: &str, declared_inputs: &[String]) -> Result<Vec<Binding>, GraphError> {
     let bindings: Vec<Binding> = serde_json::from_str(json).map_err(|error| {
         boundary_error(format!("invalid CoreML compact-input metadata: {error}"))
@@ -59,7 +59,7 @@ fn parse(json: &str, declared_inputs: &[String]) -> Result<Vec<Binding>, GraphEr
 }
 
 pub(crate) unsafe fn from_model(model: *mut Object) -> Result<Vec<Binding>, GraphError> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_vendor = "apple")]
     {
         let Some(json) = (unsafe { super::model_metadata_value(model, METADATA_KEY)? }) else {
             return Ok(Vec::new());
@@ -75,7 +75,7 @@ pub(crate) unsafe fn from_model(model: *mut Object) -> Result<Vec<Binding>, Grap
         }
         Ok(bindings)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(not(target_vendor = "apple"))]
     {
         let _ = model;
         Ok(Vec::new())
@@ -395,6 +395,7 @@ mod tests {
                 converted.weights_data.clone(),
                 policy,
                 false,
+                crate::mlcontextoptions::CoremlCompileRoute::Native,
             )
             .unwrap();
             assert_eq!(compiled.aliases.compact_input_views.len(), 1);

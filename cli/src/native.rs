@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, FromArgMatches, Parser, builder::PossibleValuesParser};
 use rustnn::mlcontext::{
-    Backend, MLContext, MLContextOptions, MLNamedTensors, MLPowerPreference, MLTensor,
-    MLTensorDescriptor,
+    Backend, CoremlCompileRoute, MLContext, MLContextOptions, MLNamedTensors, MLPowerPreference,
+    MLTensor, MLTensorDescriptor, RustNNOptions,
 };
-use rustnn::{ConverterRegistry, DataType, GraphInfo};
+use rustnn::{ConvertedGraph, ConverterRegistry, DataType, GraphInfo};
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Inspect, convert and execute WebNN graphs")]
@@ -28,6 +28,13 @@ struct Cli {
     /// Write the converted model here; otherwise write binary bytes to stdout.
     #[arg(long, requires = "convert")]
     convert_output: Option<PathBuf>,
+    /// With `--convert coreml`: also write a runnable `.mlmodelc` bundle to this directory
+    /// in pure Rust (needs the `coreml-export` feature; works on any host).
+    #[arg(long, requires = "convert", value_name = "DIR")]
+    coreml_compiled_output: Option<PathBuf>,
+    /// CoreML compile step for --run: Apple's compiler, the Rust exporter, or automatic.
+    #[arg(long, requires = "run", default_value = "auto", value_parser = ["auto", "native", "rust-export"])]
+    coreml_compile_route: String,
     /// Execute with zero inputs using this runtime, or 'auto' for normal selection.
     #[arg(long)]
     run: Option<String>,
@@ -57,7 +64,13 @@ fn context_options(cli: &Cli) -> MLContextOptions {
         "low-power" => MLPowerPreference::LowPower,
         _ => MLPowerPreference::Default,
     };
-    let options = MLContextOptions::new(power, cli.accelerated);
+    let mut rustnn_options = RustNNOptions::default();
+    rustnn_options.coreml.compile_route = match cli.coreml_compile_route.as_str() {
+        "native" => CoremlCompileRoute::Native,
+        "rust-export" => CoremlCompileRoute::RustExport,
+        _ => CoremlCompileRoute::Auto,
+    };
+    let options = MLContextOptions::new(power, cli.accelerated).with_rustnn_options(rustnn_options);
     match Backend::compiled()
         .into_iter()
         .find(|backend| Some(backend.as_ref()) == cli.run.as_deref())
@@ -216,13 +229,47 @@ fn execute(cli: &Cli, graph: GraphInfo) -> Result<()> {
     Ok(())
 }
 
+/// Write the CoreML conversion as a `.mlmodelc` bundle with the pure-Rust exporter.
+#[cfg(feature = "coreml-export")]
+fn write_coreml_bundle(model: &ConvertedGraph, directory: &Path) -> Result<()> {
+    let stats = model
+        .write_coreml_bundle(directory)
+        .context("writing .mlmodelc bundle")?;
+    eprintln!(
+        "Compiled bundle: {} ({} MIL operations, {} constants, {} bytes of MIL)",
+        directory.display(),
+        stats.operation_count,
+        stats.const_count,
+        stats.output_bytes
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "coreml-export"))]
+fn write_coreml_bundle(_model: &ConvertedGraph, _directory: &Path) -> Result<()> {
+    bail!(
+        "--coreml-compiled-output needs the `coreml-export` feature \
+         (cargo run -p rustnn-cli --features coreml-export -- ...)"
+    )
+}
+
 fn convert(
     registry: &ConverterRegistry,
     format: &str,
     graph: &GraphInfo,
     path: Option<&Path>,
+    compiled_output: Option<&Path>,
 ) -> Result<()> {
     let model = registry.convert(format, graph)?;
+    if let Some(directory) = compiled_output {
+        if model.format != "coreml" {
+            bail!("--coreml-compiled-output requires --convert coreml");
+        }
+        write_coreml_bundle(&model, directory)?;
+        if path.is_none() {
+            return Ok(());
+        }
+    }
     if let Some(path) = path {
         if let Some(weights) = model.weights_data {
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -273,7 +320,13 @@ fn run() -> Result<()> {
         std::fs::write(path, rustnn::graph_to_dot(&graph))?;
     }
     if let Some(format) = &cli.convert {
-        convert(&registry, format, &graph, cli.convert_output.as_deref())?;
+        convert(
+            &registry,
+            format,
+            &graph,
+            cli.convert_output.as_deref(),
+            cli.coreml_compiled_output.as_deref(),
+        )?;
     }
     if cli.run.is_some() {
         execute(&cli, graph)?;

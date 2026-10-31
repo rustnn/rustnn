@@ -132,6 +132,10 @@ jobs:
         if: runner.os == 'macOS'
         run: make build-coreml
 
+      - name: Run CoreML tests with the Rust .mlmodelc exporter
+        if: runner.os == 'macOS'
+        run: make test-coreml COREML_FEATURES=coreml-runtime,coreml-export,dynamic-inputs
+
       - name: Run cargo test (library only)
         run: cargo test --lib
 

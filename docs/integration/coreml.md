@@ -9,12 +9,16 @@ dispatch. The Objective-C bridge lives in `src/executors/coreml.rs` and `src/exe
 
 - A CoreML version that accepts MLProgram models (macOS 13 or newer). The native Rust
   backend also supports iOS; mobile validation uses iOS 18 as its deployment target.
-- tvOS is not enabled: the published `objc` dependency selects the wrong message ABI
-  there. watchOS execution is not enabled by these target gates either.
+- The source gates cover every Apple target (`target_vendor = "apple"`). CI builds and tests
+  macOS only. tvOS, watchOS and visionOS builds additionally depend on the `objc` 0.2 message
+  ABI, which the published crate selects correctly only for macOS and iOS; see
+  [Compile routes](#compile-routes) for the watchOS requirements.
 - The `coreml-runtime` Cargo feature. On Linux and Windows the feature compiles to shims whose
   calls always fail, so `cargo check --features coreml-runtime` works everywhere but the backend
   is never selected on those platforms.
 - Xcode command line tools for the Objective-C++ shim (`build.rs` compiles it with `cc`).
+- Optionally the `coreml-export` Cargo feature, which adds the pure-Rust `.mlmodelc` writer
+  ([Compile routes](#compile-routes)). It is required for CoreML on watchOS.
 
 ## Selection and devices
 
@@ -69,7 +73,9 @@ establishes placement, energy savings or prediction-time fallback; use separate 
    children expose live values only and reuse the original weight storage; the public WebNN
    graph, types and shapes are unchanged.
 3. `MLGraphBuilder::build` compiles the model with `MLModel` and keeps the compiled model;
-   `dispatch` binds `MLMultiArray`s over the tensor storage and runs a prediction.
+   `dispatch` binds `MLMultiArray`s over the tensor storage and runs a prediction. With the
+   `RustExport` [compile route](#compile-routes) the bundle is written in Rust instead and
+   `MLModel` loads it from its URL.
 4. The `_with_weights` one-shot executors accept that blob and try compute-unit
    configurations in turn. Converter-only users can generate protobufs and weights on
    any host with `coreml-converter`; execution requires `coreml-runtime` on Apple platforms.
@@ -229,6 +235,39 @@ constraints and storage layout are checked before prediction; standalone consume
 of these exports must supply the same private bindings.
 Persistent `MLTensor` dispatch uses these bindings with output backings enabled or
 disabled, retaining the tensor storage and private view owners through prediction.
+
+## Compile routes
+
+`CoremlOptions::compile_route` (`RustNNOptions.coreml.compile_route`) selects how the lowered
+MLProgram becomes a loadable model. It changes the compile step only: the converter, the
+numerical lowering, the compute-unit policy and the public graph are the same on every route,
+and the successful route is reported as `CoremlLoadRoute` in `graph.rustnn_load_diagnostics()`.
+
+| `CoremlCompileRoute` | What happens | Where it applies |
+|---|---|---|
+| `Native` | Apple's compiler: an in-memory `MLModelAsset`, or `MLModel.compileModelAtURL:` from a temporary `.mlmodel`/`.mlpackage` (`CoremlLoadRoute::InMemoryAsset` / `CompiledUrl`, see [How a graph runs](#how-a-graph-runs)). The only route without the `coreml-export` feature. | macOS, iOS, tvOS, visionOS |
+| `RustExport` | rustnn writes the `.mlmodelc` bundle in its own process with the pure-Rust [`mlmodelc-export`](https://github.com/rebeckerspecialties/mlmodelc-export) crate and loads it with `MLModel(contentsOf:)` (`CoremlLoadRoute::RustExport`). Needs the `coreml-export` feature; otherwise `build` fails with a `CoremlRuntimeFailed` error that names the feature. | Required on watchOS, whose public Core ML API has no model compiler; the route for sandboxed hosts where `compileModel` is unavailable or undesirable (App Extensions and App Clips are the cases named by issue #110; they have not been validated) |
+| `Auto` (default) | `Native` wherever Apple's compiler exists. With `coreml-export` compiled in, a failed native compile is retried through `RustExport` and the native failure stays in `failures`. On watchOS, `Auto` is `RustExport`. | Everywhere; keeps the default behavior byte-identical when the feature is off |
+
+The exporter emits source MIL (`model.mil`) plus `coremldata.bin`, `metadata.json` and
+`analytics/coremldata.bin`, and copies the converter's weight blob to `weights/weights.bin`
+unchanged. Core ML compiles the MIL for the device when the bundle is loaded, so the first load
+of an exported bundle costs what `compileModelAtURL:` costs elsewhere. The bundle is a plain
+directory: `ConvertedGraph::write_coreml_bundle(dir)` writes one on any host, including Linux
+CI, and `rustnn-cli --convert coreml --coreml-compiled-output model.mlmodelc` does the same
+from a `.webnn` file (build the CLI with `--features coreml-export`). `rustnn-cli --run coreml
+--coreml-compile-route rust-export` selects the route for execution.
+
+Validation receipts (2026-10-30, `mlmodelc-export` at `f958affe`, graphs lowered by this
+converter): bundles written by the exporter loaded and predicted on Apple Watch SE (2nd
+generation, watchOS 11.6.2) and Apple Watch Series 10 (watchOS 27.2) in 1 to 19 s per model,
+on Apple TV 4K and on iPhones; the exporter CLI produced 6 of 6 bundles
+from the same packages with byte-identical `weights/weights.bin`. The route does not by itself
+establish compute-unit placement or a memory bound; those remain separate measurements.
+
+watchOS, tvOS and visionOS also need the `objc` 0.2 message-send ABI fixed for their targets
+(the published crate uses the GNUstep lookup path there), for example with a `[patch.crates-io]`
+entry in the application's workspace. These targets are tier 3 in Rust and are not built in CI.
 
 ## Testing
 
