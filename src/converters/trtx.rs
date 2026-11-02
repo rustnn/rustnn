@@ -725,9 +725,9 @@ impl TrtxConverter {
             })
     }
 
-    /// Graph constant operand ids used as gather/gatherND/gatherElements indices.
+    /// Graph constant operand ids that TensorRT bakes into the engine.
     ///
-    /// These are baked (clamped) at compile time in the TRT network and must not be marked
+    /// These are transformed or folded at compile time in the TRT network and must not be marked
     /// refittable or refitted at engine load.
     pub fn gather_baked_constant_operand_ids(graph: &GraphInfo) -> HashSet<u32> {
         let mut ids = HashSet::new();
@@ -777,6 +777,20 @@ impl TrtxConverter {
         }
         for op in &graph.operations {
             match op {
+                // TensorRT evaluates constant INT32 min/max/div at build time,
+                // even with kREFIT_INDIVIDUAL. The original weights then have no
+                // refit prototype. Bake both operands and disable topology-only
+                // engine caching so different values cannot reuse a folded result.
+                Operation::Min { .. } | Operation::Max { .. } | Operation::Div { .. }
+                    if op.input_operands().iter().all(|&id| {
+                        graph.operand(id).is_some_and(|operand| {
+                            operand.kind == OperandKind::Constant
+                                && operand.descriptor.data_type == DataType::Int32
+                        })
+                    }) =>
+                {
+                    ids.extend(op.input_operands());
+                }
                 Operation::Gather { .. }
                 | Operation::GatherND { .. }
                 | Operation::GatherElements { .. } => {
