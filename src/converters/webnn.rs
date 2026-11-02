@@ -1485,6 +1485,18 @@ pub async fn convert_async(context: &MlContext, graph_info: &GraphInfo) -> Resul
                         .map_err(WebNNConverterError::BuilderOperationFailed)?,
                 ]
             }
+            #[cfg(feature = "dynamic-inputs")]
+            Operation::Range { .. }
+            | Operation::ModulusFloor { .. }
+            | Operation::ModulusTruncate { .. }
+            | Operation::ReshapeTo2d { .. }
+            | Operation::ReshapeDynamic { .. }
+            | Operation::ExpandDynamic { .. }
+            | Operation::SliceDynamic { .. }
+            | Operation::PadDynamic { .. }
+            | Operation::SplitDynamic { .. }
+            | Operation::Resample2dDynamic { .. }
+            | Operation::TileDynamic { .. } => todo!("dynamic ops not implemented"),
         };
         for (&k, v) in op.output_operands_slice().iter().zip(out.iter()) {
             let k = k as usize;
