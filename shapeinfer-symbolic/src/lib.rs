@@ -11,6 +11,7 @@ pub mod error;
 pub mod expression;
 pub mod program;
 pub mod shape_ops;
+mod shared;
 
 pub use context::Context;
 pub use error::{Error, Result};

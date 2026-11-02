@@ -88,10 +88,6 @@ onnx2webnn hands models to rustnn.
 Dynamic dimensions (`Dimension::Dynamic { name, max_size }`) are part of the model but only
 accepted when the `dynamic-inputs` feature is enabled.
 
-Symbolic inference preserves unchanged dimension expressions through size-preserving, unit-stride
-windows and broadcasts of identical dimensions. This prevents repeated residual blocks from
-duplicating equivalent expression trees.
-
 ## Legacy pipeline
 
 `load_graph_from_path` -> `ConverterRegistry::convert` -> `executors::*`

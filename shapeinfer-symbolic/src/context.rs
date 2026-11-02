@@ -11,6 +11,7 @@ use z3::ast::{Ast, Bool};
 
 pub use crate::Result;
 use crate::expression::Shape;
+use crate::shared::{BoundCache, SharedExpression, ValueCache};
 use crate::{Error, Expression, Vec};
 
 #[derive(Default, Debug, Clone)]
@@ -136,32 +137,28 @@ impl Context {
         if lhs.as_const() == Some(1) {
             return Ok(rhs);
         }
-        if rhs.as_const() == Some(1) || lhs.to_string() == rhs.to_string() {
+        if rhs.as_const() == Some(1) || lhs.cel.structurally_equal(&rhs.cel) {
             return Ok(lhs);
         }
         #[cfg(feature = "z3")]
         self.solver
             .assert(Bool::or(&[lhs.z3.eq(&rhs.z3), lhs.z3.eq(1), rhs.z3.eq(1)]));
         Ok(Expression {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(cel::common::ast::CallExpr {
-                    func_name: "broadcast".to_string(),
-                    target: None,
-                    args: vec![
-                        lhs.cel,
-                        rhs.cel,
-                        cel::common::ast::IdedExpr {
-                            id: 0,
-                            expr: cel::common::ast::Expr::Literal(
-                                cel::common::ast::LiteralValue::String(
-                                    assertion_message.to_string().into(),
-                                ),
+            cel: SharedExpression::call(
+                "broadcast",
+                vec![
+                    lhs.cel,
+                    rhs.cel,
+                    SharedExpression::from_ast(cel::common::ast::IdedExpr {
+                        id: 0,
+                        expr: cel::common::ast::Expr::Literal(
+                            cel::common::ast::LiteralValue::String(
+                                assertion_message.to_owned().into(),
                             ),
-                        },
-                    ],
-                }),
-            },
+                        ),
+                    }),
+                ],
+            ),
             #[cfg(feature = "z3")]
             z3: lhs.z3.gt(&rhs.z3).ite(&lhs.z3, &rhs.z3),
         })
@@ -220,6 +217,7 @@ impl Context {
             .collect()
     }
 
+    /// Evaluate shared nodes once per call, including nodes reused by equality constraints.
     pub fn compute_shapes_cel(
         &self,
         shapes_to_resolve: &[Shape],
@@ -241,9 +239,10 @@ impl Context {
             context.add_variable_from_value(name, value as i64);
         }
 
+        let mut cache = ValueCache::new();
         for (lhs, rhs) in &self.equalities {
-            let left = context.resolve(&lhs.cel)?;
-            let right = context.resolve(&rhs.cel)?;
+            let left = lhs.cel.resolve(&context, &mut cache)?;
+            let right = rhs.cel.resolve(&context, &mut cache)?;
             if left != right {
                 return Err(Error::RuntimeUnequalDimensions { left, right });
             }
@@ -252,7 +251,7 @@ impl Context {
         for shape in shapes_to_resolve.iter() {
             let mut exprs = Vec::new();
             for s in shape.iter() {
-                exprs.push(context.resolve(&s.cel)?);
+                exprs.push(s.cel.resolve(&context, &mut cache)?);
             }
 
             out.push(exprs);
@@ -262,14 +261,16 @@ impl Context {
     }
 
     /// Compute conservative upper bounds from upper bounds for input dimensions.
+    /// Shared nodes are bounded once per call; caches never outlive the supplied input bounds.
     pub fn compute_shape_upper_bounds(
         &self,
         shape: &Shape,
         input_upper_bounds: &BTreeMap<&str, u32>,
     ) -> Result<std::vec::Vec<u32>> {
+        let mut cache = BoundCache::new();
         shape
             .iter()
-            .map(|expression| expression.upper_bound(input_upper_bounds))
+            .map(|expression| expression.upper_bound_with_cache(input_upper_bounds, &mut cache))
             .collect()
     }
 

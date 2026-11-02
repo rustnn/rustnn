@@ -12,12 +12,13 @@ const MAX_SHAPE_DIMENSION: usize = 8;
 
 use cel::common::{
     ast::{
-        CallExpr, Expr,
+        Expr,
         operators::{ADD, DIVIDE, MULTIPLY, SUBSTRACT},
     },
     types::CelInt,
 };
 
+use crate::shared::{BoundCache, SharedExpression};
 use crate::{Error, Result, Vec};
 #[cfg(feature = "z3")]
 use z3::{
@@ -98,11 +99,22 @@ impl Display for Z3Infix {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A symbolic dimension backed by immutable shared CEL nodes.
+/// Cloning retains the same nodes; evaluation caches are scoped to each calculation.
+/// Debug output identifies the root and its children without expanding shared subexpressions.
+#[derive(Clone)]
 pub struct Expression {
-    pub(crate) cel: cel::parser::Expression,
+    pub(crate) cel: SharedExpression,
     #[cfg(feature = "z3")]
     pub(crate) z3: z3::ast::Int,
+}
+
+impl std::fmt::Debug for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Expression")
+            .field("cel", &self.cel)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Expression {
@@ -144,14 +156,10 @@ impl Expression {
             rounded.lt(&one).ite(&one, &rounded)
         };
         Ok(Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: Expr::Call(CallExpr {
-                    func_name: "roundScale".to_owned(),
-                    target: None,
-                    args: vec![self.cel, Expression::new_const(bits as i64).cel],
-                }),
-            },
+            cel: SharedExpression::call(
+                "roundScale",
+                vec![self.cel, Expression::new_const(bits as i64).cel],
+            ),
             #[cfg(feature = "z3")]
             z3: scaled_z3,
         })
@@ -159,94 +167,33 @@ impl Expression {
 
     /// Conservative upper bound for a symbolic dimension given bounds for input variables.
     pub fn upper_bound(&self, bounds: &BTreeMap<&str, u32>) -> Result<u32> {
-        fn interval(
-            expr: &cel::parser::Expression,
-            bounds: &BTreeMap<&str, u32>,
-        ) -> Result<(i64, i64)> {
-            match &expr.expr {
-                Expr::Literal(cel::common::ast::LiteralValue::Int(value)) => {
-                    let value = *value.inner();
-                    Ok((value, value))
-                }
-                Expr::Ident(name) => bounds
-                    .get(name.as_str())
-                    .map(|&max| (0, max as i64))
-                    .ok_or_else(|| Error::MissingUpperBound { name: name.clone() }),
-                Expr::Call(call) if call.args.len() >= 2 => {
-                    let (a0, a1) = interval(&call.args[0], bounds)?;
-                    let (b0, b1) = interval(&call.args[1], bounds)?;
-                    match call.func_name.as_str() {
-                        ADD => Ok((a0.saturating_add(b0), a1.saturating_add(b1))),
-                        SUBSTRACT => Ok((a0.saturating_sub(b1), a1.saturating_sub(b0))),
-                        MULTIPLY => {
-                            let products = [
-                                a0.saturating_mul(b0),
-                                a0.saturating_mul(b1),
-                                a1.saturating_mul(b0),
-                                a1.saturating_mul(b1),
-                            ];
-                            Ok((
-                                *products.iter().min().unwrap(),
-                                *products.iter().max().unwrap(),
-                            ))
-                        }
-                        DIVIDE if b0 > 0 => {
-                            let quotients = [
-                                a0.div_euclid(b0),
-                                a0.div_euclid(b1),
-                                a1.div_euclid(b0),
-                                a1.div_euclid(b1),
-                            ];
-                            Ok((
-                                *quotients.iter().min().unwrap(),
-                                *quotients.iter().max().unwrap(),
-                            ))
-                        }
-                        DIVIDE => Err(Error::UnboundedDivision),
-                        "max" => Ok((a0.max(b0), a1.max(b1))),
-                        "min" => Ok((a0.min(b0), a1.min(b1))),
-                        "broadcast" => Ok((a0.min(b0), a1.max(b1))),
-                        "roundScale" if b0 == b1 => {
-                            let scale = f32::from_bits(b0 as u32);
-                            if !scale.is_finite() || scale <= 0.0 {
-                                return Err(Error::InvalidScale { scale });
-                            }
-                            let low = ((a0.max(1) as f32) * scale).round().max(1.0) as i64;
-                            let high = ((a1.max(1) as f32) * scale).round().max(1.0) as i64;
-                            Ok((low, high))
-                        }
-                        "roundScale" => Err(Error::NonConstantScaleBits),
-                        name => Err(Error::UnsupportedSymbolicFunction {
-                            name: name.to_owned(),
-                        }),
-                    }
-                }
-                _ => Err(Error::UnsupportedSymbolicExpression),
-            }
-        }
-        let (_, upper) = interval(&self.cel, bounds)?;
+        self.upper_bound_with_cache(bounds, &mut BoundCache::new())
+    }
+
+    pub(crate) fn upper_bound_with_cache(
+        &self,
+        bounds: &BTreeMap<&str, u32>,
+        cache: &mut BoundCache,
+    ) -> Result<u32> {
+        let (_, upper) = self.cel.interval(bounds, cache)?;
         u32::try_from(upper).map_err(|_| Error::UpperBoundOutOfRange { value: upper })
     }
 
     pub fn as_const(&self) -> Option<i64> {
-        match &self.cel.expr {
-            Expr::Literal(cel::common::ast::LiteralValue::Int(value)) => Some(*value.inner()),
-            _ => None,
-        }
+        self.cel.as_const()
     }
 
     pub fn as_dynamic(&self) -> Option<&str> {
-        match &self.cel.expr {
-            Expr::Ident(name) => Some(name),
-            _ => None,
-        }
+        self.cel.as_dynamic()
     }
 
     #[cfg(not(feature = "z3"))]
     pub fn parse(source: &str) -> Result<Self> {
         cel::parser::Parser::default()
             .parse(source)
-            .map(|cel| Self { cel })
+            .map(|cel| Self {
+                cel: SharedExpression::from_ast(cel),
+            })
             .map_err(Error::from)
     }
 
@@ -275,7 +222,7 @@ impl Expression {
                                 return Err(Error::NonConstantScaleBits);
                             };
                             let base = Expression {
-                                cel: call.args[0].clone(),
+                                cel: SharedExpression::from_ast(call.args[0].clone()),
                                 z3: lhs,
                             };
                             Ok(base.round_scaled(f32::from_bits(*bits.inner() as u32))?.z3)
@@ -292,17 +239,20 @@ impl Expression {
             .parse(source)
             .map_err(Error::from)?;
         let z3 = to_z3(&cel)?;
-        Ok(Self { cel, z3 })
+        Ok(Self {
+            cel: SharedExpression::from_ast(cel),
+            z3,
+        })
     }
 
     pub fn new_const(x: i64) -> Self {
         Self {
-            cel: cel::common::ast::IdedExpr {
+            cel: SharedExpression::from_ast(cel::common::ast::IdedExpr {
                 id: 0,
                 expr: cel::common::ast::Expr::Literal(cel::common::ast::LiteralValue::Int(
                     CelInt::from(x),
                 )),
-            },
+            }),
             #[cfg(feature = "z3")]
             z3: z3::ast::Int::from_i64(x),
         }
@@ -310,10 +260,10 @@ impl Expression {
 
     pub fn new_dynamic(name: &str) -> Self {
         Self {
-            cel: cel::common::ast::IdedExpr {
+            cel: SharedExpression::from_ast(cel::common::ast::IdedExpr {
                 id: 0,
                 expr: Expr::Ident(name.to_owned()),
-            },
+            }),
             #[cfg(feature = "z3")]
             z3: z3::ast::Int::new_const(name),
         }
@@ -321,14 +271,7 @@ impl Expression {
 
     pub fn max(self, rhs: Expression) -> Self {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: "max".to_string(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call("max", vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.gt(&rhs.z3).ite(&self.z3, &rhs.z3),
         }
@@ -336,14 +279,7 @@ impl Expression {
 
     pub fn min(self, rhs: Expression) -> Self {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: "min".to_string(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call("min", vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.lt(&rhs.z3).ite(&self.z3, &rhs.z3),
         }
@@ -355,14 +291,7 @@ impl Add for Expression {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: ADD.to_owned(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call(ADD, vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.add(rhs.z3),
         }
@@ -374,14 +303,7 @@ impl Sub for Expression {
 
     fn sub(self, rhs: Self) -> Self::Output {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: SUBSTRACT.to_owned(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call(SUBSTRACT, vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.sub(rhs.z3),
         }
@@ -393,14 +315,7 @@ impl Mul for Expression {
 
     fn mul(self, rhs: Self) -> Self::Output {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: MULTIPLY.to_owned(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call(MULTIPLY, vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.mul(rhs.z3),
         }
@@ -412,14 +327,7 @@ impl Div for Expression {
 
     fn div(self, rhs: Self) -> Self::Output {
         Self {
-            cel: cel::parser::Expression {
-                id: 0,
-                expr: cel::common::ast::Expr::Call(CallExpr {
-                    func_name: DIVIDE.to_owned(),
-                    target: None,
-                    args: vec![self.cel, rhs.cel],
-                }),
-            },
+            cel: SharedExpression::call(DIVIDE, vec![self.cel, rhs.cel]),
             #[cfg(feature = "z3")]
             z3: self.z3.div(rhs.z3),
         }
@@ -490,7 +398,7 @@ impl Shape {
 //}
 //}
 
-struct MyExpression<'a>(&'a cel::parser::Expression);
+pub(crate) struct MyExpression<'a>(pub(crate) &'a cel::parser::Expression);
 
 impl Display for MyExpression<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -590,20 +498,142 @@ impl Display for MyExpression<'_> {
 
 impl Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", MyExpression(&self.cel))?;
+        write!(f, "{}", self.cel)?;
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use cel::{Context, Value};
+    use cel::Context;
     #[cfg(feature = "z3")]
     use z3::Solver;
     #[cfg(feature = "z3")]
     use z3::ast::{Ast, Int};
 
     use crate::{Error, Expression, Result};
+
+    #[test]
+    fn repeated_subexpressions_share_nodes_and_calculation_results() {
+        let mut expression = Expression::new_dynamic("n");
+        let mut equivalent = Expression::new_dynamic("n");
+        for _ in 0..28 {
+            expression = expression.clone() + expression;
+            equivalent = equivalent.clone() + equivalent;
+        }
+        assert!(expression.cel.structurally_equal(&equivalent.cel));
+        let mut shape_context = crate::Context::new(&Default::default());
+        let broadcast = shape_context
+            .broadcast_dim(expression.clone(), equivalent, "equal shared dimensions")
+            .unwrap();
+        assert!(broadcast.cel.structurally_equal(&expression.cel));
+        let mut context = Context::default();
+        context.add_variable("n", 1).unwrap();
+        let mut values = crate::shared::ValueCache::new();
+        assert_eq!(
+            expression.cel.resolve(&context, &mut values).unwrap(),
+            (1_i64 << 28).into()
+        );
+        assert_eq!(values.len(), 29);
+        let mut bounds = crate::shared::BoundCache::new();
+        assert_eq!(
+            expression
+                .upper_bound_with_cache(&[("n", 1)].into_iter().collect(), &mut bounds)
+                .unwrap(),
+            1 << 28
+        );
+        assert_eq!(bounds.len(), 29);
+        assert!(format!("{expression:?}").len() < 1024);
+    }
+
+    #[test]
+    fn calculation_caches_do_not_outlive_input_bindings() {
+        let n = Expression::new_dynamic("n");
+        let square = n.clone() * n;
+        let shape = crate::Shape::from_vec(vec![square.clone(), square.clone()].into());
+        let context = crate::Context::new(&Default::default());
+        for n in [2, 3, 4] {
+            let bindings = [("n", n)].into_iter().collect();
+            assert_eq!(
+                context
+                    .compute_shapes_cel_comcrete(std::slice::from_ref(&shape), &bindings)
+                    .unwrap()[0]
+                    .as_slice(),
+                &[n * n, n * n]
+            );
+            assert_eq!(
+                context
+                    .compute_shape_upper_bounds(&shape, &bindings)
+                    .unwrap(),
+                [n * n, n * n]
+            );
+            assert_eq!(square.upper_bound(&bindings).unwrap(), n * n);
+        }
+    }
+
+    #[test]
+    fn evaluation_temporaries_do_not_capture_input_names() {
+        let expression = Expression::new_dynamic("__shape_arg_0") + Expression::new_const(2);
+        let shape = crate::Shape::from_vec(vec![expression].into());
+        let context = crate::Context::new(&Default::default());
+        assert_eq!(
+            context
+                .compute_shapes_cel_comcrete(
+                    &[shape],
+                    &[("__shape_arg_0", 7)].into_iter().collect()
+                )
+                .unwrap()[0]
+                .as_slice(),
+            &[9]
+        );
+    }
+
+    #[test]
+    fn parsed_and_constructed_expressions_keep_the_same_text_and_values() {
+        let expression = (Expression::new_dynamic("n") + Expression::new_const(2))
+            .max(Expression::new_const(4))
+            .round_scaled(1.5)
+            .unwrap();
+        let text = expression.to_string();
+        let parsed = Expression::parse(&text).unwrap();
+        assert_eq!(parsed.to_string(), text);
+        assert!(expression.cel.structurally_equal(&parsed.cel));
+        let shape = crate::Shape::from_vec(vec![expression, parsed].into());
+        let context = crate::Context::new(&Default::default());
+        assert_eq!(
+            context
+                .compute_shapes_cel_comcrete(&[shape], &[("n", 8)].into_iter().collect())
+                .unwrap()[0]
+                .as_slice(),
+            &[15, 15]
+        );
+    }
+
+    #[cfg(not(feature = "z3"))]
+    #[test]
+    fn parsed_cel_fallback_keeps_lazy_evaluation_and_type_errors() {
+        let context = crate::Context::new(&Default::default());
+        let expression = Expression::parse("(true ? 2 : missing) + 3").unwrap();
+        let shape = crate::Shape::from_vec(vec![expression].into());
+        assert_eq!(
+            context
+                .compute_shapes_cel_comcrete(&[shape], &Default::default())
+                .unwrap()[0]
+                .as_slice(),
+            &[5]
+        );
+        for text in ["n / 0", "n + true", "missing + 1"] {
+            let expression = Expression::parse(text).unwrap();
+            let ast = cel::parser::Parser::default().parse(text).unwrap();
+            let mut context = Context::default();
+            context.add_variable("n", 4).unwrap();
+            assert_eq!(
+                expression.cel.resolve(&context, &mut Default::default()),
+                context.resolve(&ast),
+                "{text}"
+            );
+        }
+    }
 
     #[cfg(feature = "z3")]
     #[test]
@@ -644,7 +674,10 @@ mod tests {
             Expression::new_const(1) + Expression::new_const(2) - Expression::new_dynamic("foo");
         let mut context = Context::default();
         context.add_variable("foo", 1).unwrap();
-        assert_eq!(Value::resolve(&expr.cel, &context).unwrap(), 2.into());
+        assert_eq!(
+            expr.cel.resolve(&context, &mut Default::default()).unwrap(),
+            2.into()
+        );
 
         #[cfg(feature = "z3")]
         let foo = z3::ast::Int::new_const("foo");
