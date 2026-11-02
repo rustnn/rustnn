@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 NVIDIA
+//
+// SPDX-License-Identifier: Apache-2.0
+
 pub mod cel;
 #[cfg(feature = "z3")]
 pub mod z3;

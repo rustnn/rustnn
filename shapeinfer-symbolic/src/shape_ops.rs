@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 NVIDIA
+//
+// SPDX-License-Identifier: Apache-2.0
+
 //! Tensor shape algebra independent of any graph format or operator naming scheme.
 
 use crate::{Context, Error, Expression, Result, expression::Shape};
