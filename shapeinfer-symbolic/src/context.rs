@@ -133,6 +133,12 @@ impl Context {
         rhs: Expression,
         assertion_message: &str,
     ) -> Result<Expression> {
+        if lhs.as_const() == Some(1) {
+            return Ok(rhs);
+        }
+        if rhs.as_const() == Some(1) || lhs.to_string() == rhs.to_string() {
+            return Ok(lhs);
+        }
         #[cfg(feature = "z3")]
         self.solver
             .assert(Bool::or(&[lhs.z3.eq(&rhs.z3), lhs.z3.eq(1), rhs.z3.eq(1)]));

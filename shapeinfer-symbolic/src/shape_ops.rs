@@ -428,6 +428,13 @@ pub fn window_output(
     if dilation == 0 {
         return Err(Error::ZeroWindowDilation);
     }
+    if stride == 1
+        && kernel.as_const().is_some_and(|kernel| {
+            (kernel as i128 - 1) * dilation as i128 == padding[0] as i128 + padding[1] as i128
+        })
+    {
+        return Ok(input);
+    }
     let effective_kernel = (kernel - Expression::new_const(1))
         * Expression::new_const(dilation as i64)
         + Expression::new_const(1);
@@ -589,6 +596,46 @@ pub fn flatten_at_axis(shape: &Shape, axis: usize) -> Result<Shape> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_residual_convolutions_preserve_compact_spatial_expressions() {
+        let mut context = Context::new(&crate::context::ContextOptions::default());
+        let input = Shape::from_vec(
+            vec![
+                Expression::new_const(1),
+                Expression::new_const(3),
+                Expression::new_dynamic("height"),
+                Expression::new_dynamic("width"),
+            ]
+            .into(),
+        );
+        let filter = static_shape(&[3, 3, 3, 3]);
+        let options = Conv2dOptions {
+            padding: [1; 4],
+            ..Default::default()
+        };
+        let mut output = input.clone();
+        for _ in 0..256 {
+            let convolution = conv2d(&mut context, &output, &filter, &options).unwrap();
+            output = broadcast(&mut context, &output, &convolution).unwrap();
+            output = broadcast(&mut context, &output, &static_shape(&[1])).unwrap();
+        }
+        assert_eq!(
+            output
+                .iter()
+                .map(ToString::to_string)
+                .collect::<std::vec::Vec<_>>(),
+            ["1", "3", "height", "width"]
+        );
+        let bindings = [("height", 12), ("width", 18)].into_iter().collect();
+        assert_eq!(
+            context
+                .compute_shapes_cel_comcrete(&[output], &bindings)
+                .unwrap()[0]
+                .as_slice(),
+            &[1, 3, 12, 18]
+        );
+    }
 
     fn static_shape(dimensions: &[i64]) -> Shape {
         Shape::from_vec(
