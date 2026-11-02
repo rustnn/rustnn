@@ -777,15 +777,28 @@ impl TrtxConverter {
         }
         for op in &graph.operations {
             match op {
-                // TensorRT evaluates constant INT32 min/max/div at build time,
+                // TensorRT evaluates constant INT32 binary arithmetic at build time
+                // (including WebNN UINT32, which uses INT32 storage),
                 // even with kREFIT_INDIVIDUAL. The original weights then have no
                 // refit prototype. Bake both operands and disable topology-only
                 // engine caching so different values cannot reuse a folded result.
-                Operation::Min { .. } | Operation::Max { .. } | Operation::Div { .. }
+                //
+                // int8,uint8,int64,uint64 which are partially working/not-working have their own
+                // WARs here and are always baked
+                Operation::Min { .. }
+                | Operation::Max { .. }
+                | Operation::Div { .. }
+                | Operation::Add { .. }
+                | Operation::Sub { .. }
+                | Operation::Mul { .. }
+                | Operation::Pow { .. }
                     if op.input_operands().iter().all(|&id| {
                         graph.operand(id).is_some_and(|operand| {
                             operand.kind == OperandKind::Constant
-                                && operand.descriptor.data_type == DataType::Int32
+                                && matches!(
+                                    operand.descriptor.data_type,
+                                    DataType::Int32 | DataType::Uint32
+                                )
                         })
                     }) =>
                 {
