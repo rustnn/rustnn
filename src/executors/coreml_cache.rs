@@ -5,8 +5,8 @@
 //! the `.mlmodelc` it produces is copied into `<dir>/<key>/bundle.mlmodelc` next to a
 //! `manifest.json`, and the next build of the same graph loads that bundle with
 //! `MLModel(contentsOf:configuration:)` instead of compiling. The directory entries come from
-//! [`crate::backends::caching::BundleCacheEntry`]; this module computes the key, loads a hit
-//! and publishes a miss.
+//! [`crate::backends::coreml_bundle_cache::BundleCacheEntry`]; this module computes the key,
+//! loads a hit and publishes a miss.
 //!
 //! The cache is advisory: whatever goes wrong with it is logged at warn level and recorded in
 //! [`CacheOutcome`], and the graph is compiled as without a cache.
@@ -27,7 +27,7 @@ use super::{
     rustnn_coreml_load, shim_error_to_string,
 };
 use crate::backend_selection::DeviceType;
-use crate::backends::caching::{BundleCacheEntry, BundleManifest, copy_directory};
+use crate::backends::coreml_bundle_cache::{BundleCacheEntry, BundleManifest, copy_directory};
 use crate::error::GraphError;
 use crate::mlcontextoptions::CoremlFloat16Precision;
 
@@ -405,7 +405,7 @@ mod tests {
         assert_eq!(a, b, "the directory is not part of the key");
         assert_eq!(a.key(), b.key());
         assert_eq!(a.key().len(), 16);
-        crate::backends::caching::validate_cache_key(&a.key()).unwrap();
+        crate::backends::coreml_bundle_cache::validate_cache_key(&a.key()).unwrap();
         assert_eq!(a.named(), a.manifest().key_inputs);
     }
 
