@@ -478,13 +478,22 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             crate::converters::TrtxConverter::unused_constant_operand_ids(&graph);
 
         // no caching for non_refittable_constants for now, non_refittable_constants will end up in
-        // the engine and potentially grow our cache to much. We should only consider including
-        // weights into engines for very small constants
-        if self.caching_enabled && non_refittable_constants.is_empty() {
-            let key =
-                // if deciding to do hashing for non_refittable_constants
-                //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
-                graph.hash_identifier(&TRTX_SUFFIX_ENGINES, WeightsToHash::None);
+        // the engine and potentially grow our cache to much.
+        // We allow putting small non-refittable constants into the engine
+        if self.caching_enabled
+            && non_refittable_constants.iter().all(|&c| {
+                graph.operands[c as usize]
+                    .descriptor
+                    .element_count()
+                    .expect("gather_baked_constant_operand_ids fails on dynamic constants!")
+                    < 128 // 128 elements were chosen arbitrarily as the threshold for "small" constants
+            })
+        {
+            let key = graph.hash_identifier(
+                &TRTX_SUFFIX_ENGINES,
+                WeightsToHash::Some(&non_refittable_constants),
+            );
+
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
