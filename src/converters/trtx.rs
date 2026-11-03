@@ -729,7 +729,9 @@ impl TrtxConverter {
     ///
     /// These are transformed or folded at compile time in the TRT network and must not be marked
     /// refittable or refitted at engine load.
-    pub fn gather_baked_constant_operand_ids(graph: &GraphInfo) -> HashSet<u32> {
+    pub(crate) fn gather_baked_constant_operand_ids(
+        graph: &GraphInfo,
+    ) -> Result<HashSet<u32>, GraphError> {
         let mut ids = HashSet::new();
         let graph_has_qdq = graph.operations.iter().any(|op| {
             matches!(
@@ -737,73 +739,37 @@ impl TrtxConverter {
                 Operation::QuantizeLinear { .. } | Operation::DequantizeLinear { .. }
             )
         });
-        if graph_has_qdq {
-            for (id, operand) in graph.operands.iter().enumerate() {
-                if operand.kind == OperandKind::Constant {
+
+        for (id, operand) in graph.operands.iter().enumerate() {
+            if operand.kind == OperandKind::Constant {
+                let needs_baking =
+                // all constants currently non-refittable if graph has any Q/DQ ops
+                    graph_has_qdq
+                // TensorRT folds `Cast(constant)` into a new constant, so a constant whose
+                // consumers are all casts loses its refit prototype ("The weights cannot be
+                // refitted"); e.g. a scalar fp16 epsilon cast to float32 in every layer norm.
+                 || (Self::integer_constant_only_casts_to_int32(graph, id as u32)
+                    || Self::constant_only_feeds_casts(graph, id as u32))
+                 // DataType::Int64 | DataType::Uint64 are not refittable
+                 || matches!(
+                    operand.descriptor.data_type,
+                    DataType::Int64 | DataType::Uint64 | DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4)
+                 // TensorRT loves to constant fold small int32/uint32 constants
+                 // A change in behavior seems to be triggered for more the 64 elements. There is
+                 // the suspicion that DataType::Int64 | DataType::Uint64 behave the same way
+                 // https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/dynamic-shapes-advanced.html#execution-tensors-vs-shape-tensors
+                 || (matches!(
+                    operand.descriptor.data_type,
+                    DataType::Int32 | DataType::Uint32)
+                    && operand.descriptor.element_count().ok_or_else(|| GraphError::DynamicConstant{operand_id: id as u32, operand: operand.clone()})? <= 64);
+
+                if needs_baking {
                     ids.insert(id as u32);
                 }
             }
         }
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && matches!(
-                    operand.descriptor.data_type,
-                    DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4
-                )
-            {
-                ids.insert(id as u32);
-            }
-        }
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && matches!(
-                    operand.descriptor.data_type,
-                    DataType::Int64 | DataType::Uint64
-                )
-            {
-                ids.insert(id as u32);
-            }
-        }
-        // TensorRT folds `Cast(constant)` into a new constant, so a constant whose
-        // consumers are all casts loses its refit prototype ("The weights cannot be
-        // refitted"); e.g. a scalar fp16 epsilon cast to float32 in every layer norm.
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && (Self::integer_constant_only_casts_to_int32(graph, id as u32)
-                    || Self::constant_only_feeds_casts(graph, id as u32))
-            {
-                ids.insert(id as u32);
-            }
-        }
         for op in &graph.operations {
             match op {
-                // TensorRT evaluates constant INT32 binary arithmetic at build time
-                // (including WebNN UINT32, which uses INT32 storage),
-                // even with kREFIT_INDIVIDUAL. The original weights then have no
-                // refit prototype. Bake both operands and disable topology-only
-                // engine caching so different values cannot reuse a folded result.
-                //
-                // int8,uint8,int64,uint64 which are partially working/not-working have their own
-                // WARs here and are always baked
-                Operation::Min { .. }
-                | Operation::Max { .. }
-                | Operation::Div { .. }
-                | Operation::Add { .. }
-                | Operation::Sub { .. }
-                | Operation::Mul { .. }
-                | Operation::Pow { .. }
-                    if op.input_operands().iter().all(|&id| {
-                        graph.operand(id).is_some_and(|operand| {
-                            operand.kind == OperandKind::Constant
-                                && matches!(
-                                    operand.descriptor.data_type,
-                                    DataType::Int32 | DataType::Uint32
-                                )
-                        })
-                    }) =>
-                {
-                    ids.extend(op.input_operands());
-                }
                 Operation::Gather { .. }
                 | Operation::GatherND { .. }
                 | Operation::GatherElements { .. } => {
@@ -892,7 +858,7 @@ impl TrtxConverter {
                 }
             }
         }
-        ids
+        Ok(ids)
     }
 
     /// Build TensorRT network from WebNN graph.
@@ -901,7 +867,7 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
-        let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph);
+        let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph)?;
         let io_binding_names = Self::engine_io_binding_names(graph);
 
         // Step 1: Add inputs

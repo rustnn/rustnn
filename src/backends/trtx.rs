@@ -469,7 +469,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         let mut hash_key: Option<String> = None;
 
         let non_refittable_constants =
-            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
+            crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph)?;
         // Dead constants (no consumer) are eliminated by the TensorRT builder and
         // have no refit prototype; they are neither marked refittable nor refitted.
         // They do not take part in the caching decision: their values cannot
@@ -510,8 +510,6 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
-            let non_refittable_constants =
-                crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
             for constant_id in graph.constant_operand_ids_to_handles.keys() {
                 if !non_refittable_constants.contains(constant_id)
                     && !unused_constants.contains(constant_id)
