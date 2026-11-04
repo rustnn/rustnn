@@ -1,0 +1,116 @@
+---
+source: src/mlgraphbuilder.rs
+expression: builder.graph
+---
+Some(
+    GraphInfo {
+        operands: [
+            Operand {
+                kind: Input,
+                descriptor: OperandDescriptor {
+                    data_type: Float32,
+                    shape: [
+                        Dynamic(
+                            DynamicDimension {
+                                name: "fritz",
+                                max_size: 10,
+                            },
+                        ),
+                        Static(
+                            0,
+                        ),
+                    ],
+                    pending_permutation: [],
+                },
+                name: Some(
+                    "input",
+                ),
+            },
+            Operand {
+                kind: Intermediate,
+                descriptor: OperandDescriptor {
+                    data_type: Int64,
+                    shape: [
+                        Static(
+                            2,
+                        ),
+                    ],
+                    pending_permutation: [],
+                },
+                name: Some(
+                    "shape_op",
+                ),
+            },
+            Operand {
+                kind: Constant,
+                descriptor: OperandDescriptor {
+                    data_type: Int64,
+                    shape: [],
+                    pending_permutation: [],
+                },
+                name: None,
+            },
+            Operand {
+                kind: Intermediate,
+                descriptor: OperandDescriptor {
+                    data_type: Int64,
+                    shape: [
+                        Static(
+                            2,
+                        ),
+                    ],
+                    pending_permutation: [],
+                },
+                name: None,
+            },
+        ],
+        input_operands: [
+            0,
+        ],
+        output_operands: [],
+        operations: [
+            Shape {
+                input: 0,
+                options: Some(
+                    MLOperatorOptions {
+                        label: "shape_op",
+                    },
+                ),
+                outputs: [
+                    1,
+                ],
+            },
+            Mul {
+                a: 1,
+                b: 2,
+                options: Some(
+                    MLOperatorOptions {
+                        label: "",
+                    },
+                ),
+                outputs: [
+                    3,
+                ],
+            },
+        ],
+        constant_operand_ids_to_handles: {
+            2: ConstantData {
+                data: [
+                    2,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                label: None,
+            },
+        },
+        id_to_constant_tensor_operand_map: {
+            2: "2",
+        },
+        quantized: false,
+    },
+)

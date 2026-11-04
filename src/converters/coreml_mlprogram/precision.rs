@@ -656,7 +656,7 @@ fn pack_half_widenings(
             && !shape.last().is_some_and(|dimension| match dimension {
                 GraphDimension::Static(size) => *size == 1,
                 // Bounded dimensions can reach one at prediction time.
-                GraphDimension::Dynamic(_) => true,
+                GraphDimension::Dynamic(_) | GraphDimension::Expression(_) => true,
             })
         {
             // Real produced features with a non-singleton innermost axis
@@ -671,6 +671,7 @@ fn pack_half_widenings(
                 product.checked_mul(match dimension {
                     GraphDimension::Static(size) => *size,
                     GraphDimension::Dynamic(dimension) => dimension.max_size,
+                    GraphDimension::Expression(expression) => expression.max_size,
                 })
             })
             .ok_or_else(|| {

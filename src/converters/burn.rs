@@ -113,7 +113,7 @@ fn descriptor_shape_to_i64(shape: &[Dimension]) -> Vec<i64> {
         .iter()
         .map(|dim| match dim {
             Dimension::Static(v) => i64::from(*v),
-            Dimension::Dynamic(_) => -1,
+            _ => -1,
         })
         .collect()
 }

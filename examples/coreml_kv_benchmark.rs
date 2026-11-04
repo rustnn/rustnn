@@ -87,7 +87,7 @@ fn allocate(context: &mut MLContext<'_>, descriptor: &OperandDescriptor) -> Resu
         .iter()
         .map(|d| match d {
             rustnn::graph::Dimension::Static(n) => u64::from(*n),
-            rustnn::graph::Dimension::Dynamic(_) => 1,
+            _ => 1,
         })
         .collect();
     let mut tensor = context.create_tensor(
@@ -743,6 +743,10 @@ fn smollm_probe(config: &BenchmarkConfig, path: &Path, device_type: DeviceType) 
                             d.max_size
                         ),
                     },
+
+                    rustnn::graph::Dimension::Expression(expr) => {
+                        anyhow::bail!("unhandled SmolLM expression dimension {expr:?}")
+                    }
                 })
                 .collect::<Result<Vec<_>>>()?;
             let tensor = context.create_tensor(

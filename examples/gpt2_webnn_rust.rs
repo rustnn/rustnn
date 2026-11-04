@@ -56,10 +56,7 @@ mod app {
     }
 
     fn dim_to_usize(dim: &rustnn::graph::Dimension) -> usize {
-        match dim {
-            rustnn::graph::Dimension::Static(v) => *v as usize,
-            rustnn::graph::Dimension::Dynamic(d) => d.max_size as usize,
-        }
+        dim.get_static_or_max_size() as usize
     }
 
     fn detect_layout(

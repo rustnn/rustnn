@@ -185,7 +185,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
                 .iter()
                 .map(|dimension| match Dimension::from(dimension.clone()) {
                     Dimension::Static(size) => Some(size),
-                    Dimension::Dynamic(_) => None,
+                    _ => None,
                 })
                 .collect::<Option<_>>()?;
             if requested != destination_shape {

@@ -6769,7 +6769,7 @@ fn dimensions_to_i32(shape: &[Dimension]) -> Vec<i32> {
         .iter()
         .map(|d| match d {
             Dimension::Static(n) => *n as i32,
-            Dimension::Dynamic(_) => -1,
+            _ => -1,
         })
         .collect()
 }

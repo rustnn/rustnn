@@ -152,6 +152,9 @@ pub mod runtime_checks;
 pub mod shape_inference;
 pub mod tensor;
 pub mod webnn_json;
+
+#[cfg(feature = "dynamic-inputs")]
+pub mod dynamic_shapes_explainer;
 pub(crate) mod webnn_save;
 
 #[cfg(all(target_os = "macos", feature = "coreml-runtime"))]

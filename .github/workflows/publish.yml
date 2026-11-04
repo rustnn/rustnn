@@ -59,5 +59,6 @@ jobs:
           github.event_name == 'release' ||
           (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')
         run: |
-          cargo publish -p rustnn --token ${{ secrets.CRATES_IO_TOKEN }}
+          # Publish all crates in this workspace. Cargo handles dependency order
+          cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
         continue-on-error: false

@@ -163,6 +163,18 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
         | Operation::GruCell { .. }
         | Operation::Lstm { .. }
         | Operation::LstmCell { .. } => None,
+        #[cfg(feature = "dynamic-inputs")]
+        Operation::Range { .. }
+        | Operation::ModulusFloor { .. }
+        | Operation::ModulusTruncate { .. }
+        | Operation::ReshapeTo2d { .. }
+        | Operation::ReshapeDynamic { .. }
+        | Operation::ExpandDynamic { .. }
+        | Operation::SliceDynamic { .. }
+        | Operation::PadDynamic { .. }
+        | Operation::SplitDynamic { .. }
+        | Operation::Resample2dDynamic { .. }
+        | Operation::TileDynamic { .. } => None,
     }
 }
 
