@@ -58,3 +58,10 @@ Persist both the model and any weights returned in
 [ConvertedGraph](https://rustnn.github.io/rustnn/api/rustnn/converters/struct.ConvertedGraph.html);
 these backend artifacts are separate from the source `.webnn`/SafeTensors pair. See the
 [conversion recipe](https://rustnn.github.io/rustnn/user-guide/examples/#convert-to-onnx-without-a-backend).
+
+### Symbolic shapes on import
+
+Graph import preserves symbolic intermediate shapes through shape inference, rather than
+substituting the declared maximum input extents. Reshape target names containing arithmetic
+(such as `h / 2`) are interpreted as size expressions. This lets a bounded dynamic graph
+infer and validate output sizes for inputs smaller than its maximum shape.

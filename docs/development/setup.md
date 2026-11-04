@@ -197,3 +197,72 @@ Use `cargo check --features burn-cpu-runtime --all-targets` and
 interpreter and its public-executor datatype regressions. No native runtime
 installation is needed. Run `make test-wpt-burn-cpu` and regenerate its expected failures
 with `make wpt-sync-burn-cpu`. See [Burn CPU](../integration/burn-cpu.md).
+
+## ESRGAN shape benchmark
+
+Run `make benchmark-esrgan` with `trtx-runtime`, CUDA and TensorRT-RTX available. The benchmark
+reads `~/Downloads/esr_gan_fp16_fixed/real_esrgan_x2_fp16_resize_fixed.webnn` by default;
+pass another topology with `ESRGAN_ARGS='--model /path/model.webnn'`. No safetensors file is
+needed: finite, deterministic synthetic FP16 constants are generated before measurement.
+These runs measure performance, not image quality.
+
+All configurations infer at NCHW `[1, 3, 1080, 1920]` and produce `[1, 3, 2160, 3840]`:
+
+| Configuration | Minimum spatial input | Preferred spatial input | Maximum spatial input |
+|---|---|---|---|
+| `static-1080p` | 1080 x 1920 | 1080 x 1920 | 1080 x 1920 |
+| `dynamic-1080p` | 2 x 2 | 1080 x 1920 | 1080 x 1920 |
+| `dynamic-2k` | 2 x 2 | 1080 x 1920 | 1440 x 2560 |
+
+Here "2k" means QHD (2560 x 1440). ESRGAN's pixel-unshuffle requires even spatial dimensions.
+The dynamic cases retain runtime dimensions throughout reshapes and resizes.
+
+CSV output reports each engine compilation, first inference (including TensorRT JIT), and the
+mean/minimum/maximum warmed inference times in milliseconds. Compilation includes graph lowering,
+engine building, deserialization, refit and execution-context creation; it excludes parsing,
+constant generation, context initialization and graph cloning. Dynamic activation memory is
+initially allocated for the preferred 1080p shape. Inference includes dispatch and
+GPU completion, excluding tensor allocation and host/device transfers. Engine caching, runtime
+caching and CUDA graph capture are disabled for all cases. CUDA synchronization brackets each
+measurement; warmup follows the separately timed first inference.
+
+```bash
+make benchmark-esrgan ESRGAN_ARGS='--device 0 --compile-samples 3 --infer-samples 10 --warmup 3'
+make benchmark-esrgan ESRGAN_ARGS='--case dynamic-2k'
+make benchmark-esrgan ESRGAN_ARGS='--min-height 1080 --min-width 1920'
+make benchmark-esrgan ESRGAN_ARGS='--validate-only'
+cargo test --no-default-features --features trtx-runtime,dynamic-inputs \
+  --test test_trtx_dynamic_images -- --ignored
+```
+
+Use `--min-height` and `--min-width` to narrow dynamic profiles while keeping inference and
+the preferred shape at 1080p. Both minima must be even and between 2 and the inference size.
+The CSV includes each case's minimum height and width.
+
+Use `--validate-only` to parse the real topology and check all three input/output shape
+configurations without a GPU. Select `--case` to isolate a failure or benchmark one profile.
+Full-resolution engine builds can require substantial device memory; compilation failures are
+returned as errors, never recorded as successful timing samples.
+
+To compare the original ONNX network with the TensorRT-RTX CLI, use the same profile bounds,
+active shape, disabled CUDA graphs and runtime-sized activation memory. The ONNX CLI uses the
+model's real weights; the rustnn benchmark uses synthetic weights, so this checks performance
+rather than output equality. Its reported engine-build scope also differs from rustnn's full
+compile scope.
+
+```bash
+~/Downloads/TensorRT-RTX-1.7.1.116/bin/tensorrt_rtx \
+  --onnx="$HOME/Downloads/esr_gan_fp16_fixed/real_esrgan_x2_fp16_resize_fixed.onnx" \
+  --minShapes=input:1x3x2x2 --optShapes=input:1x3x1080x1920 \
+  --maxShapes=input:1x3x1440x2560 --shapes=input:1x3x1080x1920 \
+  --device=0 --allocationStrategy=runtime --noCudaGraph \
+  --iterations=5 --duration=0 --warmUp=4000 --avgRuns=1
+```
+
+Use `--maxShapes=input:1x3x1080x1920` for the smaller maximum, and
+`--minShapes=input:1x3x1080x1920` for the narrower minimum. A fixed-shape ONNX comparison
+requires a copy of the model whose input dimensions are made concrete before building.
+For Nsight Systems captures, prefix the executable command with
+`nsys-internal profile -tcuda,nvtx,osrt --gpu-metrics-devices=all --output=<report-prefix>`.
+Run GPU benchmarks sequentially and keep timings gathered under profiling separate from
+unprofiled timing samples.

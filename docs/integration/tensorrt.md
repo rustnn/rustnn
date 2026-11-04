@@ -41,6 +41,22 @@ is the first choice when the feature is enabled and a CUDA device is present. Fo
 `with_rustnn_device_hint(BackendDevice::Trtx { cuda_device_idx })`. `RUST_LOG=info` prints the
 devices found and `Backend selected: Trtx { cuda_device_idx: 0 }`.
 
+## Dynamic image inputs
+
+With `dynamic-inputs`, the MLContext path supports the image-network operations described in
+[converter rules](https://rustnn.github.io/rustnn/development/converters/#tensorrt-rtx).
+`TrtxOptions::input_profiles` supplies minimum and preferred shapes per input binding; maxima
+come from the graph. Defaults are 1 for dynamic minima and the maximum for preferred sizes.
+Set suitable minima for networks such as ESRGAN whose pixel-unshuffle requires even dimensions.
+Each builder owns its optimization profile configuration. Profile choices participate in engine
+cache keys. Dynamic activation memory is allocated for the preferred shape at build time and
+grows as needed after binding changed input shapes; previous inference finishes before resizing.
+Dispatch binds active input shapes; CUDA graph capture is disabled for dynamic graphs.
+The standalone serialized-engine conversion path continues to require static shapes.
+
+See [ESRGAN shape benchmark](https://rustnn.github.io/rustnn/development/setup/#esrgan-shape-benchmark)
+for compile and inference measurements with synthetic weights.
+
 ## How a graph runs
 
 1. `TrtxConverter::build_network` translates the `GraphInfo` into a TensorRT network. Constants
@@ -117,3 +133,11 @@ iterating.
   with casts in the converter; cases that still fail show up as missing PASS snapshots and on the
   WPT dashboard.
 - Engines are specific to the GPU architecture; the cache is per machine.
+
+### Compile phase timings
+
+`RUST_LOG=rustnn::backends::trtx=debug` reports host elapsed times for network preparation,
+serialized engine building, deserialization, refit weight registration, refitting, and execution
+context/activation setup. The ESRGAN benchmark's compile timer covers all these phases and waits
+for GPU completion. Compare the serialized-engine phase with the ONNX CLI's engine-build time;
+its engine-build message excludes the later deserialization, refit and context setup phases.

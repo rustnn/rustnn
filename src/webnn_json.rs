@@ -19,7 +19,7 @@
 //! Conversion between [`GraphInfo`] and the `webnn-graph` JSON AST (`GraphJson`).
 //!
 //! [`from_graph_json`] imports a parsed `.webnn` or JSON graph, inlining constants and
-//! inferring missing shapes; [`to_graph_json`] exports a graph for serialization. Both keep
+//! inferring missing shapes (including symbolic intermediates); [`to_graph_json`] exports a graph for serialization. Both keep
 //! the `quantized` marker of the interchange format.
 
 use crate::error::GraphError;
@@ -530,6 +530,7 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
         operand_map.insert(name.clone(), id);
     }
 
+    let mut symbolic_context = shapeinfer_symbolic::Context::new(&Default::default());
     for node in &nodes {
         let input_ids = node
             .inputs
@@ -593,14 +594,47 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                 node.id, node.op
             ))
         })?;
-        let outputs = recorder
-            .record_operation(operation, Some(&output_names))
-            .map_err(|error| {
-                conversion_error(format!(
-                    "node '{}' ({}) could not be recorded: {error}",
-                    node.id, node.op
-                ))
-            })?;
+        let symbolic =
+            operation.inputs().iter().any(|&id| {
+                recorder.graph().operands[id as usize]
+                    .descriptor
+                    .has_dynamic_dimensions()
+            }) || crate::mlgraphbuilder::operation_has_symbolic_shape_parameters(&operation);
+        let descriptors = if symbolic {
+            let inferred = if operation.output_operands().len() == 1 {
+                crate::mlgraphbuilder::symbolic_descriptor(
+                    &operation,
+                    recorder.graph(),
+                    &mut symbolic_context,
+                )
+                .map(|d| vec![d])
+            } else {
+                crate::mlgraphbuilder::symbolic_multi_descriptors(
+                    &operation,
+                    recorder.graph(),
+                    &mut symbolic_context,
+                )
+            };
+            Some(inferred.map_err(|error| {
+                conversion_error(format!("node '{}' ({}): {error}", node.id, node.op))
+            })?)
+        } else {
+            None
+        };
+        let outputs = match descriptors {
+            Some(descriptors) => recorder.record_operation_with_descriptors(
+                operation,
+                Some(&output_names),
+                Some(descriptors),
+            ),
+            None => recorder.record_operation(operation, Some(&output_names)),
+        }
+        .map_err(|error| {
+            conversion_error(format!(
+                "node '{}' ({}) could not be recorded: {error}",
+                node.id, node.op
+            ))
+        })?;
         for (name, operand) in output_names.into_iter().zip(outputs) {
             operand_map.insert(name, operand.id as u32);
         }
@@ -2218,5 +2252,46 @@ mod tests {
             owned.constant_operand_ids_to_handles[&0].data.as_ptr(),
             original_pointer
         );
+    }
+}
+
+#[cfg(all(test, feature = "dynamic-inputs"))]
+mod dynamic_image_import_tests {
+    #[test]
+    fn preserves_active_shapes_through_reshape_conv_and_resize() {
+        let source = r#"webnn_graph "image" v2 {
+            inputs { input: f32[1, 1, dyn("h", 6), dyn("w", 8)]; }
+            consts { filter: f32[1, 1, 1, 1] @scalar(1.0); }
+            nodes {
+                [a] = reshape(input, newShape=[1, 1, {"name":"h / 2","maxSize":3}, 2, {"name":"w","maxSize":8}]);
+                [b] = reshape(a, newShape=[1, 1, {"name":"h","maxSize":6}, {"name":"w","maxSize":8}]);
+                [c] = conv2d(b, filter);
+                [output] = resample2d(c, axes=[2, 3], scales=[2.0, 2.0]);
+            }
+            outputs { output; }
+        }"#;
+        let parsed = webnn_graph::parser::parse_wg_text(source).unwrap();
+        let graph = super::from_graph_json(&parsed).unwrap();
+        let descriptor = &graph.operands[graph.output_operands[0] as usize].descriptor;
+        assert!(descriptor.has_dynamic_dimensions());
+        assert_eq!(descriptor.static_or_max_shape(), [1, 1, 12, 16]);
+        let shape = crate::graph::to_symbolic_shape(&descriptor.shape).unwrap();
+        let context = shapeinfer_symbolic::Context::new(&Default::default());
+        let actual = context
+            .compute_shapes_cel_comcrete(
+                &[shape],
+                &std::collections::BTreeMap::from([("h", 4), ("w", 6)]),
+            )
+            .unwrap();
+        assert_eq!(actual[0].as_slice(), [1, 1, 8, 12]);
+        let reshape = &graph.operands[graph.operations[0].output_operands_slice()[0] as usize];
+        let shape = crate::graph::to_symbolic_shape(&reshape.descriptor.shape).unwrap();
+        let actual = context
+            .compute_shapes_cel_comcrete(
+                &[shape],
+                &std::collections::BTreeMap::from([("h", 4), ("w", 6)]),
+            )
+            .unwrap();
+        assert_eq!(actual[0].as_slice(), [1, 1, 2, 2, 6]);
     }
 }

@@ -486,13 +486,13 @@ pub fn split_equal(
         return Err(Error::SplitZeroParts);
     }
     let dims: std::vec::Vec<_> = shape.iter().cloned().collect();
-    if let Some(value) = dims[axis].as_const() {
-        if value % parts as i64 != 0 {
-            return Err(Error::SplitNotDivisible {
-                dimension: value,
-                parts,
-            });
-        }
+    if let Some(value) = dims[axis].as_const()
+        && value % parts as i64 != 0
+    {
+        return Err(Error::SplitNotDivisible {
+            dimension: value,
+            parts,
+        });
     }
     let width = dims[axis].clone() / Expression::new_const(parts as i64);
     context.ensure_shape(&Shape::from_vec(vec![width.clone()].into()))?;
@@ -554,15 +554,15 @@ pub fn slice(shape: &Shape, starts: &[u32], sizes: &Shape, strides: &[u32]) -> R
         if stride == 0 {
             return Err(Error::SliceZeroStride { axis });
         }
-        if let (Some(input), Some(size)) = (input.as_const(), size.as_const()) {
-            if i64::from(start) + size > input {
-                return Err(Error::SliceOutOfBounds {
-                    axis,
-                    start,
-                    size,
-                    input,
-                });
-            }
+        if let (Some(input), Some(size)) = (input.as_const(), size.as_const())
+            && i64::from(start) + size > input
+        {
+            return Err(Error::SliceOutOfBounds {
+                axis,
+                start,
+                size,
+                input,
+            });
         }
         let extent = if stride == 1 {
             size.clone()

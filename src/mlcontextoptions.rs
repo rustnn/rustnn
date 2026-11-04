@@ -107,6 +107,17 @@ pub struct RustNNOptions {
     pub trtx: TrtxOptions,
 }
 
+/// Minimum and preferred concrete shapes for one TensorRT input optimization profile.
+/// The maximum shape comes from the graph input descriptor. Static axes must agree at
+/// every profile point. TensorRT checks ordering and consistency while building the engine.
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct TrtxInputProfile {
+    /// Smallest supported input shape, including static axes.
+    pub min: Vec<u32>,
+    /// Shape for which TensorRT should optimize tactics, including static axes.
+    pub optimal: Vec<u32>,
+}
+
 /// Tuning of the TensorRT-RTX backend; see `docs/integration/tensorrt.md`.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
@@ -121,6 +132,10 @@ pub struct TrtxOptions {
     pub fail_on_cache_miss: bool,
     /// Lower CPU overhead using CUDA graphs
     pub cuda_graphs: bool,
+    /// Per-input optimization points, keyed by graph input binding name. Unspecified inputs
+    /// use 1 for each dynamic minimum and the declared maximum as the preferred shape.
+    /// Set this when a network requires a larger minimum (for example pixel unshuffle).
+    pub input_profiles: std::collections::BTreeMap<String, TrtxInputProfile>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -130,6 +145,7 @@ impl Default for TrtxOptions {
             engine_caching: true,
             runtime_cache: true,
             cuda_graphs: true,
+            input_profiles: Default::default(),
             fail_on_cache_miss: false,
         }
     }

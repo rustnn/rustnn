@@ -65,3 +65,6 @@ falls back to the placeholder page until the next successful nightly run.
 Burn CPU also runs full release-mode WPT conformance in `wpt-conformance.yml` on Linux.
 The job is blocking, checks the pinned WPT revision, and uploads JSON and HTML reports.
 It enables only `burn-runtime-cpu` and requires no external backend runtime library.
+
+The local `make benchmark-esrgan` target measures ESRGAN compilation and inference on
+TensorRT-RTX; it is not part of CI because it requires a local topology and NVIDIA GPU.

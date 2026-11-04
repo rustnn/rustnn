@@ -91,6 +91,16 @@ Rules that hold for every converter:
 
 ### TensorRT-RTX
 
+The MLContext backend supports bounded dynamic image graphs composed of reshape, squeeze,
+unsqueeze, transpose, conv2d, concat, leakyRelu, relu, add, mul, identity and resample2d.
+Input dimensions become TensorRT wildcards; optimization profiles use the graph's maximum
+shape and optional `TrtxOptions::input_profiles` minimum/preferred shapes. Runtime shape
+arithmetic in reshape targets supports input symbols, constants and integer `+`, `-`, `*`,
+`/`; other symbolic functions fail conversion explicitly. Scale-based resizing preserves
+runtime dimensions. Other operations in dynamic graphs are rejected pending dynamic lowering.
+The standalone serialized-engine converter still requires static shapes.
+
+
 - `uint8` is legal only at network I/O or through a cast to or from float; internal `uint8`
   results stay `int32` and become `uint8` at the outputs. Boolean masks are stored as `int8`.
 - `IDequantizeLayer` cannot take `uint8`; unsigned `dequantizeLinear` uses the manual

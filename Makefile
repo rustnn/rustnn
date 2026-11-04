@@ -528,6 +528,7 @@ help:
 	@echo "  test-webnn-wpt-chrome-headless - Run the browser WebNN WPT tests headlessly"
 	@echo ""
 	@echo "CoreML Conversion:"
+	@echo "  benchmark-esrgan - Compare ESRGAN static/dynamic TRT compile and inference times (ESRGAN_ARGS=...)"
 	@echo "  benchmark-coreml-kv - Measure KV-cache reuse with COREML_KV_CONFIG=..."
 	@echo "  build-coreml       - Build all targets with CoreML and dynamic inputs (macOS)"
 	@echo "  test-coreml        - Run CoreML unit/integration tests (optional TEST_FILTER=triangular)"
@@ -564,3 +565,7 @@ check-converters:
 	@set -e; for backend in onnx coreml litert trtx cann burn-cpu; do \
 	    $(CARGO) check --no-default-features --all-targets --features $$backend-converter; \
 	done
+
+.PHONY: benchmark-esrgan
+benchmark-esrgan:
+	@$(CARGO) bench --bench esrgan --no-default-features --features trtx-runtime,dynamic-inputs -- $(ESRGAN_ARGS)

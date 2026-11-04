@@ -529,7 +529,7 @@ fn infer_shape_err(
     })
 }
 
-fn symbolic_descriptor(
+pub(crate) fn symbolic_descriptor(
     operation: &Operation,
     graph: &GraphInfo,
     context: &mut shapeinfer_symbolic::Context,
@@ -628,12 +628,12 @@ fn symbolic_descriptor(
                 return Err(symbolic_error(operation, "gemm requires rank-two inputs"));
             }
             let a = if opts.a_transpose {
-                Shape::from_vec(vec![a[1].clone(), a[0].clone()].into())
+                Shape::from_vec(vec![a[1].clone(), a[0].clone()].into_iter().collect())
             } else {
                 shapes[0].clone()
             };
             let b = if opts.b_transpose {
-                Shape::from_vec(vec![b[1].clone(), b[0].clone()].into())
+                Shape::from_vec(vec![b[1].clone(), b[0].clone()].into_iter().collect())
             } else {
                 shapes[1].clone()
             };
@@ -741,7 +741,22 @@ fn symbolic_descriptor(
             sym(shapeinfer_symbolic::context::pad(&shapes[0], &padding))?
         }
         Operation::Expand { new_shape, .. } | Operation::Reshape { new_shape, .. } => {
-            let target: Vec<Dimension> = new_shape.iter().cloned().map(Into::into).collect();
+            let target: Vec<Dimension> = new_shape
+                .iter()
+                .cloned()
+                .map(|dimension| {
+                    if let MLDimension::Dynamic(value) = &dimension
+                        && let Ok(expression) = Expression::parse(&value.name)
+                        && expression.as_dynamic().is_none()
+                    {
+                        return Dimension::Expression(crate::graph::ExpressionDimension {
+                            expression,
+                            max_size: value.max_size,
+                        });
+                    }
+                    dimension.into()
+                })
+                .collect();
             let target = crate::graph::to_symbolic_shape(&target)
                 .map_err(|error| symbolic_error(operation, error.to_string()))?;
             if matches!(operation, Operation::Expand { .. }) {
@@ -843,7 +858,7 @@ fn symbolic_descriptor(
                     }
                 }
             }
-            Shape::from_vec(dims)
+            Shape::from_vec(dims.into_iter().collect())
         }
         #[cfg(feature = "dynamic-inputs")]
         Operation::Resample2dDynamic { options, .. } => {
@@ -866,7 +881,7 @@ fn symbolic_descriptor(
                     .round_scaled(opts.scales[i])
                     .map_err(|error| symbolic_error(operation, error.to_string()))?;
             }
-            Shape::from_vec(dims)
+            Shape::from_vec(dims.into_iter().collect())
         }
         Operation::Cast {
             data_type: target, ..
@@ -906,12 +921,20 @@ fn symbolic_descriptor(
                         symbolic_error(operation, "gruCell input has no batch dimension")
                     })?
                     .clone();
-                Shape::from_vec(vec![batch, Expression::new_const(*hidden_size as i64)])
+                Shape::from_vec(
+                    vec![batch, Expression::new_const(*hidden_size as i64)]
+                        .into_iter()
+                        .collect(),
+                )
             }
         }
         Operation::Shape { .. } => {
             data_type = DataType::Int64;
-            Shape::from_vec(vec![Expression::new_const(shapes[0].rank() as i64)])
+            Shape::from_vec(
+                vec![Expression::new_const(shapes[0].rank() as i64)]
+                    .into_iter()
+                    .collect(),
+            )
         }
         Operation::IsNaN { .. } | Operation::IsInfinite { .. } | Operation::LogicalNot { .. } => {
             data_type = DataType::Uint8;
@@ -991,7 +1014,7 @@ fn symbolic_error(operation: &Operation, reason: impl Into<String>) -> GraphBuil
     .into()
 }
 
-fn operation_has_symbolic_shape_parameters(operation: &Operation) -> bool {
+pub(crate) fn operation_has_symbolic_shape_parameters(operation: &Operation) -> bool {
     match operation {
         Operation::Expand { new_shape, .. } | Operation::Reshape { new_shape, .. } => new_shape
             .iter()
@@ -1033,7 +1056,7 @@ fn symbolic_bounds(
     bounds
 }
 
-fn symbolic_multi_descriptors(
+pub(crate) fn symbolic_multi_descriptors(
     operation: &Operation,
     graph: &GraphInfo,
     context: &mut shapeinfer_symbolic::Context,
@@ -1104,23 +1127,31 @@ fn symbolic_multi_descriptors(
                     ));
                 }
             };
-            let state = Shape::from_vec(vec![
-                Expression::new_const(directions),
-                batch.clone(),
-                Expression::new_const(*hidden_size as i64),
-            ]);
+            let state = Shape::from_vec(
+                vec![
+                    Expression::new_const(directions),
+                    batch.clone(),
+                    Expression::new_const(*hidden_size as i64),
+                ]
+                .into_iter()
+                .collect(),
+            );
             let mut outputs = if matches!(operation, Operation::Lstm { .. }) {
                 vec![state.clone(), state]
             } else {
                 vec![state]
             };
             if return_sequence {
-                outputs.push(Shape::from_vec(vec![
-                    Expression::new_const(*steps as i64),
-                    Expression::new_const(directions),
-                    batch,
-                    Expression::new_const(*hidden_size as i64),
-                ]));
+                outputs.push(Shape::from_vec(
+                    vec![
+                        Expression::new_const(*steps as i64),
+                        Expression::new_const(directions),
+                        batch,
+                        Expression::new_const(*hidden_size as i64),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ));
             }
             outputs
         }
@@ -1238,7 +1269,7 @@ fn symbolic_pool_shape(
         }
         result[axes[0]] = Expression::new_const(sizes[0] as i64);
         result[axes[1]] = Expression::new_const(sizes[1] as i64);
-        return Ok(Shape::from_vec(result));
+        return Ok(Shape::from_vec(result.into_iter().collect()));
     }
     let kernel = if let Some(window) = &options.window_dimensions {
         if window.len() != 2 {
@@ -1284,7 +1315,7 @@ fn symbolic_pool_shape(
         )
         .map_err(|error| symbolic_error(operation, error.to_string()))?;
     }
-    Ok(Shape::from_vec(result))
+    Ok(Shape::from_vec(result.into_iter().collect()))
 }
 
 fn symbolic_conv_transpose_shape(

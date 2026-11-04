@@ -539,6 +539,7 @@ fn context_options_from_c(
                 runtime_cache: options.rustnn_options.trtx.runtime_cache,
                 fail_on_cache_miss: options.rustnn_options.trtx.fail_on_cache_miss,
                 cuda_graphs: options.rustnn_options.trtx.cuda_graphs,
+                ..TrtxOptions::default()
             },
             ..RustNNOptions::default()
         });
@@ -4660,6 +4661,7 @@ mod tests {
                 runtime_cache: false,
                 fail_on_cache_miss: true,
                 cuda_graphs: false,
+                ..TrtxOptions::default()
             }
         );
     }

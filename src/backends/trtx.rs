@@ -199,6 +199,9 @@ pub(crate) struct TrtxGraph<'context> {
     cuda_stream: Arc<CudaStream>,
     cuda_graphs: HashMap<Vec<(bool, String, usize)>, CapturedCudaGraph>,
     inference_count: u64,
+    dynamic_shapes: bool,
+    activation_memory: Option<CudaSlice<u8>>,
+    active_shapes: HashMap<String, Vec<i64>>,
 }
 
 struct CapturedCudaGraph {
@@ -416,6 +419,7 @@ pub(crate) struct TrtxBuilder<'builder> {
     device_cache_id: String,
     operands: HashMap<String, MLOperand>,
     caching_enabled: bool,
+    input_profiles: std::collections::BTreeMap<String, crate::mlcontextoptions::TrtxInputProfile>,
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
     fail_on_cache_miss: bool,
@@ -465,6 +469,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         &mut self,
         graph: GraphInfo,
     ) -> crate::error::Result<crate::mlcontext::MLGraph<'context>> {
+        let build_started = std::time::Instant::now();
         let mut engine_bytes: Option<HostMemoryOrVec> = None;
         let mut hash_key: Option<String> = None;
 
@@ -484,7 +489,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let key =
                 // if deciding to do hashing for non_refittable_constants
                 //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
-                graph.hash_identifier(&TRTX_SUFFIX_ENGINES, WeightsToHash::None);
+                graph.hash_identifier(&format!("{}_{:?}", *TRTX_SUFFIX_ENGINES, self.input_profiles), WeightsToHash::None);
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
@@ -510,6 +515,53 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
             crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
+            if graph.has_dynamic_dimensions() {
+                let mut profile = self.builder.lock().unwrap().creata_optimization_profile()?;
+                let names = crate::converters::TrtxConverter::engine_io_binding_names(&graph);
+                for &id in &graph.input_operands {
+                    let operand = &graph.operands[id as usize];
+                    if !operand.descriptor.has_dynamic_dimensions() {
+                        continue;
+                    }
+                    let max: Vec<i64> = operand
+                        .descriptor
+                        .static_or_max_shape()
+                        .into_iter()
+                        .map(i64::from)
+                        .collect();
+                    let mut min: Vec<i64> = operand
+                        .descriptor
+                        .shape
+                        .iter()
+                        .map(|d| match d {
+                            crate::graph::Dimension::Static(size) => i64::from(*size),
+                            _ => 1,
+                        })
+                        .collect();
+                    let name = &names[&id];
+                    let mut optimal = max.clone();
+                    if let Some(points) = self.input_profiles.get(name) {
+                        min = points.min.iter().copied().map(i64::from).collect();
+                        optimal = points.optimal.iter().copied().map(i64::from).collect();
+                    }
+                    for (selector, dims) in [
+                        (trtx::OptProfileSelector::kMIN, &min),
+                        (trtx::OptProfileSelector::kOPT, &optimal),
+                        (trtx::OptProfileSelector::kMAX, &max),
+                    ] {
+                        profile.set_dimensions(
+                            name,
+                            selector,
+                            &trtx::trtx_sys::Dims64::from_slice(dims),
+                        )?;
+                    }
+                }
+                self.config
+                    .lock()
+                    .unwrap()
+                    .add_optimization_profile(&mut profile)?;
+            }
+
             let non_refittable_constants =
                 crate::converters::TrtxConverter::gather_baked_constant_operand_ids(&graph);
             for constant_id in graph.constant_operand_ids_to_handles.keys() {
@@ -520,12 +572,21 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 }
             }
 
+            debug!(
+                "TensorRT compile phase: prepare_network_ms={:.3}",
+                build_started.elapsed().as_secs_f64() * 1000.0
+            );
+            let engine_build_started = std::time::Instant::now();
             let host_mem = self
                 .builder
                 .lock()
                 .unwrap()
                 .build_serialized_network(&mut network, &mut self.config.lock().unwrap())
                 .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
+            debug!(
+                "TensorRT compile phase: build_serialized_engine_ms={:.3}",
+                engine_build_started.elapsed().as_secs_f64() * 1000.0
+            );
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Some(key) = hash_key
                 && let Err(error) = cache.set(&key, &host_mem)
@@ -539,6 +600,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             engine_bytes.expect("already got cached engine or tried building engine");
 
         self.cuda_context.bind_to_thread()?;
+        let deserialize_started = std::time::Instant::now();
         let mut engine = self
             .runtime
             .lock()
@@ -546,11 +608,16 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             .deserialize_cuda_engine(&engine_bytes)
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
+        debug!(
+            "TensorRT compile phase: deserialize_engine_ms={:.3}",
+            deserialize_started.elapsed().as_secs_f64() * 1000.0
+        );
         if let Ok(dump_dir) = std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR) {
             let mut key = graph.hash_identifier(
                 &format!(
-                    "{}_{:x}",
-                    TRTX_SUFFIX_ENGINES.as_str(),
+                    "{}_{:?}_{:x}",
+                    *TRTX_SUFFIX_ENGINES,
+                    self.input_profiles,
                     self.config.lock().unwrap().flags()
                 ),
                 WeightsToHash::Some(&non_refittable_constants),
@@ -568,6 +635,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         }
 
         // TODO: wrap_err, when this fails usually the engine was built without kREFIT flag
+        let refit_setup_started = std::time::Instant::now();
         let mut refitter = Refitter::new(&engine, &LOGGER)?;
 
         for (id, constant) in graph.constant_operand_ids_to_handles.iter() {
@@ -633,7 +701,17 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .into());
             }
         }
+        debug!(
+            "TensorRT compile phase: register_refit_weights_ms={:.3}",
+            refit_setup_started.elapsed().as_secs_f64() * 1000.0
+        );
+        let refit_started = std::time::Instant::now();
         refitter.refit_cuda_engine()?;
+        debug!(
+            "TensorRT compile phase: refit_engine_ms={:.3}",
+            refit_started.elapsed().as_secs_f64() * 1000.0
+        );
+        let execution_setup_started = std::time::Instant::now();
 
         let runtime_config = engine
             .create_runtime_config()
@@ -675,20 +753,68 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .set_runtime_cache(runtime_cache)
                 .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
         }
-        let exec = engine
+        if graph.has_dynamic_dimensions() {
+            info!(
+                "TensorRT dynamic shape specialization: {:?}",
+                runtime_config.dynamic_shapes_kernel_specialization_strategy()
+            );
+            runtime_config.set_execution_context_allocation_strategy(
+                trtx::ExecutionContextAllocationStrategy::kUSER_MANAGED,
+            );
+        }
+        let mut exec = engine
             .create_execution_context_with_config(Rc::new(runtime_config))
             .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?;
 
+        let cuda_stream = self.cuda_context.new_stream()?;
+        let mut activation_memory = None;
+        let mut active_shapes = HashMap::new();
+        if graph.has_dynamic_dimensions() {
+            let names = crate::converters::TrtxConverter::engine_io_binding_names(&graph);
+            for &id in &graph.input_operands {
+                let name = &names[&id];
+                let shape = self
+                    .input_profiles
+                    .get(name)
+                    .map(|profile| profile.optimal.clone())
+                    .unwrap_or_else(|| {
+                        graph.operands[id as usize].descriptor.static_or_max_shape()
+                    });
+                let shape: Vec<i64> = shape.into_iter().map(i64::from).collect();
+                exec.set_input_shape(name, &trtx::trtx_sys::Dims64::from_slice(&shape))?;
+                active_shapes.insert(name.clone(), shape);
+            }
+            let size = exec.update_device_memory_size_for_shapes();
+            let stream = &cuda_stream;
+            let mut memory = stream.alloc_zeros::<u8>(size)?;
+            let (pointer, _guard) = memory.device_ptr_mut(stream);
+            // SAFETY: the allocation is retained by TrtxGraph and sized by TensorRT for
+            // these exact input shapes. Resizing waits for all outstanding inference.
+            unsafe {
+                exec.set_device_memory_v2(pointer as *mut c_void, size as i64);
+            }
+            drop(_guard);
+            activation_memory = Some(memory);
+        }
+
+        debug!(
+            "TensorRT compile phase: execution_context_and_activation_setup_ms={:.3}",
+            execution_setup_started.elapsed().as_secs_f64() * 1000.0
+        );
+        debug!(
+            "TensorRT compile phase: backend_total_ms={:.3}",
+            build_started.elapsed().as_secs_f64() * 1000.0
+        );
         MLGraph::new(
             MLBackendGraph::TrtxEngine(TrtxGraph {
                 _engine: engine,
                 exec,
-                cuda_stream: self
-                    .cuda_context
-                    .new_stream()
-                    .map_err(|e| crate::error::Error::GraphBuildError { source: e.into() })?,
+                cuda_stream,
                 cuda_graphs: HashMap::new(),
                 inference_count: 0,
+                dynamic_shapes: graph.has_dynamic_dimensions(),
+                activation_memory,
+                active_shapes,
             }),
             &graph,
         )
@@ -723,12 +849,19 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         Ok(Box::new(TrtxBuilder {
             network,
             builder: Arc::clone(&self.builder),
-            config: Arc::clone(&self.config),
+            config: Arc::new(Mutex::new({
+                let mut config = self.builder.lock().unwrap().create_config()?;
+                let template = self.config.lock().unwrap();
+                config.set_flags(template.flags());
+                config.set_profiling_verbosity(template.profiling_verbosity());
+                config
+            })),
             runtime: Arc::clone(&self.runtime),
             device_cache_id: self.device_cache_id.clone(),
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             caching_enabled: self.options.engine_caching,
+            input_profiles: self.options.input_profiles.clone(),
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,
             fail_on_cache_miss: self.options.fail_on_cache_miss,
@@ -830,15 +963,31 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
         // TODO: just create a u64 device value for cudastreamwaitvalue64?
         let inference_stream = &graph.cuda_stream;
 
-        // TODO: set shape for dynamic networks and validate shape of input/output
         // tensors with what the network expect (done automatically by setting io_shapes?)
-        let cuda_graphs_enabled = self.options.cuda_graphs;
+        let cuda_graphs_enabled = self.options.cuda_graphs && !graph.dynamic_shapes;
         let mut io_pointers = if cuda_graphs_enabled {
             Vec::with_capacity(inputs.len() + outputs.len())
         } else {
             Vec::new()
         };
+        let shapes_changed = graph.dynamic_shapes
+            && (graph.activation_memory.is_none()
+                || inputs.iter().any(|(name, tensor)| {
+                    let shape: Vec<i64> = tensor.shape().iter().map(|&size| size as i64).collect();
+                    graph.active_shapes.get(*name) != Some(&shape)
+                }));
+        if shapes_changed {
+            inference_stream.synchronize().to_dispatch_result()?;
+        }
         for (input, tensor) in inputs.iter() {
+            let shape: Vec<i64> = tensor.shape().iter().map(|&size| size as i64).collect();
+            graph
+                .exec
+                .set_input_shape(input, &trtx::trtx_sys::Dims64::from_slice(&shape))
+                .to_dispatch_result()?;
+            if graph.dynamic_shapes {
+                graph.active_shapes.insert((*input).to_string(), shape);
+            }
             let cuda_tensor = &mut self.tensors[tensor.id];
 
             let (ptr, _) = cuda_tensor.memory.device_ptr_mut(&cuda_tensor.stream);
@@ -871,6 +1020,31 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             let event = cuda_tensor.stream.record_event(None).to_dispatch_result()?;
             inference_stream.wait(&event).to_dispatch_result()?;
             self.events.push(event);
+        }
+
+        if shapes_changed {
+            let size = graph.exec.update_device_memory_size_for_shapes();
+            if graph
+                .activation_memory
+                .as_ref()
+                .is_none_or(|memory| memory.len() < size)
+            {
+                graph.activation_memory = None;
+                graph.activation_memory = Some(
+                    inference_stream
+                        .alloc_zeros::<u8>(size)
+                        .to_dispatch_result()?,
+                );
+            }
+            let memory = graph.activation_memory.as_mut().unwrap();
+            let capacity = memory.len();
+            let (pointer, _guard) = memory.device_ptr_mut(inference_stream);
+            // SAFETY: inference has completed before resizing; memory outlives the context.
+            unsafe {
+                graph
+                    .exec
+                    .set_device_memory_v2(pointer as *mut c_void, capacity as i64);
+            }
         }
 
         if cuda_graphs_enabled {

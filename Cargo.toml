@@ -387,3 +387,8 @@ asset = [
 # Burn uses rand on browser wasm targets, where entropy comes from Web Crypto.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { version = "0.4", optional = true, features = ["wasm_js"] }
+
+[[bench]]
+name = "esrgan"
+harness = false
+required-features = ["trtx-runtime", "dynamic-inputs"]
