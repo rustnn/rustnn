@@ -33,6 +33,9 @@ struct Args {
     /// Dynamic profile minimum width (must be even and no larger than the 1080p input).
     #[arg(long, default_value_t = 2)]
     min_width: u32,
+    /// Use the null-weight placeholders from weight-groups during TensorRT engine building.
+    #[arg(long)]
+    weight_placeholders: bool,
     /// Run one configuration (static-1080p, dynamic-1080p, dynamic-2k).
     #[arg(long)]
     case: Option<String>,
@@ -144,7 +147,7 @@ fn main() -> Result<()> {
         );
     }
     println!(
-        "case,sample,compile_ms,first_infer_ms,infer_mean_ms,infer_min_ms,infer_max_ms,min_height,min_width"
+        "case,sample,compile_ms,first_infer_ms,infer_mean_ms,infer_min_ms,infer_max_ms,min_height,min_width,weight_placeholders"
     );
     for (name, height, width, dynamic) in cases {
         if args.case.as_deref().is_some_and(|case| case != name) {
@@ -172,6 +175,7 @@ fn main() -> Result<()> {
             options.trtx.engine_caching = false;
             options.trtx.runtime_cache = false;
             options.trtx.cuda_graphs = false;
+            options.trtx.weight_placeholders = args.weight_placeholders;
             if dynamic {
                 options.trtx.input_profiles.insert(
                     "input".into(),
@@ -234,7 +238,8 @@ fn main() -> Result<()> {
                 (1080, 1920)
             };
             println!(
-                "{name},{sample},{compile_ms:.3},{first_ms:.3},{mean:.3},{min:.3},{max:.3},{min_height},{min_width}"
+                "{name},{sample},{compile_ms:.3},{first_ms:.3},{mean:.3},{min:.3},{max:.3},{min_height},{min_width},{}",
+                args.weight_placeholders
             );
         }
     }

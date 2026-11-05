@@ -17,9 +17,20 @@ use rustnn::{
 #[test]
 #[ignore = "requires an NVIDIA GPU and TensorRT-RTX"]
 fn dynamic_pixel_unshuffle_resize_and_repeated_builds() -> anyhow::Result<()> {
+    exercise_dynamic_images(false)
+}
+
+#[test]
+#[ignore = "requires an NVIDIA GPU and TensorRT-RTX"]
+fn placeholders_refit_dynamic_pixel_unshuffle() -> anyhow::Result<()> {
+    exercise_dynamic_images(true)
+}
+
+fn exercise_dynamic_images(weight_placeholders: bool) -> anyhow::Result<()> {
     let text = r#"webnn_graph "dynamic_image" v2 {
         inputs { input: f32[1, 1, dyn("h", 6), dyn("w", 8)]; }
         consts {
+            dead: f32[2] @scalar(1.0);
             filter: f32[1, 4, 1, 1] @weights("filter");
             scale: f32[] @scalar(0.5);
         }
@@ -51,6 +62,7 @@ fn dynamic_pixel_unshuffle_resize_and_repeated_builds() -> anyhow::Result<()> {
         .collect();
     let mut options = RustNNOptions::default();
     options.trtx.engine_caching = false;
+    options.trtx.weight_placeholders = weight_placeholders;
     options.trtx.runtime_cache = false;
     options.trtx.input_profiles.insert(
         "input".into(),

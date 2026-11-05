@@ -106,6 +106,9 @@ The standalone serialized-engine converter still requires static shapes.
 - `IDequantizeLayer` cannot take `uint8`; unsigned `dequantizeLinear` uses the manual
   multiply path.
 - Integer broadcast uses a stride-0 slice (as `expand` does); `IResizeLayer` rejects integers.
+- `TrtxOptions::weight_placeholders` uses TensorRT-RTX 1.7 null-weight placeholders for
+  refittable float16/float32 constants during MLContext engine building. Baked constants and
+  other data types retain their buffers; the standard post-build refit supplies placeholder data.
 - Constants are refittable and set after the build; constants that TensorRT folds away (unused,
   or feeding only casts) are excluded from refit (`unused_constant_operand_ids`,
   `constant_only_feeds_casts`). Refit failures raise `TrtxError::ConstantRefitFailed` with the

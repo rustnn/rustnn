@@ -136,6 +136,10 @@ pub struct TrtxOptions {
     /// use 1 for each dynamic minimum and the declared maximum as the preferred shape.
     /// Set this when a network requires a larger minimum (for example pixel unshuffle).
     pub input_profiles: std::collections::BTreeMap<String, TrtxInputProfile>,
+    /// Build refittable float16/float32 constants with null-weight placeholders, then
+    /// supply their bytes during refit. Baked and other data types retain actual data.
+    /// Requires TensorRT-RTX 1.7+. Defaults to false; does not change the refit/build flags.
+    pub weight_placeholders: bool,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -146,6 +150,7 @@ impl Default for TrtxOptions {
             runtime_cache: true,
             cuda_graphs: true,
             input_profiles: Default::default(),
+            weight_placeholders: false,
             fail_on_cache_miss: false,
         }
     }

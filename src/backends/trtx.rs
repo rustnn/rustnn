@@ -419,6 +419,7 @@ pub(crate) struct TrtxBuilder<'builder> {
     device_cache_id: String,
     operands: HashMap<String, MLOperand>,
     caching_enabled: bool,
+    weight_placeholders: bool,
     input_profiles: std::collections::BTreeMap<String, crate::mlcontextoptions::TrtxInputProfile>,
     #[cfg(not(feature = "trtx-enterprise"))]
     runtime_cache_enabled: bool,
@@ -489,7 +490,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
             let key =
                 // if deciding to do hashing for non_refittable_constants
                 //graph.hash_identifier(&TRTX_SUFFIX, WeightsToHash::Some(&non_refittable_constants));
-                graph.hash_identifier(&format!("{}_{:?}", *TRTX_SUFFIX_ENGINES, self.input_profiles), WeightsToHash::None);
+                graph.hash_identifier(&format!("{}_{:?}_placeholders{}", *TRTX_SUFFIX_ENGINES, self.input_profiles, self.weight_placeholders), WeightsToHash::None);
             if let Ok(cache) = ENGINE_CACHE.as_ref()
                 && let Ok(engine) = cache.get(&key)
             {
@@ -514,7 +515,11 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                 .unwrap()
                 .take()
                 .expect("Frontend API should prevent TrtxBuilder::build to be called twice");
-            crate::converters::TrtxConverter::build_network(&graph, &mut network)?;
+            if self.weight_placeholders {
+                TrtxConverter::build_network_with_placeholders(&graph, &mut network)?;
+            } else {
+                TrtxConverter::build_network(&graph, &mut network)?;
+            }
             if graph.has_dynamic_dimensions() {
                 let mut profile = self.builder.lock().unwrap().creata_optimization_profile()?;
                 let names = crate::converters::TrtxConverter::engine_io_binding_names(&graph);
@@ -615,10 +620,11 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         if let Ok(dump_dir) = std::env::var(TRTX_JSON_DUMP_PATH_ENV_VAR) {
             let mut key = graph.hash_identifier(
                 &format!(
-                    "{}_{:?}_{:x}",
+                    "{}_{:?}_{:x}_placeholders{}",
                     *TRTX_SUFFIX_ENGINES,
                     self.input_profiles,
-                    self.config.lock().unwrap().flags()
+                    self.config.lock().unwrap().flags(),
+                    self.weight_placeholders
                 ),
                 WeightsToHash::Some(&non_refittable_constants),
             );
@@ -861,6 +867,7 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
             cuda_context: Arc::clone(&self.cuda_ctx),
             operands: HashMap::new(),
             caching_enabled: self.options.engine_caching,
+            weight_placeholders: self.options.weight_placeholders,
             input_profiles: self.options.input_profiles.clone(),
             #[cfg(not(feature = "trtx-enterprise"))]
             runtime_cache_enabled: self.options.runtime_cache,

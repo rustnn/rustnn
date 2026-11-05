@@ -873,6 +873,24 @@ impl TrtxConverter {
         graph: &'a GraphInfo,
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
+        Self::build_network_impl(graph, network, false)
+    }
+
+    /// Build refittable floating-point constants with TensorRT's null-weight placeholders.
+    /// Ported from the weight-groups branch; baked constants keep their actual bytes.
+    #[cfg(feature = "trtx-runtime")]
+    pub(crate) fn build_network_with_placeholders<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+    ) -> Result<(), GraphError> {
+        Self::build_network_impl(graph, network, true)
+    }
+
+    fn build_network_impl<'a>(
+        graph: &'a GraphInfo,
+        network: &mut trtx::NetworkDefinition<'a>,
+        placeholders: bool,
+    ) -> Result<(), GraphError> {
         // Dynamic lowering is currently restricted to the image-network operations audited
         // below. Other converters still use static maxima in several lowering paths.
         if graph.has_dynamic_dimensions() {
@@ -902,6 +920,11 @@ impl TrtxConverter {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
         let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph);
         let io_binding_names = Self::engine_io_binding_names(graph);
+        let unused_constants = if placeholders {
+            Self::unused_constant_operand_ids(graph)
+        } else {
+            HashSet::new()
+        };
 
         // Step 1: Add inputs
         for (operand_id, operand) in graph.operands.iter().enumerate() {
@@ -946,12 +969,38 @@ impl TrtxConverter {
         // Step 2: Add constants
         for (operand_id, operand) in graph.operands.iter().enumerate() {
             if operand.kind == OperandKind::Constant {
+                if unused_constants.contains(&(operand_id as u32)) {
+                    continue;
+                }
                 let dims: Vec<i32> = operand
                     .descriptor
                     .shape
                     .iter()
                     .map(|d| get_static_or_max_size(d) as i32)
                     .collect();
+                if placeholders
+                    && !non_refittable_constants.contains(&(operand_id as u32))
+                    && matches!(
+                        operand.descriptor.data_type,
+                        DataType::Float16 | DataType::Float32
+                    )
+                {
+                    let dims: Vec<i64> = dims.iter().copied().map(i64::from).collect();
+                    let layer = network
+                        .add_constant_placeholder(
+                            &dims,
+                            Self::webnn_to_trt_dtype(operand.descriptor.data_type)?,
+                            &Self::constant_weight_name(operand_id as u32),
+                        )
+                        .map_err(|error| {
+                            Self::shape_error(format!("constant placeholder {operand_id}: {error}"))
+                        })?;
+                    tensor_map.insert(
+                        operand_id as u32,
+                        layer.output(network, 0).map_err(Self::shape_error)?,
+                    );
+                    continue;
+                }
                 let data = Self::get_constant_data(graph, operand_id as u32)?;
 
                 // Validate that data size matches expected packed byte length

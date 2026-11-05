@@ -141,3 +141,12 @@ serialized engine building, deserialization, refit weight registration, refittin
 context/activation setup. The ESRGAN benchmark's compile timer covers all these phases and waits
 for GPU completion. Compare the serialized-engine phase with the ONNX CLI's engine-build time;
 its engine-build message excludes the later deserialization, refit and context setup phases.
+
+### Weight placeholders
+
+`TrtxOptions::weight_placeholders` optionally builds refittable float16/float32 constants with
+TensorRT-RTX 1.7 null-weight placeholders, as in the `weight-groups` implementation. Their bytes
+are supplied during the normal post-build refit. Baked constants and other data types continue
+to use actual buffers. This option defaults to false and keeps the same refit/strip build flags;
+its value participates in engine cache keys. It does not implement the branch's external-weight
+reference or weight-group APIs. The ESRGAN benchmark exposes it as `--weight-placeholders`.

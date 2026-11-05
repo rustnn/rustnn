@@ -266,3 +266,16 @@ For Nsight Systems captures, prefix the executable command with
 `nsys-internal profile -tcuda,nvtx,osrt --gpu-metrics-devices=all --output=<report-prefix>`.
 Run GPU benchmarks sequentially and keep timings gathered under profiling separate from
 unprofiled timing samples.
+
+Compare ESRGAN's ordinary constant buffers with the `weight-groups` null-weight placeholder
+lowering using `ESRGAN_ARGS='--weight-placeholders'`. This changes how refittable floating-point
+constants enter the TensorRT network; the build/refit flags, profiles and post-build refit remain
+identical. Weights needed for inference are still generated before measurement and supplied during
+refit. The CSV's `weight_placeholders` column identifies the mode. For paired build measurements,
+use the same `--case`, minima and sample counts in both modes, with compilation caching disabled
+(the benchmark already disables it).
+
+```bash
+make benchmark-esrgan ESRGAN_ARGS='--case dynamic-2k --compile-samples 3'
+make benchmark-esrgan ESRGAN_ARGS='--case dynamic-2k --compile-samples 3 --weight-placeholders'
+```
