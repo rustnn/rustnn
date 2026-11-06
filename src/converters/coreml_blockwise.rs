@@ -1432,6 +1432,10 @@ mod tests {
         graph
             .constant_operand_ids_to_handles
             .get_mut(&built.scale.rustnn_index())
+            .map(|constant| match constant {
+                crate::graph::ConstantReference::OwnedData(data) => data,
+                _ => panic!("expected owned constant"),
+            })
             .unwrap()
             .data
             .truncate(2 * 3 * 2);
@@ -1478,6 +1482,10 @@ mod tests {
         short
             .constant_operand_ids_to_handles
             .get_mut(&built.data.rustnn_index())
+            .map(|constant| match constant {
+                crate::graph::ConstantReference::OwnedData(data) => data,
+                _ => panic!("expected owned constant"),
+            })
             .unwrap()
             .data
             .pop();

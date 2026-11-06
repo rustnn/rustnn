@@ -756,8 +756,6 @@ mod tests {
             folded.constant_operand_ids_to_handles[&1]
                 .as_owned_data()
                 .unwrap()
-                .as_owned_data()
-                .unwrap()
                 .data
                 .len(),
             4
@@ -881,13 +879,9 @@ mod tests {
             &graph.constant_operand_ids_to_handles[&1]
                 .as_owned_data()
                 .unwrap()
-                .as_owned_data()
-                .unwrap()
                 .data,
         );
         let result = &folded.constant_operand_ids_to_handles[&2]
-            .as_owned_data()
-            .unwrap()
             .as_owned_data()
             .unwrap();
         assert_eq!(result.label.as_deref(), Some("w"));
@@ -986,8 +980,6 @@ mod tests {
             folded.constant_operand_ids_to_handles[&2]
                 .as_owned_data()
                 .unwrap()
-                .as_owned_data()
-                .unwrap()
                 .data,
             data
         );
@@ -1039,8 +1031,6 @@ mod tests {
         assert_eq!(folded.operations.len(), 1);
         assert_eq!(folded.operands[2].kind, OperandKind::Constant);
         let result: Vec<f32> = folded.constant_operand_ids_to_handles[&2]
-            .as_owned_data()
-            .unwrap()
             .as_owned_data()
             .unwrap()
             .data
@@ -1132,8 +1122,6 @@ mod tests {
             folded.constant_operand_ids_to_handles[&2]
                 .as_owned_data()
                 .unwrap()
-                .as_owned_data()
-                .unwrap()
                 .data,
             vec![255, 1, 2, 0]
         );
@@ -1195,12 +1183,8 @@ mod tests {
             folded.constant_operand_ids_to_handles[&1]
                 .as_owned_data()
                 .unwrap()
-                .as_owned_data()
-                .unwrap()
                 .data,
             graph.constant_operand_ids_to_handles[&1]
-                .as_owned_data()
-                .unwrap()
                 .as_owned_data()
                 .unwrap()
                 .data
@@ -1268,8 +1252,6 @@ mod tests {
             vec![3]
         );
         let result: Vec<f32> = folded.constant_operand_ids_to_handles[&3]
-            .as_owned_data()
-            .unwrap()
             .as_owned_data()
             .unwrap()
             .data
@@ -1353,8 +1335,6 @@ mod tests {
         // The transposed float16 payload is in the weight blob, once.
         let source = f16_values(
             &graph.constant_operand_ids_to_handles[&1]
-                .as_owned_data()
-                .unwrap()
                 .as_owned_data()
                 .unwrap()
                 .data,
