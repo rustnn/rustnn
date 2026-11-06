@@ -8,7 +8,7 @@
 | `protoc` | Required: `build.rs` compiles the CoreML protobuf schemas, and `webnn-onnx-utils` the ONNX one (default `onnx` feature). Linux `apt-get install protobuf-compiler`, macOS `brew install protobuf`, Windows `winget install Google.Protobuf` |
 | `flatc` | Required for `litert-runtime` (TFLite schema). CI downloads the flatbuffers release binary; macOS `brew install flatbuffers` |
 | Node.js | WPT corpus fetch and evaluation (`scripts/fetch_wpt.mjs`, `scripts/wpt_bridge/`) |
-| Python 3 | Only for MkDocs (`pip install -r docs/requirements.txt`) and `scripts/generate_backend_operator_report.py` |
+| Python 3 | MkDocs (`pip install -r docs/requirements.txt`) and the generator scripts in `scripts/` |
 | libclang | `trtx-runtime`: the `trtx-sys` crate generates bindings with autocxx; set `LIBCLANG_PATH` if it is not found |
 | Doxygen and cbindgen | Required for the documentation website and `make docs-capi`; install Doxygen with your package manager and cbindgen with `cargo install cbindgen --locked` |
 
@@ -67,6 +67,8 @@ Use the Makefile targets; they set feature flags and environment variables consi
 | `validate-cann-env`, `cann-build`, `cann-device-test` | OpenHarmony toolchain check, cross build, device test through `hdc`; see [CANN](../integration/cann.md) |
 | `validate-all-env` | Build and unit tests in one run |
 | `fetch-wpt` | Download the pinned WPT corpus into the cache (`WPT_DIR` overrides) |
+| `fetch-webnn-spec` | Refresh the live WebNN Bikeshed source in `target/webnn-index.bs` (requires `curl`) |
+| `generate-operation-data-types`, `check-operation-data-types` | Generate `src/generated/operation_data_types.rs` from the cached spec; check for drift. Requires Python 3 and rustfmt; downloads the spec if missing |
 | `test-wpt` | WPT conformance on ONNX Runtime CPU |
 | `test-wpt-tolerance`, `test-wpt-tolerance-parity` | Backend-independent comparison regressions and direct upstream JavaScript-helper parity; the latter requires Node.js and a fetched WPT corpus and also runs after successful full ONNX/CoreML WPT targets |
 | `test-wpt-op OP=relu` | One operation; `WPT_BACKEND=onnx|trtx|litert|coreml` selects the backend |
@@ -93,6 +95,12 @@ cargo test --lib --features cann-runtime-mock
 ```
 
 ## Workflow for a change
+
+For specification data type metadata, run `make fetch-webnn-spec` followed by
+`make generate-operation-data-types`, review the generated diff, and run
+`python3 -m unittest scripts/test_generate_operation_data_types.py`.
+See the [specification reference](https://github.com/rustnn/rustnn/blob/main/docs/reference/README.md)
+for the extraction scope.
 
 1. Branch from `main`.
 2. Make the change with its tests. Unit tests live in `#[cfg(test)]` modules at the end of each
