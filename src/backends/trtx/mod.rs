@@ -594,6 +594,72 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
         // influence the engine's outputs.
         let unused_constants = TrtxConverter::unused_constant_operand_ids(&graph);
 
+        // TODO: resolve in a backend generic path?
+        // non_refittable_constants need to be resolved even when doing weightless builds
+        for &id in &non_refittable_constants {
+            let Some(reference) = graph.constant_operand_ids_to_handles.get(&id) else {
+                continue;
+            };
+            let data = match reference {
+                crate::graph::ConstantReference::FileRef(file_ref) => {
+                    use std::io::{Read, Seek, SeekFrom};
+                    let mut file =
+                        std::fs::File::open(&file_ref.path).map_err(graph_build_error)?;
+                    file.seek(SeekFrom::Start(file_ref.offset as u64))
+                        .map_err(graph_build_error)?;
+                    let mut data = vec![0; file_ref.len];
+                    file.read_exact(&mut data).map_err(graph_build_error)?;
+                    data
+                }
+                crate::graph::ConstantReference::IdRef(id_ref) => {
+                    let tensors = self.tensors.read().unwrap();
+                    let tensor = tensors.get(id_ref.id as usize).ok_or_else(|| {
+                        GraphBuilderError::InconsistentGraphInfo {
+                            message: format!("Invalid baked tensor reference {id_ref:?}"),
+                        }
+                    })?;
+                    // TODO: this might seem a bit ridiculous to download already
+                    // uploaded constants to CPU again, but we don't really have a better choice
+                    // while building the engine. Unless we have some general criterion like data type
+                    // for baked constants, we can't know on constant creation whether a constant
+                    // will be baked. We will only know later when the user constructed all
+                    // consumers of this constant and we only know all consumers on graph build.
+                    //
+                    // Suggestion to avoid is this is to reduce situations of "baked" constants
+                    // which are mostly workarounds around TRT limitations.
+                    match tensor {
+                        TrtxTensorStorage::TrtxTensor(tensor) => {
+                            tensor.stream.clone_dtoh(&tensor.memory)?
+                        }
+                        TrtxTensorStorage::HostTensor(tensor) => {
+                            tensor.stream.synchronize()?;
+                            tensor.memory.as_slice()?.to_vec()
+                        }
+                        #[cfg(feature = "cufile")]
+                        TrtxTensorStorage::SharedCudaTensor(tensor) => tensor.stream.clone_dtoh(
+                            &tensor
+                                .memory
+                                .slice(tensor.offset..tensor.offset + tensor.len),
+                        )?,
+                        TrtxTensorStorage::Destroyed => {
+                            return Err(GraphBuilderError::InconsistentGraphInfo {
+                                message: format!("Baked tensor {id_ref:?} is destroyed"),
+                            }
+                            .into());
+                        }
+                    }
+                }
+                _ => continue,
+            };
+            graph.constant_operand_ids_to_handles.insert(
+                id,
+                crate::graph::ConstantReference::OwnedData(crate::ConstantData {
+                    data,
+                    label: None,
+                }),
+            );
+        }
+
         // no caching for non_refittable_constants for now, non_refittable_constants will end up in
         // the engine and potentially grow our cache to much.
         // We allow putting small non-refittable constants into the engine
@@ -606,73 +672,6 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for TrtxBuilder<'c
                     < 128 // 128 elements were chosen arbitrarily as the threshold for "small" constants
             })
         {
-            // TODO: resolve via backend?
-            for &id in &non_refittable_constants {
-                let Some(reference) = graph.constant_operand_ids_to_handles.get(&id) else {
-                    continue;
-                };
-                let data = match reference {
-                    crate::graph::ConstantReference::FileRef(file_ref) => {
-                        use std::io::{Read, Seek, SeekFrom};
-                        let mut file =
-                            std::fs::File::open(&file_ref.path).map_err(graph_build_error)?;
-                        file.seek(SeekFrom::Start(file_ref.offset as u64))
-                            .map_err(graph_build_error)?;
-                        let mut data = vec![0; file_ref.len];
-                        file.read_exact(&mut data).map_err(graph_build_error)?;
-                        data
-                    }
-                    crate::graph::ConstantReference::IdRef(id_ref) => {
-                        let tensors = self.tensors.read().unwrap();
-                        let tensor = tensors.get(id_ref.id as usize).ok_or_else(|| {
-                            GraphBuilderError::InconsistentGraphInfo {
-                                message: format!("Invalid baked tensor reference {id_ref:?}"),
-                            }
-                        })?;
-                        // TODO: this might seem a bit ridiculous to download already
-                        // uploaded constants to CPU again, but we don't really have a better choice
-                        // while building the engine. Unless we have some general criterion like data type
-                        // for baked constants, we can't know on constant creation whether a constant
-                        // will be baked. We will only know later when the user constructed all
-                        // consumers of this constant and we only know all consumers on graph build.
-                        //
-                        // Suggestion to avoid is this is to reduce situations of "baked" constants
-                        // which are mostly workarounds around TRT limitations.
-                        match tensor {
-                            TrtxTensorStorage::TrtxTensor(tensor) => {
-                                tensor.stream.clone_dtoh(&tensor.memory)?
-                            }
-                            TrtxTensorStorage::HostTensor(tensor) => {
-                                tensor.stream.synchronize()?;
-                                tensor.memory.as_slice()?.to_vec()
-                            }
-                            #[cfg(feature = "cufile")]
-                            TrtxTensorStorage::SharedCudaTensor(tensor) => {
-                                tensor.stream.clone_dtoh(
-                                    &tensor
-                                        .memory
-                                        .slice(tensor.offset..tensor.offset + tensor.len),
-                                )?
-                            }
-                            TrtxTensorStorage::Destroyed => {
-                                return Err(GraphBuilderError::InconsistentGraphInfo {
-                                    message: format!("Baked tensor {id_ref:?} is destroyed"),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                    _ => continue,
-                };
-                graph.constant_operand_ids_to_handles.insert(
-                    id,
-                    crate::graph::ConstantReference::OwnedData(crate::ConstantData {
-                        data,
-                        label: None,
-                    }),
-                );
-            }
-
             let key = graph.hash_identifier(
                 &TRTX_SUFFIX_ENGINES,
                 WeightsToHash::Some(&non_refittable_constants),
