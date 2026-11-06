@@ -91,13 +91,15 @@ Rules that hold for every converter:
 
 ### TensorRT-RTX
 
+- `bloat16`, `float8e4m3` are currently accepted by the converter but not fully implemented.
+  Undefined errors are expected until bloat16/fp8 is actually tested
 - `uint8` is legal only at network I/O or through a cast to or from float; internal `uint8`
   results stay `int32` and become `uint8` at the outputs. Boolean masks are stored as `int8`.
 - `IDequantizeLayer` cannot take `uint8`; unsigned `dequantizeLinear` uses the manual
   multiply path.
 - Integer broadcast uses a stride-0 slice (as `expand` does); `IResizeLayer` rejects integers.
 - Constants are refittable and set after the build; constants that TensorRT folds away (unused,
-  or feeding only casts) are excluded from refit (`unused_constant_operand_ids`,
+  or feeding only casts and certain data types) are excluded from refit (`unused_constant_operand_ids`,
   `constant_only_feeds_casts`). Refit failures raise `TrtxError::ConstantRefitFailed` with the
   operand and its consumers.
 - The engine cache key hashes the converter sources (`build.rs`, `SOURCE_HASH`), so converter

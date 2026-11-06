@@ -49,6 +49,10 @@ use webnn_onnx_utils::{
     tensor_data::TensorData,
 };
 
+// Float8 tensor types and Cast/Identity support were introduced in ONNX IR 9 / opset 19.
+const ONNX_IR_VERSION: i64 = 9;
+const ONNX_OP_SET_VERSION: i64 = 19;
+
 /// Append each initializer's `raw_data` into one external blob and point tensors at it (ONNX external data).
 ///
 /// Tensors using `int32_data` / `float_data` / `int64_data` are left unchanged. Only non-empty `raw_data`
@@ -1100,6 +1104,8 @@ impl OnnxConverter {
     fn data_type_code(data_type: DataType) -> ProtoDataType {
         // Convert rust-webnn-graph DataType to webnn_onnx_utils DataType first
         let utils_dtype = match data_type {
+            DataType::Bfloat16 => return ProtoDataType::Bfloat16,
+            DataType::Float8e4m3 => return ProtoDataType::Float8e4m3fn,
             // ORT does not accept native int4/uint4 tensor inputs in our current path.
             // Keep uint4 as uint8 and int4 as int32 to match runtime input marshaling.
             DataType::Int4 => utils_data_types::DataType::Int32,
@@ -1125,6 +1131,8 @@ impl OnnxConverter {
             DataType::Uint8 => 2,
             DataType::Int8 => 3,
             DataType::Float16 => 10,
+            DataType::Bfloat16 => 16,
+            DataType::Float8e4m3 => 17,
             DataType::Int32 => 6,
             DataType::Int64 => 7,
             DataType::Uint32 => 12,
@@ -1950,6 +1958,8 @@ impl OnnxConverter {
             let type_code = match to {
                 MLOperandDataType::Float32 => ProtoDataType::Float as i64,
                 MLOperandDataType::Float16 => ProtoDataType::Float16 as i64,
+                MLOperandDataType::Bfloat16 => ProtoDataType::Bfloat16 as i64,
+                MLOperandDataType::Float8e4m3 => ProtoDataType::Float8e4m3fn as i64,
                 MLOperandDataType::Int32 => ProtoDataType::Int32 as i64,
                 MLOperandDataType::Uint32 => ProtoDataType::Uint32 as i64,
                 MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
@@ -9893,6 +9903,8 @@ impl crate::converters::GraphConverter for OnnxConverter {
                             Operation::Cast { data_type: to, .. } => match to {
                                 MLOperandDataType::Float32 => ProtoDataType::Float as i64,
                                 MLOperandDataType::Float16 => ProtoDataType::Float16 as i64,
+                                MLOperandDataType::Bfloat16 => ProtoDataType::Bfloat16 as i64,
+                                MLOperandDataType::Float8e4m3 => ProtoDataType::Float8e4m3fn as i64,
                                 MLOperandDataType::Int32 => ProtoDataType::Int32 as i64,
                                 MLOperandDataType::Uint32 => ProtoDataType::Uint32 as i64,
                                 MLOperandDataType::Int8 => ProtoDataType::Int8 as i64,
@@ -10069,13 +10081,13 @@ impl crate::converters::GraphConverter for OnnxConverter {
         };
 
         let model = ModelProto {
-            ir_version: 8, // IR version 8 = ONNX 1.10+ (supports opset 14-15)
+            ir_version: ONNX_IR_VERSION,
             model_version: 1,
             producer_name: "rustnn".to_string(),
             producer_version: "0.1.0".to_string(),
             graph: Some(graph_proto),
             opset_import: vec![OperatorSetIdProto {
-                version: 18,            // Opset 18: LpPool gains ceil_mode and dilations (for l2pool2d)
+                version: ONNX_OP_SET_VERSION,
                 domain: "".to_string(), // Empty string = default ONNX domain
             }],
             ..Default::default()

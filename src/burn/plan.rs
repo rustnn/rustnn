@@ -25,7 +25,8 @@ use crate::graph::DataType;
 use crate::operators::Operation;
 
 /// Current IR version; bump when breaking serialized layout.
-pub const BURN_PLAN_VERSION: u32 = 3;
+/// Version 4 uses the shared `MLOperandDataType` variant order for element types.
+pub const BURN_PLAN_VERSION: u32 = 4;
 
 /// Graph input or output binding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

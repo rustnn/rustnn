@@ -20,7 +20,7 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
-use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
+use crate::graph::{Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
 use crate::operator_options::OperandIndex;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
@@ -362,7 +362,7 @@ impl<'context> MLGraph<'context> {
 
         for (&name, tensor) in inputs {
             let expected = self.input_descriptors.get(name).expect("validated above");
-            if DataType::from(tensor.data_type()) != expected.data_type {
+            if tensor.data_type() != expected.data_type {
                 return Err(Error::GraphDispatchError {
                     source: format!(
                         "input '{name}' data type mismatch (expected {:?}, got {:?})",
@@ -376,7 +376,7 @@ impl<'context> MLGraph<'context> {
 
         for (&name, tensor) in outputs {
             let expected = self.output_descriptors.get(name).expect("validated above");
-            if DataType::from(tensor.data_type()) != expected.data_type {
+            if tensor.data_type() != expected.data_type {
                 return Err(Error::GraphDispatchError {
                     source: format!(
                         "output '{name}' data type mismatch (expected {:?}, got {:?})",
@@ -408,7 +408,7 @@ pub struct MLOperandDescriptor {
 impl From<&MLOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         OperandDescriptor {
-            data_type: val.data_type.into(),
+            data_type: val.data_type,
             shape: val
                 .shape
                 .iter()
@@ -491,7 +491,7 @@ impl MLOperand {
     pub fn data_type(self, graph: &GraphInfo) -> Result<MLOperandDataType> {
         let operand = get_operand(self, graph)?;
 
-        Ok(operand.descriptor.data_type.try_into()?)
+        Ok(operand.descriptor.data_type)
     }
 
     /// Index of the operand in its builder's graph (rustnn extension). Operand fields of the

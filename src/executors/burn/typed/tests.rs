@@ -20,6 +20,30 @@ use crate::operator_options::*;
 use burn_ndarray::NdArray;
 use std::collections::HashMap;
 
+#[test]
+fn floating_point_types_are_not_integers() {
+    for dtype in [
+        DataType::Float16,
+        DataType::Float32,
+        DataType::Bfloat16,
+        DataType::Float8e4m3,
+    ] {
+        assert!(!is_integer(dtype), "{dtype:?}");
+    }
+    for dtype in [
+        DataType::Int4,
+        DataType::Uint4,
+        DataType::Int8,
+        DataType::Uint8,
+        DataType::Int32,
+        DataType::Uint32,
+        DataType::Int64,
+        DataType::Uint64,
+    ] {
+        assert!(is_integer(dtype), "{dtype:?}");
+    }
+}
+
 struct Runtime {
     env: TensorEnv<NdArray<f32>>,
     types: HashMap<u32, DataType>,

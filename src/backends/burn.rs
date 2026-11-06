@@ -119,6 +119,11 @@ fn write_output(
     if !matches!(data_type, DataType::Int4 | DataType::Uint4) {
         for (i, &value) in result.data.iter().enumerate() {
             match data_type {
+                DataType::Bfloat16 | DataType::Float8e4m3 => {
+                    return Err(Error::GraphDispatchError {
+                        source: "bfloat16/float8e4m3 outputs are unsupported".into(),
+                    });
+                }
                 DataType::Float32 => bytes.extend_from_slice(&value.to_le_bytes()),
                 DataType::Float16 => {
                     bytes.extend_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes())

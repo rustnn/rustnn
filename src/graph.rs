@@ -105,61 +105,9 @@ pub fn dynamic_inputs_enabled() -> bool {
     cfg!(feature = "dynamic-inputs")
 }
 
-/// Element type of an operand in the graph model; converts to and from
-/// [`crate::operator_enums::MLOperandDataType`]. Serialized in snake_case (`"float32"`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DataType {
-    /// Signed 4-bit integer, two per byte.
-    Int4,
-    /// Unsigned 4-bit integer, two per byte.
-    Uint4,
-    /// IEEE 754 binary16.
-    Float16,
-    /// IEEE 754 binary32.
-    Float32,
-    /// Signed 32-bit integer.
-    Int32,
-    /// Unsigned 32-bit integer.
-    Uint32,
-    /// Signed 8-bit integer.
-    Int8,
-    /// Unsigned 8-bit integer; also carries boolean results.
-    Uint8,
-    /// Signed 64-bit integer.
-    Int64,
-    /// Unsigned 64-bit integer.
-    Uint64,
-}
-
-impl DataType {
-    /// Bits per element (4 for the packed 4-bit types).
-    pub const fn bits_per_element(self) -> usize {
-        match self {
-            DataType::Int4 | DataType::Uint4 => 4,
-            DataType::Int8 | DataType::Uint8 => 8,
-            DataType::Float16 => 16,
-            DataType::Float32 | DataType::Int32 | DataType::Uint32 => 32,
-            DataType::Int64 | DataType::Uint64 => 64,
-        }
-    }
-
-    /// Host storage bytes for `elements` values (always `ceil(elements * bits / 8)`).
-    pub fn storage_byte_length(self, elements: usize) -> Option<usize> {
-        let total_bits = elements.checked_mul(self.bits_per_element())?;
-        Some(total_bits.div_ceil(8))
-    }
-
-    /// Byte size of one element when the type is whole-byte aligned (`bits % 8 == 0`).
-    pub fn bytes_per_element(self) -> usize {
-        let bits = self.bits_per_element();
-        debug_assert!(
-            bits.is_multiple_of(8),
-            "bytes_per_element is only defined for byte-aligned types; use storage_byte_length for int4/uint4"
-        );
-        bits / 8
-    }
-}
+/// Graph operand element type; the same type as the WebNN API's
+/// [`crate::operator_enums::MLOperandDataType`], with identical serialization and storage helpers.
+pub type DataType = crate::operator_enums::MLOperandDataType;
 
 /// Packed int4/uint4 layout: even logical indices in the low nibble, odd in the high (ONNX/WebNN
 /// convention, i.e. element `2*i` occupies the least-significant 4 bits of byte `i`).
@@ -528,18 +476,6 @@ mod tests {
         assert_eq!(DataType::Uint8.bits_per_element(), 8);
         assert_eq!(DataType::Int64.bits_per_element(), 64);
         assert_eq!(DataType::Uint64.bits_per_element(), 64);
-    }
-
-    #[test]
-    fn test_data_type_bytes_per_element() {
-        assert_eq!(DataType::Float16.bytes_per_element(), 2);
-        assert_eq!(DataType::Float32.bytes_per_element(), 4);
-        assert_eq!(DataType::Int32.bytes_per_element(), 4);
-        assert_eq!(DataType::Uint32.bytes_per_element(), 4);
-        assert_eq!(DataType::Int8.bytes_per_element(), 1);
-        assert_eq!(DataType::Uint8.bytes_per_element(), 1);
-        assert_eq!(DataType::Int64.bytes_per_element(), 8);
-        assert_eq!(DataType::Uint64.bytes_per_element(), 8);
     }
 
     #[test]
