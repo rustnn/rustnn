@@ -49,7 +49,10 @@ impl CompiledCoremlModel {
 #[path = "coreml_load.rs"]
 mod load;
 use load::LoadTrace;
-pub use load::{CoremlLoadDiagnostics, CoremlLoadFailure, CoremlLoadRoute};
+pub use load::{CacheOutcome, CoremlLoadDiagnostics, CoremlLoadFailure, CoremlLoadRoute};
+#[path = "coreml_cache.rs"]
+mod cache;
+pub(crate) use cache::{BundleCacheRequest, compile_model_cached};
 
 // Link against the system frameworks we use.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -454,6 +457,8 @@ enum CoremlModelBacking {
         #[allow(dead_code)]
         temp_model: Option<TempModelSource>,
     },
+    /// A `.mlmodelc` owned by the compiled-bundle cache; it outlives the model.
+    Persistent,
 }
 
 impl std::fmt::Debug for CompiledCoremlModel {
@@ -489,6 +494,7 @@ impl Drop for CompiledCoremlModel {
                 // so remove it explicitly. `temp_model`, if any, cleans itself up on drop.
                 let _ = std::fs::remove_dir_all(compiled_dir);
             }
+            CoremlModelBacking::Persistent => {}
         }
     }
 }

@@ -200,6 +200,29 @@ pub struct CoremlOptions {
     pub output_backings: bool,
     /// Float16 lowering. Defaults to [`CoremlFloat16Precision::Native`].
     pub float16_precision: CoremlFloat16Precision,
+
+    // Compiled-bundle cache (see "Compiled-bundle cache" in the CoreML integration guide).
+    /// Directory of the compiled-bundle cache; `None` (the default) disables it.
+    ///
+    /// When set, `MLGraphBuilder::build` keeps the compiled `.mlmodelc` of every graph under
+    /// `<dir>/<key>/` and loads it from there on the next build of the same graph instead of
+    /// compiling again, which is the slow step on small devices. The key covers the graph
+    /// (operands, operations and every constant's bytes, through
+    /// `GraphInfo::hash_identifier`), the emitted weights blob and program size, the
+    /// compute-unit policy, `float16_precision`, the compile route, the crate version, a hash
+    /// of the CoreML converter sources and the OS build, so a converter, crate or OS change
+    /// never serves a stale bundle. Operand names and ids are part of the graph, so the same
+    /// WebNN graph built in another order or with other names is a different key.
+    ///
+    /// Only the URL route yields a bundle, so with the cache enabled graphs with inputs compile
+    /// from a URL (`CoremlLoadRoute::CompiledUrl`); input-free programs of proven constant
+    /// copies stay in memory and report the cache as disabled. A cache failure never fails a
+    /// build: the graph compiles as without the cache and the outcome is reported in
+    /// `CoremlLoadDiagnostics::cache` (a `CacheOutcome`), reachable through
+    /// `MLGraph::rustnn_load_diagnostics`.
+    /// The directory grows by about the weights size per graph and is never evicted by rustnn;
+    /// deleting it is always safe. On iOS and watchOS use a `Library/Caches` location.
+    pub compiled_bundle_cache: Option<std::path::PathBuf>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -209,6 +232,7 @@ impl Default for CoremlOptions {
             reuse_tensor_storage: false,
             output_backings: true,
             float16_precision: CoremlFloat16Precision::Native,
+            compiled_bundle_cache: None,
         }
     }
 }
