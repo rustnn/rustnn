@@ -231,6 +231,9 @@ impl<B: Backend> TensorValue<B> {
             ..
         } = input;
         match dtype {
+            DataType::Bfloat16 | DataType::Float8e4m3 => {
+                Err(error("bfloat16/float8e4m3 inputs are unsupported"))
+            }
             DataType::Float32 | DataType::Float16 => {
                 if int64_data.is_some() || uint64_data.is_some() {
                     return Err(error("float input has an integer payload"));

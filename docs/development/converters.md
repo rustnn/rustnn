@@ -91,6 +91,8 @@ Rules that hold for every converter:
 
 ### TensorRT-RTX
 
+- `bloat16`, `float8e4m3` are currently accepted by the converter but not fully implemented.
+  Undefined errors are expected until bloat16/fp8 is actually tested
 - `uint8` is legal only at network I/O or through a cast to or from float; internal `uint8`
   results stay `int32` and become `uint8` at the outputs. Boolean masks are stored as `int8`.
 - `IDequantizeLayer` cannot take `uint8`; unsigned `dequantizeLinear` uses the manual

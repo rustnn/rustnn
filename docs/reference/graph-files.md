@@ -48,6 +48,8 @@ Dynamic dimensions require `dynamic-inputs`; constants remain static. See the
 [dynamic-shape workflow](https://rustnn.github.io/rustnn/development/flexible-input-shapes/)
 and [Dimension](https://rustnn.github.io/rustnn/api/rustnn/graph/enum.Dimension.html).
 
+`float8e4m3` and `bfloat16` are until an implementation of those data types in webnn-graph unsupported.
+
 ## Other exports
 
 For text without file output, use
