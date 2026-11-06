@@ -10,7 +10,9 @@ use rand::Rng;
 use rustnn::{
     GraphInfo,
     loader::sanitize_webnn_identifiers,
-    mlcontext::{Backend, MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference},
+    mlcontext::{
+        Backend, MLContext, MLContextOptions, MLGraphBuilder, MLPowerPreference, RustNNOptions,
+    },
 };
 use safetensors::{Dtype, tensor::TensorView};
 use std::path::{Path, PathBuf};
@@ -111,19 +113,24 @@ fn prepare_weights(webnn_string: &str, filename: &str) -> PathBuf {
     cache_path
 }
 
-fn compile_model(webnn_string: &str, weights_path: &Path, backend: Backend, resolve_weights: bool) {
+fn compile_model(
+    webnn_string: &str,
+    weights_path: &Path,
+    context_options: &MLContextOptions,
+    resolve_weights: bool,
+) {
     let mut graph_info = load_model_with_weights(webnn_string, weights_path, resolve_weights);
     if !resolve_weights {
         graph_info
             .resolve_safetensor_references(weights_path)
             .unwrap();
     }
-    let mut context = MLContext::create(&context_options(backend)).unwrap();
+    let mut context = MLContext::create(&context_options).unwrap();
     let mut builder = MLGraphBuilder::new(&mut context).unwrap();
     builder.build_graph_info(graph_info).unwrap();
 }
 
-fn context_options(backend: Backend) -> MLContextOptions {
+fn create_context_options(backend: Backend) -> MLContextOptions {
     let (power_preference, accelerated) = match backend {
         Backend::Trtx => (MLPowerPreference::HighPerformance, true),
         _ => (MLPowerPreference::Default, false),
@@ -145,22 +152,37 @@ fn compile_webnn(c: &mut Criterion) {
     let resnet50_weights = prepare_weights(RESNET50_OPSET16, "resnet50_Opset16.safetensors");
     let flux_weights = prepare_weights(FLUX_KEIN_DECODER, "flux_klein_decoder.safetensors");
 
-    for backend in [
-        Backend::Onnx,
-        Backend::Trtx,
-        Backend::Litert,
-        Backend::Coreml,
-    ] {
-        if MLContext::create(&context_options(backend)).is_err() {
+    let mut no_trtx_caching = RustNNOptions::default();
+    no_trtx_caching.trtx.engine_caching = false;
+
+    for (test_name, options) in [
+        ("ort", create_context_options(Backend::Onnx)),
+        ("trtx with caching", create_context_options(Backend::Trtx)),
+        (
+            "trtx without caching",
+            create_context_options(Backend::Trtx).with_rustnn_options(no_trtx_caching),
+        ),
+        ("litert", create_context_options(Backend::Litert)),
+        ("coreml", create_context_options(Backend::Coreml)),
+    ]
+    .iter()
+    {
+        let backend = options.rustnn_backend_hint();
+        if let Err(err) = MLContext::create(&options) {
+            warn!(
+                "Skipping {test_name:?} ({backend:?} with options {options:?}). Can't create context: {err}"
+            );
             continue;
         }
 
-        c.bench_function(&format!("compile resnet 50 {backend:?}"), |b| {
-            b.iter(|| compile_model(RESNET50_OPSET16, &resnet50_weights, backend, false))
-        });
-        c.bench_function(&format!("compile flux_kein_decoder {backend:?}"), |b| {
-            b.iter(|| compile_model(FLUX_KEIN_DECODER, &flux_weights, backend, false))
-        });
+        c.bench_function(
+            &format!("compile resnet 50 {test_name}, options {options:?}"),
+            |b| b.iter(|| compile_model(RESNET50_OPSET16, &resnet50_weights, options, false)),
+        );
+        c.bench_function(
+            &format!("compile flux_kein_decoder {test_name}, options {options:?}"),
+            |b| b.iter(|| compile_model(FLUX_KEIN_DECODER, &flux_weights, options, false)),
+        );
     }
 }
 
