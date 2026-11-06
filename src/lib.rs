@@ -76,7 +76,7 @@
 //!
 //! # Cargo features
 //!
-//! Default features are `onnx-converter`, `burn-cpu-runtime`, and `coreml-runtime`. Burn CPU is selected
+//! Default features are `onnx-converter` and `burn-cpu-runtime`. Burn CPU is selected
 //! after every other eligible backend. Each `<backend>-runtime` enables its matching
 //! `<backend>-converter`; converter features expose serialization without rustnn execution.
 //! With `default-features = false`, enable only the converters or runtimes you need.

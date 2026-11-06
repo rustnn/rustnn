@@ -6,7 +6,7 @@ The `trtx` backend runs WebNN graphs on NVIDIA RTX GPUs through
 network by `src/converters/trtx.rs` (with `trtx_gru.rs`, `trtx_lstm.rs` and `trtx_rnn.rs` for the
 recurrent operations); there is no ONNX intermediate. The backend itself is
 `src/backends/trtx/mod.rs`; its file-backed weight upload algorithms and internal I/O
-configuration live in `src/backends/trtx/trtx_io_playground.rs`.
+configuration live in `src/backends/trtx/io_playground.rs`.
 
 ## Features
 

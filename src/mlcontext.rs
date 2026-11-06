@@ -287,11 +287,6 @@ impl MLTensor {
     pub fn destroy(&self, context: &mut MLContext<'_>) -> Result<()> {
         context.destroy_tensor(self)
     }
-    /// Deprecated spelling of [`Self::destroy`].
-    #[deprecated(note = "use MLTensor::destroy")]
-    pub fn destoy(&self, context: &mut MLContext<'_>) -> Result<()> {
-        self.destroy(context)
-    }
 
     /// Whether this tensor has released its backend storage.
     pub fn destroyed(&self) -> bool {
