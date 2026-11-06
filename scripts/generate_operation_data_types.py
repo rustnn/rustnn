@@ -123,7 +123,7 @@ def operand_data_type_variants() -> dict[str, str]:
     if not variants:
         raise ValueError("MLOperandDataType has no variants")
 
-    EXPECTED_RUSTNN_DATA_TYPES = 10
+    EXPECTED_RUSTNN_DATA_TYPES = 12
     assert len(variants) == EXPECTED_RUSTNN_DATA_TYPES, (
         f"Detected number of variants of MLOperandDataType is {len(variants)}. In the past it was {EXPECTED_RUSTNN_DATA_TYPES=}."
         "Please review whether this change is expected and then update EXPECTED_RUSTNN_DATA_TYPES"

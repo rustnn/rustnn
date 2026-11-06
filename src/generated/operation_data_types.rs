@@ -22,6 +22,8 @@ pub const ALL_DATA_TYPES: &[MLOperandDataType] = &[
     MLOperandDataType::Uint8,
     MLOperandDataType::Int4,
     MLOperandDataType::Uint4,
+    MLOperandDataType::Bfloat16,
+    MLOperandDataType::Float8e4m3,
 ];
 
 /// Every WebNN standard data type represented by rustnn.
@@ -34,8 +36,8 @@ pub const ALL_SPEC_DATA_TYPES: &[MLOperandDataType] = &[
     MLOperandDataType::Uint64,
     MLOperandDataType::Int8,
     MLOperandDataType::Uint8,
-    // Spec type absent from MLOperandDataType: bfloat16
-    // Spec type absent from MLOperandDataType: float8e4m3
+    MLOperandDataType::Bfloat16,
+    MLOperandDataType::Float8e4m3,
 ];
 
 /// WebNN operation identifier in the spec data type tables.
@@ -462,10 +464,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Abs,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int64,
             MLOperandDataType::Int32,
             MLOperandDataType::Int8,
@@ -514,8 +516,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::AveragePool2d,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::AveragePool2d,
@@ -530,8 +535,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::BatchNormalization,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::BatchNormalization,
@@ -566,8 +574,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Ceil,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Ceil,
@@ -607,8 +618,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Conv2d,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Conv2d,
@@ -628,8 +642,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ConvTranspose2d,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::ConvTranspose2d,
@@ -639,8 +656,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Cos,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Cos,
@@ -650,10 +670,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::CumulativeSum,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int64,
@@ -668,12 +688,12 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::DequantizeLinear,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: float8e4m3
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Uint8,
             MLOperandDataType::Int8,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int32,
+            MLOperandDataType::Float8e4m3,
         ]),
     },
     OperandDataTypes {
@@ -684,8 +704,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::DequantizeLinear,
         operand: OperandName::Scale,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::DequantizeLinear,
@@ -710,8 +733,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Elu,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Elu,
@@ -736,8 +762,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Erf,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Erf,
@@ -747,8 +776,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Exp,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Exp,
@@ -768,8 +800,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Floor,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Floor,
@@ -836,8 +871,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Gelu,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Gelu,
@@ -847,8 +885,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Gemm,
         operand: OperandName::A,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Gemm,
@@ -908,8 +949,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Gru,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Gru,
@@ -949,8 +993,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::GruCell,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::GruCell,
@@ -975,8 +1022,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::HardSigmoid,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::HardSigmoid,
@@ -986,8 +1036,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::HardSwish,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::HardSwish,
@@ -1012,8 +1065,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::InstanceNormalization,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::InstanceNormalization,
@@ -1028,8 +1084,12 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::IsInfinite,
         operand: OperandName::A,
-        // Spec types absent from MLOperandDataType: bfloat16, float8e4m3
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+            MLOperandDataType::Float8e4m3,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::IsInfinite,
@@ -1039,8 +1099,12 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::IsNaN,
         operand: OperandName::A,
-        // Spec types absent from MLOperandDataType: bfloat16, float8e4m3
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+            MLOperandDataType::Float8e4m3,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::IsNaN,
@@ -1050,8 +1114,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::L2Pool2d,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::L2Pool2d,
@@ -1066,8 +1133,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::LayerNormalization,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::LayerNormalization,
@@ -1082,8 +1152,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::LeakyRelu,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::LeakyRelu,
@@ -1123,8 +1196,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Linear,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Linear,
@@ -1134,8 +1210,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Log,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Log,
@@ -1215,8 +1294,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Lstm,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Lstm,
@@ -1271,8 +1353,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::LstmCell,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::LstmCell,
@@ -1307,8 +1392,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Matmul,
         operand: OperandName::A,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Matmul,
@@ -1378,10 +1466,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Neg,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int64,
             MLOperandDataType::Int32,
             MLOperandDataType::Int8,
@@ -1435,10 +1523,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Prelu,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int64,
             MLOperandDataType::Int32,
             MLOperandDataType::Int8,
@@ -1457,8 +1545,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::QuantizeLinear,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::QuantizeLinear,
@@ -1473,19 +1564,22 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::QuantizeLinear,
         operand: OperandName::ZeroPoint,
-        // Spec types absent from MLOperandDataType: float8e4m3
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Uint8,
             MLOperandDataType::Int8,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int32,
+            MLOperandDataType::Float8e4m3,
         ]),
     },
     OperandDataTypes {
         operation: OperationName::Reciprocal,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Reciprocal,
@@ -1495,10 +1589,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceL1,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int64,
@@ -1513,8 +1607,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceL2,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::ReduceL2,
@@ -1524,8 +1621,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceLogSum,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::ReduceLogSum,
@@ -1535,8 +1635,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceLogSumExp,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::ReduceLogSumExp,
@@ -1556,8 +1659,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceMean,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::ReduceMean,
@@ -1577,10 +1683,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceProduct,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int64,
@@ -1595,10 +1701,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceSum,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int64,
@@ -1613,10 +1719,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::ReduceSumSquare,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int32,
             MLOperandDataType::Uint32,
             MLOperandDataType::Int64,
@@ -1631,10 +1737,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Relu,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int64,
             MLOperandDataType::Int32,
             MLOperandDataType::Int8,
@@ -1648,10 +1754,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Resample2d,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Uint8,
             MLOperandDataType::Int8,
         ]),
@@ -1684,8 +1790,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::RoundEven,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::RoundEven,
@@ -1743,8 +1852,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Sigmoid,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Sigmoid,
@@ -1754,10 +1866,10 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Sign,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
         allowed: AllowedDataTypes::Types(&[
             MLOperandDataType::Float32,
             MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
             MLOperandDataType::Int64,
             MLOperandDataType::Int32,
             MLOperandDataType::Int8,
@@ -1771,8 +1883,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Sin,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Sin,
@@ -1792,8 +1907,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Softmax,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Softmax,
@@ -1803,8 +1921,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Softplus,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Softplus,
@@ -1814,8 +1935,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Softsign,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Softsign,
@@ -1835,8 +1959,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Sqrt,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Sqrt,
@@ -1861,8 +1988,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Tan,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Tan,
@@ -1872,8 +2002,11 @@ pub const OPERATION_DATA_TYPES: &[OperandDataTypes] = &[
     OperandDataTypes {
         operation: OperationName::Tanh,
         operand: OperandName::Input,
-        // Spec types absent from MLOperandDataType: bfloat16
-        allowed: AllowedDataTypes::Types(&[MLOperandDataType::Float32, MLOperandDataType::Float16]),
+        allowed: AllowedDataTypes::Types(&[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16,
+        ]),
     },
     OperandDataTypes {
         operation: OperationName::Tanh,
