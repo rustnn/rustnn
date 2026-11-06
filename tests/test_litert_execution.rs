@@ -128,10 +128,10 @@ mod tests {
         let mut constants = HashMap::new();
         constants.insert(
             1,
-            ConstantData {
+            rustnn::graph::ConstantReference::OwnedData(ConstantData {
                 data: filter_bytes,
                 label: Some("filter".into()),
-            },
+            }),
         );
 
         let graph = GraphInfo {

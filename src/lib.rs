@@ -93,7 +93,7 @@
 //! | `trtx-converter` | Serialized TensorRT-RTX engines through `trtx`; conversion requires the NVIDIA SDK and GPU |
 //! | `cann-converter` | HiAI offline models through `hiai-rs`; conversion requires the CANN DDK |
 //! | `onnx-runtime` | ONNX Runtime execution through `ort` (dynamic loading, `ORT_DYLIB_PATH`) |
-//! | `coreml-runtime` | Apple CoreML execution on macOS/iOS; failing shims on other targets |
+//! | `coreml-runtime` | Apple CoreML execution on macOS/iOS (default); disabled on wasm32, failing shims on other native hosts |
 //! | `litert-runtime` | LiteRT execution through `litert` and `litert-sys` |
 //! | `burn-cpu-runtime` | Burn NdArray CPU execution (default); no native runtime library |
 //! | `trtx-runtime` | TensorRT-RTX execution, CUDA tensors and compressed engine caches |
@@ -104,6 +104,7 @@
 //! | `dynamic-inputs` | Enable ONNX/CoreML conversion of [`graph::Dimension::Dynamic`] shapes bounded by `max_size` |
 //! | `zstd-cache-compression` | Compress on-disk engine caches (enabled by `trtx-runtime`) |
 //! | `native-examples` | Build the larger examples (`fast_style_transfer_builder_api`, `smollm_mlcontext`) |
+//! | `native-benches` | Build native benchmarks (`weights_io`); omit for wasm32 checks |
 //! | `capi` | C API exports and logging support |
 //! | `wpt-embed-corpus` | Embed the WPT corpus for targets without filesystem access |
 //! | `webnn-wpt-tests` | Browser WPT tests, including the embedded corpus |

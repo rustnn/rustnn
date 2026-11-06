@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use crate::Operation;
 use crate::error::GraphBuilderError;
-use crate::graph::{ConstantData, GraphInfo, Operand, OperandDescriptor, OperandKind};
+use crate::graph::{GraphInfo, Operand, OperandDescriptor, OperandKind};
 use crate::mlcontext::MLOperand;
 use crate::mlgraphbuilder::infer_operation_descriptors;
 
@@ -18,6 +18,10 @@ pub(crate) struct GraphRecorder {
 impl GraphRecorder {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn graph_mut(&mut self) -> &mut GraphInfo {
+        &mut self.graph
     }
 
     pub(crate) fn graph(&self) -> &GraphInfo {
@@ -51,7 +55,7 @@ impl GraphRecorder {
         &mut self,
         name: Option<String>,
         descriptor: OperandDescriptor,
-        data: ConstantData,
+        data: impl Into<crate::graph::ConstantReference>,
     ) -> u32 {
         let id = self.graph.operands.len() as u32;
         self.graph.operands.push(Operand {
@@ -59,7 +63,9 @@ impl GraphRecorder {
             descriptor,
             name,
         });
-        self.graph.constant_operand_ids_to_handles.insert(id, data);
+        self.graph
+            .constant_operand_ids_to_handles
+            .insert(id, data.into());
         id
     }
 
@@ -179,6 +185,7 @@ impl Deref for GraphRecorder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::ConstantData;
     use crate::graph::{DataType, Dimension, DynamicDimension, to_dimension_vector};
     use crate::operator_options::{MLGruCellOptions, MLGruOptions, MLLstmOptions, MLSplitOptions};
 

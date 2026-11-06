@@ -8,6 +8,7 @@
 //! upper bound and require the `dynamic-inputs` feature at runtime.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_with::{base64::Base64, serde_as};
@@ -28,9 +29,9 @@ pub struct DynamicDimension {
     pub max_size: u32,
 }
 
-/// One entry of an operand shape. Serializes as a number or as `{ "name", "maxSize" }`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(untagged)]
+/// One entry of an operand shape, either static or bounded dynamic.
 pub enum Dimension {
     /// Fixed size.
     Static(u32),
@@ -325,20 +326,172 @@ pub struct Operand {
     pub name: Option<String>,
 }
 
-/// Raw bytes of a constant operand (little-endian, 4-bit types nibble-packed).
+/// Resolves constant references to bytes for graph conversion.
+pub trait WeightsContext<'context> {
+    /// Resolves the reference for a constant operand.
+    fn resolve(
+        &mut self,
+        constant_ref: &'context ConstantReference,
+        descriptor: &OperandDescriptor,
+        id: u32,
+    ) -> crate::error::Result<&'context [u8]>;
+}
+/// Resolves inline constant data without performing I/O.
+pub struct DefaultWeightsContext {}
+
+impl<'context> WeightsContext<'context> for DefaultWeightsContext {
+    fn resolve(
+        &mut self,
+        constant: &'context ConstantReference,
+        _descriptor: &OperandDescriptor,
+        id: u32,
+    ) -> crate::error::Result<&'context [u8]> {
+        match constant {
+            ConstantReference::OwnedData(ConstantData { data, .. }) => Ok(data),
+            ConstantReference::UrlRef(_)
+            | ConstantReference::FileRef(_)
+            | ConstantReference::OffsetRef(_)
+            | ConstantReference::StringRef(_)
+            | ConstantReference::IdRef(_)
+            | ConstantReference::Missing => {
+                Err(crate::error::GraphBuilderError::UnresolvedConstant {
+                    id,
+                    constant_ref: constant.clone(),
+                }
+                .into())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// An external tensor byte range addressed by URL.
+pub struct UrlRef {
+    /// Entity tag identifying the remote content.
+    pub etag: String,
+    /// Source URL.
+    pub url: String,
+    /// Byte offset into the source.
+    pub offset: u64,
+    /// Length of the byte range.
+    pub len: u64,
+    #[serde(default)]
+    /// Optional source label.
+    pub label: Option<String>,
+}
+
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// Raw little-endian constant bytes, with nibble-packed 4-bit values.
 pub struct ConstantData {
     /// The bytes; base64 in JSON.
     #[serde_as(as = "Base64")]
     pub data: Vec<u8>,
     /// Optional label carried into exported graphs.
     #[serde(default)]
+    /// Optional source label.
     pub label: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// A byte range in an external tensor file.
+pub struct FileRef {
+    /// File containing the tensor bytes.
+    pub path: PathBuf,
+    /// Byte offset into the source.
+    pub offset: usize,
+    /// Length of the byte range.
+    pub len: usize,
+    #[serde(default)]
+    /// Optional source label.
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// A byte range in an externally supplied buffer.
+pub struct OffsetRef {
+    /// Byte offset into the source.
+    pub offset: usize,
+    /// Length of the byte range.
+    pub len: usize,
+    #[serde(default)]
+    /// Optional source label.
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// A tensor handle in the graph context.
+pub struct IdRef {
+    /// Context-local tensor identifier.
+    pub id: u64,
+    #[serde(default)]
+    /// Optional source label.
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// A named tensor to resolve from an external weights file.
+pub struct StringRef {
+    #[serde(default)]
+    /// Optional source label.
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+#[serde(untagged)]
+/// Inline constant data or a reference to externally managed tensor storage.
+pub enum ConstantReference {
+    /// Bytes owned by the graph.
+    OwnedData(ConstantData),
+    /// Remote tensor bytes.
+    UrlRef(UrlRef),
+    /// Tensor bytes in a local file.
+    FileRef(FileRef),
+    /// Tensor bytes in an external buffer.
+    OffsetRef(OffsetRef),
+    /// Named external tensor awaiting resolution.
+    StringRef(StringRef),
+    /// Tensor allocated by the graph context.
+    IdRef(IdRef),
+    /// No data source has been supplied.
+    Missing,
+}
+
+impl From<ConstantData> for ConstantReference {
+    fn from(data: ConstantData) -> Self {
+        Self::OwnedData(data)
+    }
+}
+
+impl ConstantReference {
+    /// Returns the inline data, if present.
+    pub fn as_owned_data(&self) -> Option<&ConstantData> {
+        match self {
+            Self::OwnedData(data) => Some(data),
+            _ => None,
+        }
+    }
+
+    /// Returns the tensor handle reference, if present.
+    pub fn as_id_ref(&self) -> Option<&IdRef> {
+        if let Self::IdRef(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    /// Returns `true` if the constant reference is [`IdRef`].
+    ///
+    /// [`IdRef`]: ConstantReference::IdRef
+    #[must_use]
+    pub fn is_id_ref(&self) -> bool {
+        matches!(self, Self::IdRef(..))
+    }
+}
+
+#[derive(Debug, Serialize, Clone, Deserialize, Default)]
 /// The complete backend-agnostic graph.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraphInfo {
     /// All operands; operations refer to them by index.
     pub operands: Vec<Operand>,
@@ -353,7 +506,7 @@ pub struct GraphInfo {
     pub operations: Vec<Operation>,
     /// Constant data by operand index.
     #[serde(default)]
-    pub constant_operand_ids_to_handles: HashMap<u32, ConstantData>,
+    pub constant_operand_ids_to_handles: HashMap<u32, ConstantReference>,
     /// Whether the graph carries quantized constants (affects the `.webnn` export).
     #[serde(default)]
     pub quantized: bool,
@@ -361,6 +514,160 @@ pub struct GraphInfo {
 
 impl GraphInfo {
     /// The operand with index `id`, if it exists.
+    pub fn constant_data(&self, id: u32) -> crate::error::Result<&[u8]> {
+        let constant = self
+            .constant_operand_ids_to_handles
+            .get(&id)
+            .ok_or(crate::error::GraphBuilderError::MissingConstantId { id })?;
+        let descriptor = &self
+            .operands
+            .get(id as usize)
+            .ok_or(crate::error::GraphBuilderError::MissingConstantId { id })?
+            .descriptor;
+        DefaultWeightsContext {}.resolve(constant, descriptor, id)
+    }
+
+    /// Resolves all [`ConstantReference::StringRef`] entries against a safetensors file.
+    ///
+    /// Only the safetensors length prefix and JSON header are read. Tensor offsets in the
+    /// header are relative to the data section, so the resulting [`FileRef`] offsets include
+    /// both the eight-byte length prefix and the header itself.
+    pub fn resolve_safetensor_references(
+        &mut self,
+        path: impl AsRef<std::path::Path>,
+    ) -> crate::error::Result<()> {
+        use std::io::Read;
+
+        const LENGTH_PREFIX_SIZE: usize = size_of::<u64>();
+        const MAX_HEADER_SIZE: usize = 100_000_000;
+
+        let string_refs: Vec<(u32, String)> = self
+            .constant_operand_ids_to_handles
+            .iter()
+            .filter_map(|(&id, reference)| match reference {
+                ConstantReference::StringRef(string_ref) => Some((id, string_ref.label.clone())),
+                _ => None,
+            })
+            .collect();
+
+        if string_refs.is_empty() {
+            return Ok(());
+        }
+
+        let path = path.as_ref();
+        let mut file = std::fs::File::open(path).map_err(|error| GraphError::io(path, error))?;
+        let mut header_len_bytes = [0_u8; LENGTH_PREFIX_SIZE];
+        file.read_exact(&mut header_len_bytes)
+            .map_err(|error| GraphError::io(path, error))?;
+
+        let header_len = usize::try_from(u64::from_le_bytes(header_len_bytes)).map_err(|_| {
+            GraphError::ConversionFailed {
+                format: "safetensors".to_string(),
+                reason: "header length does not fit in usize".to_string(),
+            }
+        })?;
+        if header_len > MAX_HEADER_SIZE {
+            return Err(GraphError::ConversionFailed {
+                format: "safetensors".to_string(),
+                reason: format!(
+                    "header length {header_len} exceeds the {MAX_HEADER_SIZE}-byte limit"
+                ),
+            }
+            .into());
+        }
+
+        let mut header = vec![0_u8; header_len];
+        file.read_exact(&mut header)
+            .map_err(|error| GraphError::io(path, error))?;
+        let metadata: safetensors::tensor::Metadata =
+            serde_json::from_slice(&header).map_err(|error| GraphError::ConversionFailed {
+                format: "safetensors".to_string(),
+                reason: format!("invalid header JSON: {error}"),
+            })?;
+        let data_start = LENGTH_PREFIX_SIZE.checked_add(header_len).ok_or_else(|| {
+            GraphError::ConversionFailed {
+                format: "safetensors".to_string(),
+                reason: "data section offset overflowed usize".to_string(),
+            }
+        })?;
+
+        // Resolve every reference before mutating the graph, leaving it unchanged on error.
+        let mut replacements = Vec::with_capacity(string_refs.len());
+        for (id, label) in string_refs {
+            let tensor = metadata
+                .info(&label)
+                .ok_or_else(|| GraphError::ConversionFailed {
+                    format: "safetensors".to_string(),
+                    reason: format!("tensor `{label}` is missing from the header"),
+                })?;
+            let (relative_start, relative_end) = tensor.data_offsets;
+            let offset = data_start.checked_add(relative_start).ok_or_else(|| {
+                GraphError::ConversionFailed {
+                    format: "safetensors".to_string(),
+                    reason: format!("tensor `{label}` file offset overflowed usize"),
+                }
+            })?;
+
+            replacements.push((
+                id,
+                ConstantReference::FileRef(FileRef {
+                    path: path.to_path_buf(),
+                    offset,
+                    len: relative_end - relative_start,
+                    label: Some(label),
+                }),
+            ));
+        }
+
+        for (id, reference) in replacements {
+            self.constant_operand_ids_to_handles.insert(id, reference);
+        }
+
+        Ok(())
+    }
+
+    /// Appends a constant operand backed by the supplied reference.
+    pub fn add_constant_reference(
+        &mut self,
+        descriptor: OperandDescriptor,
+        reference: ConstantReference,
+        name: Option<String>,
+    ) -> crate::error::Result<u32> {
+        let id = self
+            .operands
+            .len()
+            .try_into()
+            .map_err(|_e| GraphError::TooManyOperands {
+                count: self.operands.len(),
+            })?;
+
+        self.operands.push(Operand {
+            kind: OperandKind::Constant,
+            descriptor,
+            name,
+        });
+        self.constant_operand_ids_to_handles.insert(id, reference);
+
+        Ok(id)
+    }
+
+    /// Resolves a constant using a caller-supplied context.
+    pub fn resolve_constant<'context>(
+        &'context self,
+        id: u32,
+        context: &mut (impl WeightsContext<'context> + 'context),
+    ) -> crate::error::Result<&'context [u8]> {
+        let constant = self.constant_operand_ids_to_handles.get(&id);
+        let Some(constant) = constant else {
+            return Err(crate::error::GraphBuilderError::MissingConstantId { id }.into());
+        };
+        let Some(operand) = self.operands.get(id as usize) else {
+            return Err(crate::error::GraphBuilderError::MissingConstantId { id }.into());
+        };
+        context.resolve(constant, &operand.descriptor, id)
+    }
+
+    /// Returns the operand with this index, if present.
     pub fn operand(&self, id: u32) -> Option<&Operand> {
         self.operands.get(id as usize)
     }
@@ -515,6 +822,93 @@ impl GraphInfo {
 mod tests {
     use super::*;
     use crate::error::GraphError;
+
+    fn write_safetensors_header(path: &std::path::Path, header: &serde_json::Value) -> usize {
+        let header = serde_json::to_vec(header).unwrap();
+        let mut contents = Vec::with_capacity(size_of::<u64>() + header.len());
+        contents.extend_from_slice(&(header.len() as u64).to_le_bytes());
+        contents.extend_from_slice(&header);
+        std::fs::write(path, contents).unwrap();
+        size_of::<u64>() + header.len()
+    }
+
+    #[test]
+    fn resolve_safetensor_references_uses_header_offsets() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("weights.safetensors");
+        let data_start = write_safetensors_header(
+            &path,
+            &serde_json::json!({
+                "unused": {
+                    "dtype": "F32",
+                    "shape": [1],
+                    "data_offsets": [0, 4]
+                },
+                "weight": {
+                    "dtype": "F32",
+                    "shape": [1],
+                    "data_offsets": [4, 8]
+                }
+            }),
+        );
+        let mut graph = GraphInfo::default();
+        graph.constant_operand_ids_to_handles.insert(
+            4,
+            ConstantReference::StringRef(StringRef {
+                label: "weight".to_string(),
+            }),
+        );
+
+        graph.resolve_safetensor_references(&path).unwrap();
+
+        let ConstantReference::FileRef(file_ref) = &graph.constant_operand_ids_to_handles[&4]
+        else {
+            panic!("StringRef was not replaced with FileRef");
+        };
+        assert_eq!(file_ref.path, path);
+        assert_eq!(file_ref.offset, data_start + 4);
+        assert_eq!(file_ref.len, 4);
+        assert_eq!(file_ref.label.as_deref(), Some("weight"));
+    }
+
+    #[test]
+    fn resolve_safetensor_references_is_transactional() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("weights.safetensors");
+        write_safetensors_header(
+            &path,
+            &serde_json::json!({
+                "present": {
+                    "dtype": "F32",
+                    "shape": [1],
+                    "data_offsets": [0, 4]
+                }
+            }),
+        );
+        let mut graph = GraphInfo::default();
+        graph.constant_operand_ids_to_handles.insert(
+            1,
+            ConstantReference::StringRef(StringRef {
+                label: "present".to_string(),
+            }),
+        );
+        graph.constant_operand_ids_to_handles.insert(
+            2,
+            ConstantReference::StringRef(StringRef {
+                label: "missing".to_string(),
+            }),
+        );
+
+        assert!(graph.resolve_safetensor_references(&path).is_err());
+        assert!(matches!(
+            graph.constant_operand_ids_to_handles[&1],
+            ConstantReference::StringRef(_)
+        ));
+        assert!(matches!(
+            graph.constant_operand_ids_to_handles[&2],
+            ConstantReference::StringRef(_)
+        ));
+    }
 
     #[test]
     fn test_data_type_bits_per_element() {

@@ -78,16 +78,31 @@ impl MLContextOptions {
         self
     }
 
+    /// Get currently set backend hint
+    pub fn rustnn_backend_hint(&self) -> Option<Backend> {
+        self.backend_hint
+    }
+
     /// Use exactly this device, skipping selection (no availability check, no fallback).
     pub fn with_rustnn_device_hint(mut self, device: BackendDevice) -> Self {
         self.device_hint = Some(device);
         self
     }
 
+    /// Get currently set backend device hint
+    pub fn rustnn_backend_device_hint(&self) -> Option<BackendDevice> {
+        self.device_hint
+    }
+
     /// Attach backend-specific tuning options.
     pub fn with_rustnn_options(mut self, options: RustNNOptions) -> Self {
         self.rustnn_options = options;
         self
+    }
+
+    /// Get currently set [RustNNOptions]
+    pub fn rustnn_options(&self) -> &RustNNOptions {
+        &self.rustnn_options
     }
 }
 
