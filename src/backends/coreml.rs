@@ -28,7 +28,8 @@ use crate::mlcontext::{
     MLTensorDescriptor,
 };
 use crate::mlcontextoptions::{
-    BackendStatistics, CoremlFloat16Precision, CoremlOptions, CoremlTensorStatistics,
+    BackendStatistics, CoremlCompileRoute, CoremlFloat16Precision, CoremlOptions,
+    CoremlTensorStatistics,
 };
 use crate::operators::Operation;
 
@@ -88,6 +89,7 @@ impl fmt::Debug for CoremlGraph {
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
     float16_precision: CoremlFloat16Precision,
+    compile_route: CoremlCompileRoute,
 }
 
 impl fmt::Debug for CoremlBuilder {
@@ -95,6 +97,7 @@ impl fmt::Debug for CoremlBuilder {
         f.debug_struct("CoremlBuilder")
             .field("device_type", &self.device_type)
             .field("float16_precision", &self.float16_precision)
+            .field("compile_route", &self.compile_route)
             .finish()
     }
 }
@@ -127,6 +130,7 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             converted.weights_data,
             self.device_type,
             use_asset,
+            self.compile_route,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
         MLGraph::new(
@@ -309,6 +313,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         Ok(Box::new(CoremlBuilder {
             device_type: self.device_type,
             float16_precision: self.options.float16_precision,
+            compile_route: self.options.compile_route,
         }))
     }
 

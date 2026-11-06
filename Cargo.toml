@@ -60,6 +60,9 @@ cann-runtime = ["cann-converter"]
 # Device-free backend validation; does not enable the native converter or DDK.
 cann-runtime-mock = []
 coreml-runtime = ["coreml-converter", "objc", "block"]
+# Write runnable `.mlmodelc` bundles in pure Rust (`ConvertedGraph::write_coreml_bundle`,
+# `CoremlCompileRoute::RustExport`) for Apple targets without `MLModel.compileModel`.
+coreml-export = ["coreml-converter", "dep:mlmodelc-export"]
 litert-runtime = ["litert-converter", "dep:litert", "dep:litert-sys"]
 onnx-runtime = ["onnx-converter", "ort", "ndarray"]
 trtx-runtime = ["trtx-converter", "dep:cudarc", "zstd-cache-compression"]
@@ -237,6 +240,7 @@ litert-sys = { version = "0.2.1", optional = true }
 flatbuffers = { version = "25.12", optional = true }
 regex = "1.11"
 hiai-rs = { version = "0.1.0", optional = true }
+mlmodelc-export = { version = "0.1", default-features = false, optional = true }
 webnn-graph = { version = "0.4", default-features = false }
 webnn-onnx-utils = { version = "0.1.1", optional = true }
 
@@ -266,7 +270,7 @@ block = { version = "0.1", optional = true }
 pollster = { version = "1.0.1", optional = true }
 strum = { version = "0.28.0", features = ["derive"] }
 
-[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+[target.'cfg(target_vendor = "apple")'.dependencies]
 # Native CoreML targets require Objective-C exception handling.
 objc = { version = "0.2", optional = true, features = ["exception"] }
 
