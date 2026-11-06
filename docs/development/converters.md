@@ -99,7 +99,7 @@ Rules that hold for every converter:
   multiply path.
 - Integer broadcast uses a stride-0 slice (as `expand` does); `IResizeLayer` rejects integers.
 - Constants are refittable and set after the build; constants that TensorRT folds away (unused,
-  or feeding only casts) are excluded from refit (`unused_constant_operand_ids`,
+  or feeding only casts and certain data types) are excluded from refit (`unused_constant_operand_ids`,
   `constant_only_feeds_casts`). Refit failures raise `TrtxError::ConstantRefitFailed` with the
   operand and its consumers.
 - The engine cache key hashes the converter sources (`build.rs`, `SOURCE_HASH`), so converter

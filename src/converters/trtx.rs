@@ -733,11 +733,13 @@ impl TrtxConverter {
             })
     }
 
-    /// Graph constant operand ids used as gather/gatherND/gatherElements indices.
+    /// Graph constant operand ids that TensorRT bakes into the engine.
     ///
-    /// These are baked (clamped) at compile time in the TRT network and must not be marked
+    /// These are transformed or folded at compile time in the TRT network and must not be marked
     /// refittable or refitted at engine load.
-    pub fn gather_baked_constant_operand_ids(graph: &GraphInfo) -> HashSet<u32> {
+    pub(crate) fn gather_baked_constant_operand_ids(
+        graph: &GraphInfo,
+    ) -> Result<HashSet<u32>, GraphError> {
         let mut ids = HashSet::new();
         let graph_has_qdq = graph.operations.iter().any(|op| {
             matches!(
@@ -745,42 +747,33 @@ impl TrtxConverter {
                 Operation::QuantizeLinear { .. } | Operation::DequantizeLinear { .. }
             )
         });
-        if graph_has_qdq {
-            for (id, operand) in graph.operands.iter().enumerate() {
-                if operand.kind == OperandKind::Constant {
+
+        for (id, operand) in graph.operands.iter().enumerate() {
+            if operand.kind == OperandKind::Constant {
+                let needs_baking =
+                // all constants currently non-refittable if graph has any Q/DQ ops
+                    graph_has_qdq
+                // TensorRT folds `Cast(constant)` into a new constant, so a constant whose
+                // consumers are all casts loses its refit prototype ("The weights cannot be
+                // refitted"); e.g. a scalar fp16 epsilon cast to float32 in every layer norm.
+                 || (Self::integer_constant_only_casts_to_int32(graph, id as u32)
+                    || Self::constant_only_feeds_casts(graph, id as u32))
+                 // DataType::Int64 | DataType::Uint64 are not refittable
+                 || matches!(
+                    operand.descriptor.data_type,
+                    DataType::Int64 | DataType::Uint64 | DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4)
+                 // TensorRT loves to constant fold small int32/uint32 constants
+                 // A change in behavior seems to be triggered for more the 64 elements. There is
+                 // the suspicion that DataType::Int64 | DataType::Uint64 behave the same way
+                 // https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/dynamic-shapes-advanced.html#execution-tensors-vs-shape-tensors
+                 || (matches!(
+                    operand.descriptor.data_type,
+                    DataType::Int32 | DataType::Uint32)
+                    && operand.descriptor.element_count().ok_or_else(|| GraphError::DynamicConstant{operand_id: id as u32, operand: operand.clone()})? <= 64);
+
+                if needs_baking {
                     ids.insert(id as u32);
                 }
-            }
-        }
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && matches!(
-                    operand.descriptor.data_type,
-                    DataType::Int8 | DataType::Uint8 | DataType::Int4 | DataType::Uint4
-                )
-            {
-                ids.insert(id as u32);
-            }
-        }
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && matches!(
-                    operand.descriptor.data_type,
-                    DataType::Int64 | DataType::Uint64
-                )
-            {
-                ids.insert(id as u32);
-            }
-        }
-        // TensorRT folds `Cast(constant)` into a new constant, so a constant whose
-        // consumers are all casts loses its refit prototype ("The weights cannot be
-        // refitted"); e.g. a scalar fp16 epsilon cast to float32 in every layer norm.
-        for (id, operand) in graph.operands.iter().enumerate() {
-            if operand.kind == OperandKind::Constant
-                && (Self::integer_constant_only_casts_to_int32(graph, id as u32)
-                    || Self::constant_only_feeds_casts(graph, id as u32))
-            {
-                ids.insert(id as u32);
             }
         }
         for op in &graph.operations {
@@ -873,7 +866,7 @@ impl TrtxConverter {
                 }
             }
         }
-        ids
+        Ok(ids)
     }
 
     /// Build TensorRT network from WebNN graph.
@@ -882,7 +875,7 @@ impl TrtxConverter {
         network: &mut trtx::NetworkDefinition<'a>,
     ) -> Result<(), GraphError> {
         let mut tensor_map: HashMap<u32, trtx::Tensor<'a>> = HashMap::new();
-        let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph);
+        let mut non_refittable_constants = Self::gather_baked_constant_operand_ids(graph)?;
         let io_binding_names = Self::engine_io_binding_names(graph);
 
         // Step 1: Add inputs
@@ -11414,10 +11407,6 @@ impl TrtxConverter {
             .map(|o| o.input_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
-        let input_dtype = graph
-            .operand(input_id)
-            .map(|o| o.descriptor.data_type)
-            .unwrap_or(DataType::Float32);
         let input = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -11451,28 +11440,7 @@ impl TrtxConverter {
         } else {
             None
         };
-        let pre_conv_input = nhwc_shuffle_output.as_ref().unwrap_or(input);
-
-        // TensorRT conv kernel is always Float; cast Half input to Float so types match.
-        let half_cast_output: Option<trtx::Tensor<'a>> = if input_dtype == DataType::Float16 {
-            let cast_layer = network
-                .add_cast(pre_conv_input, TrtDataType::kFLOAT)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Conv2d Half->Float cast: {}", e),
-                })?;
-            Some(
-                cast_layer
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Conv2d cast output: {}", e),
-                    })?,
-            )
-        } else {
-            None
-        };
-        let conv_input_source = half_cast_output.as_ref().unwrap_or(pre_conv_input);
+        let conv_input_source = nhwc_shuffle_output.as_ref().unwrap_or(input);
 
         // Stride, padding, dilation, groups from typed options
         let strides: [i32; 2] = conv_opts
@@ -11551,56 +11519,10 @@ impl TrtxConverter {
                     format: "trtx".to_string(),
                     reason: format!("Filter operand {} tensor not found", filter_id),
                 })?;
-        // Constants are already TensorRT constant tensors. Cast/shuffle them through TensorRT layers
-        // so graph constant bytes are never rewritten on the CPU for convolution weights.
-        let filter_tensor_for_conv: Option<trtx::Tensor<'a>> =
-            if filter_operand.descriptor.data_type == DataType::Float16 {
-                let cast_layer = network
-                    .add_cast(filter_tensor, TrtDataType::kFLOAT)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("Conv2d filter Half->Float cast: {}", e),
-                    })?;
-                Some(
-                    cast_layer
-                        .output(&*network, 0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Conv2d filter cast output: {}", e),
-                        })?,
-                )
-            } else {
-                None
-            };
-        let filter_tensor_to_use = filter_tensor_for_conv.as_ref().unwrap_or(filter_tensor);
-
-        let bias_tensor_raw = bias_id.and_then(|id| tensor_map.get(&id));
-        let bias_tensor_for_conv: Option<trtx::Tensor<'a>> =
-            if let (Some(bt), Some(bid)) = (bias_tensor_raw, bias_id) {
-                let bias_dtype = graph
-                    .operand(bid)
-                    .map(|o| o.descriptor.data_type)
-                    .unwrap_or(DataType::Float32);
-                if bias_dtype == DataType::Float16 {
-                    let cast_layer = network.add_cast(bt, TrtDataType::kFLOAT).map_err(|e| {
-                        GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Conv2d bias Half->Float cast: {}", e),
-                        }
-                    })?;
-                    Some(cast_layer.output(&*network, 0).map_err(|e| {
-                        GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("Conv2d bias cast output: {}", e),
-                        }
-                    })?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-        let bias_tensor_to_use = bias_tensor_for_conv.as_ref().or(bias_tensor_raw);
+        // Constants are already TensorRT tensors. Preserve their dtype and shuffle layouts
+        // without rewriting graph constant bytes on the CPU.
+        let filter_tensor_to_use = filter_tensor;
+        let bias_tensor_to_use = bias_id.and_then(|id| tensor_map.get(&id));
 
         let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> =
             if filter_layout != ConvLayout::Oihw {
@@ -11664,31 +11586,13 @@ impl TrtxConverter {
 
         layer.set_num_groups(network, groups as i64);
 
-        // Extract output tensor from layer (NCHW, Float)
+        // Extract output tensor from layer (NCHW, with the input dtype).
         let conv_output = layer
             .output(&*network, 0)
             .map_err(|e| GraphError::ConversionFailed {
                 format: "trtx".to_string(),
                 reason: format!("Failed to get convolution output: {}", e),
             })?;
-
-        // If input was Half, cast conv output back to Half to match graph output type.
-        let conv_output = if input_dtype == DataType::Float16 {
-            let cast_layer = network
-                .add_cast(&conv_output, TrtDataType::kHALF)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Conv2d Float->Half cast: {}", e),
-                })?;
-            cast_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("Conv2d cast output: {}", e),
-                })?
-        } else {
-            conv_output
-        };
 
         // If input was NHWC, transpose output back to NHWC.
         let output = if input_layout == "nhwc" {
@@ -11811,10 +11715,6 @@ impl TrtxConverter {
             .map(|o| o.input_layout.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or("nchw");
-        let input_dtype = graph
-            .operand(input_id)
-            .map(|o| o.descriptor.data_type)
-            .unwrap_or(DataType::Float32);
         let input = tensor_map
             .get(&input_id)
             .ok_or_else(|| GraphError::ConversionFailed {
@@ -11847,27 +11747,7 @@ impl TrtxConverter {
         } else {
             None
         };
-        let pre_deconv_input = nhwc_shuffle_output.as_ref().unwrap_or(input);
-
-        let half_cast_output: Option<trtx::Tensor<'a>> = if input_dtype == DataType::Float16 {
-            let cast_layer = network
-                .add_cast(pre_deconv_input, TrtDataType::kFLOAT)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("convTranspose2d Half->Float cast: {}", e),
-                })?;
-            Some(
-                cast_layer
-                    .output(&*network, 0)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("convTranspose2d cast output: {}", e),
-                    })?,
-            )
-        } else {
-            None
-        };
-        let deconv_input_source = half_cast_output.as_ref().unwrap_or(pre_deconv_input);
+        let deconv_input_source = nhwc_shuffle_output.as_ref().unwrap_or(input);
 
         let strides: [i32; 2] = deconv_opts
             .and_then(|o| {
@@ -11923,54 +11803,8 @@ impl TrtxConverter {
                     format: "trtx".to_string(),
                     reason: format!("Filter operand {} tensor not found", filter_id),
                 })?;
-        let filter_tensor_for_conv: Option<trtx::Tensor<'a>> =
-            if filter_operand.descriptor.data_type == DataType::Float16 {
-                let cast_layer = network
-                    .add_cast(filter_tensor, TrtDataType::kFLOAT)
-                    .map_err(|e| GraphError::ConversionFailed {
-                        format: "trtx".to_string(),
-                        reason: format!("convTranspose2d filter Half->Float cast: {}", e),
-                    })?;
-                Some(
-                    cast_layer
-                        .output(&*network, 0)
-                        .map_err(|e| GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("convTranspose2d filter cast output: {}", e),
-                        })?,
-                )
-            } else {
-                None
-            };
-        let filter_tensor_to_use = filter_tensor_for_conv.as_ref().unwrap_or(filter_tensor);
-
-        let bias_tensor_raw = bias_id.and_then(|id| tensor_map.get(&id));
-        let bias_tensor_for_conv: Option<trtx::Tensor<'a>> =
-            if let (Some(bt), Some(bid)) = (bias_tensor_raw, bias_id) {
-                let bias_dtype = graph
-                    .operand(bid)
-                    .map(|o| o.descriptor.data_type)
-                    .unwrap_or(DataType::Float32);
-                if bias_dtype == DataType::Float16 {
-                    let cast_layer = network.add_cast(bt, TrtDataType::kFLOAT).map_err(|e| {
-                        GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("convTranspose2d bias Half->Float cast: {}", e),
-                        }
-                    })?;
-                    Some(cast_layer.output(&*network, 0).map_err(|e| {
-                        GraphError::ConversionFailed {
-                            format: "trtx".to_string(),
-                            reason: format!("convTranspose2d bias cast output: {}", e),
-                        }
-                    })?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-        let bias_tensor_to_use = bias_tensor_for_conv.as_ref().or(bias_tensor_raw);
+        let filter_tensor_to_use = filter_tensor;
+        let bias_tensor_to_use = bias_id.and_then(|id| tensor_map.get(&id));
 
         let filter_layout_shuffle_out: Option<trtx::Tensor<'a>> =
             if filter_layout != TransposeLayout::Iohw {
@@ -12243,22 +12077,7 @@ impl TrtxConverter {
             None => deconv_output,
         };
 
-        let conv_output = if input_dtype == DataType::Float16 {
-            let cast_layer = network
-                .add_cast(&spatial_adjusted, TrtDataType::kHALF)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("convTranspose2d Float->Half cast: {}", e),
-                })?;
-            cast_layer
-                .output(&*network, 0)
-                .map_err(|e| GraphError::ConversionFailed {
-                    format: "trtx".to_string(),
-                    reason: format!("convTranspose2d cast output: {}", e),
-                })?
-        } else {
-            spatial_adjusted
-        };
+        let conv_output = spatial_adjusted;
 
         let output = if input_layout == "nhwc" {
             let mut shuffle =
