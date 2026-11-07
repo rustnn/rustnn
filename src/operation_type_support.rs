@@ -117,10 +117,7 @@ pub(crate) fn check_allowed_data_types_with_policy(
     let mut types = input_data_types(operation, operation_name, graph)?;
     for (index, id) in operation.output_operands().iter().enumerate() {
         if let Some(operand) = graph.operands.get(*id as usize) {
-            types.push((
-                output_name(operation, index),
-                ml_data_type(operand.descriptor.data_type),
-            ));
+            types.push((output_name(operation, index), operand.descriptor.data_type));
         }
     }
     check_types(operation_name, &types, allow_int4_uint4)
@@ -136,17 +133,13 @@ pub(crate) fn check_output_data_types(
         return Ok(());
     };
     let mut types = input_data_types(operation, operation_name, graph)?;
-    types.extend(outputs.iter().enumerate().map(|(index, output)| {
-        (
-            output_name(operation, index),
-            ml_data_type(output.data_type),
-        )
-    }));
+    types.extend(
+        outputs
+            .iter()
+            .enumerate()
+            .map(|(index, output)| (output_name(operation, index), output.data_type)),
+    );
     check_types(operation_name, &types, allow_int4_uint4)
-}
-
-fn ml_data_type(data_type: crate::graph::DataType) -> MLOperandDataType {
-    MLOperandDataType::try_from(data_type).expect("every graph type has an API data type")
 }
 
 fn spec_operation_name(operation: &Operation) -> Option<OperationName> {
@@ -192,7 +185,7 @@ fn input_data_types(
                 operand_id,
             },
         )?;
-        types.push((operand_name, ml_data_type(operand.descriptor.data_type)));
+        types.push((operand_name, operand.descriptor.data_type));
     }
     if matches!(
         operation,
