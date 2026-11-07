@@ -94,6 +94,7 @@ impl fmt::Debug for OrtGraph {
 
 pub(crate) struct OrtBuilder<'a> {
     graph: Option<&'a GraphInfo>,
+    device_idx: usize,
 }
 
 impl fmt::Debug for OrtBuilder<'_> {
@@ -130,6 +131,18 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("set opt level failed: {e}"),
             })?;
+        let device =
+            env.devices()
+                .nth(self.device_idx)
+                .ok_or_else(|| GraphError::OnnxRuntimeFailed {
+                    reason: "selected ONNX Runtime device is no longer available".into(),
+                })?;
+        builder =
+            builder
+                .with_devices([device], None)
+                .map_err(|e| GraphError::OnnxRuntimeFailed {
+                    reason: format!("set execution provider device failed: {e}"),
+                })?;
         if let Some(weights) = converted.weights_data {
             builder = builder
                 .with_external_initializer_file_in_memory(
@@ -711,7 +724,10 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     where
         'context: 'builder,
     {
-        Ok(Box::new(OrtBuilder { graph: None }))
+        Ok(Box::new(OrtBuilder {
+            graph: None,
+            device_idx: self.device_idx,
+        }))
     }
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> crate::error::Result<MLTensor> {
