@@ -27,7 +27,11 @@ fn same_type_rules_resolve_to_the_referenced_domain() {
     );
     assert_eq!(
         allowed_data_types(OperationName::BatchNormalization, OperandName::Scale),
-        &[MLOperandDataType::Float32, MLOperandDataType::Float16]
+        &[
+            MLOperandDataType::Float32,
+            MLOperandDataType::Float16,
+            MLOperandDataType::Bfloat16
+        ]
     );
     assert_eq!(
         allowed_data_types(OperationName::DequantizeLinear, OperandName::Output),
@@ -50,7 +54,7 @@ fn graph(types: &[MLOperandDataType]) -> rustnn::GraphInfo {
         graph.operands.push(rustnn::Operand {
             kind: rustnn::OperandKind::Input,
             descriptor: rustnn::OperandDescriptor {
-                data_type: data_type.into(),
+                data_type,
                 shape: rustnn::graph::to_dimension_vector(&[2]),
                 pending_permutation: vec![],
             },
