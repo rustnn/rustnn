@@ -134,3 +134,12 @@ stderr. External weights require `--convert-output`. `RUST_LOG` filters diagnost
 - [Backends](https://rustnn.github.io/rustnn/api/rustnn/backend_selection/): selection rules and per-backend requirements.
 - [Examples](examples.md): the example programs and short recipes.
 - [Flexible Input Shapes](../development/flexible-input-shapes.md): dynamic tensor workflow.
+
+### Custom ONNX Runtime environments
+
+With `onnx-runtime`, build an `ort::environment::Environment`, register plugin EPs
+with `Environment::register_ep_library(name, path)`, then pass its `Arc` to
+[`init_global_ort_env`](https://rustnn.github.io/rustnn/api/rustnn/executors/onnx/fn.init_global_ort_env.html).
+Do this before device discovery or context creation. ONNX sessions use the selected
+EP device. Later initialization attempts return `OrtAlreadyInitialized`; a failed
+lazy load can still be replaced with a caller-supplied environment.
