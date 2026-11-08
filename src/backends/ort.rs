@@ -7,7 +7,7 @@
 use std::fmt;
 use std::sync::Arc;
 
-use log::debug;
+use log::{debug, info};
 use ndarray::{ArrayD, IxDyn};
 use ort::environment::Environment;
 use ort::memory::DeviceType;
@@ -94,6 +94,7 @@ impl fmt::Debug for OrtGraph {
 
 pub(crate) struct OrtBuilder<'a> {
     graph: Option<&'a GraphInfo>,
+    device_idx: usize,
 }
 
 impl fmt::Debug for OrtBuilder<'_> {
@@ -130,6 +131,18 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for OrtBuilder<'co
             .map_err(|e| GraphError::OnnxRuntimeFailed {
                 reason: format!("set opt level failed: {e}"),
             })?;
+        let device =
+            env.devices()
+                .nth(self.device_idx)
+                .ok_or_else(|| GraphError::OnnxRuntimeFailed {
+                    reason: "selected ONNX Runtime device is no longer available".into(),
+                })?;
+        builder =
+            builder
+                .with_devices([device], None)
+                .map_err(|e| GraphError::OnnxRuntimeFailed {
+                    reason: format!("set execution provider device failed: {e}"),
+                })?;
         if let Some(weights) = converted.weights_data {
             builder = builder
                 .with_external_initializer_file_in_memory(
@@ -605,6 +618,20 @@ pub(crate) struct OrtContext {
     tensors: Vec<OrtTensor>,
 }
 
+// helper because ort::device::Device doesn't implement Debug
+fn debug_repr_device(device: &ort::device::Device) -> String {
+    let hardware = &device.hardware_device();
+    format!(
+        "{:?}",
+        (
+            &hardware.vendor(),
+            &device.ep_vendor(),
+            &hardware.id(),
+            &hardware.ty(),
+        )
+    )
+}
+
 impl OrtContext {
     pub(crate) fn new_from_ep_idx(
         device_idx: usize,
@@ -612,6 +639,13 @@ impl OrtContext {
     ) -> crate::error::Result<Self> {
         let env = ensure_ort_initialized()
             .map_err(|e| Error::ContextCreationError { source: e.into() })?;
+        info!(
+            "Created new OrtContext with selected device {}",
+            env.devices()
+                .nth(device_idx)
+                .map(|d| debug_repr_device(&d))
+                .unwrap_or_default()
+        );
         Ok(Self {
             env,
             device_idx,
@@ -629,20 +663,16 @@ impl OrtContext {
 
         let selected = env
             .devices()
-            .inspect(|d| {
-                let hardware = d.hardware_device();
-                debug!(
-                    "Saw ONNX device {:?}",
-                    (
-                        &hardware.vendor(),
-                        &d.ep_vendor(),
-                        &hardware.id(),
-                        &hardware.ty(),
-                    )
-                )
-            })
+            .inspect(|d| debug!("Saw ONNX device {}", debug_repr_device(d)))
             .position(|d| device_type == d.hardware_device().ty().into())
             .ok_or(Error::NoDeviceAvailable)?;
+        info!(
+            "Created new OrtContext with selected device {}",
+            env.devices()
+                .nth(selected)
+                .map(|d| debug_repr_device(&d))
+                .unwrap_or_default()
+        );
 
         Ok(Self {
             env,
@@ -680,15 +710,7 @@ impl ListDevices for OrtContext {
         let mut rtn = vec![];
         for (idx, d) in env.devices().enumerate() {
             let hardware = d.hardware_device();
-            debug!(
-                "Saw ONNX device {:?}",
-                (
-                    &hardware.vendor(),
-                    &d.ep_vendor(),
-                    &hardware.id(),
-                    &hardware.ty(),
-                )
-            );
+            debug!("Saw ONNX device {}", debug_repr_device(&d));
             rtn.push(BackendDevice::Onnx {
                 device_type: hardware.ty().into(),
                 ep_device_idx: idx,
@@ -711,7 +733,10 @@ impl<'context> MLBackendContext<'context> for OrtContext {
     where
         'context: 'builder,
     {
-        Ok(Box::new(OrtBuilder { graph: None }))
+        Ok(Box::new(OrtBuilder {
+            graph: None,
+            device_idx: self.device_idx,
+        }))
     }
 
     fn create_tensor(&mut self, descriptor: &MLTensorDescriptor) -> crate::error::Result<MLTensor> {
