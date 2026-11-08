@@ -20,6 +20,9 @@
 //! Explicit backend hints restrict selection to that backend. When nothing
 //! matches, creation fails with [`crate::error::Error::NoBackendAvailable`] (or the
 //! `ForBackendHint` variant), which lists the wanted and compiled backends.
+//!
+//! [`Backend::compilable`] lists every known backend; [`Backend::compiled`] lists those enabled
+//! for this build and target. Neither loads native runtimes or probes devices.
 
 #[cfg(feature = "onnx-runtime")]
 use crate::executors::onnx::ensure_ort_initialized;
@@ -27,7 +30,7 @@ use crate::{
     error::Result,
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
 };
-use strum::{AsRefStr, EnumString, IntoStaticStr};
+use strum::{AsRefStr, EnumString, IntoStaticStr, VariantArray};
 
 #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
 use crate::backends::cann::CannContext;
@@ -56,7 +59,7 @@ pub enum DeviceType {
 /// Execution backend. Each variant is compiled in by the matching Cargo feature
 /// (`onnx-runtime`, `trtx-runtime`, `coreml-runtime`, `litert-runtime`, `cann-runtime`,
 /// `burn-cpu-runtime`). Burn CPU is enabled by default.
-#[derive(Debug, Eq, PartialEq, Copy, Clone, EnumString, AsRefStr, IntoStaticStr)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, EnumString, AsRefStr, IntoStaticStr, VariantArray)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Backend {
     /// ONNX Runtime (`onnx-runtime`).
@@ -74,6 +77,12 @@ pub enum Backend {
 }
 
 impl Backend {
+    /// Every known backend, derived from the enum regardless of enabled features or target.
+    /// This does not load native runtimes or probe devices.
+    pub const fn compilable() -> &'static [Self] {
+        Self::VARIANTS
+    }
+
     /// Internal runtimes compiled into this build and supported on its target.
     ///
     /// This does not load native libraries or probe hardware. Use
