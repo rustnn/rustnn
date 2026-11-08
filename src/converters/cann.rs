@@ -22,7 +22,6 @@
 //! The DDK is required for conversion; `cann-runtime` additionally enables execution.
 //! `cann-runtime-mock` exposes placeholder conversion and a backend that rejects dispatch
 //! without the DDK. Enabling `cann-converter` also enables real conversion.
-
 use crate::error::GraphError;
 #[cfg(feature = "cann-converter")]
 use crate::graph::DataType;
@@ -166,11 +165,20 @@ pub(crate) fn webnn_op_to_hiai(op: &Operation) -> Option<&'static str> {
     }
 }
 
-// Data types the adapter can represent: Int4/Uint4 have no CANN data type, and mapping
-// them to FLOAT would reinterpret packed nibbles as float.
+// int4/uint4/bf16/fp8 have corresponding CANN dtype, but are not yet implemented here
 #[cfg(feature = "cann-converter")]
 fn is_supported_dtype(data_type: DataType) -> bool {
-    !matches!(data_type, DataType::Int4 | DataType::Uint4)
+    matches!(
+        data_type,
+        DataType::Float32
+            | DataType::Float16
+            | DataType::Int32
+            | DataType::Uint32
+            | DataType::Int64
+            | DataType::Uint64
+            | DataType::Int8
+            | DataType::Uint8
+    )
 }
 
 // Rank > 4 operands the emitted graph still uses, i.e. what `rewrite_attention_5d` did
@@ -388,7 +396,9 @@ mod adapter {
             DataType::Uint64 => C::CANN_DT_UINT64,
             // Int4/Uint4 are rejected by `is_supported_dtype` before reaching an
             // emitted op; this arm only keeps the match exhaustive.
-            DataType::Int4 | DataType::Uint4 => C::CANN_DT_FLOAT,
+            DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3 => {
+                unreachable!("unsupported types are rejected before lowering")
+            }
         }
     }
 

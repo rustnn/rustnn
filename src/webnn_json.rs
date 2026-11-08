@@ -64,8 +64,14 @@ fn operand_export_name_with_overrides(
 }
 
 /// Convert our DataType to webnn-graph DataType
-fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
-    match dt {
+fn to_webnn_datatype(dt: &DataType) -> Result<webnn_graph::ast::DataType, GraphError> {
+    Ok(match dt {
+        DataType::Bfloat16 | DataType::Float8e4m3 => {
+            return Err(GraphError::ConversionFailed {
+                format: "webnn-graph-json".into(),
+                reason: "bfloat16/float8e4m3 are not supported by this conversion".into(),
+            });
+        }
         DataType::Int4 => webnn_graph::ast::DataType::Int4,
         DataType::Uint4 => webnn_graph::ast::DataType::Uint4,
         DataType::Float32 => webnn_graph::ast::DataType::Float32,
@@ -76,7 +82,7 @@ fn to_webnn_datatype(dt: &DataType) -> webnn_graph::ast::DataType {
         DataType::Uint64 => webnn_graph::ast::DataType::Uint64,
         DataType::Int8 => webnn_graph::ast::DataType::Int8,
         DataType::Uint8 => webnn_graph::ast::DataType::Uint8,
-    }
+    })
 }
 
 /// Convert webnn-graph DataType to our DataType
@@ -305,6 +311,7 @@ pub(crate) fn to_graph_json_with_consts(
 
     // Process operands - separate inputs and constants
     for (idx, operand) in graph.operands.iter().enumerate() {
+        to_webnn_datatype(&operand.descriptor.data_type)?;
         let name = operand_export_name(operand, idx);
 
         match &operand.kind {
@@ -312,7 +319,7 @@ pub(crate) fn to_graph_json_with_consts(
                 inputs.insert(
                     name,
                     OperandDesc {
-                        data_type: to_webnn_datatype(&operand.descriptor.data_type),
+                        data_type: to_webnn_datatype(&operand.descriptor.data_type)?,
                         shape: operand
                             .descriptor
                             .shape
@@ -348,7 +355,7 @@ pub(crate) fn to_graph_json_with_consts(
                     consts.insert(
                         name,
                         ConstDecl {
-                            data_type: to_webnn_datatype(&operand.descriptor.data_type),
+                            data_type: to_webnn_datatype(&operand.descriptor.data_type)?,
                             shape: const_shape,
                             init,
                         },
@@ -413,6 +420,23 @@ pub fn from_graph_json(graph_json: &GraphJson) -> Result<GraphInfo, GraphError> 
 
 /// Converts an owned GraphJson without cloning inline constant buffers.
 pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphError> {
+    from_graph_json_owned_with_options(
+        graph_json,
+        &crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        ),
+    )
+}
+
+/// Converts an owned GraphJson with the context's allowed data type check policy.
+///
+/// Only the data type policies are used; loading does not create or select a backend.
+/// Bypassed operations emit warnings. Shape and reference checks remain active.
+pub fn from_graph_json_owned_with_options(
+    graph_json: GraphJson,
+    options: &crate::mlcontextoptions::MLContextOptions,
+) -> Result<GraphInfo, GraphError> {
     fn conversion_error(reason: impl Into<String>) -> GraphError {
         GraphError::ConversionFailed {
             format: "webnn-graph-json".to_string(),
@@ -441,7 +465,9 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
         outputs,
         ..
     } = graph_json;
-    let mut recorder = GraphRecorder::new();
+    let mut recorder = GraphRecorder::new()
+        .with_bypass_allowed_data_types_checks(options.bypass_allowed_data_types_checks)
+        .with_allow_int4_uint4(options.allow_int4_uint4);
     recorder.set_quantized(quantized);
     let mut operand_map: BTreeMap<String, u32> = BTreeMap::new();
 
@@ -480,9 +506,12 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
                 let mut bytes = Vec::new();
                 for _ in 0..element_count {
                     match data_type {
-                        DataType::Int4 | DataType::Uint4 => {
+                        DataType::Bfloat16
+                        | DataType::Float8e4m3
+                        | DataType::Int4
+                        | DataType::Uint4 => {
                             return Err(conversion_error(
-                                "int4/uint4 constants are not supported in scalar export",
+                                "bfloat16/float8e4m3 and int4/uint4 constants are not supported in scalar export",
                             ));
                         }
                         DataType::Float32 => bytes.extend_from_slice(&scalar.to_le_bytes()),
@@ -577,11 +606,14 @@ pub fn from_graph_json_owned(graph_json: GraphJson) -> Result<GraphInfo, GraphEr
         })?;
         let outputs = recorder
             .record_operation(operation, Some(&output_names))
-            .map_err(|error| {
-                conversion_error(format!(
-                    "node '{}' ({}) could not be recorded: {error}",
+            .map_err(|error| match error {
+                crate::error::GraphBuilderError::AllowedDataTypes(source) => {
+                    GraphError::AllowedDataTypes(source)
+                }
+                other => conversion_error(format!(
+                    "node '{}' ({}) could not be recorded: {other}",
                     node.id, node.op
-                ))
+                )),
             })?;
         for (name, operand) in output_names.into_iter().zip(outputs) {
             operand_map.insert(name, operand.id as u32);
@@ -621,6 +653,13 @@ mod tests {
 
     fn ushape(shape: &[u32]) -> Vec<u32> {
         shape.to_vec()
+    }
+
+    #[test]
+    fn low_precision_float_export_returns_error() {
+        for data_type in [DataType::Bfloat16, DataType::Float8e4m3] {
+            assert!(to_webnn_datatype(&data_type).is_err());
+        }
     }
 
     #[test]
@@ -699,7 +738,7 @@ mod tests {
         ];
 
         for dt in types {
-            let webnn_dt = to_webnn_datatype(&dt);
+            let webnn_dt = to_webnn_datatype(&dt).unwrap();
             let back = from_webnn_datatype(&webnn_dt);
             assert_eq!(dt, back);
         }
@@ -871,7 +910,13 @@ mod tests {
             "text serialization preserves quantized marker"
         );
 
-        let graph_info = from_graph_json(&parsed).expect("graph from text");
+        let options = crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        )
+        .with_rustnn_allow_int4_uint4(true);
+        let graph_info =
+            from_graph_json_owned_with_options(parsed, &options).expect("graph from text");
         assert!(graph_info.quantized);
         assert_eq!(graph_info.operands[0].descriptor.data_type, DataType::Uint4);
     }
@@ -1113,6 +1158,11 @@ mod tests {
 
     #[test]
     fn test_all_data_types_roundtrip() {
+        let options = crate::mlcontextoptions::MLContextOptions::new(
+            crate::mlcontextoptions::MLPowerPreference::Default,
+            false,
+        )
+        .with_rustnn_allow_int4_uint4(true);
         let types = vec![
             DataType::Float32,
             DataType::Float16,
@@ -1129,7 +1179,7 @@ mod tests {
         for dtype in types {
             let graph = build_quantized_graph_info(dtype);
             let json = to_graph_json(&graph, false).expect("to_graph_json");
-            let back = from_graph_json(&json).expect("from_graph_json");
+            let back = from_graph_json_owned_with_options(json, &options).expect("from_graph_json");
 
             assert_eq!(
                 back.operands[0].descriptor.data_type, dtype,

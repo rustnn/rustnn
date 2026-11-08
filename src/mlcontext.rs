@@ -20,7 +20,7 @@ pub use crate::backend_selection::{Backend, BackendDevice, DeviceType};
 use crate::backends::trtx::TrtxGraph;
 use crate::error::Error;
 use crate::error::Result;
-use crate::graph::{DataType, Dimension, Operand, get_static_or_max_size};
+use crate::graph::{Dimension, Operand, get_static_or_max_size};
 use crate::mlgraphbuilder::get_operand;
 use crate::operator_options::OperandIndex;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind};
@@ -363,7 +363,7 @@ impl<'context> MLGraph<'context> {
 
         for (&name, tensor) in inputs {
             let expected = self.input_descriptors.get(name).expect("validated above");
-            if DataType::from(tensor.data_type()) != expected.data_type {
+            if tensor.data_type() != expected.data_type {
                 return Err(Error::GraphDispatchError {
                     source: format!(
                         "input '{name}' data type mismatch (expected {:?}, got {:?})",
@@ -377,7 +377,7 @@ impl<'context> MLGraph<'context> {
 
         for (&name, tensor) in outputs {
             let expected = self.output_descriptors.get(name).expect("validated above");
-            if DataType::from(tensor.data_type()) != expected.data_type {
+            if tensor.data_type() != expected.data_type {
                 return Err(Error::GraphDispatchError {
                     source: format!(
                         "output '{name}' data type mismatch (expected {:?}, got {:?})",
@@ -409,7 +409,7 @@ pub struct MLOperandDescriptor {
 impl From<&MLOperandDescriptor> for OperandDescriptor {
     fn from(val: &MLOperandDescriptor) -> Self {
         OperandDescriptor {
-            data_type: val.data_type.into(),
+            data_type: val.data_type,
             shape: val
                 .shape
                 .iter()
@@ -492,7 +492,7 @@ impl MLOperand {
     pub fn data_type(self, graph: &GraphInfo) -> Result<MLOperandDataType> {
         let operand = get_operand(self, graph)?;
 
-        Ok(operand.descriptor.data_type.try_into()?)
+        Ok(operand.descriptor.data_type)
     }
 
     /// Index of the operand in its builder's graph (rustnn extension). Operand fields of the
@@ -600,6 +600,8 @@ impl MLTensorDescriptor {
 pub struct MLContext<'context> {
     pub(crate) backend: Box<dyn MLBackendContext<'context> + 'context>,
     pub(crate) device: BackendDevice,
+    pub(crate) bypass_allowed_data_types_checks: bool,
+    pub(crate) allow_int4_uint4: bool,
 }
 
 impl<'context> MLContext<'context> {
@@ -656,7 +658,12 @@ impl<'context> MLContext<'context> {
                 CannContext::new_from_device_type(device_type, Some(&options.rustnn_options))?,
             ),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            bypass_allowed_data_types_checks: options.bypass_allowed_data_types_checks,
+            allow_int4_uint4: options.allow_int4_uint4,
+        })
     }
 
     /// Not implemented: `ML.createContext(GPUDevice)`.
@@ -671,7 +678,12 @@ impl<'context> MLContext<'context> {
             crate::backend_selection::BackendDevice::Cann { .. } => todo!(),
             BackendDevice::BurnCpu => todo!(),
         };
-        Ok(Self { backend, device })
+        Ok(Self {
+            backend,
+            device,
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
+        })
     }
     /// Whether the selected device is a GPU or NPU rather than a CPU.
     pub fn accelerated(&self) -> bool {
@@ -915,6 +927,8 @@ mod test {
     #[test]
     fn capacity_shrink_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
             // All mutation methods panic, so reaching it would fail this test.
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
@@ -967,6 +981,8 @@ mod test {
     #[test]
     fn capacity_overflow_is_rejected_before_calling_any_backend() {
         let mut context = MLContext {
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
@@ -988,6 +1004,8 @@ mod test {
     fn backend_statistics_are_optional() {
         // This backend uses the default trait method, without a runtime dependency.
         let context = MLContext {
+            bypass_allowed_data_types_checks: false,
+            allow_int4_uint4: false,
             backend: Box::new(crate::backends::DisabledContext {}),
             device: BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,

@@ -14,14 +14,18 @@
  * limitations under the License.
  */
 
-//! Folds `transpose`, `reshape` and `cast` of constants before the CoreML lowering.
+//! Folds constant views and bounded float32 positional expressions before CoreML lowering.
+//!
+//! BNNS can fault while compiling a broadcast divide followed by sine/cosine, concat
+//! and transpose. Resolve these static expressions before handing the graph to CoreML.
+//! Arithmetic results are limited to 4 MiB; dynamic and float16 expressions stay native.
 //!
 //! The Apple Neural Engine admits `matmul(x, const)` but refuses `matmul(x, transpose(const))`
 //! (measured with Core ML's compute plan on A12 and A13). GPT-Neo style graphs carry one such
 //! transpose per projection, so lowering it literally also costs one run-time transpose of the
 //! weight per token on the CPU and GPU paths. This prepass rewrites the three view operations
 //! over constants into new constants at convert time, on a clone of the [`GraphInfo`], and
-//! leaves everything else untouched:
+//! also resolves bounded float32 positional expressions. In both cases:
 //!
 //! - the input must be an [`OperandKind::Constant`] with payload bytes, a static shape, no
 //!   pending layout permutation and a whole-byte element type (4-bit constants are skipped);
@@ -49,7 +53,17 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
     let has_candidate = graph.operations.iter().any(|operation| {
         matches!(
             operation,
-            Operation::Transpose { .. } | Operation::Reshape { .. } | Operation::Cast { .. }
+            Operation::Transpose { .. }
+                | Operation::Reshape { .. }
+                | Operation::Cast { .. }
+                | Operation::Div { .. }
+                | Operation::Add { .. }
+                | Operation::Sub { .. }
+                | Operation::Mul { .. }
+                | Operation::Pow { .. }
+                | Operation::Sin { .. }
+                | Operation::Cos { .. }
+                | Operation::Concat { .. }
         ) && operation
             .output_operand()
             .is_some_and(|output| !graph.output_operands.contains(&output))
@@ -81,23 +95,28 @@ pub(crate) fn fold_constant_views(graph: &GraphInfo) -> Option<GraphInfo> {
     let operations = std::mem::take(&mut folded.operations);
     let mut kept = Vec::with_capacity(operations.len());
     for operation in operations {
-        let Some((input, output, data)) = fold_one(&folded, &operation) else {
+        let candidate = fold_one(&folded, &operation)
+            .map(|(input, output, data)| (vec![input], output, data))
+            .or_else(|| fold_float_expression(&folded, &operation));
+        let Some((inputs, output, data)) = candidate else {
             kept.push(operation);
             continue;
         };
         changed = true;
         let label = folded
             .constant_operand_ids_to_handles
-            .get(&input)
+            .get(&inputs[0])
             .and_then(|constant| constant.label.clone());
         folded.operands[output as usize].kind = OperandKind::Constant;
         folded
             .constant_operand_ids_to_handles
             .insert(output, ConstantData { data, label });
-        let remaining = use_count.entry(input).or_default();
-        *remaining = remaining.saturating_sub(1);
-        if *remaining == 0 {
-            folded.constant_operand_ids_to_handles.remove(&input);
+        for input in inputs {
+            let remaining = use_count.entry(input).or_default();
+            *remaining = remaining.saturating_sub(1);
+            if *remaining == 0 {
+                folded.constant_operand_ids_to_handles.remove(&input);
+            }
         }
     }
     folded.operations = kept;
@@ -140,7 +159,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
     let destination_shape = destination.descriptor.static_shape()?;
     let source_type = source.descriptor.data_type;
     let destination_type = destination.descriptor.data_type;
-    if is_packed(source_type) || is_packed(destination_type) {
+    if is_unsupported_scalar_type(source_type) || is_unsupported_scalar_type(destination_type) {
         return None;
     }
     let data = &graph.constant_operand_ids_to_handles.get(&input)?.data;
@@ -194,7 +213,7 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
             data.clone()
         }
         Operation::Cast { data_type, .. } => {
-            if DataType::from(*data_type) != destination_type || source_shape != destination_shape {
+            if *data_type != destination_type || source_shape != destination_shape {
                 return None;
             }
             // A fold never grows the stored payload: a widening cast (float16 weights read
@@ -209,6 +228,165 @@ fn fold_one(graph: &GraphInfo, operation: &Operation) -> Option<(u32, u32, Vec<u
     Some((input, output, payload))
 }
 
+/// Fold the constant-only path used by sinusoidal positional embeddings. Keep a
+/// fixed allocation bound so broadcasting cannot turn a tiny graph into huge weights.
+fn fold_float_expression(
+    graph: &GraphInfo,
+    operation: &Operation,
+) -> Option<(Vec<u32>, u32, Vec<u8>)> {
+    if !matches!(
+        operation,
+        Operation::Div { .. }
+            | Operation::Add { .. }
+            | Operation::Sub { .. }
+            | Operation::Mul { .. }
+            | Operation::Pow { .. }
+            | Operation::Sin { .. }
+            | Operation::Cos { .. }
+            | Operation::Concat { .. }
+    ) {
+        return None;
+    }
+    let output = operation.output_operand()?;
+    if graph.output_operands.contains(&output) {
+        return None;
+    }
+    let destination = graph.operand(output)?;
+    if destination.kind != OperandKind::Intermediate
+        || destination.descriptor.data_type != DataType::Float32
+        || !destination.descriptor.pending_permutation.is_empty()
+    {
+        return None;
+    }
+    let shape = destination.descriptor.static_shape()?;
+    let count = destination.descriptor.element_count()?;
+    if count > 1_048_576 {
+        return None;
+    }
+    let inputs = operation.input_operands();
+    let mut values = Vec::new();
+    let mut shapes = Vec::new();
+    for &input in &inputs {
+        let source = graph.operand(input)?;
+        if source.kind != OperandKind::Constant
+            || source.descriptor.data_type != DataType::Float32
+            || !source.descriptor.pending_permutation.is_empty()
+        {
+            return None;
+        }
+        let data = &graph.constant_operand_ids_to_handles.get(&input)?.data;
+        if data.len() != source.descriptor.element_count()?.checked_mul(4)? {
+            return None;
+        }
+        shapes.push(source.descriptor.static_shape()?);
+        values.push(
+            data.chunks_exact(4)
+                .map(|v| f32::from_le_bytes(v.try_into().expect("four-byte chunk")))
+                .collect::<Vec<_>>(),
+        );
+    }
+    let result: Vec<f32> = match operation {
+        Operation::Sin { .. } | Operation::Cos { .. } => {
+            if shapes[0] != shape {
+                return None;
+            }
+            values[0]
+                .iter()
+                .map(|&v| {
+                    if matches!(operation, Operation::Sin { .. }) {
+                        v.sin()
+                    } else {
+                        v.cos()
+                    }
+                })
+                .collect()
+        }
+        Operation::Div { .. }
+        | Operation::Add { .. }
+        | Operation::Sub { .. }
+        | Operation::Mul { .. }
+        | Operation::Pow { .. } => {
+            // Row-major broadcast offsets, including scalar inputs.
+            let strides = shapes
+                .iter()
+                .map(|source| {
+                    if source.len() > shape.len() {
+                        return None;
+                    }
+                    let mut aligned = vec![0usize; shape.len()];
+                    let mut stride = 1usize;
+                    for axis in (0..source.len()).rev() {
+                        let dst = shape.len() - source.len() + axis;
+                        if source[axis] != 1 && source[axis] != shape[dst] {
+                            return None;
+                        }
+                        if source[axis] != 1 {
+                            aligned[dst] = stride;
+                        }
+                        stride = stride.checked_mul(source[axis] as usize)?;
+                    }
+                    Some(aligned)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            (0..count)
+                .map(|index| {
+                    let mut left = index;
+                    let mut offsets = [0usize; 2];
+                    for axis in (0..shape.len()).rev() {
+                        let coordinate = left % shape[axis] as usize;
+                        left /= shape[axis] as usize;
+                        for input in 0..2 {
+                            offsets[input] += coordinate * strides[input][axis];
+                        }
+                    }
+                    match operation {
+                        Operation::Add { .. } => values[0][offsets[0]] + values[1][offsets[1]],
+                        Operation::Sub { .. } => values[0][offsets[0]] - values[1][offsets[1]],
+                        Operation::Mul { .. } => values[0][offsets[0]] * values[1][offsets[1]],
+                        Operation::Pow { .. } => values[0][offsets[0]].powf(values[1][offsets[1]]),
+                        _ => values[0][offsets[0]] / values[1][offsets[1]],
+                    }
+                })
+                .collect()
+        }
+        Operation::Concat { axis, .. } => {
+            let axis = *axis as usize;
+            if axis >= shape.len()
+                || shapes.iter().any(|s| {
+                    s.len() != shape.len()
+                        || s.iter()
+                            .enumerate()
+                            .any(|(i, &d)| i != axis && d != shape[i])
+                })
+            {
+                return None;
+            }
+            if shapes.iter().map(|s| s[axis] as usize).sum::<usize>() != shape[axis] as usize {
+                return None;
+            }
+            let outer = shape[..axis].iter().map(|&d| d as usize).product::<usize>();
+            let inner = shape[axis + 1..]
+                .iter()
+                .map(|&d| d as usize)
+                .product::<usize>();
+            let mut result = Vec::with_capacity(count);
+            for row in 0..outer {
+                for (source, values) in shapes.iter().zip(&values) {
+                    let width = source[axis] as usize * inner;
+                    result.extend_from_slice(&values[row * width..(row + 1) * width]);
+                }
+            }
+            result
+        }
+        _ => return None,
+    };
+    Some((
+        inputs,
+        output,
+        result.into_iter().flat_map(f32::to_le_bytes).collect(),
+    ))
+}
+
 fn is_quantized_storage(data_type: DataType) -> bool {
     matches!(
         data_type,
@@ -216,8 +394,11 @@ fn is_quantized_storage(data_type: DataType) -> bool {
     )
 }
 
-fn is_packed(data_type: DataType) -> bool {
-    matches!(data_type, DataType::Int4 | DataType::Uint4)
+fn is_unsupported_scalar_type(data_type: DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Int4 | DataType::Uint4 | DataType::Bfloat16 | DataType::Float8e4m3
+    )
 }
 
 fn is_permutation(permutation: &[usize], rank: usize) -> bool {
@@ -299,7 +480,9 @@ fn read_scalars(data: &[u8], data_type: DataType) -> Vec<Scalar> {
             DataType::Uint8 => Scalar::Int(u8::from_le_bytes(chunk.try_into().unwrap()) as i128),
             DataType::Int64 => Scalar::Int(i64::from_le_bytes(chunk.try_into().unwrap()) as i128),
             DataType::Uint64 => Scalar::Int(u64::from_le_bytes(chunk.try_into().unwrap()) as i128),
-            DataType::Int4 | DataType::Uint4 => unreachable!("packed types are rejected earlier"),
+            DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
+                unreachable!("unsupported scalar types are rejected earlier")
+            }
         })
         .collect()
 }
@@ -377,7 +560,9 @@ fn cast_bytes(data: &[u8], from: DataType, to: DataType) -> Option<Vec<u8>> {
                 let value = int_value(scalar, 0, u64::MAX as i128)? as u64;
                 out.extend_from_slice(&value.to_le_bytes());
             }
-            DataType::Int4 | DataType::Uint4 => return None,
+            DataType::Bfloat16 | DataType::Float8e4m3 | DataType::Int4 | DataType::Uint4 => {
+                return None;
+            }
         }
     }
     Some(out)
@@ -427,6 +612,72 @@ mod tests {
             .chunks_exact(2)
             .map(|c| half::f16::from_le_bytes([c[0], c[1]]).to_f32())
             .collect()
+    }
+
+    #[test]
+    fn float_division_broadcasts_without_integer_shape_coercion() {
+        let mut builder = crate::mlgraphbuilder::MLGraphBuilder::new_uncompiled();
+        let desc =
+            |shape| crate::mlcontext::MLOperandDescriptor::new(MLOperandDataType::Float32, shape);
+        let a = builder
+            .constant_from_bytes(
+                &desc(vec![2, 1]),
+                [1.5f32, 3.]
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+                    .collect(),
+            )
+            .unwrap();
+        let b = builder
+            .constant_from_bytes(
+                &desc(vec![1, 3]),
+                [2f32, 4., 8.]
+                    .into_iter()
+                    .flat_map(f32::to_le_bytes)
+                    .collect(),
+            )
+            .unwrap();
+        let divided = builder.div(a, b).unwrap();
+        let output = builder.identity(divided).unwrap();
+        let mut outputs = crate::mlcontext::MLNamedOperands::new();
+        outputs.insert("result", output);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        let folded = fold_constant_views(&graph).unwrap();
+        let data = &folded.constant_operand_ids_to_handles[&divided.rustnn_index()].data;
+        let actual: Vec<_> = data
+            .chunks_exact(4)
+            .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+            .collect();
+        assert_eq!(actual, [0.75, 0.375, 0.1875, 1.5, 0.75, 0.375]);
+        assert!(
+            !folded
+                .constant_operand_ids_to_handles
+                .contains_key(&a.rustnn_index())
+        );
+        assert!(
+            !folded
+                .constant_operand_ids_to_handles
+                .contains_key(&b.rustnn_index())
+        );
+    }
+
+    #[test]
+    fn broadcast_expansion_has_a_fixed_allocation_bound() {
+        let mut builder = crate::mlgraphbuilder::MLGraphBuilder::new_uncompiled();
+        let desc =
+            |shape| crate::mlcontext::MLOperandDescriptor::new(MLOperandDataType::Float32, shape);
+        let a = builder
+            .constant_from_bytes(&desc(vec![1025, 1]), vec![0; 1025 * 4])
+            .unwrap();
+        let b = builder
+            .constant_from_bytes(&desc(vec![1, 1024]), vec![0; 1024 * 4])
+            .unwrap();
+        let divided = builder.div(a, b).unwrap();
+        let output = builder.identity(divided).unwrap();
+        let mut outputs = crate::mlcontext::MLNamedOperands::new();
+        outputs.insert("result", output);
+        let graph = builder.finish_graph_info(&outputs).unwrap();
+        assert!(fold_constant_views(&graph).is_none());
     }
 
     #[test]
@@ -700,7 +951,7 @@ mod tests {
     }
 
     fn cast_graph(from: DataType, to: MLOperandDataType, data: Vec<u8>) -> GraphInfo {
-        let to_type = DataType::from(to);
+        let to_type = to;
         let mut graph = GraphInfo {
             operands: vec![
                 operand(OperandKind::Input, to_type, &[4], "x"),
