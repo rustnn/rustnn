@@ -38,7 +38,9 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             sudo apt-get update
-            sudo apt-get install -y protobuf-compiler
+            sudo apt-get install -y protobuf-compiler libclang-21-dev
+            # autocxx for trtx only works for libclang versions not newer than 21.
+            echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
           elif [ "$RUNNER_OS" = "macOS" ]; then
             brew install protobuf
           else
@@ -206,7 +208,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y doxygen
+          sudo apt-get install -y doxygen libclang-21-dev
           cargo install cbindgen --version 0.29.4 --locked
           pip install -r docs/requirements.txt
 
@@ -228,10 +230,10 @@ jobs:
           echo "/home/linuxbrew/.linuxbrew/bin" >> $GITHUB_PATH
           echo "/home/linuxbrew/.linuxbrew/sbin" >> $GITHUB_PATH
 
-      - name: Install protobuf compiler and cargo-c
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler libclang-21-dev
           brew install cargo-c
           protoc --version
 
