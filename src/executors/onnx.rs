@@ -951,6 +951,34 @@ mod tests {
             assert!(first.to_string().contains("missing-onnxruntime"));
             use crate::mlcontext::ListDevices;
             assert!(crate::backends::ort::OrtContext::list_devices().is_empty());
+            use crate::mlcontext::{Backend, MLContext, MLContextOptions, MLPowerPreference};
+            let options = MLContextOptions::new(MLPowerPreference::Default, false)
+                .with_rustnn_backend_hint(Backend::Onnx);
+            let error =
+                MLContext::create(&options).expect_err("missing runtime must fail selection");
+            assert!(matches!(
+                error,
+                crate::error::Error::NoBackendAvailableForBackendHint { .. }
+            ));
+            assert!(error.to_string().contains("missing-onnxruntime"), "{error}");
+            let automatic =
+                MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
+            #[cfg(feature = "burn-cpu-runtime")]
+            assert!(
+                automatic.is_ok(),
+                "automatic selection must fall back to Burn CPU"
+            );
+            #[cfg(not(any(
+                feature = "burn-cpu-runtime",
+                feature = "coreml-runtime",
+                feature = "litert-runtime"
+            )))]
+            assert!(
+                automatic
+                    .expect_err("no runtime available")
+                    .to_string()
+                    .contains("missing-onnxruntime")
+            );
             return;
         }
 
