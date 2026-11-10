@@ -3,12 +3,13 @@
 //! [`run_onnx_with_inputs`] loads the model bytes (plus optional external weights) into a new
 //! session on every call. [`run_onnx_with_inputs_checked`] additionally validates the inputs
 //! against WebNN descriptors, and [`run_onnx_zeroed`] feeds zero inputs.
+//! [`init_global_ort_env`] installs a custom environment shared with the ONNX backend.
 
 #![cfg(feature = "onnx-runtime")]
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, RwLock};
 
 use log::{debug, info, warn};
 use ndarray::{ArrayD, IxDyn};
@@ -25,12 +26,57 @@ use crate::error::GraphError;
 use crate::graph::OperandDescriptor;
 use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_length};
 
-// Keep both the environment and any initialization failure for the process lifetime.
-static ENVIRONMENT: OnceLock<Result<Arc<Environment>, String>> = OnceLock::new();
+// Cache initialization failures as well as the process-wide environment.
+//
+// Having only one environment per process is also a limitation of the ort crate:
+// see https://github.com/pykeio/ort/blob/6ed2423cc08ca21d0b07f467b6e4387ef1bee2ce/src/environment.rs#L515-L517
+static ENVIRONMENT: RwLock<Option<Result<Arc<Environment>, String>>> = RwLock::new(None);
+
+/// An ONNX Runtime environment has already been installed in rustnn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the global ONNX Runtime environment is already initialized")]
+pub struct OrtAlreadyInitialized;
+
+/// Installs a caller-configured ONNX Runtime environment for all rustnn sessions.
+///
+/// Register any EP libraries on `environment` before calling this function, and call
+/// it before device discovery or creating an ONNX context. The first successful
+/// initialization wins, including concurrent calls and rustnn's lazy initialization.
+/// A cached lazy-initialization failure may be replaced with a supplied environment.
+///
+/// # Errors
+/// Returns [`OrtAlreadyInitialized`] if an environment is already installed.
+pub fn init_global_ort_env(environment: Arc<Environment>) -> Result<(), OrtAlreadyInitialized> {
+    let mut state = ENVIRONMENT.write().unwrap_or_else(|e| e.into_inner());
+    if matches!(*state, Some(Ok(_))) {
+        return Err(OrtAlreadyInitialized);
+    }
+    *state = Some(Ok(environment));
+    Ok(())
+}
+
+/// Returns whether rustnn has a successfully installed ONNX Runtime environment.
+///
+/// This does not initialize the runtime. The result is a snapshot; use
+/// [`init_global_ort_env`] to atomically install an environment.
+pub fn is_ort_initialized() -> bool {
+    matches!(
+        *ENVIRONMENT.read().unwrap_or_else(|e| e.into_inner()),
+        Some(Ok(_))
+    )
+}
 
 pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
-    ENVIRONMENT
-        .get_or_init(|| {
+    let cached = ENVIRONMENT
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    if let Some(result) = cached {
+        return result.map_err(|reason| GraphError::OnnxRuntimeFailed { reason });
+    }
+    let mut state = ENVIRONMENT.write().unwrap_or_else(|e| e.into_inner());
+    state
+        .get_or_insert_with(|| {
             info!("Loading onnxruntime");
             #[cfg(not(target_arch = "wasm32"))]
             let path = std::env::var_os("ORT_DYLIB_PATH")
@@ -90,6 +136,10 @@ pub enum TensorData {
     Float32(Vec<f32>),
     /// 16-bit floats as raw bits.
     Float16(Vec<u16>), // f16 stored as u16 bits
+    /// Brain 16-bit floats as raw bits.
+    Bfloat16(Vec<u16>),
+    /// Finite E4M3 floats as raw bytes (ONNX FLOAT8E4M3FN).
+    Float8e4m3(Vec<u8>),
     /// Signed 8-bit integers.
     Int8(Vec<i8>),
     /// Unsigned 8-bit integers.
@@ -108,7 +158,8 @@ impl TensorData {
     fn len(&self) -> usize {
         match self {
             TensorData::Float32(v) => v.len(),
-            TensorData::Float16(v) => v.len(),
+            TensorData::Float16(v) | TensorData::Bfloat16(v) => v.len(),
+            TensorData::Float8e4m3(v) => v.len(),
             TensorData::Int8(v) => v.len(),
             TensorData::Uint8(v) => v.len(),
             TensorData::Int32(v) => v.len(),
@@ -417,6 +468,11 @@ fn run_onnx_session_with_inputs(
                         })?
                     };
                 SessionInputValue::from(value)
+            }
+            TensorData::Bfloat16(_) | TensorData::Float8e4m3(_) => {
+                return Err(GraphError::OnnxRuntimeFailed {
+                    reason: "BF16 and FP8 tensor I/O is not supported yet".into(),
+                });
             }
             TensorData::Float16(data) => {
                 // Convert u16 bits to half::f16
@@ -816,6 +872,74 @@ pub fn run_onnx_with_bindings(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_custom_environment_initialization() {
+        const CHILD: &str = "RUSTNN_TEST_CUSTOM_ORT_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            let env = if mode == "lazy" {
+                ensure_ort_initialized().unwrap()
+            } else {
+                Arc::new(
+                    ort::init_from(std::env::var_os("ORT_DYLIB_PATH").unwrap())
+                        .unwrap()
+                        .with_name("custom")
+                        .build()
+                        .unwrap(),
+                )
+            };
+            if mode == "lazy" {
+                let original = ensure_ort_initialized().unwrap();
+                assert_eq!(init_global_ort_env(env), Err(OrtAlreadyInitialized));
+                assert!(Arc::ptr_eq(&original, &ensure_ort_initialized().unwrap()));
+            } else {
+                if mode == "failure" {
+                    *ENVIRONMENT.write().unwrap() = Some(Err("previous load failure".into()));
+                }
+                let barrier = std::sync::Barrier::new(8);
+                let successes = std::thread::scope(|scope| {
+                    let handles: Vec<_> = (0..8)
+                        .map(|_| {
+                            let env = env.clone();
+                            let barrier = &barrier;
+                            scope.spawn(move || {
+                                barrier.wait();
+                                init_global_ort_env(env).is_ok()
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| usize::from(h.join().unwrap()))
+                        .sum::<usize>()
+                });
+                assert_eq!(successes, 1);
+                assert!(Arc::ptr_eq(&env, &ensure_ort_initialized().unwrap()));
+            }
+            return;
+        }
+        // This test needs a real runtime; the failure test below does not.
+        if std::env::var_os("ORT_DYLIB_PATH").is_none() {
+            return;
+        }
+        for mode in ["custom", "lazy", "failure"] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "executors::onnx::tests::test_custom_environment_initialization",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 
     #[test]
     fn test_missing_runtime_returns_consistent_errors() {

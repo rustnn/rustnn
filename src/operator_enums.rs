@@ -1,6 +1,5 @@
 //! Enumerations of the WebNN IDL (`MLOperandDataType`, layouts, rounding, padding modes).
 
-use crate::{DataType, error::GraphBuilderError};
 use serde::{Deserialize, Serialize};
 use strum::{AsRefStr, EnumString, IntoStaticStr};
 
@@ -45,58 +44,58 @@ pub enum MLOperandDataType {
     Int4,
     /// Unsigned 4-bit integer (rustnn extension).
     Uint4,
-}
-
-impl TryFrom<DataType> for MLOperandDataType {
-    type Error = GraphBuilderError;
-    fn try_from(value: DataType) -> Result<Self, Self::Error> {
-        Ok(match value {
-            DataType::Float32 => Self::Float32,
-            DataType::Float16 => Self::Float16,
-            DataType::Int32 => Self::Int32,
-            DataType::Uint32 => Self::Uint32,
-            DataType::Int64 => Self::Int64,
-            DataType::Uint64 => Self::Uint64,
-            DataType::Int8 => Self::Int8,
-            DataType::Uint8 => Self::Uint8,
-            DataType::Int4 => Self::Int4,
-            DataType::Uint4 => Self::Uint4,
-        })
-    }
-}
-
-impl From<MLOperandDataType> for DataType {
-    fn from(val: MLOperandDataType) -> Self {
-        match val {
-            MLOperandDataType::Float32 => DataType::Float32,
-            MLOperandDataType::Float16 => DataType::Float16,
-            MLOperandDataType::Int32 => DataType::Int32,
-            MLOperandDataType::Uint32 => DataType::Uint32,
-            MLOperandDataType::Int64 => DataType::Int64,
-            MLOperandDataType::Uint64 => DataType::Uint64,
-            MLOperandDataType::Int8 => DataType::Int8,
-            MLOperandDataType::Uint8 => DataType::Uint8,
-            MLOperandDataType::Int4 => DataType::Int4,
-            MLOperandDataType::Uint4 => DataType::Uint4,
-        }
-    }
+    /// Brain floating point: one sign bit, eight exponent bits and seven fraction bits.
+    #[serde(rename = "bfloat16")]
+    #[strum(serialize = "bfloat16")]
+    Bfloat16,
+    /// 8-bit floating point in the E4M3 format of the OCP 8-bit Floating Point Specification [OCP-OFP8],
+    /// with 1 sign bit, 4 exponent bits (exponent bias 7) and 3 trailing significand bits
+    #[serde(rename = "float8e4m3")]
+    #[strum(serialize = "float8e4m3")]
+    Float8e4m3,
 }
 
 impl MLOperandDataType {
     /// Bits per element (4 for the packed 4-bit types).
-    pub const fn rustnn_element_size_bits(self) -> usize {
+    pub(crate) const fn bits_per_element(self) -> usize {
         match self {
             MLOperandDataType::Float32 | MLOperandDataType::Int32 | MLOperandDataType::Uint32 => 32,
-            MLOperandDataType::Float16 => 16,
+            MLOperandDataType::Float16 | MLOperandDataType::Bfloat16 => 16,
             MLOperandDataType::Int64 | MLOperandDataType::Uint64 => 64,
-            MLOperandDataType::Int8 | MLOperandDataType::Uint8 => 8,
+            MLOperandDataType::Int8 | MLOperandDataType::Uint8 | MLOperandDataType::Float8e4m3 => 8,
             MLOperandDataType::Int4 | MLOperandDataType::Uint4 => 4,
         }
     }
 
+    /// Host storage bytes for `elements` values, including packed 4-bit elements.
+    /// Returns `None` if the bit length overflows `usize`.
+    pub(crate) const fn storage_byte_length(self, elements: usize) -> Option<usize> {
+        match elements.checked_mul(self.bits_per_element()) {
+            Some(bits) => Some(bits.div_ceil(8)),
+            None => None,
+        }
+    }
+
+    /// Byte size of one element for byte-aligned types. Use [`Self::storage_byte_length`]
+    /// for packed `int4` and `uint4` elements.
+    #[cfg(any(feature = "cann-converter", feature = "coreml-converter"))]
+    pub(crate) fn bytes_per_element(self) -> usize {
+        let bits = self.bits_per_element();
+        debug_assert!(
+            bits.is_multiple_of(8),
+            "bytes_per_element is only defined for byte-aligned types; use storage_byte_length for int4/uint4"
+        );
+        bits / 8
+    }
+
+    /// Bits per element
+    pub const fn rustnn_element_size_bits(self) -> usize {
+        self.bits_per_element()
+    }
+
     /// Host storage bytes for `elements` values, rounding 4-bit types up to whole bytes.
     pub const fn rustnn_storage_byte_length(self, elements: usize) -> usize {
-        let bits = self.rustnn_element_size_bits();
+        let bits = self.bits_per_element();
         (bits * elements).div_ceil(8)
     }
 }
@@ -469,7 +468,8 @@ mod test {
         }
 
         check_strings!(MLOperandDataType {
-            Float32 => "float32", Float16 => "float16", Int32 => "int32",
+            Float32 => "float32", Float16 => "float16",
+            Bfloat16 => "bfloat16", Float8e4m3 => "float8e4m3", Int32 => "int32",
             Uint32 => "uint32", Int64 => "int64", Uint64 => "uint64",
             Int8 => "int8", Uint8 => "uint8", Int4 => "int4", Uint4 => "uint4",
         });

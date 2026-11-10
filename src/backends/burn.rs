@@ -119,6 +119,11 @@ fn write_output(
     if !matches!(data_type, DataType::Int4 | DataType::Uint4) {
         for (i, &value) in result.data.iter().enumerate() {
             match data_type {
+                DataType::Bfloat16 | DataType::Float8e4m3 => {
+                    return Err(Error::GraphDispatchError {
+                        source: "bfloat16/float8e4m3 outputs are unsupported".into(),
+                    });
+                }
                 DataType::Float32 => bytes.extend_from_slice(&value.to_le_bytes()),
                 DataType::Float16 => {
                     bytes.extend_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes())
@@ -779,7 +784,8 @@ mod tests {
                 for constant in [false, true] {
                     let mut context = MLContext::create(
                         &MLContextOptions::new(MLPowerPreference::Default, false)
-                            .with_rustnn_backend_hint(Backend::BurnCpu),
+                            .with_rustnn_backend_hint(Backend::BurnCpu)
+                            .with_rustnn_allow_int4_uint4(true),
                     )
                     .unwrap();
                     let shape = vec![elements as u64];
@@ -890,7 +896,8 @@ mod tests {
             for elements in [8usize, 9] {
                 let mut context = MLContext::create(
                     &MLContextOptions::new(MLPowerPreference::Default, false)
-                        .with_rustnn_backend_hint(Backend::BurnCpu),
+                        .with_rustnn_backend_hint(Backend::BurnCpu)
+                        .with_rustnn_allow_int4_uint4(true),
                 )
                 .unwrap();
                 let shape = vec![elements as u64];
