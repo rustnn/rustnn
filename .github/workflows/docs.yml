@@ -67,10 +67,13 @@ jobs:
         with:
           components: rustfmt, clippy, rust-src
 
-      - name: Install protobuf compiler
+      - name: Install protobuf compiler, Doxygen and libclang
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler doxygen
+          sudo apt-get install -y protobuf-compiler doxygen libclang-21-dev
+          # `make docs-api` builds trtx-sys, whose autocxx bindings only work with libclang 21
+          # or older; ubuntu-latest (26.04) ships a newer default. Same pin as ci.yml.
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
           protoc --version
 
       - name: Install flatc
