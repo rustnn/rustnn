@@ -23,9 +23,9 @@
 //!
 //! [`Backend::compilable`] lists every known backend; [`Backend::compiled`] lists those enabled
 //! for this build and target. Neither loads native runtimes or probes devices.
+//! Failed selection retains runtime-loading and device-discovery details in the error's reason;
+//! automatic selection can still fall back to another usable backend.
 
-#[cfg(feature = "onnx-runtime")]
-use crate::executors::onnx::ensure_ort_initialized;
 use crate::{
     error::Result,
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
@@ -204,11 +204,68 @@ impl BackendDevice {
     }
 }
 
+// Keep selection failures without preventing another backend from satisfying the hints.
+#[cfg(any(
+    feature = "onnx-runtime",
+    feature = "trtx-runtime",
+    feature = "litert-runtime"
+))]
+fn discover_devices(
+    backend: Backend,
+    result: Result<Vec<BackendDevice>>,
+    failures: &mut Vec<String>,
+) -> Vec<BackendDevice> {
+    match result {
+        Ok(devices) => {
+            if devices.is_empty() {
+                failures.push(format!("{}: no compatible devices found", backend.as_ref()));
+            }
+            devices
+        }
+        Err(error) => {
+            failures.push(format!("{}: {error}", backend.as_ref()));
+            Vec::new()
+        }
+    }
+}
+
+fn selection_failure_reason(options: &MLContextOptions, failures: &[String]) -> String {
+    if let Some(backend) = options.backend_hint
+        && !Backend::compiled().contains(&backend)
+    {
+        return format!(
+            "{} is compile-time disabled on this target",
+            backend.as_ref()
+        );
+    }
+    if failures.is_empty() {
+        "no device matches the requested power and acceleration hints".into()
+    } else {
+        failures.join("; ")
+    }
+}
+
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
+    if let Some(device_hint) = options.device_hint {
+        return Ok(device_hint);
+    }
+    #[allow(unused_mut)]
+    let mut failures = Vec::new();
     let have_trtx = cfg!(feature = "trtx-runtime");
     let want_trtx = options.backend_hint.is_none() || options.backend_hint == Some(Backend::Trtx);
     #[cfg(feature = "trtx-runtime")]
-    let trtx_devices = TrtxContext::list_devices();
+    let trtx_devices = if want_trtx
+        && options.accelerated
+        && options.power_preference != MLPowerPreference::LowPower
+    {
+        discover_devices(
+            Backend::Trtx,
+            TrtxContext::try_list_devices(),
+            &mut failures,
+        )
+    } else {
+        Vec::new()
+    };
 
     #[cfg(any(feature = "cann-runtime", feature = "cann-runtime-mock"))]
     let have_cann = cfg!(any(feature = "cann-runtime", feature = "cann-runtime-mock"));
@@ -232,12 +289,35 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
     let want_litert =
         options.backend_hint.is_none() || options.backend_hint == Some(Backend::Litert);
     #[cfg(feature = "litert-runtime")]
-    let litert_devices = LiteRtContext::list_devices();
-
-    if let Some(device_hint) = options.device_hint {
-        // No fallbacks for now. We could check if device is available
-        return Ok(device_hint);
-    }
+    let litert_devices = if want_litert {
+        discover_devices(
+            Backend::Litert,
+            LiteRtContext::try_list_devices(),
+            &mut failures,
+        )
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "onnx-runtime")]
+    let onnx_devices = if want_onnx {
+        discover_devices(Backend::Onnx, OrtContext::try_list_devices(), &mut failures)
+    } else {
+        Vec::new()
+    };
+    #[cfg(feature = "trtx-runtime")]
+    let trtx_loaded = if !trtx_devices.is_empty() {
+        match trtx::dynamically_load_tensorrt(None::<String>) {
+            Ok(_) => true,
+            Err(error) => {
+                failures.push(format!(
+                    "trtx: TensorRT-RTX library loading failed: {error}"
+                ));
+                false
+            }
+        }
+    } else {
+        false
+    };
 
     Ok(match (options.power_preference, options.accelerated) {
         // Trtx
@@ -246,7 +326,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
             if have_trtx
                 && want_trtx
                 && let [first, ..] = trtx_devices.as_slice()
-                && trtx::dynamically_load_tensorrt(None::<String>).is_ok() =>
+                && trtx_loaded =>
         {
             *first
         }
@@ -307,8 +387,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_onnx
                 && want_onnx
-                && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_gpu()) =>
+                && let Some(first) = onnx_devices.iter().find(|d| d.is_gpu()) =>
         {
             *first
         }
@@ -316,8 +395,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (MLPowerPreference::Default | MLPowerPreference::LowPower, true)
             if have_onnx
                 && want_onnx
-                && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_npu()) =>
+                && let Some(first) = onnx_devices.iter().find(|d| d.is_npu()) =>
         {
             *first
         }
@@ -327,8 +405,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (_, _)
             if have_onnx
                 && want_onnx
-                && ensure_ort_initialized().is_ok()
-                && let Some(first) = OrtContext::list_devices().iter().find(|d| d.is_cpu()) =>
+                && let Some(first) = onnx_devices.iter().find(|d| d.is_cpu()) =>
         {
             *first
         }
@@ -342,6 +419,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         (_, _) if let Some(backend_hint) = options.backend_hint => {
             return Err(crate::error::Error::NoBackendAvailableForBackendHint {
+                reason: selection_failure_reason(options, &failures),
                 backend_hint,
                 want_trtx,
                 have_trtx,
@@ -357,6 +435,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         _ => {
             return Err(crate::error::Error::NoBackendAvailable {
+                reason: selection_failure_reason(options, &failures),
                 want_trtx,
                 have_trtx,
                 want_onnx,

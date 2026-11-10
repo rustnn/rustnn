@@ -255,9 +255,10 @@ pub enum GraphBuilderError {
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum Error {
-    /// No backend is available for context creation.
-    #[error("No backend is available for context creation")]
+    /// No backend matched the requested hints; `reason` retains discovery and runtime failures.
+    #[error("No backend is available for context creation: {reason}")]
     NoBackendAvailable {
+        reason: String,
         want_trtx: bool,
         have_trtx: bool,
         want_onnx: bool,
@@ -269,9 +270,10 @@ pub enum Error {
         want_cann: bool,
         have_cann: bool,
     },
-    /// No backend is available for backend hint: `backend_hint`.
-    #[error("No backend is available for backend hint: {backend_hint:?}.")]
+    /// The requested backend is disabled or failed discovery; `reason` describes the failure.
+    #[error("No backend is available for backend hint {backend_hint:?}: {reason}")]
     NoBackendAvailableForBackendHint {
+        reason: String,
         backend_hint: Backend,
         want_trtx: bool,
         have_trtx: bool,
