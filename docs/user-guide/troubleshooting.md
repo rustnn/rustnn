@@ -55,3 +55,9 @@ lines to most of these situations.
 | `make docs-backend-ops-check` fails | A converter's operator support changed; run `make docs-backend-ops` and commit the report |
 | CI job fails with `detected conflict: 'bin/cargo-clippy'` from rustup | rustup was adding components from `rust-toolchain.toml` at the first cargo call; the workflows install them in the toolchain step, keep that when adding jobs |
 | Windows: `Access is denied` from `cargo fmt` or the linker | A test binary is still running; wait for it |
+
+### ONNX Runtime environment already initialized
+
+`init_global_ort_env` returns `OrtAlreadyInitialized` after an environment has been
+installed. Register EP libraries and supply the environment before listing devices
+or creating an ONNX context; an existing environment cannot be replaced.
