@@ -96,9 +96,9 @@ fn list(registry: &ConverterRegistry) {
         }
         if devices.is_empty() {
             println!(
-                "  {}: unavailable ({})",
+                "  {}: unavailable\n    {}",
                 backend.as_ref(),
-                last_error.unwrap()
+                rustnn::error::format_error_chain(&last_error.unwrap()).replace('\n', "\n    ")
             );
         } else {
             println!("  {}: {}", backend.as_ref(), devices.join(", "));
@@ -300,7 +300,10 @@ pub(super) fn main() {
         .with_ansi(std::io::stderr().is_terminal())
         .try_init();
     if let Err(error) = run() {
-        eprintln!("error: {error:#}");
+        eprintln!(
+            "error: {}",
+            rustnn::error::format_error_chain(error.as_ref())
+        );
         std::process::exit(1);
     }
 }

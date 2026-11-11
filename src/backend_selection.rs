@@ -27,7 +27,7 @@
 //! automatic selection can still fall back to another usable backend.
 
 use crate::{
-    error::Result,
+    error::{Error, Result},
     mlcontext::{GpuDevice, MLContextOptions, MLPowerPreference},
 };
 use strum::{AsRefStr, EnumString, IntoStaticStr, VariantArray};
@@ -213,36 +213,54 @@ impl BackendDevice {
 fn discover_devices(
     backend: Backend,
     result: Result<Vec<BackendDevice>>,
-    failures: &mut Vec<String>,
+    failures: &mut Vec<(Backend, Error)>,
 ) -> Vec<BackendDevice> {
     match result {
         Ok(devices) => {
             if devices.is_empty() {
-                failures.push(format!("{}: no compatible devices found", backend.as_ref()));
+                failures.push((backend, Error::NoDeviceAvailable));
             }
             devices
         }
         Err(error) => {
-            failures.push(format!("{}: {error}", backend.as_ref()));
+            failures.push((backend, error));
             Vec::new()
         }
     }
 }
 
-fn selection_failure_reason(options: &MLContextOptions, failures: &[String]) -> String {
+fn selection_failure_reason(
+    options: &MLContextOptions,
+    mut failures: Vec<(Backend, Error)>,
+) -> Box<dyn std::error::Error + Send + Sync> {
     if let Some(backend) = options.backend_hint
         && !Backend::compiled().contains(&backend)
     {
         return format!(
             "{} is compile-time disabled on this target",
             backend.as_ref()
-        );
+        )
+        .into();
+    }
+    if failures.len() == 1 {
+        return failures.pop().unwrap().1.into();
     }
     if failures.is_empty() {
-        "no device matches the requested power and acceleration hints".into()
-    } else {
-        failures.join("; ")
+        return "no device matches the requested power and acceleration hints".into();
     }
+    // Independent attempts are siblings, not a single causal chain.
+    failures
+        .into_iter()
+        .map(|(backend, error)| {
+            format!(
+                "{}:\n  {}",
+                backend.as_ref(),
+                crate::error::format_error_chain(&error).replace('\n', "\n  ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .into()
 }
 
 pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice> {
@@ -309,8 +327,11 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         match trtx::dynamically_load_tensorrt(None::<String>) {
             Ok(_) => true,
             Err(error) => {
-                failures.push(format!(
-                    "trtx: TensorRT-RTX library loading failed: {error}"
+                failures.push((
+                    Backend::Trtx,
+                    Error::ContextCreationError {
+                        source: error.into(),
+                    },
                 ));
                 false
             }
@@ -419,7 +440,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         (_, _) if let Some(backend_hint) = options.backend_hint => {
             return Err(crate::error::Error::NoBackendAvailableForBackendHint {
-                reason: selection_failure_reason(options, &failures),
+                reason: selection_failure_reason(options, failures),
                 backend_hint,
                 want_trtx,
                 have_trtx,
@@ -435,7 +456,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         }
         _ => {
             return Err(crate::error::Error::NoBackendAvailable {
-                reason: selection_failure_reason(options, &failures),
+                reason: selection_failure_reason(options, failures),
                 want_trtx,
                 have_trtx,
                 want_onnx,

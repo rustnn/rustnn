@@ -42,9 +42,7 @@ impl LiteRt {
             // SAFETY: LiteRT initializes the environment through a valid out pointer.
             let status = unsafe { sys::LiteRtCreateEnvironment(0, std::ptr::null(), &mut env) };
             if status != sys::kLiteRtStatusOk {
-                Err(format!(
-                    "LiteRtCreateEnvironment failed: status code={status}"
-                ))
+                Err(format!("LiteRtCreateEnvironment failed: status code={status}").into())
             } else if env.is_null() {
                 Err("LiteRtCreateEnvironment returned a null environment".into())
             } else {
