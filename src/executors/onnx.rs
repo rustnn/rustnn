@@ -30,7 +30,8 @@ use crate::runtime_checks::{RuntimeShapeState, TensorKind, validate_shape_data_l
 //
 // Having only one environment per process is also a limitation of the ort crate:
 // see https://github.com/pykeio/ort/blob/6ed2423cc08ca21d0b07f467b6e4387ef1bee2ce/src/environment.rs#L515-L517
-static ENVIRONMENT: RwLock<Option<Result<Arc<Environment>, String>>> = RwLock::new(None);
+type OrtInitialization = Result<Arc<Environment>, Arc<dyn std::error::Error + Send + Sync>>;
+static ENVIRONMENT: RwLock<Option<OrtInitialization>> = RwLock::new(None);
 
 /// An ONNX Runtime environment has already been installed in rustnn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -72,7 +73,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     if let Some(result) = cached {
-        return result.map_err(|reason| GraphError::OnnxRuntimeFailed { reason });
+        return result.map_err(|source| GraphError::OnnxRuntimeInitializationFailed { source });
     }
     let mut state = ENVIRONMENT.write().unwrap_or_else(|e| e.into_inner());
     state
@@ -93,7 +94,8 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
             // Load explicitly before any other ort API: implicit loading can panic.
             let result = (|| {
                 #[cfg(not(target_arch = "wasm32"))]
-                let builder = ort::init_from(path).map_err(|error| error.to_string())?;
+                let builder = ort::init_from(path)
+                    .map_err(|error| Arc::new(error) as Arc<dyn std::error::Error + Send + Sync>)?;
                 #[cfg(target_arch = "wasm32")]
                 let builder = ort::init();
                 builder
@@ -102,7 +104,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
                     .with_telemetry(false)
                     .build()
                     .map(Arc::new)
-                    .map_err(|error| error.to_string())
+                    .map_err(|error| Arc::new(error) as Arc<dyn std::error::Error + Send + Sync>)
             })();
             match result {
                 Ok(env) => {
@@ -116,7 +118,7 @@ pub(crate) fn ensure_ort_initialized() -> Result<Arc<Environment>, GraphError> {
             }
         })
         .clone()
-        .map_err(|reason| GraphError::OnnxRuntimeFailed { reason })
+        .map_err(|source| GraphError::OnnxRuntimeInitializationFailed { source })
 }
 
 /// Output metadata reported by [`run_onnx_zeroed`].
@@ -894,7 +896,9 @@ mod tests {
                 assert!(Arc::ptr_eq(&original, &ensure_ort_initialized().unwrap()));
             } else {
                 if mode == "failure" {
-                    *ENVIRONMENT.write().unwrap() = Some(Err("previous load failure".into()));
+                    *ENVIRONMENT.write().unwrap() = Some(Err(Arc::new(std::io::Error::other(
+                        "previous load failure",
+                    ))));
                 }
                 let barrier = std::sync::Barrier::new(8);
                 let successes = std::thread::scope(|scope| {
@@ -947,8 +951,11 @@ mod tests {
         if std::env::var_os(CHILD).is_some() {
             let first = ensure_ort_initialized().expect_err("missing library");
             let second = ensure_ort_initialized().expect_err("cached failure");
-            assert_eq!(first.to_string(), second.to_string());
-            assert!(first.to_string().contains("missing-onnxruntime"));
+            assert_eq!(
+                crate::error::format_error_chain(&first),
+                crate::error::format_error_chain(&second)
+            );
+            assert!(crate::error::format_error_chain(&first).contains("missing-onnxruntime"));
             use crate::mlcontext::ListDevices;
             assert!(crate::backends::ort::OrtContext::list_devices().is_empty());
             use crate::mlcontext::{Backend, MLContext, MLContextOptions, MLPowerPreference};
@@ -960,7 +967,10 @@ mod tests {
                 error,
                 crate::error::Error::NoBackendAvailableForBackendHint { .. }
             ));
-            assert!(error.to_string().contains("missing-onnxruntime"), "{error}");
+            assert!(
+                crate::error::format_error_chain(&error).contains("missing-onnxruntime"),
+                "{error}"
+            );
             let automatic =
                 MLContext::create(&MLContextOptions::new(MLPowerPreference::Default, false));
             #[cfg(feature = "burn-cpu-runtime")]
@@ -974,9 +984,7 @@ mod tests {
                 feature = "litert-runtime"
             )))]
             assert!(
-                automatic
-                    .expect_err("no runtime available")
-                    .to_string()
+                crate::error::format_error_chain(&automatic.expect_err("no runtime available"))
                     .contains("missing-onnxruntime")
             );
             return;

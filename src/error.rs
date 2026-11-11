@@ -249,6 +249,22 @@ pub enum GraphBuilderError {
     InconsistentGraphInfo { message: String },
 }
 
+/// Render each error and its sources on separate lines, indented by two spaces per level.
+/// Messages are printed unchanged; this does not filter causes or reconstruct stack frames.
+pub fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut lines = Vec::new();
+    let mut current = Some(error);
+    let mut depth = 0;
+    while let Some(error) = current {
+        for line in error.to_string().lines() {
+            lines.push(format!("{}{line}", "  ".repeat(depth)));
+        }
+        current = error.source();
+        depth += 1;
+    }
+    lines.join("\n")
+}
+
 /// Errors of the WebNN API: context creation, building, tensors and dispatch.
 ///
 /// Variant fields carry the values named in the message; they are not documented separately.
@@ -256,9 +272,10 @@ pub enum GraphBuilderError {
 #[allow(missing_docs)]
 pub enum Error {
     /// No backend matched the requested hints; `reason` retains discovery and runtime failures.
-    #[error("No backend is available for context creation: {reason}")]
+    #[error("No backend is available for context creation")]
     NoBackendAvailable {
-        reason: String,
+        #[source]
+        reason: Box<dyn std::error::Error + Send + Sync>,
         want_trtx: bool,
         have_trtx: bool,
         want_onnx: bool,
@@ -271,9 +288,10 @@ pub enum Error {
         have_cann: bool,
     },
     /// The requested backend is disabled or failed discovery; `reason` describes the failure.
-    #[error("No backend is available for backend hint {backend_hint:?}: {reason}")]
+    #[error("No backend is available for backend hint {backend_hint:?}")]
     NoBackendAvailableForBackendHint {
-        reason: String,
+        #[source]
+        reason: Box<dyn std::error::Error + Send + Sync>,
         backend_hint: Backend,
         want_trtx: bool,
         have_trtx: bool,
@@ -325,7 +343,7 @@ pub enum Error {
     },
 
     /// Failed to create context: `source`.
-    #[error("Failed to create context: {source}")]
+    #[error("Failed to create context")]
     ContextCreationError {
         source: Box<dyn std::error::Error + Sync + Send>,
     },
@@ -634,6 +652,12 @@ pub enum GraphError {
     /// Onnx runtime failed: `reason`.
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
+    /// ONNX Runtime initialization failed; retains the cached loader or environment error.
+    #[error("onnx runtime initialization failed")]
+    OnnxRuntimeInitializationFailed {
+        #[source]
+        source: std::sync::Arc<dyn std::error::Error + Send + Sync>,
+    },
     /// Tensorrt runtime is only available with the `trtx-runtime` feature enabled.
     #[error("tensorrt runtime is only available with the `trtx-runtime` feature enabled")]
     TrtxRuntimeUnavailable,
@@ -916,5 +940,44 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("quantizeLinear"));
         assert!(msg.contains("scale must be float32"));
+    }
+}
+
+#[cfg(test)]
+mod error_chain_tests {
+    use super::{Error, GraphError, format_error_chain};
+
+    #[test]
+    fn formats_cached_sources_without_splitting_colons() {
+        let source: std::sync::Arc<dyn std::error::Error + Send + Sync> = std::sync::Arc::new(
+            std::io::Error::other("failed to load C:\\runtime:custom\\onnx.dll: dlopen failed"),
+        );
+        let error = GraphError::OnnxRuntimeInitializationFailed {
+            source: source.clone(),
+        };
+        let wrapped = Error::ContextCreationError {
+            source: error.into(),
+        };
+        assert_eq!(
+            format_error_chain(&wrapped),
+            "Failed to create context\n  onnx runtime initialization failed\n    failed to load C:\\runtime:custom\\onnx.dll: dlopen failed"
+        );
+        assert_eq!(
+            source.to_string(),
+            "failed to load C:\\runtime:custom\\onnx.dll: dlopen failed"
+        );
+    }
+
+    #[test]
+    fn indents_multiline_causes_without_rewriting_messages() {
+        let error = Error::ContextCreationError {
+            source: std::io::Error::other("first line\nsecond line: details").into(),
+        };
+        assert_eq!(
+            format_error_chain(&error),
+            "Failed to create context\n  first line\n  second line: details"
+        );
+        let leaf = std::io::Error::other("context: cause: details");
+        assert_eq!(format_error_chain(&leaf), "context: cause: details");
     }
 }
