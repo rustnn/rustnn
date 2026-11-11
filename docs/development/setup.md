@@ -9,7 +9,7 @@
 | `flatc` | Required for `litert-runtime` (TFLite schema). CI downloads the flatbuffers release binary; macOS `brew install flatbuffers` |
 | Node.js | WPT corpus fetch and evaluation (`scripts/fetch_wpt.mjs`, `scripts/wpt_bridge/`) |
 | Python 3 | MkDocs (`pip install -r docs/requirements.txt`) and the generator scripts in `scripts/` |
-| libclang | `trtx-runtime`: the `trtx-sys` crate generates bindings with autocxx; set `LIBCLANG_PATH` if it is not found |
+| libclang | `trtx-runtime` and `make docs-api`: the `trtx-sys` crate generates bindings with autocxx, which needs libclang 21 or older; set `LIBCLANG_PATH` if it is not found or a newer libclang is the default (CI installs `libclang-21-dev` and sets `LIBCLANG_PATH=/usr/lib/llvm-21/lib`) |
 | Doxygen and cbindgen | Required for the documentation website and `make docs-capi`; install Doxygen with your package manager and cbindgen with `cargo install cbindgen --locked` |
 
 Windows: install the Visual Studio C++ build tools and run `git config --system core.longpaths true`
