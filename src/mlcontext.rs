@@ -83,8 +83,12 @@ use crate::{
 // Backend traits
 
 pub(crate) trait ListDevices {
-    // TODO: should probably be a Result or just be an empty Vec when something is not working the
     fn list_devices() -> Vec<BackendDevice>;
+
+    /// Enumerate devices while retaining initialization failures for backend selection.
+    fn try_list_devices() -> Result<Vec<BackendDevice>> {
+        Ok(Self::list_devices())
+    }
 }
 
 // could make public later if interface stabilized

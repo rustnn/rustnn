@@ -2,14 +2,16 @@
 
 Errors you are likely to meet, what causes them, and where to look. Error types are described
 in the [error reference](https://rustnn.github.io/rustnn/api/rustnn/error/); `RUST_LOG=debug` adds the backend's own log
-lines to most of these situations.
+lines to most of these situations. CLI errors use indented causal chains, not execution stack
+traces. `error::format_error_chain` prints each `source()` message unchanged; opaque dependency
+messages remain single entries. Runtime initialization caches share the original error.
 
 ## Context creation
 
 | Symptom | Cause and fix |
 |---|---|
-| `Error::NoBackendAvailable { want_*, have_* }` | No compiled backend can serve the hints. The `have_*` flags show which features the binary was built with; add `--features onnx-runtime` (or another backend) or relax the hints |
-| `Error::NoBackendAvailableForBackendHint` | The hinted backend is compiled in but reports no device, or its library failed to load. Check the backend-specific rows below |
+| `Error::NoBackendAvailable { want_*, have_* }` | No backend can serve the hints. The `reason` includes runtime-loading and device-discovery failures; automatic selection still tries other backends. The `have_*` flags show which features the binary was built with; add `--features onnx-runtime` (or another backend) or relax the hints |
+| `Error::NoBackendAvailableForBackendHint` | The hinted backend is disabled, reports no matching device, or fails initialization. The `reason` distinguishes compile-time disabled support from runtime-loading or device-discovery failures. Check the backend-specific rows below |
 | ONNX Runtime is unavailable, or initialization reports a missing library or incompatible version | Set `ORT_DYLIB_PATH` to the downloaded ONNX Runtime 1.29 or newer shared library and restart the process. rustnn uses `ort::init_from` to return loading errors; backend discovery skips an unavailable runtime. An old `onnxruntime.dll` in Windows `System32` can be selected if the variable is unset. See [Getting Started](getting-started.md#provide-onnx-runtime) |
 | ONNX Runtime repeats the same initialization error after fixing `ORT_DYLIB_PATH` | Initialization failures are cached for the process lifetime. Restart the process after fixing the library path |
 | TensorRT-RTX not selected, log shows a library load error (`LoadLibraryExW` code 126 on Windows) | `tensorrt_rtx_1_6` is not on `PATH` / `LD_LIBRARY_PATH`; add the SDK library directory or call `dynamically_load_tensorrt` |

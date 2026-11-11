@@ -35,14 +35,25 @@ use crate::{GraphError, GraphInfo};
 struct LiteRt;
 
 impl LiteRt {
-    fn env() -> sys::LiteRtEnvironment {
-        static ENV: OnceLock<usize> = OnceLock::new();
-        *ENV.get_or_init(|| {
+    fn env() -> Result<sys::LiteRtEnvironment> {
+        static ENV: OnceLock<std::result::Result<usize, String>> = OnceLock::new();
+        ENV.get_or_init(|| {
             let mut env = std::ptr::null_mut();
-            check(unsafe { sys::LiteRtCreateEnvironment(0, std::ptr::null(), &mut env) })
-                .expect("LiteRtCreateEnvironment failed");
-            env as usize
-        }) as *mut _
+            // SAFETY: LiteRT initializes the environment through a valid out pointer.
+            let status = unsafe { sys::LiteRtCreateEnvironment(0, std::ptr::null(), &mut env) };
+            if status != sys::kLiteRtStatusOk {
+                Err(format!("LiteRtCreateEnvironment failed: status code={status}").into())
+            } else if env.is_null() {
+                Err("LiteRtCreateEnvironment returned a null environment".into())
+            } else {
+                Ok(env as usize)
+            }
+        })
+        .as_ref()
+        .map(|env| *env as sys::LiteRtEnvironment)
+        .map_err(|reason| Error::ContextCreationError {
+            source: reason.clone().into(),
+        })
     }
 }
 
@@ -109,6 +120,7 @@ impl LiteRtGraph {
         output_order: Vec<(String, u32)>,
         float16_emulated: bool,
     ) -> Result<Self> {
+        let environment = LiteRt::env()?;
         let owned = model_bytes.into_boxed_slice();
         unsafe {
             let mut model = std::ptr::null_mut();
@@ -129,12 +141,8 @@ impl LiteRtGraph {
             ))?;
 
             let mut compiled = std::ptr::null_mut();
-            let status = sys::LiteRtCreateCompiledModel(
-                LiteRt::env(),
-                model.as_ptr(),
-                options,
-                &mut compiled,
-            );
+            let status =
+                sys::LiteRtCreateCompiledModel(environment, model.as_ptr(), options, &mut compiled);
             sys::LiteRtDestroyOptions(options);
             check(status)?;
             let compiled = NonNull::new(compiled).ok_or_else(|| Error::GraphBuildError {
@@ -270,7 +278,7 @@ impl LiteRtTensor {
         let mut handle = std::ptr::null_mut();
         check(unsafe {
             sys::LiteRtCreateManagedTensorBuffer(
-                LiteRt::env(),
+                LiteRt::env()?,
                 sys::kLiteRtTensorBufferTypeHostMemory,
                 &tensor_type,
                 size_bytes,
@@ -1161,7 +1169,7 @@ impl LiteRtContext {
         _rustnn_options: Option<&RustNNOptions>,
     ) -> Result<Self> {
         let _ = litert::set_global_log_severity(litert::LogSeverity::Warning);
-        LiteRt::env();
+        LiteRt::env()?;
         Ok(Self {
             tensors: Vec::new(),
             device_type,
@@ -1181,10 +1189,12 @@ impl LiteRtContext {
 // Impls for Backend Trait
 impl ListDevices for LiteRtContext {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
-        if LiteRt::env().is_null() {
-            return vec![];
-        }
-        vec![
+        Self::try_list_devices().unwrap_or_default()
+    }
+
+    fn try_list_devices() -> Result<Vec<crate::backend_selection::BackendDevice>> {
+        LiteRt::env()?;
+        Ok(vec![
             crate::backend_selection::BackendDevice::LiteRt {
                 device_type: DeviceType::Cpu,
             },
@@ -1194,7 +1204,7 @@ impl ListDevices for LiteRtContext {
             crate::backend_selection::BackendDevice::LiteRt {
                 device_type: DeviceType::Npu,
             },
-        ]
+        ])
     }
 }
 
