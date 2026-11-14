@@ -45,19 +45,13 @@ pub mod webnn;
 #[cfg(feature = "coreml-converter")]
 mod weight_file_builder;
 
-#[cfg(all(
-    feature = "coreml-runtime",
-    any(target_os = "macos", target_os = "ios", test)
-))]
+#[cfg(all(feature = "coreml-runtime", any(target_vendor = "apple", test)))]
 pub(crate) use coreml_mlprogram::CoremlConstantCopies;
 #[cfg(feature = "coreml-converter")]
 pub use coreml_mlprogram::CoremlMlProgramConverter;
 #[cfg(feature = "coreml-runtime")]
 pub(crate) use coreml_mlprogram::CoremlPassthrough;
-#[cfg(all(
-    feature = "coreml-runtime",
-    any(target_os = "macos", target_os = "ios")
-))]
+#[cfg(all(feature = "coreml-runtime", target_vendor = "apple"))]
 pub(crate) use coreml_mlprogram::{
     INPUT_ALIASES_METADATA_KEY, OUTPUT_ALIASES_METADATA_KEY, OUTPUT_CONSTANT_COPIES_METADATA_KEY,
     OUTPUT_PASSTHROUGHS_METADATA_KEY,
@@ -72,10 +66,7 @@ pub(crate) use trtx::LOGGER as trtx_logger;
 pub use trtx::TrtxConverter;
 #[cfg(feature = "coreml-converter")]
 pub(crate) use weight_file_builder::WeightFileBuilder;
-#[cfg(all(
-    feature = "coreml-runtime",
-    any(target_os = "macos", target_os = "ios", test)
-))]
+#[cfg(all(feature = "coreml-runtime", any(target_vendor = "apple", test)))]
 pub(crate) use weight_file_builder::weight_ranges;
 
 #[cfg(any(feature = "cann-converter", feature = "cann-runtime-mock"))]
@@ -112,6 +103,68 @@ pub struct ConvertedGraph {
     pub data: Vec<u8>,
     /// Optional weight file data for formats that require external weights (e.g., CoreML Float16)
     pub weights_data: Option<Vec<u8>>,
+}
+
+/// Summary of a `.mlmodelc` bundle written by [`ConvertedGraph::write_coreml_bundle`].
+#[cfg(feature = "coreml-export")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CoremlBundleStats {
+    /// Size of the MLProgram protobuf that was lowered to MIL text.
+    pub input_bytes: usize,
+    /// Bytes written to `model.mil`.
+    pub output_bytes: usize,
+    /// MIL operations in the program, including nested blocks.
+    pub operation_count: usize,
+    /// Constants in the program (inline and weight-file references).
+    pub const_count: usize,
+}
+
+impl ConvertedGraph {
+    /// Write this CoreML conversion as a runnable `.mlmodelc` bundle in pure Rust.
+    ///
+    /// Requires the `coreml-export` feature and a `format` of `"coreml"`. The bundle holds the
+    /// MIL program as source text (`model.mil`), the bundle metadata and, when
+    /// [`weights_data`](Self::weights_data) is `Some`, `weights/weights.bin`; Core ML compiles
+    /// the MIL for the device when the bundle is loaded with `MLModel(contentsOf:)`. This
+    /// invokes no Apple compiler, subprocess or network service, so it runs on any host,
+    /// including Linux CI, and produces a bundle that watchOS, App Extensions and App Clips
+    /// can load without `MLModel.compileModel`. `directory` is created if needed; existing
+    /// bundle files in it are replaced.
+    ///
+    /// Loading the bundle is a separate Core ML runtime operation; use
+    /// `CoremlOptions::compile_route` to make the CoreML backend take this route for graphs it
+    /// builds.
+    #[cfg(feature = "coreml-export")]
+    pub fn write_coreml_bundle(
+        &self,
+        directory: impl AsRef<std::path::Path>,
+    ) -> Result<CoremlBundleStats, GraphError> {
+        if self.format != "coreml" {
+            return Err(GraphError::ConversionFailed {
+                format: self.format.to_string(),
+                reason: "only CoreML conversions can be written as .mlmodelc bundles".to_string(),
+            });
+        }
+        let stats = mlmodelc_export::compile_to_dir(
+            &self.data,
+            self.weights_data.as_deref(),
+            directory.as_ref(),
+        )
+        .map_err(|error| GraphError::ConversionFailed {
+            format: "coreml".to_string(),
+            reason: format!(
+                ".mlmodelc export to {} failed: {error}",
+                directory.as_ref().display()
+            ),
+        })?;
+        Ok(CoremlBundleStats {
+            input_bytes: stats.input_bytes,
+            output_bytes: stats.output_bytes,
+            operation_count: stats.operation_count,
+            const_count: stats.const_count,
+        })
+    }
 }
 
 /// Lowers a [`GraphInfo`] to one backend format.

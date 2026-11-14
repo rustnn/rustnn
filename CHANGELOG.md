@@ -7,6 +7,7 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 ## [Unreleased]
 
 ### Added
+- CoreML: optional `coreml-export` feature with `CoremlOptions::compile_route` (`Auto`, `Native`, `RustExport`) and `ConvertedGraph::write_coreml_bundle`. `RustExport` writes the `.mlmodelc` bundle in pure Rust through the `mlmodelc-export` crate and loads it with `MLModel(contentsOf:)`, the route watchOS and other targets without `MLModel.compileModel` need; `Auto` keeps the native compiler wherever it exists. The CoreML source gates now cover every Apple target (`target_vendor = "apple"`), `rustnn-cli --convert coreml` gains `--coreml-compiled-output <dir.mlmodelc>` and `--run` gains `--coreml-compile-route` (#110).
 - CoreML: `CoremlOptions::float16_precision` selects the float16 lowering (rustnn extension). `Native`, the default, keeps native float16 MIL kernels and one MIL program; `Exact` evaluates float16 arithmetic, activations, normalization and data movement in float32 with float16 storage and materializes explicit float16 rounding boundaries as Pipeline children (#279). `CoremlMlProgramConverter::convert_with_float16_precision` exposes the same choice; `WPT_COREML_FLOAT16` selects it for WPT.
 
 ### Changed

@@ -567,7 +567,7 @@ unsafe fn copy_output(
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 unsafe extern "C" {
     fn rustnn_coreml_array_view(
         data: *mut c_void,
@@ -589,7 +589,7 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(target_vendor = "apple"))]
 #[allow(clippy::too_many_arguments)] // Mirrors the native C ABI above.
 unsafe fn rustnn_coreml_array_view(
     _data: *mut c_void,
@@ -603,7 +603,7 @@ unsafe fn rustnn_coreml_array_view(
 ) -> i32 {
     1
 }
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(target_vendor = "apple"))]
 unsafe fn rustnn_coreml_predict_backed(
     _model: *mut Object,
     _features: *mut Object,
@@ -937,6 +937,7 @@ mod tests {
             converted.weights_data,
             DeviceType::Cpu,
             false,
+            crate::mlcontextoptions::CoremlCompileRoute::Native,
         )
         .unwrap();
         let mut input = CoremlTensorStorage::new(DataType::Float32, 12, true).unwrap();

@@ -2,6 +2,7 @@
 
 use crate::backend_selection::DeviceType;
 use crate::error::GraphError;
+use crate::mlcontextoptions::CoremlCompileRoute;
 
 /// The CoreML loading route, not an execution device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -10,6 +11,60 @@ pub enum CoremlLoadRoute {
     InMemoryAsset,
     /// Compile a source URL and load the resulting `.mlmodelc`.
     CompiledUrl,
+    /// Write the `.mlmodelc` in this process with `mlmodelc-export` (the `coreml-export`
+    /// feature) and load it from that URL.
+    RustExport,
+}
+
+/// A compile route with [`CoremlCompileRoute::Auto`] resolved for this build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ResolvedCompileRoute {
+    /// Apple's compiler only.
+    Native,
+    /// Apple's compiler first; on a native failure, the Rust exporter.
+    NativeThenRustExport,
+    /// The Rust exporter only.
+    RustExport,
+}
+
+/// Decide the compile route from the option, the compiled features and the target.
+///
+/// `Auto` keeps today's native behavior wherever Apple's compiler exists and only adds the
+/// exporter as a fallback when it is compiled in; on watchOS the native compiler does not
+/// exist, so `Auto` goes straight to the exporter. An explicit `RustExport` without the
+/// feature is an error rather than a silent native build.
+pub(super) fn resolve_compile_route(
+    route: CoremlCompileRoute,
+    exporter_available: bool,
+    native_compiler_available: bool,
+) -> Result<ResolvedCompileRoute, GraphError> {
+    match route {
+        CoremlCompileRoute::Native => Ok(ResolvedCompileRoute::Native),
+        CoremlCompileRoute::RustExport if exporter_available => {
+            Ok(ResolvedCompileRoute::RustExport)
+        }
+        CoremlCompileRoute::RustExport => Err(GraphError::CoremlRuntimeFailed {
+            reason: "CoremlCompileRoute::RustExport requires the `coreml-export` Cargo feature"
+                .to_string(),
+        }),
+        CoremlCompileRoute::Auto => Ok(match (exporter_available, native_compiler_available) {
+            (false, _) => ResolvedCompileRoute::Native,
+            (true, false) => ResolvedCompileRoute::RustExport,
+            (true, true) => ResolvedCompileRoute::NativeThenRustExport,
+        }),
+    }
+}
+
+/// The compile route for this build: the exporter is compiled in with `coreml-export`,
+/// and the public `MLModel.compileModel` API exists on every Apple target except watchOS.
+pub(super) fn resolve_compile_route_for_target(
+    route: CoremlCompileRoute,
+) -> Result<ResolvedCompileRoute, GraphError> {
+    resolve_compile_route(
+        route,
+        cfg!(feature = "coreml-export"),
+        !cfg!(target_os = "watchos"),
+    )
 }
 
 /// An unsuccessful attempt preceding a successful model load.
@@ -136,6 +191,64 @@ impl LoadTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_route_is_native_regardless_of_the_exporter() {
+        for exporter in [false, true] {
+            for native in [false, true] {
+                assert_eq!(
+                    resolve_compile_route(CoremlCompileRoute::Native, exporter, native).unwrap(),
+                    ResolvedCompileRoute::Native
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn auto_without_the_exporter_keeps_the_native_compiler() {
+        for native in [false, true] {
+            assert_eq!(
+                resolve_compile_route(CoremlCompileRoute::Auto, false, native).unwrap(),
+                ResolvedCompileRoute::Native
+            );
+        }
+    }
+
+    #[test]
+    fn auto_with_the_exporter_prefers_native_and_falls_back() {
+        assert_eq!(
+            resolve_compile_route(CoremlCompileRoute::Auto, true, true).unwrap(),
+            ResolvedCompileRoute::NativeThenRustExport
+        );
+        // watchOS: no public compiler, so the exporter is the only route.
+        assert_eq!(
+            resolve_compile_route(CoremlCompileRoute::Auto, true, false).unwrap(),
+            ResolvedCompileRoute::RustExport
+        );
+    }
+
+    #[test]
+    fn explicit_rust_export_needs_the_feature() {
+        assert_eq!(
+            resolve_compile_route(CoremlCompileRoute::RustExport, true, true).unwrap(),
+            ResolvedCompileRoute::RustExport
+        );
+        let error = resolve_compile_route(CoremlCompileRoute::RustExport, false, true).unwrap_err();
+        assert!(error.to_string().contains("coreml-export"), "{error}");
+    }
+
+    #[test]
+    fn default_route_resolves_for_this_build() {
+        let expected = match (cfg!(feature = "coreml-export"), cfg!(target_os = "watchos")) {
+            (false, _) => ResolvedCompileRoute::Native,
+            (true, false) => ResolvedCompileRoute::NativeThenRustExport,
+            (true, true) => ResolvedCompileRoute::RustExport,
+        };
+        assert_eq!(
+            resolve_compile_route_for_target(CoremlCompileRoute::default()).unwrap(),
+            expected
+        );
+    }
 
     fn simulate(
         device: DeviceType,
