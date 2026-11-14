@@ -23,6 +23,26 @@ pub struct CoremlLoadFailure {
     pub reason: String,
 }
 
+/// What the compiled-bundle cache did for one load (rustnn extension).
+///
+/// Enabled with `CoremlOptions::compiled_bundle_cache`. The cache never decides whether a
+/// build succeeds: on `Error` the graph was compiled as without the cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CacheOutcome {
+    /// No cache directory was configured, or the graph loaded in memory, where no bundle
+    /// exists to keep.
+    Disabled,
+    /// A complete entry for the key was loaded; `MLModel.compileModel` did not run.
+    Hit,
+    /// No complete entry existed; the graph was compiled and the bundle was published.
+    Miss,
+    /// The cache was enabled but could not serve or store the entry (an unreadable or
+    /// unloadable entry, a key collision, a failed copy or publish). The message names the
+    /// step; the graph was compiled as without the cache, and a stale entry was removed.
+    Error(String),
+}
+
 /// Why and how a graph was successfully loaded by CoreML.
 ///
 /// Compute units are permissions, not measured CPU/GPU/Neural Engine placement.
@@ -37,6 +57,8 @@ pub struct CoremlLoadDiagnostics {
     pub route: CoremlLoadRoute,
     /// Earlier failures in attempt order, including successful CPU/URL fallback.
     pub failures: Vec<CoremlLoadFailure>,
+    /// What the compiled-bundle cache did; `Disabled` unless the option is set.
+    pub cache: CacheOutcome,
 }
 
 pub(super) fn compute_unit_for_device(device: DeviceType) -> (i64, &'static str) {
@@ -127,6 +149,7 @@ impl LoadTrace {
             loaded_compute_units,
             route,
             failures: self.failures.clone(),
+            cache: CacheOutcome::Disabled,
         };
         log::debug!("CoreML model load: {diagnostics:?}");
         diagnostics

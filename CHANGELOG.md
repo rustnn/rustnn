@@ -7,6 +7,7 @@ This changelog consolidates the previous `RELEASE_NOTES_*.md` files into a singl
 ## [Unreleased]
 
 ### Added
+- CoreML: `CoremlOptions::compiled_bundle_cache` keeps the compiled `.mlmodelc` of every built graph under a caller-chosen directory and loads it on the next build of the same graph instead of compiling again (rustnn extension, off by default). Entries are published with a staging directory and one rename, unusable entries are rebuilt once, and a cache failure never fails a build; `CoremlLoadDiagnostics::cache` reports the `CacheOutcome` (`Disabled`, `Hit`, `Miss` or `Error`). With the cache enabled, graphs with inputs compile from a URL.
 - CoreML: `CoremlOptions::float16_precision` selects the float16 lowering (rustnn extension). `Native`, the default, keeps native float16 MIL kernels and one MIL program; `Exact` evaluates float16 arithmetic, activations, normalization and data movement in float32 with float16 storage and materializes explicit float16 rounding boundaries as Pipeline children (#279). `CoremlMlProgramConverter::convert_with_float16_precision` exposes the same choice; `WPT_COREML_FLOAT16` selects it for WPT.
 
 ### Changed
