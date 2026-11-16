@@ -26,6 +26,14 @@ fn parse_coreml_device(value: Option<&str>) -> &'static str {
     }
 }
 
+/// CoreML compiled-bundle cache directory for the trials: `WPT_COREML_BUNDLE_CACHE=<dir>`
+/// sets `CoremlOptions::compiled_bundle_cache`; unset (default) leaves the cache off.
+pub fn coreml_bundle_cache() -> Option<std::path::PathBuf> {
+    std::env::var_os("WPT_COREML_BUNDLE_CACHE")
+        .filter(|directory| !directory.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// CoreML float16 lowering for the trials: `WPT_COREML_FLOAT16=native` (default) or `exact`.
 pub fn coreml_float16_precision() -> rustnn::mlcontext::CoremlFloat16Precision {
     parse_coreml_float16(std::env::var("WPT_COREML_FLOAT16").ok().as_deref())

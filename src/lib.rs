@@ -121,6 +121,7 @@
 //! | `WPT_COREML_TENSOR_MODE` | WPT harness only: `baseline` (default), `persistent`, or `backings`; does not change library defaults |
 //! | `WPT_COREML_FLOAT16` | WPT harness only: `native` (default) or `exact` CoreML float16 lowering; does not change library defaults |
 //! | `WPT_COREML_COMPILE_ROUTE` | WPT harness only: `auto` (default), `native` or `rust-export` CoreML compile route; `rust-export` needs the `coreml-export` feature |
+//! | `WPT_COREML_BUNDLE_CACHE` | WPT harness only: directory for the CoreML compiled-bundle cache; unset (default) leaves it off |
 //!
 //! Persistent caches (TensorRT engines and the TensorRT runtime cache) live under the
 //! platform cache directory, `<cache_dir>/rustnn/<category>`; see [`backends::caching`].

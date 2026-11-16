@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use rustnn::executors::coreml::CoremlLoadRoute;
+use rustnn::executors::coreml::{CacheOutcome, CoremlLoadDiagnostics, CoremlLoadRoute};
 use rustnn::mlcontext::{
     Backend, CoremlCompileRoute, LoadDiagnostics, MLContext, MLContextOptions, MLGraphBuilder,
     MLNamedOperands, MLNamedTensors, MLOperandDescriptor, MLPowerPreference, MLTensorDescriptor,
@@ -21,8 +21,13 @@ const INPUT: [f32; 4] = [0.5, -1.25, 3.0, -0.0625];
 const BIAS: [f32; 4] = [1.0, 0.5, -4.0, 0.0625];
 
 fn context(route: CoremlCompileRoute) -> MLContext<'static> {
+    context_with_cache(route, None)
+}
+
+fn context_with_cache(route: CoremlCompileRoute, cache: Option<&Path>) -> MLContext<'static> {
     let mut options = RustNNOptions::default();
     options.coreml.compile_route = route;
+    options.coreml.compiled_bundle_cache = cache.map(Path::to_path_buf);
     MLContext::create(
         &MLContextOptions::new(MLPowerPreference::Default, false)
             .with_rustnn_backend_hint(Backend::Coreml)
@@ -46,6 +51,14 @@ fn save_graph(context: &mut MLContext<'_>, path: &Path) -> GraphInfo {
 }
 
 fn run(context: &mut MLContext<'_>, graph_info: GraphInfo) -> (CoremlLoadRoute, [f32; 4]) {
+    let (load, actual) = run_with_diagnostics(context, graph_info);
+    (load.route, actual)
+}
+
+fn run_with_diagnostics(
+    context: &mut MLContext<'_>,
+    graph_info: GraphInfo,
+) -> (CoremlLoadDiagnostics, [f32; 4]) {
     let mut graph = context.rustnn_build_graph(graph_info).unwrap();
     let Some(LoadDiagnostics::Coreml(load)) = graph.rustnn_load_diagnostics() else {
         panic!("CoreML graph did not report CoreML load diagnostics");
@@ -65,7 +78,7 @@ fn run(context: &mut MLContext<'_>, graph_info: GraphInfo) -> (CoremlLoadRoute, 
         .unwrap();
     let mut actual = [0f32; 4];
     context.read_tensor(&output, &mut actual).unwrap();
-    (load.route, actual)
+    (load, actual)
 }
 
 #[test]
@@ -165,5 +178,58 @@ fn rust_export_route_keeps_constant_copies_off_the_url_loader() {
         let mut actual = [0f32; 24];
         context.read_tensor(&tensor, &mut actual).unwrap();
         assert_eq!(actual.to_vec(), values, "{route:?}");
+    }
+}
+
+#[test]
+fn exported_bundles_are_cached_under_their_own_key() {
+    let source = tempfile::tempdir().unwrap();
+    let cache = tempfile::tempdir().unwrap();
+    let entries = || {
+        std::fs::read_dir(cache.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter(|name| !name.contains(".partial-"))
+            .count()
+    };
+    let expected: Vec<f32> = INPUT
+        .iter()
+        .zip(BIAS)
+        .map(|(input, bias)| (input + bias).max(0.0))
+        .collect();
+
+    let mut export = context_with_cache(CoremlCompileRoute::RustExport, Some(cache.path()));
+    let graph_info = save_graph(&mut export, &source.path().join("cached.webnn"));
+    let (first, first_values) = run_with_diagnostics(&mut export, graph_info.clone());
+    assert_eq!(first.route, CoremlLoadRoute::RustExport);
+    assert_eq!(first.cache, CacheOutcome::Miss);
+    assert_eq!(first_values.to_vec(), expected);
+    assert_eq!(entries(), 1);
+
+    // The second build loads the exported bundle from the cache and says which route wrote it.
+    let (second, second_values) = run_with_diagnostics(&mut export, graph_info.clone());
+    assert_eq!(second.route, CoremlLoadRoute::RustExport);
+    assert_eq!(second.cache, CacheOutcome::Hit);
+    assert_eq!(second_values, first_values);
+    assert_eq!(entries(), 1);
+
+    // Apple's compiler never loads the exporter's entry: it has a key of its own.
+    if !cfg!(target_os = "watchos") {
+        let mut native = context_with_cache(CoremlCompileRoute::Native, Some(cache.path()));
+        let (load, values) = run_with_diagnostics(&mut native, graph_info.clone());
+        assert_eq!(load.route, CoremlLoadRoute::CompiledUrl);
+        assert_eq!(load.cache, CacheOutcome::Miss);
+        assert_eq!(values.to_vec(), expected);
+        assert_eq!(entries(), 2);
+
+        // `Auto` shares the native entry, and the exporter's entry is still its own hit.
+        let mut auto = context_with_cache(CoremlCompileRoute::Auto, Some(cache.path()));
+        let (load, _) = run_with_diagnostics(&mut auto, graph_info.clone());
+        assert_eq!(load.route, CoremlLoadRoute::CompiledUrl);
+        assert_eq!(load.cache, CacheOutcome::Hit);
+        let (load, _) = run_with_diagnostics(&mut export, graph_info);
+        assert_eq!(load.route, CoremlLoadRoute::RustExport);
+        assert_eq!(load.cache, CacheOutcome::Hit);
+        assert_eq!(entries(), 2);
     }
 }

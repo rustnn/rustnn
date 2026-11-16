@@ -24,6 +24,8 @@ pub mod caching;
 
 #[cfg(feature = "coreml-runtime")]
 pub mod coreml;
+#[cfg(feature = "coreml-runtime")]
+pub(crate) mod coreml_bundle_cache;
 
 #[cfg(feature = "onnx-runtime")]
 pub mod ort;

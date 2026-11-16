@@ -50,6 +50,8 @@ WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml
 # Qualify the Rust export compile route (auto is the default; native forces Apple's compiler)
 WPT_COREML_COMPILE_ROUTE=rust-export WPT_COREML_FLOAT16=exact \
   make test-wpt-coreml WPT_COREML_FEATURES=coreml-runtime,coreml-export
+# Run with the CoreML compiled-bundle cache; a second run with the same directory hits
+WPT_COREML_BUNDLE_CACHE=/tmp/rustnn-wpt-bundles make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.

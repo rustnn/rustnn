@@ -62,6 +62,7 @@ impl WptBackend {
         }
         coreml.coreml.float16_precision = super::wpt_config::coreml_float16_precision();
         coreml.coreml.compile_route = super::wpt_config::coreml_compile_route();
+        coreml.coreml.compiled_bundle_cache = super::wpt_config::coreml_bundle_cache();
         vec![
             Self::new(
                 "burn-cpu",

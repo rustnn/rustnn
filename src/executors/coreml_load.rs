@@ -27,6 +27,30 @@ pub(super) enum ResolvedCompileRoute {
     RustExport,
 }
 
+impl ResolvedCompileRoute {
+    /// The route whose bundle the compiled-bundle cache keeps under this policy, with its
+    /// name in the cache key, or `None` when the first attempt loads in memory and leaves
+    /// no bundle. The arguments are those of [`LoadTrace::compile_routes`].
+    ///
+    /// Bundles from Apple's compiler are keyed `native` under either native policy, and
+    /// only the exporter-only policy keys `rust-export`: a bundle the exporter wrote as the
+    /// fallback of a failed native compile is never stored under the native name.
+    pub(super) fn cached_route(
+        self,
+        use_memory: bool,
+        url_crashes: bool,
+    ) -> Option<(CoremlLoadRoute, &'static str)> {
+        match self {
+            Self::Native | Self::NativeThenRustExport => {
+                (!use_memory).then_some((CoremlLoadRoute::CompiledUrl, "native"))
+            }
+            Self::RustExport => {
+                (!url_crashes).then_some((CoremlLoadRoute::RustExport, "rust-export"))
+            }
+        }
+    }
+}
+
 /// Decide the compile route from the option, the compiled features and the target.
 ///
 /// `Auto` keeps today's native behavior wherever Apple's compiler exists and only adds the
@@ -84,6 +108,27 @@ pub struct CoremlLoadFailure {
     pub reason: String,
 }
 
+/// What the compiled-bundle cache did for one load (rustnn extension).
+///
+/// Enabled with `CoremlOptions::compiled_bundle_cache`. The cache never decides whether a
+/// build succeeds: on `Error` the graph was compiled as without the cache.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CacheOutcome {
+    /// No cache directory was configured, or the graph loaded in memory, where no bundle
+    /// exists to keep (input-free programs, and float16 graphs under the native lowering
+    /// unless the compile route is the Rust exporter).
+    Disabled,
+    /// A complete entry for the key was loaded; `MLModel.compileModel` did not run.
+    Hit,
+    /// No complete entry existed; the graph was compiled and the bundle was published.
+    Miss,
+    /// The cache was enabled but could not serve or store the entry (an unreadable or
+    /// unloadable entry, a key collision, a failed copy or publish). The message names the
+    /// step; the graph was compiled as without the cache, and a stale entry was removed.
+    Error(String),
+}
+
 /// Why and how a graph was successfully loaded by CoreML.
 ///
 /// Compute units are permissions, not measured CPU/GPU/Neural Engine placement.
@@ -98,6 +143,8 @@ pub struct CoremlLoadDiagnostics {
     pub route: CoremlLoadRoute,
     /// Earlier failures in attempt order, including successful CPU/URL fallback.
     pub failures: Vec<CoremlLoadFailure>,
+    /// What the compiled-bundle cache did; `Disabled` unless the option is set.
+    pub cache: CacheOutcome,
 }
 
 pub(super) fn compute_unit_for_device(device: DeviceType) -> (i64, &'static str) {
@@ -241,6 +288,7 @@ impl LoadTrace {
             loaded_compute_units,
             route,
             failures: self.failures.clone(),
+            cache: CacheOutcome::Disabled,
         };
         log::debug!("CoreML model load: {diagnostics:?}");
         diagnostics
@@ -250,6 +298,36 @@ impl LoadTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_keeps_the_bundle_of_the_first_url_attempt() {
+        use CoremlLoadRoute::{CompiledUrl, RustExport};
+        for native in [
+            ResolvedCompileRoute::Native,
+            ResolvedCompileRoute::NativeThenRustExport,
+        ] {
+            for url_crashes in [false, true] {
+                assert_eq!(
+                    native.cached_route(false, url_crashes),
+                    Some((CompiledUrl, "native")),
+                    "{native:?}"
+                );
+                assert_eq!(native.cached_route(true, url_crashes), None, "{native:?}");
+            }
+        }
+        // The exporter ignores the in-memory preference; only the constant-copy programs
+        // leave it for the in-memory asset.
+        for use_memory in [false, true] {
+            assert_eq!(
+                ResolvedCompileRoute::RustExport.cached_route(use_memory, false),
+                Some((RustExport, "rust-export"))
+            );
+            assert_eq!(
+                ResolvedCompileRoute::RustExport.cached_route(use_memory, true),
+                None
+            );
+        }
+    }
 
     #[test]
     fn native_route_is_native_regardless_of_the_exporter() {
