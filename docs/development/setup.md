@@ -24,6 +24,7 @@ The default build needs no native runtime beyond the prerequisites above.
 |---|---|
 | `onnx-runtime` | The pinned ONNX Runtime; `make onnxruntime-download` installs it and the related Make targets configure `ORT_DYLIB_PATH` |
 | `coreml-runtime` | Xcode and system CoreML on macOS/iOS; see the [CoreML guide](../integration/coreml.md) for deployment requirements and the tvOS dependency caveat |
+| `coreml-export` | None beyond `protoc`: the pure-Rust `mlmodelc-export` crate writes `.mlmodelc` bundles on any host; see [Compile routes](../integration/coreml.md#compile-routes) |
 | `trtx-runtime`, `trtx-enterprise` | A compatible NVIDIA GPU and driver, CUDA 13.0, and a loadable TensorRT-RTX runtime |
 | `litert-runtime` | `flatc` on `PATH` plus the native LiteRT library provisioned by `litert-sys`; WPT runs also configure its library search path |
 | `cann-runtime` | An OHOS/Ascend HiAI environment and `libcann_shim.so` (or `CANN_SHIM_PATH`) |

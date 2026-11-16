@@ -216,6 +216,46 @@ pub enum CoremlFloat16Precision {
     Exact,
 }
 
+/// How the CoreML backend turns the lowered MLProgram into a loadable model (rustnn extension).
+///
+/// This selects the compile step only; the converter, the numerical lowering and the
+/// compute-unit policy are unchanged. The successful route is reported as
+/// `CoremlLoadRoute` in the graph's load diagnostics. See the "Compile routes" section of
+/// the CoreML integration guide.
+#[derive(PartialEq, Eq, Clone, Copy, Debug, Default)]
+#[non_exhaustive]
+pub enum CoremlCompileRoute {
+    /// [`Native`](Self::Native) where Apple's compiler exists, otherwise
+    /// [`RustExport`](Self::RustExport). On watchOS the public `MLModel.compileModel`
+    /// API does not exist, so `Auto` selects `RustExport` there; the build then needs the
+    /// `coreml-export` feature. With that feature enabled on any other Apple target, `Auto`
+    /// also retries through `RustExport` when the native compile step fails, and records the
+    /// native failure in the load diagnostics.
+    #[default]
+    Auto,
+    /// Compile with Apple's `MLModel` (in memory through `MLModelAsset`, or from a temporary
+    /// `.mlmodel`/`.mlpackage` URL). This is the only route without the `coreml-export`
+    /// feature.
+    Native,
+    /// Write the `.mlmodelc` bundle in this process with the pure-Rust `mlmodelc-export`
+    /// crate and load it with `MLModel(contentsOf:)`. Requires the `coreml-export` feature;
+    /// without it, `build` fails. The bundle contains source MIL, which Core ML compiles for
+    /// the device at load time. This is the route for watchOS and other targets where
+    /// `MLModel.compileModel` is unavailable.
+    ///
+    /// The bundle is always loaded from disk, so the values are those of the native URL
+    /// route, not those of the in-memory asset that [`Native`](Self::Native) uses for most
+    /// graphs. Float16 graphs can differ between the two under
+    /// [`CoremlFloat16Precision::Native`] (WPT's float16 NHWC `l2Pool2d` trial, and on some
+    /// hosts its float16 `gru` and `lstm` trials, fail from a URL); use
+    /// [`CoremlFloat16Precision::Exact`] for float16 graphs on this route.
+    ///
+    /// An input-free program whose outputs are all copies of constants is not loaded from
+    /// the bundle, because Core ML can crash on it from a URL. It is loaded as an in-memory
+    /// asset instead, and on watchOS, which has no such loader, `build` fails.
+    RustExport,
+}
+
 /// CoreML tensor storage and lowering options; see the CoreML integration guide.
 #[derive(PartialEq, Eq, Clone, Debug)]
 #[non_exhaustive]
@@ -230,6 +270,9 @@ pub struct CoremlOptions {
     pub output_backings: bool,
     /// Float16 lowering. Defaults to [`CoremlFloat16Precision::Native`].
     pub float16_precision: CoremlFloat16Precision,
+    /// Compile step. Defaults to [`CoremlCompileRoute::Auto`], which keeps the native
+    /// compiler wherever it exists.
+    pub compile_route: CoremlCompileRoute,
 
     // Compiled-bundle cache (see "Compiled-bundle cache" in the CoreML integration guide).
     /// Directory of the compiled-bundle cache; `None` (the default) disables it.
@@ -249,7 +292,9 @@ pub struct CoremlOptions {
     /// keep the route they have without the cache, and report the cache as disabled when
     /// that route is the in-memory one: input-free programs, and float16 graphs under
     /// [`CoremlFloat16Precision::Native`], where URL compilation is known to return other
-    /// values. Use [`CoremlFloat16Precision::Exact`] to cache float16 graphs. A cache failure never fails a
+    /// values. Use [`CoremlFloat16Precision::Exact`] to cache float16 graphs. Under
+    /// [`CoremlCompileRoute::RustExport`] the exported bundle is what is kept, under a key
+    /// of its own, for every graph that route loads from a URL. A cache failure never fails a
     /// build: the graph compiles as without the cache and the outcome is reported in
     /// `CoremlLoadDiagnostics::cache` (a `CacheOutcome`), reachable through
     /// `MLGraph::rustnn_load_diagnostics`.
@@ -265,6 +310,7 @@ impl Default for CoremlOptions {
             reuse_tensor_storage: false,
             output_backings: true,
             float16_precision: CoremlFloat16Precision::Native,
+            compile_route: CoremlCompileRoute::Auto,
             compiled_bundle_cache: None,
         }
     }

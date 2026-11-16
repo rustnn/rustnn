@@ -11,7 +11,12 @@ cargo run -p rustnn-cli -- examples/sample_graph.webnn --export-dot graph.dot
 cargo run -p rustnn-cli -- examples/sample_graph.webnn --convert onnx --convert-output model.onnx
 cargo run -p rustnn-cli -- examples/sample_graph.webnn --run burn-cpu
 cargo run -p rustnn-cli --features rustnn/trtx-runtime -- examples/sample_graph.webnn --run trtx --accelerated
+cargo run -p rustnn-cli --features coreml-export -- examples/sample_graph.webnn --convert coreml --coreml-compiled-output model.mlmodelc
 ```
+
+`--coreml-compiled-output` writes a runnable `.mlmodelc` with the pure-Rust exporter on any
+host (no Apple compiler); `--run coreml --coreml-compile-route rust-export` loads graphs
+through the same route. See the CoreML guide's "Compile routes" section.
 
 `--list` lists enabled converters and probes compiled runtimes through `MLContext::create`.
 `--help` derives the choices for `--convert` and `--run` from the library. A compiled
