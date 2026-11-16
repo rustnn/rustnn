@@ -145,6 +145,9 @@ jobs:
       - name: Run cargo test (library only)
         run: cargo test --lib
 
+      - name: Run CLI unit tests
+        run: cargo test --locked -p rustnn-cli --bin rustnn-cli
+
       - name: Test WPT tolerance comparison and source budgets
         run: make test-wpt-tolerance
 
