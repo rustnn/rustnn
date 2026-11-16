@@ -46,6 +46,9 @@ WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
 
 # Compare the CoreML float16 lowerings (native is the default) on one requested device
 WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml
+
+# Run with the CoreML compiled-bundle cache; a second run with the same directory hits
+WPT_COREML_BUNDLE_CACHE=/tmp/rustnn-wpt-bundles make test-wpt-coreml
 ```
 
 Always use `--test-threads 1` for WPT runs. Parallel execution is not validated for `MLContext` thread safety.

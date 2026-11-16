@@ -6899,8 +6899,12 @@ impl CoremlMlProgramConverter {
             }
         }
 
-        // Add constant operands as const operations
-        for (operand_id, constant_data) in &graph_info.constant_operand_ids_to_handles {
+        // Add constant operands as const operations, in operand order: the map iterates in
+        // a different order on every conversion, and the order decides the layout of the
+        // weights blob, which callers hash (the compiled-bundle cache key).
+        let mut constants: Vec<_> = graph_info.constant_operand_ids_to_handles.iter().collect();
+        constants.sort_unstable_by_key(|&(&operand_id, _)| operand_id);
+        for (operand_id, constant_data) in constants {
             let operand =
                 graph_info
                     .operand(*operand_id)

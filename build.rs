@@ -100,7 +100,9 @@ fn build_coreml_shim() {
     println!("cargo:rustc-link-lib=dylib=c++");
 }
 
-fn create_source_hash(source_files: &[&str]) {
+/// Hash `source_files` into `OUT_DIR/<output_name>` so a backend can key its on-disk cache on
+/// the sources that produce the cached artifact.
+fn create_source_hash(source_files: &[&str], output_name: &str) {
     let mut hasher = SeaHasher::new();
     let mut buffer = Vec::new();
 
@@ -125,7 +127,7 @@ fn create_source_hash(source_files: &[&str]) {
 
     // 3. Write the combined hash out
     let out_dir = env::var("OUT_DIR").unwrap();
-    let dest_path = Path::new(&out_dir).join("source_hash.txt");
+    let dest_path = Path::new(&out_dir).join(output_name);
     fs::write(dest_path, hash_string).unwrap();
 }
 
@@ -228,12 +230,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Let the binaries find the prebuilt LiteRT libraries at run time.
     forward_litert_lib_dir();
 
-    create_source_hash(&[
-        "src/converters/trtx.rs",
-        "src/converters/trtx_gru.rs",
-        "src/converters/trtx_lstm.rs",
-        "src/converters/trtx_rnn.rs",
-        "src/backends/trtx.rs",
-    ]);
+    create_source_hash(
+        &[
+            "src/converters/trtx.rs",
+            "src/converters/trtx_gru.rs",
+            "src/converters/trtx_lstm.rs",
+            "src/converters/trtx_rnn.rs",
+            "src/backends/trtx.rs",
+        ],
+        "source_hash.txt",
+    );
+    // Keys the CoreML compiled-bundle cache (src/executors/coreml_cache.rs): the converter
+    // decides the emitted MIL program, the shim performs the compilation.
+    create_source_hash(
+        &[
+            "src/converters/coreml_mlprogram.rs",
+            "src/converters/coreml_mlprogram/precision.rs",
+            "src/converters/coreml_constant_fold.rs",
+            "src/converters/coreml_names.rs",
+            "src/executors/coreml_shim.mm",
+        ],
+        "coreml_source_hash.txt",
+    );
     Ok(())
 }
