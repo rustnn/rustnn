@@ -946,6 +946,64 @@ mod tests {
     }
 
     #[test]
+    fn test_ort_discovery_waits_for_backend_selection() {
+        const CHILD: &str = "RUSTNN_TEST_LAZY_ORT_CHILD";
+        if let Some(mode) = std::env::var_os(CHILD) {
+            use crate::backend_selection::{BackendDevice, DeviceType, select_backend};
+            use crate::mlcontext::{MLContextOptions, MLPowerPreference};
+            let options = MLContextOptions::new(MLPowerPreference::Default, false);
+            let options = if mode == "device" {
+                options.with_rustnn_device_hint(BackendDevice::BurnCpu)
+            } else {
+                options
+            };
+            let selected = select_backend(&options).unwrap();
+            if mode == "device" {
+                assert_eq!(selected, BackendDevice::BurnCpu);
+            } else {
+                assert_eq!(
+                    selected,
+                    BackendDevice::Coreml {
+                        device_type: DeviceType::Cpu
+                    }
+                );
+            }
+            assert!(
+                ENVIRONMENT.read().unwrap().is_none(),
+                "ORT discovery was attempted unnecessarily"
+            );
+            let error = ensure_ort_initialized().expect_err("invalid runtime path");
+            assert!(error.to_string().contains("missing-onnxruntime"));
+            return;
+        }
+        let modes = ["device"].into_iter();
+        #[cfg(all(
+            feature = "coreml-runtime",
+            any(target_os = "macos", target_os = "ios")
+        ))]
+        let modes = modes.chain(["coreml"]);
+        let dir = tempfile::tempdir().unwrap();
+        for mode in modes {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "executors::onnx::tests::test_ort_discovery_waits_for_backend_selection",
+                    "--nocapture",
+                ])
+                .env(CHILD, mode)
+                .env("ORT_DYLIB_PATH", dir.path().join("missing-onnxruntime"))
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{mode}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
     fn test_missing_runtime_returns_consistent_errors() {
         const CHILD: &str = "RUSTNN_TEST_MISSING_ORT_CHILD";
         if std::env::var_os(CHILD).is_some() {
@@ -955,6 +1013,7 @@ mod tests {
                 crate::error::format_error_chain(&first),
                 crate::error::format_error_chain(&second)
             );
+            assert!(first.to_string().contains("missing-onnxruntime"));
             assert!(crate::error::format_error_chain(&first).contains("missing-onnxruntime"));
             use crate::mlcontext::ListDevices;
             assert!(crate::backends::ort::OrtContext::list_devices().is_empty());
@@ -967,6 +1026,7 @@ mod tests {
                 error,
                 crate::error::Error::NoBackendAvailableForBackendHint { .. }
             ));
+            assert!(error.to_string().contains("missing-onnxruntime"));
             assert!(
                 crate::error::format_error_chain(&error).contains("missing-onnxruntime"),
                 "{error}"

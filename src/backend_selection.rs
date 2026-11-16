@@ -25,6 +25,7 @@
 //! for this build and target. Neither loads native runtimes or probes devices.
 //! Failed selection retains runtime-loading and device-discovery details in the error's reason;
 //! automatic selection can still fall back to another usable backend.
+//! ONNX Runtime discovery runs only when selection reaches an ONNX Runtime candidate.
 
 use crate::{
     error::{Error, Result},
@@ -320,11 +321,7 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         Vec::new()
     };
     #[cfg(feature = "onnx-runtime")]
-    let onnx_devices = if want_onnx {
-        discover_devices(Backend::Onnx, OrtContext::try_list_devices(), &mut failures)
-    } else {
-        Vec::new()
-    };
+    let onnx_devices = std::cell::OnceCell::new();
     #[cfg(feature = "trtx-runtime")]
     let trtx_loaded = if !trtx_devices.is_empty() {
         match trtx::dynamically_load_tensorrt(None::<String>) {
@@ -411,7 +408,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (MLPowerPreference::Default | MLPowerPreference::HighPerformance, true)
             if have_onnx
                 && want_onnx
-                && let Some(first) = onnx_devices.iter().find(|d| d.is_gpu()) =>
+                && let Ok(devices) = onnx_devices.get_or_init(OrtContext::try_list_devices)
+                && let Some(first) = devices.iter().find(|d| d.is_gpu()) =>
         {
             *first
         }
@@ -419,7 +417,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (MLPowerPreference::Default | MLPowerPreference::LowPower, true)
             if have_onnx
                 && want_onnx
-                && let Some(first) = onnx_devices.iter().find(|d| d.is_npu()) =>
+                && let Ok(devices) = onnx_devices.get_or_init(OrtContext::try_list_devices)
+                && let Some(first) = devices.iter().find(|d| d.is_npu()) =>
         {
             *first
         }
@@ -429,7 +428,8 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         (_, _)
             if have_onnx
                 && want_onnx
-                && let Some(first) = onnx_devices.iter().find(|d| d.is_cpu()) =>
+                && let Ok(devices) = onnx_devices.get_or_init(OrtContext::try_list_devices)
+                && let Some(first) = devices.iter().find(|d| d.is_cpu()) =>
         {
             *first
         }
@@ -441,36 +441,42 @@ pub(crate) fn select_backend(options: &MLContextOptions) -> Result<BackendDevice
         {
             BackendDevice::BurnCpu
         }
-        (_, _) if let Some(backend_hint) = options.backend_hint => {
-            return Err(crate::error::Error::NoBackendAvailableForBackendHint {
-                reason: selection_failure_reason(options, failures),
-                backend_hint,
-                want_trtx,
-                have_trtx,
-                want_onnx,
-                have_onnx,
-                want_coreml,
-                have_coreml,
-                want_litert,
-                have_litert,
-                want_cann,
-                have_cann,
-            });
-        }
         _ => {
-            return Err(crate::error::Error::NoBackendAvailable {
-                reason: selection_failure_reason(options, failures),
-                want_trtx,
-                have_trtx,
-                want_onnx,
-                have_onnx,
-                want_coreml,
-                have_coreml,
-                want_litert,
-                have_litert,
-                want_cann,
-                have_cann,
-            });
+            #[cfg(feature = "onnx-runtime")]
+            if let Some(result) = onnx_devices.into_inner() {
+                let _ = discover_devices(Backend::Onnx, result, &mut failures);
+            }
+            let reason = selection_failure_reason(options, failures);
+            if let Some(backend_hint) = options.backend_hint {
+                return Err(crate::error::Error::NoBackendAvailableForBackendHint {
+                    reason,
+                    backend_hint,
+                    want_trtx,
+                    have_trtx,
+                    want_onnx,
+                    have_onnx,
+                    want_coreml,
+                    have_coreml,
+                    want_litert,
+                    have_litert,
+                    want_cann,
+                    have_cann,
+                });
+            } else {
+                return Err(crate::error::Error::NoBackendAvailable {
+                    reason,
+                    want_trtx,
+                    have_trtx,
+                    want_onnx,
+                    have_onnx,
+                    want_coreml,
+                    have_coreml,
+                    want_litert,
+                    have_litert,
+                    want_cann,
+                    have_cann,
+                });
+            }
         }
     })
 }

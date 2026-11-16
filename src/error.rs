@@ -272,7 +272,7 @@ pub fn format_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
 #[allow(missing_docs)]
 pub enum Error {
     /// No backend matched the requested hints; `reason` retains discovery and runtime failures.
-    #[error("No backend is available for context creation")]
+    #[error("No backend is available for context creation: {reason}")]
     NoBackendAvailable {
         #[source]
         reason: Box<dyn std::error::Error + Send + Sync>,
@@ -288,7 +288,7 @@ pub enum Error {
         have_cann: bool,
     },
     /// The requested backend is disabled or failed discovery; `reason` describes the failure.
-    #[error("No backend is available for backend hint {backend_hint:?}")]
+    #[error("No backend is available for backend hint {backend_hint:?}: {reason}")]
     NoBackendAvailableForBackendHint {
         #[source]
         reason: Box<dyn std::error::Error + Send + Sync>,
@@ -343,7 +343,7 @@ pub enum Error {
     },
 
     /// Failed to create context: `source`.
-    #[error("Failed to create context")]
+    #[error("Failed to create context: {source}")]
     ContextCreationError {
         source: Box<dyn std::error::Error + Sync + Send>,
     },
@@ -653,7 +653,7 @@ pub enum GraphError {
     #[error("onnx runtime failed: {reason}")]
     OnnxRuntimeFailed { reason: String },
     /// ONNX Runtime initialization failed; retains the cached loader or environment error.
-    #[error("onnx runtime initialization failed")]
+    #[error("onnx runtime initialization failed: {source}")]
     OnnxRuntimeInitializationFailed {
         #[source]
         source: std::sync::Arc<dyn std::error::Error + Send + Sync>,
@@ -960,7 +960,11 @@ mod error_chain_tests {
         };
         assert_eq!(
             format_error_chain(&wrapped),
-            "Failed to create context\n  onnx runtime initialization failed\n    failed to load C:\\runtime:custom\\onnx.dll: dlopen failed"
+            concat!(
+                "Failed to create context: onnx runtime initialization failed: failed to load C:\\runtime:custom\\onnx.dll: dlopen failed\n",
+                "  onnx runtime initialization failed: failed to load C:\\runtime:custom\\onnx.dll: dlopen failed\n",
+                "    failed to load C:\\runtime:custom\\onnx.dll: dlopen failed"
+            )
         );
         assert_eq!(
             source.to_string(),
@@ -975,7 +979,7 @@ mod error_chain_tests {
         };
         assert_eq!(
             format_error_chain(&error),
-            "Failed to create context\n  first line\n  second line: details"
+            "Failed to create context: first line\nsecond line: details\n  first line\n  second line: details"
         );
         let leaf = std::io::Error::other("context: cause: details");
         assert_eq!(format_error_chain(&leaf), "context: cause: details");

@@ -80,6 +80,36 @@ fn context_options(cli: &Cli) -> MLContextOptions {
     }
 }
 
+// Keep distinct failures from every hint combination; the final probe may be unsupported.
+fn probe_runtime(
+    backend: Backend,
+    mut probe: impl FnMut(&MLContextOptions) -> rustnn::error::Result<String>,
+) -> (Vec<String>, Vec<String>) {
+    let mut devices = Vec::new();
+    let mut failures = Vec::new();
+    for (power, accelerated) in [
+        (MLPowerPreference::Default, false),
+        (MLPowerPreference::HighPerformance, true),
+        (MLPowerPreference::LowPower, true),
+    ] {
+        let options = MLContextOptions::new(power, accelerated).with_rustnn_backend_hint(backend);
+        match probe(&options) {
+            Ok(device) => {
+                if !devices.contains(&device) {
+                    devices.push(device);
+                }
+            }
+            Err(error) => {
+                let diagnostic = rustnn::error::format_error_chain(&error);
+                if !failures.contains(&diagnostic) {
+                    failures.push(diagnostic);
+                }
+            }
+        }
+    }
+    (devices, failures)
+}
+
 fn list(registry: &ConverterRegistry) {
     println!("Converters: {}", registry.available_formats().join(", "));
     println!("Runtimes:");
@@ -88,31 +118,14 @@ fn list(registry: &ConverterRegistry) {
         println!("  (none compiled)");
     }
     for backend in backends {
-        let mut devices = Vec::new();
-        let mut last_error = None;
-        for (power, accelerated) in [
-            (MLPowerPreference::Default, false),
-            (MLPowerPreference::HighPerformance, true),
-            (MLPowerPreference::LowPower, true),
-        ] {
-            let options =
-                MLContextOptions::new(power, accelerated).with_rustnn_backend_hint(backend);
-            match MLContext::create(&options) {
-                Ok(context) => {
-                    let device = format!("{:?}", context.rustnn_device());
-                    if !devices.contains(&device) {
-                        devices.push(device);
-                    }
-                }
-                Err(error) => last_error = Some(error),
-            }
-        }
+        let (devices, failures) = probe_runtime(backend, |options| {
+            MLContext::create(options).map(|context| format!("{:?}", context.rustnn_device()))
+        });
         if devices.is_empty() {
-            println!(
-                "  {}: unavailable\n    {}",
-                backend.as_ref(),
-                rustnn::error::format_error_chain(&last_error.unwrap()).replace('\n', "\n    ")
-            );
+            println!("  {}: unavailable", backend.as_ref());
+            for failure in failures {
+                println!("    {}", failure.replace('\n', "\n    "));
+            }
         } else {
             println!("  {}: {}", backend.as_ref(), devices.join(", "));
         }
@@ -358,5 +371,48 @@ pub(super) fn main() {
             rustnn::error::format_error_chain(error.as_ref())
         );
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runtime_listing_retains_earlier_initialization_failure() {
+        let mut attempt = 0;
+        let (devices, failures) = probe_runtime(Backend::Trtx, |_| {
+            attempt += 1;
+            if attempt == 2 {
+                Err(rustnn::error::Error::ContextCreationError {
+                    source: "CUDA driver library not found".into(),
+                })
+            } else {
+                Err(rustnn::error::Error::NoDeviceAvailable)
+            }
+        });
+        assert!(devices.is_empty());
+        assert_eq!(attempt, 3);
+        assert_eq!(failures.len(), 2);
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.contains("CUDA driver library not found"))
+        );
+    }
+
+    #[test]
+    fn runtime_listing_deduplicates_devices_without_losing_failures() {
+        let mut attempt = 0;
+        let (devices, failures) = probe_runtime(Backend::Onnx, |_| {
+            attempt += 1;
+            if attempt == 2 {
+                Err(rustnn::error::Error::NoDeviceAvailable)
+            } else {
+                Ok("CPU".into())
+            }
+        });
+        assert_eq!(devices, ["CPU"]);
+        assert_eq!(failures.len(), 1);
     }
 }

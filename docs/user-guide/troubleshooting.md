@@ -4,7 +4,9 @@ Errors you are likely to meet, what causes them, and where to look. Error types 
 in the [error reference](https://rustnn.github.io/rustnn/api/rustnn/error/); `RUST_LOG=debug` adds the backend's own log
 lines to most of these situations. CLI errors use indented causal chains, not execution stack
 traces. `error::format_error_chain` prints each `source()` message unchanged; opaque dependency
-messages remain single entries. Runtime initialization caches share the original error.
+messages remain single entries. Ordinary error display also includes initialization causes;
+chain output may repeat causes already included in a wrapper's message. Runtime initialization
+caches share the original error. CLI `--list` retains distinct failures from all discovery probes.
 
 ## Context creation
 
