@@ -4,7 +4,8 @@
 //! for a language model on an A12 or A13). With `CoremlOptions::compiled_bundle_cache` set,
 //! the `.mlmodelc` it produces is copied into `<dir>/<key>/bundle.mlmodelc` next to a
 //! `manifest.json`, and the next build of the same graph loads that bundle with
-//! `MLModel(contentsOf:configuration:)` instead of compiling. The directory entries come from
+//! `MLModel(contentsOf:configuration:)` instead of compiling. Under the Rust export compile
+//! route the bundle kept is the exported one, under its own key. The directory entries come from
 //! [`crate::backends::coreml_bundle_cache::BundleCacheEntry`]; this module computes the key,
 //! loads a hit and publishes a miss.
 //!
@@ -20,7 +21,9 @@ use objc::rc::autoreleasepool;
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 
-use super::load::{CacheOutcome, CoremlLoadRoute, compute_unit_for_device};
+use super::load::{
+    CacheOutcome, CoremlLoadRoute, compute_unit_for_device, resolve_compile_route_for_target,
+};
 use super::{
     CompiledCoremlModel, CoremlModelBacking, CoremlWeightStorage, LoadTrace, ReleaseOnDrop,
     compile_model, copy_dir_recursively, has_single_program_output_scope, model_aliases,
@@ -29,7 +32,7 @@ use super::{
 use crate::backend_selection::DeviceType;
 use crate::backends::coreml_bundle_cache::{BundleCacheEntry, BundleManifest};
 use crate::error::GraphError;
-use crate::mlcontextoptions::CoremlFloat16Precision;
+use crate::mlcontextoptions::{CoremlCompileRoute, CoremlFloat16Precision};
 
 /// SeaHash of the CoreML converter sources and the compile shim, written by `build.rs`.
 const CONVERTER_SOURCE_HASH: &str =
@@ -47,8 +50,6 @@ pub(crate) struct BundleCacheRequest<'a> {
     /// The emitted MIL protobuf cannot serve as the key input: its map fields encode from
     /// `HashMap`s, so two conversions of one graph differ in byte order.
     pub(crate) graph_hash: String,
-    /// The compile route that produced the bundle, part of the key (`"native"` today).
-    pub(crate) route: &'a str,
     /// The float16 lowering the program was emitted with, part of the key.
     pub(crate) float16_precision: CoremlFloat16Precision,
 }
@@ -75,23 +76,27 @@ impl CacheKeyInputs {
         weights_data: Option<&[u8]>,
         device_type: DeviceType,
         request: &BundleCacheRequest<'_>,
+        route: &str,
     ) -> Self {
         Self::with_environment(
             model_bytes,
             weights_data,
             device_type,
             request,
+            route,
             env!("CARGO_PKG_VERSION"),
             CONVERTER_SOURCE_HASH,
             os_build_string(),
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn with_environment(
         model_bytes: &[u8],
         weights_data: Option<&[u8]>,
         device_type: DeviceType,
         request: &BundleCacheRequest<'_>,
+        route: &str,
         crate_version: &'static str,
         converter_source_hash: &'static str,
         os_build: String,
@@ -103,7 +108,7 @@ impl CacheKeyInputs {
             weights_len: weights_data.map_or(0, <[u8]>::len),
             compute_units: compute_unit_for_device(device_type).1,
             float16_precision: format!("{:?}", request.float16_precision),
-            route: request.route.to_owned(),
+            route: route.to_owned(),
             crate_version,
             converter_source_hash,
             os_build,
@@ -215,23 +220,51 @@ fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
 /// usual and its bundle published (`Miss`); an entry that cannot be read, fails to load or
 /// belongs to another key is removed and rebuilt once, and a failed publish is reported, in
 /// both cases as `Error` with the model compiled as without the cache.
+///
+/// The compile route names the key (`ResolvedCompileRoute::cached_route`): `native` for
+/// Apple's compiler and `rust-export` for the exporter-only route, whose hits report
+/// [`CoremlLoadRoute::RustExport`]. Under `Auto` a bundle the exporter wrote after a failed
+/// native compile is not published (`Error`), so the native key never holds one.
 pub(crate) fn compile_model_cached(
     model_bytes: Vec<u8>,
     weights_data: Option<Vec<u8>>,
     device_type: DeviceType,
     use_in_memory_asset: bool,
+    constant_copy_program: bool,
+    compile_route: CoremlCompileRoute,
     cache: Option<BundleCacheRequest<'_>>,
 ) -> Result<CompiledCoremlModel, GraphError> {
-    let Some(request) = cache.filter(|_| !use_in_memory_asset) else {
-        return compile_model(model_bytes, weights_data, device_type, use_in_memory_asset);
+    let compile = |model_bytes, weights_data| {
+        compile_model(
+            model_bytes,
+            weights_data,
+            device_type,
+            use_in_memory_asset,
+            constant_copy_program,
+            compile_route,
+        )
     };
-    let inputs = CacheKeyInputs::new(&model_bytes, weights_data.as_deref(), device_type, &request);
+    let Some(request) = cache else {
+        return compile(model_bytes, weights_data);
+    };
+    let Some((route, route_name)) = resolve_compile_route_for_target(compile_route)?
+        .cached_route(use_in_memory_asset, constant_copy_program)
+    else {
+        return compile(model_bytes, weights_data);
+    };
+    let inputs = CacheKeyInputs::new(
+        &model_bytes,
+        weights_data.as_deref(),
+        device_type,
+        &request,
+        route_name,
+    );
     let key = inputs.key();
     let entry = match BundleCacheEntry::new(request.directory, &key, BUNDLE_NAME) {
         Ok(entry) => entry,
         Err(error) => {
             log::warn!("CoreML compiled-bundle cache is unusable: {error}");
-            let mut model = compile_model(model_bytes, weights_data, device_type, false)?;
+            let mut model = compile(model_bytes, weights_data)?;
             model.diagnostics.cache = CacheOutcome::Error(format!("cache unusable: {error}"));
             return Ok(model);
         }
@@ -245,6 +278,7 @@ pub(crate) fn compile_model_cached(
             &model_bytes,
             weights_data.as_ref(),
             device_type,
+            route,
         ) {
             Ok(mut model) => {
                 log::debug!(
@@ -278,8 +312,15 @@ pub(crate) fn compile_model_cached(
     let weights_data = weights_data.map(|weights| {
         Arc::try_unwrap(weights).unwrap_or_else(|shared| shared.as_slice().to_vec())
     });
-    let mut model = compile_model(model_bytes, weights_data, device_type, false)?;
+    let mut model = compile(model_bytes, weights_data)?;
     match &model.backing {
+        CoremlModelBacking::OnDisk { .. } if model.diagnostics.route != route => {
+            outcome = CacheOutcome::Error(format!(
+                "the bundle came from the {:?} fallback and is not kept under the \
+                 {route_name} key",
+                model.diagnostics.route
+            ));
+        }
         CoremlModelBacking::OnDisk { compiled_dir, .. } => {
             let published = entry.publish(inputs.manifest(), |staged| {
                 copy_dir_recursively(compiled_dir, staged)
@@ -301,13 +342,15 @@ pub(crate) fn compile_model_cached(
 }
 
 /// Load the bundle of a complete entry after checking that its manifest was written for the
-/// same key inputs. The entry outlives the returned model.
+/// same key inputs. The entry outlives the returned model. `route` is the route that wrote
+/// the bundle, reported in the diagnostics.
 fn load_entry(
     entry: &BundleCacheEntry,
     inputs: &CacheKeyInputs,
     model_bytes: &[u8],
     weights_data: Option<&Arc<Vec<u8>>>,
     device_type: DeviceType,
+    route: CoremlLoadRoute,
 ) -> Result<CompiledCoremlModel, GraphError> {
     let manifest = entry
         .manifest()
@@ -320,7 +363,6 @@ fn load_entry(
         });
     }
     let bundle = entry.bundle();
-    let route = CoremlLoadRoute::CompiledUrl;
     let mut trace = LoadTrace::new(device_type);
     autoreleasepool(|| unsafe {
         // `fileURLWithPath:` returns an autoreleased URL; the pool releases it.
@@ -376,20 +418,23 @@ unsafe fn load_compiled_url(compiled_url: *mut Object, code: i64) -> Result<*mut
 mod tests {
     use super::*;
 
-    fn request<'a>(directory: &'a Path, route: &'a str) -> BundleCacheRequest<'a> {
-        BundleCacheRequest {
+    /// A request and the route name of its key.
+    type Keyed<'a> = (BundleCacheRequest<'a>, &'a str);
+
+    fn request<'a>(directory: &'a Path, route: &'a str) -> Keyed<'a> {
+        let request = BundleCacheRequest {
             directory,
             graph_hash: "graph-1".to_owned(),
-            route,
             float16_precision: CoremlFloat16Precision::Native,
-        }
+        };
+        (request, route)
     }
 
     fn inputs(
         program: &[u8],
         weights: Option<&[u8]>,
         device: DeviceType,
-        request: &BundleCacheRequest<'_>,
+        (request, route): &Keyed<'_>,
         crate_version: &'static str,
         converter_hash: &'static str,
         os_build: &str,
@@ -399,6 +444,7 @@ mod tests {
             weights,
             device,
             request,
+            route,
             crate_version,
             converter_hash,
             os_build.to_owned(),
@@ -445,14 +491,10 @@ mod tests {
             "abc",
             "Build 1",
         );
-        let exact = BundleCacheRequest {
-            float16_precision: CoremlFloat16Precision::Exact,
-            ..request(dir, "native")
-        };
-        let other_graph = BundleCacheRequest {
-            graph_hash: "graph-2".to_owned(),
-            ..request(dir, "native")
-        };
+        let mut exact = request(dir, "native");
+        exact.0.float16_precision = CoremlFloat16Precision::Exact;
+        let mut other_graph = request(dir, "native");
+        other_graph.0.graph_hash = "graph-2".to_owned();
         let variants = [
             (
                 "graph hash",
@@ -609,7 +651,8 @@ mod tests {
             b"program",
             None,
             DeviceType::Cpu,
-            &request(Path::new("/cache"), "native"),
+            &request(Path::new("/cache"), "native").0,
+            "native",
         );
         assert_eq!(inputs.crate_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(inputs.converter_source_hash, CONVERTER_SOURCE_HASH);

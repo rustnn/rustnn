@@ -26,6 +26,10 @@
   It also builds and tests CoreML with and without dynamic inputs using `make build-coreml`
   and `make test-coreml`; both explicitly enable `cli` so CLI integration tests build and
   execute the CoreML binary. CLI tests are excluded when `cli` is disabled.
+  `make test-coreml COREML_FEATURES=coreml-runtime,coreml-export,dynamic-inputs` adds the
+  pure-Rust `.mlmodelc` exporter and runs the `RustExport` compile-route tests.
+  `cargo check -p rustnn-cli --features coreml-export --all-targets` compiles the CLI's
+  `--coreml-compiled-output` branch, which no other job builds.
   `make test-coreml-gather` also runs the focused gather bounds and
   scalar-index shape regressions; numerical checks remain strict.
 - `make test-coreml-precision` qualifies explicit float16 rounding in native Pipeline

@@ -7,6 +7,8 @@ ONNX_PATH ?= target/graph.onnx
 COREML_PATH ?= target/graph.mlmodel
 COREMLC_PATH ?= target/graph.mlmodelc
 COREML_FEATURES ?= coreml-runtime,dynamic-inputs
+# Add coreml-export to qualify WPT_COREML_COMPILE_ROUTE=rust-export.
+WPT_COREML_FEATURES ?= coreml-runtime
 COREML_KV_CONFIG ?=
 TEST_FILTER ?=
 LITERT_PATH ?= target/graph.tflite
@@ -213,7 +215,7 @@ test-wpt-litert:
 	$(CARGO) test --test run_wpt_conformance --features "litert-runtime" -- litert
 
 test-wpt-coreml:
-	WPT_BACKEND=coreml $(CARGO) test --test run_wpt_conformance --features coreml-runtime -- $(if $(TEST_FILTER),$(TEST_FILTER),coreml)
+	WPT_BACKEND=coreml $(CARGO) test --test run_wpt_conformance --features $(WPT_COREML_FEATURES) -- $(if $(TEST_FILTER),$(TEST_FILTER),coreml)
 	$(MAKE) test-wpt-tolerance-parity
 
 .PHONY: test-wpt-burn-cpu wpt-sync-burn-cpu test-wpt-tolerance test-wpt-tolerance-parity test-wpt-source-tolerance
@@ -264,7 +266,7 @@ test-coreml-kv-benchmark:
 
 test-wpt-coreml-report:
 	@mkdir -p reports
-	WPT_REPORT_JSON=reports/wpt-conformance.json $(CARGO) test --test run_wpt_conformance --features coreml-runtime -- coreml
+	WPT_REPORT_JSON=reports/wpt-conformance.json $(CARGO) test --test run_wpt_conformance --features $(WPT_COREML_FEATURES) -- coreml
 	$(MAKE) test-wpt-tolerance-parity
 
 test-wpt-cann: require-wpt-cache validate-cann-env

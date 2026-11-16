@@ -28,7 +28,8 @@ use crate::mlcontext::{
     MLTensorDescriptor,
 };
 use crate::mlcontextoptions::{
-    BackendStatistics, CoremlFloat16Precision, CoremlOptions, CoremlTensorStatistics,
+    BackendStatistics, CoremlCompileRoute, CoremlFloat16Precision, CoremlOptions,
+    CoremlTensorStatistics,
 };
 use crate::operators::Operation;
 
@@ -88,6 +89,7 @@ impl fmt::Debug for CoremlGraph {
 pub(crate) struct CoremlBuilder {
     device_type: DeviceType,
     float16_precision: CoremlFloat16Precision,
+    compile_route: CoremlCompileRoute,
     /// `CoremlOptions::compiled_bundle_cache`; `None` compiles every build.
     compiled_bundle_cache: Option<std::path::PathBuf>,
 }
@@ -97,16 +99,10 @@ impl fmt::Debug for CoremlBuilder {
         f.debug_struct("CoremlBuilder")
             .field("device_type", &self.device_type)
             .field("float16_precision", &self.float16_precision)
+            .field("compile_route", &self.compile_route)
             .field("compiled_bundle_cache", &self.compiled_bundle_cache)
             .finish()
     }
-}
-
-/// Name of the compile route of this build, part of the compiled-bundle cache key. Only the
-/// native `MLModel.compileModel` route exists today; a route option that adds an in-process
-/// `.mlmodelc` emitter keys its bundles under another name.
-fn compile_route_name() -> &'static str {
-    "native"
 }
 
 impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder {
@@ -132,13 +128,17 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             }
             _ => supports_in_memory_asset(&graph_info),
         };
+        // The exporter loads from a URL too, so it needs the same proof under either lowering.
+        let constant_copy_program = self.compile_route != CoremlCompileRoute::Native
+            && CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data);
         // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
         // cache enabled a program that would load in memory compiles from a URL instead.
         // Two classes keep the route chosen above, and with it their values: input-free
         // programs (the constant-copy and uint8 clamp cases above), and float16 graphs
         // under the native lowering, where URL compilation is known to differ from the
         // in-memory result (WPT float16 l2Pool2d with layout=nhwc returns inf). Either is
-        // cached only when its own route is already the URL route.
+        // cached only when its own route is already a URL route, which the Rust export
+        // route is for everything except the constant-copy programs.
         let cache_moves_route = self.compiled_bundle_cache.is_some()
             && !graph_info.input_operands.is_empty()
             && !(self.float16_precision == CoremlFloat16Precision::Native
@@ -150,7 +150,6 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             .map(|directory| BundleCacheRequest {
                 directory,
                 graph_hash: graph_info.hash_identifier("coreml", WeightsToHash::All),
-                route: compile_route_name(),
                 float16_precision: self.float16_precision,
             });
         let model = compile_model_cached(
@@ -158,6 +157,8 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             converted.weights_data,
             self.device_type,
             use_asset,
+            constant_copy_program,
+            self.compile_route,
             cache,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;
@@ -341,6 +342,7 @@ impl<'context> MLBackendContext<'context> for CoremlContext {
         Ok(Box::new(CoremlBuilder {
             device_type: self.device_type,
             float16_precision: self.options.float16_precision,
+            compile_route: self.options.compile_route,
             compiled_bundle_cache: self.options.compiled_bundle_cache.clone(),
         }))
     }

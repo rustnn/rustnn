@@ -19,10 +19,10 @@ use objc::runtime::{Class, Object};
 use objc::{class, msg_send, sel, sel_impl};
 
 use super::coreml_dtype::{ArrayLayout, NativeType, boundary_error, from_native, to_native};
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 use crate::converters::CoremlConstantCopies;
 use crate::converters::CoremlPassthrough;
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 use crate::converters::{
     INPUT_ALIASES_METADATA_KEY, OUTPUT_ALIASES_METADATA_KEY, OUTPUT_CONSTANT_COPIES_METADATA_KEY,
     OUTPUT_PASSTHROUGHS_METADATA_KEY,
@@ -48,6 +48,7 @@ impl CompiledCoremlModel {
 }
 #[path = "coreml_load.rs"]
 mod load;
+use crate::mlcontextoptions::CoremlCompileRoute;
 use load::LoadTrace;
 pub use load::{CacheOutcome, CoremlLoadDiagnostics, CoremlLoadFailure, CoremlLoadRoute};
 #[path = "coreml_cache.rs"]
@@ -55,10 +56,10 @@ mod cache;
 pub(crate) use cache::{BundleCacheRequest, compile_model_cached};
 
 // Link against the system frameworks we use.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 #[link(name = "Foundation", kind = "framework")]
 unsafe extern "C" {}
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 #[link(name = "CoreML", kind = "framework")]
 unsafe extern "C" {
     static MLModelCreatorDefinedKey: *mut Object;
@@ -66,7 +67,7 @@ unsafe extern "C" {
 
 // Objective-C++ exception firewall (src/executors/coreml_shim.mm).
 // Return codes: 0 = success, 1 = NSError, 2 = NSException, 3 = C++ exception.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 unsafe extern "C" {
     fn rustnn_coreml_compile(
         model_url: *mut Object,
@@ -96,7 +97,7 @@ unsafe extern "C" {
 /// # Safety
 /// This stand-in does not dereference its pointer arguments. Its unsafe signature
 /// mirrors the native shim; no output pointers are initialized on failure.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(target_vendor = "apple"))]
 pub unsafe extern "C" fn rustnn_coreml_compile(
     _model_url: *mut Object,
     _out_url: *mut *mut Object,
@@ -110,7 +111,7 @@ pub unsafe extern "C" fn rustnn_coreml_compile(
 /// # Safety
 /// This stand-in does not dereference its pointer arguments. Its unsafe signature
 /// mirrors the native shim; no output pointers are initialized on failure.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(target_vendor = "apple"))]
 pub unsafe extern "C" fn rustnn_coreml_load(
     _compiled_url: *mut Object,
     _configuration: *mut Object,
@@ -125,7 +126,7 @@ pub unsafe extern "C" fn rustnn_coreml_load(
 /// # Safety
 /// This stand-in does not dereference its pointer arguments. Its unsafe signature
 /// mirrors the native shim; no output pointers are initialized on failure.
-#[cfg(not(any(target_os = "macos", target_os = "ios")))]
+#[cfg(not(target_vendor = "apple"))]
 pub unsafe extern "C" fn rustnn_coreml_predict(
     _model: *mut Object,
     _features: *mut Object,
@@ -550,26 +551,42 @@ mod output_backing_scope_tests {
 
 /// Load a CoreML model directly from protobuf bytes and retain it for repeated
 /// dispatch, falling back to CPU-only if the preferred compute units fail.
+///
+/// `compile_route` selects the compile step (see [`CoremlCompileRoute`]); with
+/// `Native` or without the `coreml-export` feature the behavior is unchanged.
+/// `constant_copy_program` marks an input-free program of constant copies, which the
+/// exporter must not load from a URL (see [`LoadTrace::compile_routes`]).
 pub(crate) fn compile_model(
     model_bytes: Vec<u8>,
     weights_data: Option<Vec<u8>>,
     device_type: crate::backend_selection::DeviceType,
     use_in_memory_asset: bool,
+    constant_copy_program: bool,
+    compile_route: CoremlCompileRoute,
 ) -> Result<CompiledCoremlModel, GraphError> {
+    let resolved = load::resolve_compile_route_for_target(compile_route)?;
     // Owned so the in-memory path can hand the buffers to NSData without
     // copying (weight blobs reach hundreds of MB); the Arcs keep them valid
     // for the URL fallback below even after the NSData objects are released.
     let model_bytes = Arc::new(model_bytes);
     let weights_data = weights_data.map(Arc::new);
-    let mut trace = LoadTrace::new(device_type);
-    trace.routes(use_in_memory_asset, |trace, route| match route {
-        CoremlLoadRoute::InMemoryAsset => {
-            compile_model_from_asset(&model_bytes, weights_data.as_ref(), trace)
-        }
-        CoremlLoadRoute::CompiledUrl => {
-            compile_model_from_url(&model_bytes, weights_data.as_ref(), trace)
-        }
-    })
+    LoadTrace::new(device_type).compile_routes(
+        resolved,
+        use_in_memory_asset,
+        constant_copy_program,
+        load::in_memory_asset_available_for_target(),
+        |trace, route| match route {
+            CoremlLoadRoute::InMemoryAsset => {
+                compile_model_from_asset(&model_bytes, weights_data.as_ref(), trace)
+            }
+            CoremlLoadRoute::CompiledUrl => {
+                compile_model_from_url(&model_bytes, weights_data.as_ref(), trace)
+            }
+            CoremlLoadRoute::RustExport => {
+                compile_model_from_export(&model_bytes, weights_data.as_ref(), trace)
+            }
+        },
+    )
 }
 
 fn compile_model_from_asset(
@@ -625,19 +642,53 @@ fn compile_model_from_asset(
     })
 }
 
+/// Compile through Apple's `MLModel.compileModelAtURL:` from a temporary source URL.
 fn compile_model_from_url(
     model_bytes: &[u8],
     weights_data: Option<&Arc<Vec<u8>>>,
     trace: &mut LoadTrace,
 ) -> Result<CompiledCoremlModel, GraphError> {
-    let route = CoremlLoadRoute::CompiledUrl;
+    compile_model_from_compiled_dir(
+        CoremlLoadRoute::CompiledUrl,
+        model_bytes,
+        weights_data,
+        trace,
+        |model_bytes, weights_data| unsafe {
+            prepare_compiled_model_with_weights(model_bytes, weights_data, None)
+        },
+    )
+}
+
+/// Write the `.mlmodelc` with `mlmodelc-export` and load it from that URL.
+fn compile_model_from_export(
+    model_bytes: &[u8],
+    weights_data: Option<&Arc<Vec<u8>>>,
+    trace: &mut LoadTrace,
+) -> Result<CompiledCoremlModel, GraphError> {
+    compile_model_from_compiled_dir(
+        CoremlLoadRoute::RustExport,
+        model_bytes,
+        weights_data,
+        trace,
+        |model_bytes, weights_data| unsafe { prepare_exported_model(model_bytes, weights_data) },
+    )
+}
+
+/// Load a compiled `.mlmodelc` directory produced by `prepare`, trying the compute-unit
+/// policies in turn. The directory is removed when the model drops.
+fn compile_model_from_compiled_dir(
+    route: CoremlLoadRoute,
+    model_bytes: &[u8],
+    weights_data: Option<&Arc<Vec<u8>>>,
+    trace: &mut LoadTrace,
+    prepare: impl FnOnce(
+        &[u8],
+        Option<&[u8]>,
+    ) -> Result<(*mut Object, PathBuf, Option<TempModelSource>), GraphError>,
+) -> Result<CompiledCoremlModel, GraphError> {
     autoreleasepool(|| unsafe {
         let (compiled_url, compiled_dir, temp_model) = trace.prepare(route, || {
-            prepare_compiled_model_with_weights(
-                model_bytes,
-                weights_data.map(|bytes| bytes.as_slice()),
-                None,
-            )
+            prepare(model_bytes, weights_data.map(|bytes| bytes.as_slice()))
         })?;
         // Owned (+1) by us; released when this function returns on any path.
         let _compiled_url_guard = ReleaseOnDrop(compiled_url);
@@ -1618,7 +1669,7 @@ unsafe fn nsarray_to_strings(array: *mut Object) -> Vec<String> {
         .collect()
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 fn parse_output_aliases(
     json: &str,
     declared_outputs: &[String],
@@ -1626,7 +1677,7 @@ fn parse_output_aliases(
     parse_feature_aliases(json, declared_outputs, "output", true)
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 fn parse_feature_aliases(
     json: &str,
     declared: &[String],
@@ -1682,7 +1733,7 @@ unsafe fn model_aliases<'a>(
     })
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios", test))]
+#[cfg(any(target_vendor = "apple", test))]
 fn parse_constant_copies<'a>(
     json: &str,
     outputs: &HashMap<String, String>,
@@ -1777,7 +1828,7 @@ unsafe fn model_constant_copies<'a>(
     input_copies: &HashMap<String, CoremlPassthrough>,
     weights: Option<&CoremlWeightStorage<'a>>,
 ) -> Result<HashMap<String, CoremlConstantCopy<'a>>, GraphError> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_vendor = "apple")]
     {
         let Some(json) =
             (unsafe { model_metadata_value(model, OUTPUT_CONSTANT_COPIES_METADATA_KEY)? })
@@ -1795,7 +1846,7 @@ unsafe fn model_constant_copies<'a>(
             weights,
         )
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(not(target_vendor = "apple"))]
     {
         let _ = (model, outputs, input_copies, weights);
         Ok(HashMap::new())
@@ -1835,7 +1886,7 @@ unsafe fn model_passthroughs(
     inputs: &HashMap<String, String>,
     outputs: &HashMap<String, String>,
 ) -> Result<HashMap<String, CoremlPassthrough>, GraphError> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_vendor = "apple")]
     {
         let description: *mut Object = msg_send![model, modelDescription];
         let Some(json) =
@@ -1855,14 +1906,14 @@ unsafe fn model_passthroughs(
             &unsafe { nsarray_to_strings(output_keys) },
         )
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(not(target_vendor = "apple"))]
     {
         let _ = (model, inputs, outputs);
         Ok(HashMap::new())
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[cfg(target_vendor = "apple")]
 unsafe fn model_metadata_value(
     model: *mut Object,
     key: &str,
@@ -1889,7 +1940,7 @@ unsafe fn model_feature_aliases(
     model: *mut Object,
     input: bool,
 ) -> Result<HashMap<String, String>, GraphError> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[cfg(target_vendor = "apple")]
     {
         let description: *mut Object = msg_send![model, modelDescription];
         let Some(json) = (unsafe {
@@ -1917,7 +1968,7 @@ unsafe fn model_feature_aliases(
             parse_output_aliases(&json, &declared)
         }
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[cfg(not(target_vendor = "apple"))]
     {
         let _ = (model, input);
         Ok(HashMap::new())
@@ -2185,6 +2236,46 @@ pub(crate) unsafe fn prepare_compiled_model_with_weights(
         compiled_src_path,
         Some(temp_mlmodel),
     ))
+}
+
+/// Write a `.mlmodelc` bundle in this process with `mlmodelc-export` and return its URL.
+///
+/// Mirrors [`prepare_compiled_model_with_weights`]: the returned NSURL is owned (+1) and the
+/// directory is a kept temporary directory that the caller removes (the `OnDisk` backing
+/// does so on drop). There is no source `.mlmodel`, so the third element is `None`.
+#[cfg(feature = "coreml-export")]
+unsafe fn prepare_exported_model(
+    model_bytes: &[u8],
+    weights_data: Option<&[u8]>,
+) -> Result<(*mut Object, PathBuf, Option<TempModelSource>), GraphError> {
+    let bundle = tempfile::Builder::new()
+        .prefix("rustnn_coreml_")
+        .suffix(".mlmodelc")
+        .tempdir()
+        .map_err(|err| GraphError::CoremlRuntimeFailed {
+            reason: format!("failed to create a temporary .mlmodelc directory: {err}"),
+        })?;
+    mlmodelc_export::compile_to_dir(model_bytes, weights_data, bundle.path()).map_err(|err| {
+        GraphError::CoremlRuntimeFailed {
+            reason: format!("mlmodelc-export failed: {err}"),
+        }
+    })?;
+    let url = unsafe { nsurl_from_path(bundle.path())? };
+    // `nsurl_from_path` returns an autoreleased URL; hand the caller an owned (+1) one.
+    let _: *mut Object = msg_send![url, retain];
+    Ok((url, bundle.keep(), None))
+}
+
+/// Without the `coreml-export` feature the route is rejected before this is reached.
+#[cfg(not(feature = "coreml-export"))]
+unsafe fn prepare_exported_model(
+    _model_bytes: &[u8],
+    _weights_data: Option<&[u8]>,
+) -> Result<(*mut Object, PathBuf, Option<TempModelSource>), GraphError> {
+    Err(GraphError::CoremlRuntimeFailed {
+        reason: "CoremlCompileRoute::RustExport requires the `coreml-export` Cargo feature"
+            .to_string(),
+    })
 }
 
 #[allow(dead_code)]
@@ -2725,6 +2816,8 @@ mod checked_attempt_tests {
                     converted.weights_data,
                     crate::backend_selection::DeviceType::Cpu,
                     in_memory,
+                    false,
+                    CoremlCompileRoute::Native,
                 )
                 .unwrap();
                 assert_eq!(
