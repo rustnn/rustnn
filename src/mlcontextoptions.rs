@@ -244,9 +244,12 @@ pub struct CoremlOptions {
     /// never serves a stale bundle. Operand names and ids are part of the graph, so the same
     /// WebNN graph built in another order or with other names is a different key.
     ///
-    /// Only the URL route yields a bundle, so with the cache enabled graphs with inputs compile
-    /// from a URL (`CoremlLoadRoute::CompiledUrl`); input-free programs of proven constant
-    /// copies stay in memory and report the cache as disabled. A cache failure never fails a
+    /// Only the URL route yields a bundle, so with the cache enabled a graph that would load
+    /// in memory compiles from a URL instead (`CoremlLoadRoute::CompiledUrl`). Two classes
+    /// keep the route they have without the cache, and report the cache as disabled when
+    /// that route is the in-memory one: input-free programs, and float16 graphs under
+    /// [`CoremlFloat16Precision::Native`], where URL compilation is known to return other
+    /// values. Use [`CoremlFloat16Precision::Exact`] to cache float16 graphs. A cache failure never fails a
     /// build: the graph compiles as without the cache and the outcome is reported in
     /// `CoremlLoadDiagnostics::cache` (a `CacheOutcome`), reachable through
     /// `MLGraph::rustnn_load_diagnostics`.

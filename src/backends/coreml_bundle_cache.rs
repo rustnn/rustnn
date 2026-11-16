@@ -52,8 +52,8 @@ pub(crate) struct BundleManifest {
 /// One directory-valued cache entry: `<cache_dir>/<key>/` holding `<bundle>` (a directory)
 /// and [`BundleManifest`] as `manifest.json`.
 ///
-/// Writers fill a staging directory `<cache_dir>/<key>.partial-<pid>` and publish it with one
-/// rename, so a reader sees either no entry, a partial entry without a manifest (a crashed or
+/// Writers fill a staging directory `<cache_dir>/<key>.partial-<pid>-<random>` of their own
+/// and publish it with one rename, so a reader sees either no entry, a partial entry without a manifest (a crashed or
 /// concurrent writer) or a complete one. A partial entry is treated as a miss and replaced by
 /// the next publish. The cache never evicts other keys and never deletes a complete entry on
 /// its own; the owner of the directory decides when to remove entries.
@@ -114,12 +114,41 @@ impl BundleCacheEntry {
         }
     }
 
+    fn staging_prefix(&self) -> String {
+        format!("{}.partial-", self.key)
+    }
+
+    /// Remove staging directories of this key whose writer is provably gone: the name
+    /// carries the writer's process id, and the directory goes only when no process has
+    /// that id. A live writer's directory (another process, or another publish of this
+    /// one) is never touched, so two writers of one key cannot empty each other's bundle.
+    fn remove_stale_staging(&self, parent: &Path) {
+        let prefix = self.staging_prefix();
+        let Ok(entries) = std::fs::read_dir(parent) else {
+            return;
+        };
+        for candidate in entries.flatten() {
+            let name = candidate.file_name();
+            let Some(rest) = name.to_str().and_then(|name| name.strip_prefix(&prefix)) else {
+                continue;
+            };
+            let writer = rest
+                .split('-')
+                .next()
+                .and_then(|pid| pid.parse::<u32>().ok());
+            if writer.is_some_and(|pid| pid != std::process::id() && process_is_gone(pid)) {
+                let _ = std::fs::remove_dir_all(candidate.path());
+            }
+        }
+    }
+
     /// Fill a staging directory beside the entry through `write_bundle`, which receives the
     /// path of the staged bundle directory (not yet created), then record `manifest` with the
     /// bundle's byte count and publish the entry with one atomic rename.
     ///
-    /// Stale staging directories of this key from earlier processes are removed first, and so
-    /// is a partial entry at the final path. When another process published the same key
+    /// Staging directories of this key left by processes that no longer exist are removed
+    /// first, and so is a partial entry at the final path. When another writer published the
+    /// same key
     /// meanwhile, its complete entry wins and this one is discarded. On any failure the
     /// staging directory is removed and the final path is left as it was.
     pub(crate) fn publish(
@@ -134,16 +163,13 @@ impl BundleCacheEntry {
             )
         })?;
         std::fs::create_dir_all(parent)?;
-        let prefix = format!("{}.partial-", self.key);
-        if let Ok(entries) = std::fs::read_dir(parent) {
-            for stale in entries.flatten() {
-                if stale.file_name().to_string_lossy().starts_with(&prefix) {
-                    let _ = std::fs::remove_dir_all(stale.path());
-                }
-            }
-        }
-        let staging = parent.join(format!("{prefix}{}", std::process::id()));
-        std::fs::create_dir_all(&staging)?;
+        self.remove_stale_staging(parent);
+        // A directory of this publish alone: the process id says who owns it, the random
+        // suffix keeps two publishes of one process apart. Dropping it removes it.
+        let staging_dir = tempfile::Builder::new()
+            .prefix(&format!("{}{}-", self.staging_prefix(), std::process::id()))
+            .tempdir_in(parent)?;
+        let staging = staging_dir.path().to_path_buf();
         let staged_bundle = staging.join(&self.bundle_name);
         let written = write_bundle(&staged_bundle).and_then(|()| {
             if !staged_bundle.is_dir() {
@@ -156,21 +182,20 @@ impl BundleCacheEntry {
             let json = serde_json::to_vec_pretty(&manifest).map_err(std::io::Error::other)?;
             write_cache_file(&staging.join(Self::MANIFEST), &json)
         });
-        if let Err(error) = written {
-            let _ = std::fs::remove_dir_all(&staging);
-            return Err(error);
-        }
+        written?;
         // A partial entry at the final path (crashed writer) would make the rename fail.
         if self.dir.exists() && !self.is_complete() {
             let _ = std::fs::remove_dir_all(&self.dir);
         }
         match std::fs::rename(&staging, &self.dir) {
             Ok(()) => {
+                // The directory now lives at the entry path; nothing is left to remove.
+                let _ = staging_dir.keep();
                 debug!("Published cache entry {}", self.dir.display());
                 Ok(())
             }
             Err(error) => {
-                let _ = std::fs::remove_dir_all(&staging);
+                drop(staging_dir);
                 if self.is_complete() {
                     debug!(
                         "Cache entry {} was published concurrently; keeping it",
@@ -183,6 +208,22 @@ impl BundleCacheEntry {
             }
         }
     }
+}
+
+/// Whether no process has this id: `kill(pid, 0)` fails with `ESRCH`. A process this one may
+/// not signal (`EPERM`) exists, and so does any id the call cannot classify.
+fn process_is_gone(pid: u32) -> bool {
+    const ESRCH: i32 = 3;
+    unsafe extern "C" {
+        fn kill(pid: i32, signal: i32) -> i32;
+    }
+    let Ok(pid) = i32::try_from(pid) else {
+        return false;
+    };
+    // Signal 0 performs the existence and permission checks and sends nothing.
+    pid > 0
+        && unsafe { kill(pid, 0) } == -1
+        && std::io::Error::last_os_error().raw_os_error() == Some(ESRCH)
 }
 
 /// Sum of the sizes of the regular files below `dir`.
@@ -198,25 +239,6 @@ fn directory_byte_count(dir: &Path) -> std::io::Result<u64> {
         }
     }
     Ok(total)
-}
-
-/// Copy the directory tree `src` to `dst`, replacing an existing `dst`.
-pub(crate) fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
-    if dst.exists() {
-        std::fs::remove_dir_all(dst)?;
-    }
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let dst_path = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_directory(&entry.path(), &dst_path)?;
-        } else {
-            std::fs::copy(entry.path(), dst_path)?;
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -289,15 +311,34 @@ mod tests {
         entry.remove().unwrap();
     }
 
+    /// The id of a process that has exited and been reaped.
+    fn dead_process_id() -> u32 {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
     #[test]
-    fn publish_stages_renames_and_removes_stale_staging() {
+    fn publish_stages_renames_and_removes_only_dead_writers_staging() {
         let cache = tempfile::tempdir().unwrap();
         let root = cache.path().join("compiled");
         let entry = BundleCacheEntry::new(&root, "tiny", "bundle.mlmodelc").unwrap();
-        let stale = root.join("tiny.partial-1");
-        std::fs::create_dir_all(stale.join("bundle.mlmodelc")).unwrap();
-        let other = root.join("other.partial-1");
-        std::fs::create_dir_all(&other).unwrap();
+        let dead = dead_process_id();
+        let stale = [
+            root.join(format!("tiny.partial-{dead}")),
+            root.join(format!("tiny.partial-{dead}-AbC123")),
+        ];
+        // Process 1 always exists, and so does this one: both are live writers.
+        let live = [
+            root.join("tiny.partial-1-AbC123"),
+            root.join(format!("tiny.partial-{}-AbC123", std::process::id())),
+            root.join("tiny.partial-unparsed"),
+        ];
+        let other = root.join(format!("other.partial-{dead}-AbC123"));
+        for dir in stale.iter().chain(&live).chain([&other]) {
+            std::fs::create_dir_all(dir.join("bundle.mlmodelc")).unwrap();
+        }
 
         entry.publish(manifest(), write_bundle(b"program")).unwrap();
 
@@ -313,19 +354,61 @@ mod tests {
             7 + 2,
             "regular files below the bundle"
         );
-        assert!(!stale.exists(), "stale staging of this key removed");
+        for dir in &stale {
+            assert!(!dir.exists(), "staging of a dead writer removed: {dir:?}");
+        }
+        for dir in &live {
+            assert!(dir.exists(), "staging of a live writer kept: {dir:?}");
+        }
         assert!(other.exists(), "other keys untouched");
-        let names: Vec<_> = std::fs::read_dir(&root)
+        let mut names: Vec<_> = std::fs::read_dir(&root)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(
-            !names.iter().any(|n| n.starts_with("tiny.partial-")),
-            "{names:?}"
+        names.sort();
+        assert_eq!(
+            names.len(),
+            1 + live.len() + 1,
+            "no staging of this publish: {names:?}"
         );
         // Publishing again onto a complete entry keeps a complete entry.
         entry.publish(manifest(), write_bundle(b"second")).unwrap();
         assert!(entry.is_complete());
+    }
+
+    #[test]
+    fn concurrent_publishes_of_one_key_leave_a_whole_entry() {
+        let cache = tempfile::tempdir().unwrap();
+        for round in 0..20 {
+            let key = format!("k{round}");
+            let barrier = std::sync::Barrier::new(8);
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        let entry = BundleCacheEntry::new(cache.path(), &key, "b").unwrap();
+                        barrier.wait();
+                        entry.publish(manifest(), write_bundle(b"program")).unwrap();
+                    });
+                }
+            });
+            let entry = BundleCacheEntry::new(cache.path(), &key, "b").unwrap();
+            assert!(entry.is_complete(), "round {round}");
+            assert_eq!(
+                std::fs::read(entry.bundle().join("model.mil")).unwrap(),
+                b"program"
+            );
+            assert_eq!(
+                std::fs::read(entry.bundle().join("nested").join("weight.bin")).unwrap(),
+                b"wx"
+            );
+            assert_eq!(entry.manifest().unwrap().bundle_bytes, 9);
+        }
+        let leftovers: Vec<_> = std::fs::read_dir(cache.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".partial-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
@@ -366,19 +449,10 @@ mod tests {
     }
 
     #[test]
-    fn copy_directory_copies_nested_trees() {
+    fn bundle_bytes_count_nested_regular_files() {
         let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("src");
-        write_bundle(b"abc")(&src).unwrap();
-        let dst = dir.path().join("dst");
-        std::fs::create_dir_all(dst.join("old")).unwrap();
-        copy_directory(&src, &dst).unwrap();
-        assert!(!dst.join("old").exists(), "destination is replaced");
-        assert_eq!(std::fs::read(dst.join("model.mil")).unwrap(), b"abc");
-        assert_eq!(
-            std::fs::read(dst.join("nested").join("weight.bin")).unwrap(),
-            b"wx"
-        );
-        assert_eq!(directory_byte_count(&dst).unwrap(), 5);
+        let bundle = dir.path().join("bundle");
+        write_bundle(b"abc")(&bundle).unwrap();
+        assert_eq!(directory_byte_count(&bundle).unwrap(), 5);
     }
 }

@@ -120,32 +120,50 @@ model (the MLE5 program library) is cached by the OS separately and is not contr
 |---|---|
 | `<dir>/<key>/bundle.mlmodelc` | The compiled bundle, copied from the compiler's output |
 | `<dir>/<key>/manifest.json` | The key inputs by name, the crate version, the OS build, the write time and the bundle's byte count |
-| `<dir>/<key>.partial-<pid>` | A staging directory while an entry is written; removed on publish or failure |
+| `<dir>/<key>.partial-<pid>-<random>` | The staging directory of one writer while an entry is written; removed on publish or failure |
 
 The key is a SeaHash over these inputs, each of which the manifest records:
 
 - the graph: `GraphInfo::hash_identifier` over operands (names included), operations and every
   constant's bytes. The emitted MIL protobuf is not the input because its map fields encode
   from hash maps, so two conversions of one graph differ in byte order;
-- the emitted weights blob and the emitted program's size;
+- the emitted weights blob and the emitted program's size. The converter emits constants in
+  operand order, so the blob is the same bytes on every conversion of one graph;
 - the compute-unit policy of the requested device and `float16_precision`;
 - the compile route (`native`, the `MLModel.compileModel` route; an in-process `.mlmodelc`
   emitter would key its bundles under another name);
 - the crate version, a hash of the CoreML converter sources and the compile shim computed by
-  `build.rs`, and the OS build string from `NSProcessInfo`.
+  `build.rs`, and the OS version and build from `sysctl` (`kern.osproductversion` and
+  `kern.osversion`, for example `27.2 (25C56)`), which do not change with the user's language.
 
-Entries are written into the staging directory and published with one `rename`, so a reader
-sees no entry, a partial entry (a writer that died before the manifest) or a complete one. A
+Each writer fills a staging directory of its own and publishes it with one `rename`, so a
+reader sees no entry, a partial entry (a writer that died before the manifest) or a complete
+one, and concurrent writers of one key do not touch each other's files: the first rename wins
+and the others discard their copy. A staging directory is removed by a later writer only when
+no process has the id in its name. A
 partial entry is a miss and is replaced; a complete entry whose bundle fails to load, or whose
 manifest records other key inputs, is removed and rebuilt once. The cache never fails a build:
 every failure is logged at warn level and the graph compiles as without a cache. rustnn never
 evicts entries; each is about the size of the graph's weights, and deleting `dir` or any entry
 is safe at any time.
 
-Only the URL compile route yields a bundle. With the cache enabled, graphs with inputs
-therefore compile from a URL under either float16 lowering (`CoremlLoadRoute::CompiledUrl`),
-while input-free programs of proven constant copies keep the in-memory route for the BNNS
-reason above and report the cache as disabled. `CoremlLoadDiagnostics::cache` reports one
+Only the URL compile route yields a bundle. With the cache enabled, a graph that would load
+as an in-memory asset therefore compiles from a URL instead (`CoremlLoadRoute::CompiledUrl`),
+with two exceptions that keep the route they have without the cache and report the cache as
+disabled when that route is the in-memory one:
+
+- input-free programs. Constant copies can crash BNNS from a URL, and other input-free
+  programs are evaluated by the URL compiler itself, which returns 0 for WPT's saturating
+  uint8 `clamp` on iOS and tvOS 26 and 27;
+- float16 graphs under the `Native` float16 lowering, where URL compilation is known to
+  return other values than the in-memory asset (WPT's float16 `l2Pool2d` with `layout=nhwc`
+  returns `inf` where 289 is expected). Use `float16_precision = Exact` to cache float16
+  graphs: that lowering compiles from a URL with or without the cache.
+
+For every other graph, enabling the cache changes the compile route from in-memory to URL.
+The CoreML WPT corpus passes with the cache enabled under this rule, on a miss and on a hit;
+`WPT_COREML_BUNDLE_CACHE=<dir>` runs the corpus with the option set.
+`CoremlLoadDiagnostics::cache` reports one
 `CacheOutcome` per build: `Disabled`, `Hit`, `Miss`, or `Error(message)` when the cache was
 enabled but could not serve or store the entry.
 

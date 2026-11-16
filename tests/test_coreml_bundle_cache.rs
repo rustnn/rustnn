@@ -5,6 +5,7 @@
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use rustnn::backend_selection::{BackendDevice, DeviceType};
 use rustnn::executors::coreml::{CacheOutcome, CoremlLoadDiagnostics, CoremlLoadRoute};
 use rustnn::mlcontext::{
     Backend, CoremlFloat16Precision, LoadDiagnostics, MLContext, MLContextOptions, MLGraph,
@@ -17,32 +18,53 @@ const INPUT: [f32; 4] = [1.0, -2.0, 3.5, -0.25];
 const BIAS: [f32; 4] = [0.5, 0.5, -4.0, 0.0];
 
 fn context<'a>(cache: Option<&Path>, precision: CoremlFloat16Precision) -> MLContext<'a> {
+    context_on(cache, precision, DeviceType::Cpu)
+}
+
+fn context_on<'a>(
+    cache: Option<&Path>,
+    precision: CoremlFloat16Precision,
+    device_type: DeviceType,
+) -> MLContext<'a> {
     let mut options = RustNNOptions::default();
     options.coreml.compiled_bundle_cache = cache.map(Path::to_path_buf);
     options.coreml.float16_precision = precision;
     MLContext::create(
-        &MLContextOptions::new(MLPowerPreference::Default, false)
+        &MLContextOptions::new(MLPowerPreference::Default, device_type != DeviceType::Cpu)
             .with_rustnn_backend_hint(Backend::Coreml)
+            .with_rustnn_device_hint(BackendDevice::Coreml { device_type })
             .with_rustnn_options(options),
     )
     .unwrap()
 }
 
+fn diagnostics(graph: &MLGraph<'_>) -> CoremlLoadDiagnostics {
+    let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() else {
+        panic!("CoreML graph did not report CoreML load diagnostics");
+    };
+    diagnostics
+}
+
 /// `relu(input + bias)` with a non-scalar float32 constant, so the program has a weights
 /// blob and the entry records a weights hash.
 fn build<'a>(context: &mut MLContext<'a>) -> (MLGraph<'a>, CoremlLoadDiagnostics) {
+    build_with_bias(context, &BIAS)
+}
+
+fn build_with_bias<'a>(
+    context: &mut MLContext<'a>,
+    bias: &[f32; 4],
+) -> (MLGraph<'a>, CoremlLoadDiagnostics) {
     let mut builder = MLGraphBuilder::new(context).unwrap();
     let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![4]);
     let input = builder.input("input", &descriptor).unwrap();
-    let bias = builder.constant_from_slice(&descriptor, &BIAS).unwrap();
+    let bias = builder.constant_from_slice(&descriptor, bias).unwrap();
     let sum = builder.add(input, bias).unwrap();
     let output = builder.relu(sum).unwrap();
     let graph = builder
         .build(&MLNamedOperands::from([("output", output)]))
         .unwrap();
-    let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() else {
-        panic!("CoreML graph did not report CoreML load diagnostics");
-    };
+    let diagnostics = diagnostics(&graph);
     (graph, diagnostics)
 }
 
@@ -130,9 +152,9 @@ fn the_second_build_loads_the_cached_bundle_and_computes_the_same_values() {
     let entry_inode = std::fs::metadata(&entry).unwrap().ino();
     let manifest_bytes = std::fs::read(entry.join("manifest.json")).unwrap();
 
-    // The second build of the same graph is served from the entry: the entry directory is
-    // the same inode (a publish would rename a fresh one into place) and the manifest is
-    // byte-identical, so nothing was compiled and republished.
+    // The second build of the same graph reports a hit and leaves the entry as it was.
+    // That alone does not show that nothing was compiled, because a publish never replaces
+    // a complete entry; `a_hit_runs_the_bundle_on_disk` shows it.
     let (mut second, diagnostics) = build(&mut context);
     assert_eq!(diagnostics.cache, CacheOutcome::Hit, "{diagnostics:?}");
     assert_eq!(diagnostics.route, CoremlLoadRoute::CompiledUrl);
@@ -170,21 +192,107 @@ fn context_with_same_cache<'a>(cache: &Path) -> MLContext<'a> {
     context(Some(cache), CoremlFloat16Precision::Native)
 }
 
+/// A hit must run the bundle that is on disk. The entry of one graph gets the compiled
+/// bundle of another (same shapes, another bias) while its manifest stays: the next build
+/// of the first graph then computes the other graph's values, which a build that compiled
+/// its own program could not.
+#[test]
+fn a_hit_runs_the_bundle_on_disk() {
+    const OTHER_BIAS: [f32; 4] = [8.0, 8.0, 8.0, 8.0];
+    let cache = tempfile::tempdir().unwrap();
+    let mut context = context(Some(cache.path()), CoremlFloat16Precision::Native);
+    let (mut graph, diagnostics) = build(&mut context);
+    assert_eq!(diagnostics.cache, CacheOutcome::Miss, "{diagnostics:?}");
+    assert_eq!(run(&mut context, &mut graph), expected());
+    drop(graph);
+    let entry = single_entry(cache.path());
+
+    let other_cache = tempfile::tempdir().unwrap();
+    let mut other = self::context(Some(other_cache.path()), CoremlFloat16Precision::Native);
+    let (other_graph, diagnostics) = build_with_bias(&mut other, &OTHER_BIAS);
+    assert_eq!(diagnostics.cache, CacheOutcome::Miss, "{diagnostics:?}");
+    drop(other_graph);
+    let other_entry = single_entry(other_cache.path());
+    std::fs::remove_dir_all(entry.join("bundle.mlmodelc")).unwrap();
+    std::fs::rename(
+        other_entry.join("bundle.mlmodelc"),
+        entry.join("bundle.mlmodelc"),
+    )
+    .unwrap();
+
+    let (mut graph, diagnostics) = build(&mut context);
+    assert_eq!(diagnostics.cache, CacheOutcome::Hit, "{diagnostics:?}");
+    let swapped: Vec<f32> = INPUT
+        .iter()
+        .zip(OTHER_BIAS)
+        .map(|(input, bias)| (input + bias).max(0.0))
+        .collect();
+    assert_ne!(swapped, expected());
+    assert_eq!(run(&mut context, &mut graph).to_vec(), swapped);
+}
+
+/// The weights blob is a key input, so it has to be the same bytes on every conversion of
+/// one graph. With several constants that depends on the order the converter emits them.
+#[test]
+fn a_graph_with_many_constants_misses_once_and_then_hits() {
+    let cache = tempfile::tempdir().unwrap();
+    let outcomes: Vec<_> = (0..6)
+        .map(|_| {
+            let mut context = context(Some(cache.path()), CoremlFloat16Precision::Native);
+            let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+            let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![64]);
+            let mut sum = builder.input("input", &descriptor).unwrap();
+            for constant in 0..8 {
+                let values: Vec<f32> = (0..64).map(|i| (constant * 64 + i) as f32).collect();
+                let operand = builder.constant_from_slice(&descriptor, &values).unwrap();
+                sum = builder.add(sum, operand).unwrap();
+            }
+            let graph = builder
+                .build(&MLNamedOperands::from([("output", sum)]))
+                .unwrap();
+            diagnostics(&graph).cache
+        })
+        .collect();
+    assert_eq!(outcomes[0], CacheOutcome::Miss);
+    assert!(
+        outcomes[1..]
+            .iter()
+            .all(|outcome| *outcome == CacheOutcome::Hit),
+        "{outcomes:?}"
+    );
+    single_entry(cache.path());
+}
+
 #[test]
 fn each_float16_lowering_and_policy_has_its_own_entry() {
     let cache = tempfile::tempdir().unwrap();
-    let mut native = context(Some(cache.path()), CoremlFloat16Precision::Native);
-    let (_, diagnostics) = build(&mut native);
-    assert_eq!(diagnostics.cache, CacheOutcome::Miss);
-    let mut exact = context(Some(cache.path()), CoremlFloat16Precision::Exact);
-    let (_, diagnostics) = build(&mut exact);
-    assert_eq!(diagnostics.cache, CacheOutcome::Miss, "{diagnostics:?}");
-    let entries = std::fs::read_dir(cache.path()).unwrap().count();
-    assert_eq!(entries, 2, "one entry per float16 lowering");
-    let (_, diagnostics) = build(&mut native);
-    assert_eq!(diagnostics.cache, CacheOutcome::Hit, "{diagnostics:?}");
-    let (_, diagnostics) = build(&mut exact);
-    assert_eq!(diagnostics.cache, CacheOutcome::Hit, "{diagnostics:?}");
+    let configurations = [
+        (CoremlFloat16Precision::Native, DeviceType::Cpu),
+        (CoremlFloat16Precision::Exact, DeviceType::Cpu),
+        (CoremlFloat16Precision::Native, DeviceType::Gpu),
+        (CoremlFloat16Precision::Native, DeviceType::Npu),
+    ];
+    for (count, &(precision, device)) in configurations.iter().enumerate() {
+        let mut context = context_on(Some(cache.path()), precision, device);
+        let (_, diagnostics) = build(&mut context);
+        assert_eq!(
+            diagnostics.cache,
+            CacheOutcome::Miss,
+            "{precision:?} {device:?}: {diagnostics:?}"
+        );
+        let entries = std::fs::read_dir(cache.path()).unwrap().count();
+        assert_eq!(entries, count + 1, "one entry per lowering and policy");
+    }
+    for (precision, device) in configurations {
+        let mut context = context_on(Some(cache.path()), precision, device);
+        let (_, diagnostics) = build(&mut context);
+        assert_eq!(
+            diagnostics.cache,
+            CacheOutcome::Hit,
+            "{precision:?} {device:?}: {diagnostics:?}"
+        );
+    }
+    assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 4);
 }
 
 #[test]
@@ -269,10 +377,76 @@ fn input_free_constant_copies_bypass_the_cache() {
     let graph = builder
         .build(&MLNamedOperands::from([("output", output)]))
         .unwrap();
-    let Some(LoadDiagnostics::Coreml(diagnostics)) = graph.rustnn_load_diagnostics() else {
-        panic!("CoreML graph did not report CoreML load diagnostics");
-    };
+    let diagnostics = diagnostics(&graph);
     assert_eq!(diagnostics.route, CoremlLoadRoute::InMemoryAsset);
     assert_eq!(diagnostics.cache, CacheOutcome::Disabled, "{diagnostics:?}");
     assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+}
+
+/// An input-free program that is not a constant copy keeps its route as well: through the
+/// URL compiler, iOS and tvOS 26 and 27 return 0 for this saturating uint8 clamp.
+#[test]
+fn input_free_programs_keep_their_route() {
+    use rustnn::operator_options::MLClampOptions;
+    let cache = tempfile::tempdir().unwrap();
+    for cached in [false, true] {
+        let mut context = context(
+            cached.then_some(cache.path()),
+            CoremlFloat16Precision::Native,
+        );
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let descriptor = MLOperandDescriptor::new(MLOperandDataType::Uint8, vec![4]);
+        let constant = builder
+            .constant_from_slice(&descriptor, &[0u8, 100, 200, 255])
+            .unwrap();
+        let options = MLClampOptions {
+            min_value: Some(serde_json::json!(150)),
+            max_value: Some(serde_json::json!(255)),
+            ..Default::default()
+        };
+        let output = builder.clamp_with_options(constant, options).unwrap();
+        let graph = builder
+            .build(&MLNamedOperands::from([("output", output)]))
+            .unwrap();
+        let diagnostics = diagnostics(&graph);
+        assert_eq!(
+            diagnostics.route,
+            CoremlLoadRoute::InMemoryAsset,
+            "{cached}"
+        );
+        assert_eq!(diagnostics.cache, CacheOutcome::Disabled, "{cached}");
+    }
+    assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+}
+
+/// Under the native lowering a float16 graph keeps the in-memory route, whose values the
+/// URL compiler does not always reproduce; the exact lowering compiles from a URL with or
+/// without the cache, so there the graph is cached.
+#[test]
+fn native_float16_graphs_keep_their_route_and_exact_ones_are_cached() {
+    let cache = tempfile::tempdir().unwrap();
+    let build = |precision| {
+        let mut context = context(Some(cache.path()), precision);
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float16, vec![4]);
+        let input = builder.input("input", &descriptor).unwrap();
+        let output = builder.relu(input).unwrap();
+        let graph = builder
+            .build(&MLNamedOperands::from([("output", output)]))
+            .unwrap();
+        diagnostics(&graph)
+    };
+    let native = build(CoremlFloat16Precision::Native);
+    assert_eq!(native.route, CoremlLoadRoute::InMemoryAsset, "{native:?}");
+    assert_eq!(native.cache, CacheOutcome::Disabled, "{native:?}");
+    assert_eq!(std::fs::read_dir(cache.path()).unwrap().count(), 0);
+
+    let exact = build(CoremlFloat16Precision::Exact);
+    assert_eq!(exact.route, CoremlLoadRoute::CompiledUrl, "{exact:?}");
+    assert_eq!(exact.cache, CacheOutcome::Miss, "{exact:?}");
+    assert_eq!(
+        build(CoremlFloat16Precision::Exact).cache,
+        CacheOutcome::Hit
+    );
+    single_entry(cache.path());
 }

@@ -23,11 +23,11 @@ use objc::{class, msg_send, sel, sel_impl};
 use super::load::{CacheOutcome, CoremlLoadRoute, compute_unit_for_device};
 use super::{
     CompiledCoremlModel, CoremlModelBacking, CoremlWeightStorage, LoadTrace, ReleaseOnDrop,
-    compile_model, has_single_program_output_scope, model_aliases, nsurl_from_path,
-    rustnn_coreml_load, shim_error_to_string,
+    compile_model, copy_dir_recursively, has_single_program_output_scope, model_aliases,
+    nsurl_from_path, rustnn_coreml_load, shim_error_to_string,
 };
 use crate::backend_selection::DeviceType;
-use crate::backends::coreml_bundle_cache::{BundleCacheEntry, BundleManifest, copy_directory};
+use crate::backends::coreml_bundle_cache::{BundleCacheEntry, BundleManifest};
 use crate::error::GraphError;
 use crate::mlcontextoptions::CoremlFloat16Precision;
 
@@ -160,27 +160,51 @@ impl CacheKeyInputs {
     }
 }
 
-/// The operating system build, as `NSProcessInfo` reports it (for example
-/// `Version 27.2 (Build 25C56)`); the target OS name on hosts without Foundation.
+/// The operating system version and build from the kernel, for example `27.2 (25C56)`.
+///
+/// Both come from `sysctl` (`kern.osproductversion`, `kern.osversion`) rather than
+/// `NSProcessInfo.operatingSystemVersionString`, which is a display string in the user's
+/// language: a language change must not re-key every entry.
 fn os_build_string() -> String {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        autoreleasepool(|| unsafe {
-            let info: *mut Object = msg_send![class!(NSProcessInfo), processInfo];
-            if info.is_null() {
-                return std::env::consts::OS.to_owned();
-            }
-            let version: *mut Object = msg_send![info, operatingSystemVersionString];
-            if version.is_null() {
-                return std::env::consts::OS.to_owned();
-            }
-            super::nsstring_to_string(version)
-        })
+    let version = sysctl_string(c"kern.osproductversion");
+    let build = sysctl_string(c"kern.osversion");
+    match (version, build) {
+        (Some(version), Some(build)) => format!("{version} ({build})"),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => std::env::consts::OS.to_owned(),
     }
-    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-    {
-        std::env::consts::OS.to_owned()
+}
+
+/// A string-valued `sysctl` by name; `None` when the name is unknown or the value is empty.
+fn sysctl_string(name: &std::ffi::CStr) -> Option<String> {
+    unsafe extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            oldp: *mut std::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut std::ffi::c_void,
+            newlen: usize,
+        ) -> std::ffi::c_int;
     }
+    let mut buffer = [0u8; 64];
+    let mut len = buffer.len();
+    let status = unsafe {
+        sysctlbyname(
+            name.as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut len,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    let value = std::ffi::CStr::from_bytes_until_nul(&buffer[..len.min(buffer.len())])
+        .ok()?
+        .to_str()
+        .ok()?;
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 /// [`compile_model`] with the compiled-bundle cache in front of the URL route.
@@ -258,7 +282,7 @@ pub(crate) fn compile_model_cached(
     match &model.backing {
         CoremlModelBacking::OnDisk { compiled_dir, .. } => {
             let published = entry.publish(inputs.manifest(), |staged| {
-                copy_directory(compiled_dir, staged)
+                copy_dir_recursively(compiled_dir, staged)
             });
             if let Err(error) = published {
                 log::warn!(
@@ -570,7 +594,17 @@ mod tests {
     #[test]
     fn the_embedded_environment_is_present() {
         assert_eq!(CONVERTER_SOURCE_HASH.len(), 16, "{CONVERTER_SOURCE_HASH:?}");
-        assert!(!os_build_string().is_empty());
+        // `27.2 (25C56)`: a numeric version and the build, neither a localized string.
+        let os_build = os_build_string();
+        let (version, build) = os_build.split_once(" (").expect(&os_build);
+        assert!(
+            version.split('.').all(|part| part.parse::<u32>().is_ok()),
+            "{os_build}"
+        );
+        assert!(
+            build.ends_with(')') && build.len() > 1 && build.is_ascii(),
+            "{os_build}"
+        );
         let inputs = CacheKeyInputs::new(
             b"program",
             None,

@@ -31,7 +31,7 @@ pub struct CoremlLoadFailure {
 #[non_exhaustive]
 pub enum CacheOutcome {
     /// No cache directory was configured, or the graph loaded in memory, where no bundle
-    /// exists to keep.
+    /// exists to keep (input-free programs, and float16 graphs under the native lowering).
     Disabled,
     /// A complete entry for the key was loaded; `MLModel.compileModel` did not run.
     Hit,

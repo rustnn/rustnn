@@ -124,20 +124,26 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
         // for the exact lowering to change, and the URL compiler evaluates such a program
         // itself, so it follows the Native rule: through the URL compiler, iOS and tvOS 26
         // and 27 return 0 for WPT's data-free uint8 clamp that saturates to 255.
-        // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
-        // cache enabled every program with inputs compiles from a URL; the data-free
-        // constant-copy programs keep the in-memory route for the BNNS reason above.
         let use_asset = match self.float16_precision {
             CoremlFloat16Precision::Exact
                 if !graph_info.input_operands.is_empty() || has_float16_operand(&graph_info) =>
             {
                 CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
             }
-            _ if self.compiled_bundle_cache.is_some() => {
-                CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data)
-            }
             _ => supports_in_memory_asset(&graph_info),
         };
+        // The compiled-bundle cache keeps the `.mlmodelc` of the URL route, so with the
+        // cache enabled a program that would load in memory compiles from a URL instead.
+        // Two classes keep the route chosen above, and with it their values: input-free
+        // programs (the constant-copy and uint8 clamp cases above), and float16 graphs
+        // under the native lowering, where URL compilation is known to differ from the
+        // in-memory result (WPT float16 l2Pool2d with layout=nhwc returns inf). Either is
+        // cached only when its own route is already the URL route.
+        let cache_moves_route = self.compiled_bundle_cache.is_some()
+            && !graph_info.input_operands.is_empty()
+            && !(self.float16_precision == CoremlFloat16Precision::Native
+                && has_float16_operand(&graph_info));
+        let use_asset = use_asset && !cache_moves_route;
         let cache = self
             .compiled_bundle_cache
             .as_deref()
