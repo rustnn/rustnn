@@ -49,8 +49,8 @@ impl CompiledCoremlModel {
 #[path = "coreml_load.rs"]
 mod load;
 use crate::mlcontextoptions::CoremlCompileRoute;
+use load::LoadTrace;
 pub use load::{CoremlLoadDiagnostics, CoremlLoadFailure, CoremlLoadRoute};
-use load::{LoadTrace, ResolvedCompileRoute};
 
 // Link against the system frameworks we use.
 #[cfg(target_vendor = "apple")]
@@ -548,11 +548,14 @@ mod output_backing_scope_tests {
 ///
 /// `compile_route` selects the compile step (see [`CoremlCompileRoute`]); with
 /// `Native` or without the `coreml-export` feature the behavior is unchanged.
+/// `constant_copy_program` marks an input-free program of constant copies, which the
+/// exporter must not load from a URL (see [`LoadTrace::compile_routes`]).
 pub(crate) fn compile_model(
     model_bytes: Vec<u8>,
     weights_data: Option<Vec<u8>>,
     device_type: crate::backend_selection::DeviceType,
     use_in_memory_asset: bool,
+    constant_copy_program: bool,
     compile_route: CoremlCompileRoute,
 ) -> Result<CompiledCoremlModel, GraphError> {
     let resolved = load::resolve_compile_route_for_target(compile_route)?;
@@ -561,33 +564,23 @@ pub(crate) fn compile_model(
     // for the URL fallback below even after the NSData objects are released.
     let model_bytes = Arc::new(model_bytes);
     let weights_data = weights_data.map(Arc::new);
-    let mut trace = LoadTrace::new(device_type);
-    let native = |trace: &mut LoadTrace| {
-        trace.routes(use_in_memory_asset, |trace, route| match route {
+    LoadTrace::new(device_type).compile_routes(
+        resolved,
+        use_in_memory_asset,
+        constant_copy_program,
+        load::in_memory_asset_available_for_target(),
+        |trace, route| match route {
             CoremlLoadRoute::InMemoryAsset => {
                 compile_model_from_asset(&model_bytes, weights_data.as_ref(), trace)
             }
-            CoremlLoadRoute::CompiledUrl | CoremlLoadRoute::RustExport => {
+            CoremlLoadRoute::CompiledUrl => {
                 compile_model_from_url(&model_bytes, weights_data.as_ref(), trace)
             }
-        })
-    };
-    match resolved {
-        ResolvedCompileRoute::Native => native(&mut trace),
-        ResolvedCompileRoute::RustExport => {
-            compile_model_from_export(&model_bytes, weights_data.as_ref(), &mut trace)
-        }
-        ResolvedCompileRoute::NativeThenRustExport => {
-            native(&mut trace).or_else(|native_error| {
-                compile_model_from_export(&model_bytes, weights_data.as_ref(), &mut trace)
-                    .map_err(|export_error| GraphError::CoremlRuntimeFailed {
-                        reason: format!(
-                            "native CoreML compile failed ({native_error}); Rust export fallback failed ({export_error})"
-                        ),
-                    })
-            })
-        }
-    }
+            CoremlLoadRoute::RustExport => {
+                compile_model_from_export(&model_bytes, weights_data.as_ref(), trace)
+            }
+        },
+    )
 }
 
 fn compile_model_from_asset(
@@ -2817,6 +2810,7 @@ mod checked_attempt_tests {
                     converted.weights_data,
                     crate::backend_selection::DeviceType::Cpu,
                     in_memory,
+                    false,
                     CoremlCompileRoute::Native,
                 )
                 .unwrap();

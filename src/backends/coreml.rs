@@ -125,11 +125,15 @@ impl<'context, 'builder> MLBackendBuilder<'context, 'builder> for CoremlBuilder 
             }
             _ => supports_in_memory_asset(&graph_info),
         };
+        // The exporter loads from a URL too, so it needs the same proof under either lowering.
+        let constant_copy_program = self.compile_route != CoremlCompileRoute::Native
+            && CoremlMlProgramConverter::constant_copy_asset_eligible(&graph_info, &converted.data);
         let model = compile_model(
             converted.data,
             converted.weights_data,
             self.device_type,
             use_asset,
+            constant_copy_program,
             self.compile_route,
         )
         .map_err(|e| Error::GraphBuildError { source: e.into() })?;

@@ -242,6 +242,17 @@ pub enum CoremlCompileRoute {
     /// without it, `build` fails. The bundle contains source MIL, which Core ML compiles for
     /// the device at load time. This is the route for watchOS and other targets where
     /// `MLModel.compileModel` is unavailable.
+    ///
+    /// The bundle is always loaded from disk, so the values are those of the native URL
+    /// route, not those of the in-memory asset that [`Native`](Self::Native) uses for most
+    /// graphs. Float16 graphs can differ between the two under
+    /// [`CoremlFloat16Precision::Native`] (WPT's float16 NHWC `l2Pool2d` trial, and on some
+    /// hosts its float16 `gru` and `lstm` trials, fail from a URL); use
+    /// [`CoremlFloat16Precision::Exact`] for float16 graphs on this route.
+    ///
+    /// An input-free program whose outputs are all copies of constants is not loaded from
+    /// the bundle, because Core ML can crash on it from a URL. It is loaded as an in-memory
+    /// asset instead, and on watchOS, which has no such loader, `build` fails.
     RustExport,
 }
 

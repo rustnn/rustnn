@@ -395,6 +395,7 @@ mod tests {
                 converted.weights_data.clone(),
                 policy,
                 false,
+                false,
                 crate::mlcontextoptions::CoremlCompileRoute::Native,
             )
             .unwrap();

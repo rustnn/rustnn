@@ -67,6 +67,12 @@ pub(super) fn resolve_compile_route_for_target(
     )
 }
 
+/// Whether `MLModelAsset` can be created from specification data on this target; the
+/// initializers are `API_UNAVAILABLE(watchos)`.
+pub(super) fn in_memory_asset_available_for_target() -> bool {
+    !cfg!(target_os = "watchos")
+}
+
 /// An unsuccessful attempt preceding a successful model load.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoremlLoadFailure {
@@ -172,6 +178,59 @@ impl LoadTrace {
         })
     }
 
+    /// Run the attempts of a resolved compile route in order.
+    ///
+    /// `Native` is [`Self::routes`]. `RustExport` loads the exported bundle, and
+    /// `NativeThenRustExport` tries it after every native attempt has failed.
+    ///
+    /// An exported bundle is loaded from a URL. `url_crashes` marks the input-free
+    /// constant-copy programs on which BNNS crashes through any URL load, so the exporter
+    /// never loads them: `RustExport` sends them to the in-memory asset, or fails where
+    /// `in_memory_available` is false (watchOS has no in-memory specification loader),
+    /// and `NativeThenRustExport` does not add the export attempt.
+    pub(super) fn compile_routes<T>(
+        &mut self,
+        resolved: ResolvedCompileRoute,
+        use_memory: bool,
+        url_crashes: bool,
+        in_memory_available: bool,
+        mut load: impl FnMut(&mut Self, CoremlLoadRoute) -> Result<T, GraphError>,
+    ) -> Result<T, GraphError> {
+        match resolved {
+            ResolvedCompileRoute::Native => self.routes(use_memory, load),
+            ResolvedCompileRoute::RustExport if !url_crashes => {
+                load(self, CoremlLoadRoute::RustExport)
+            }
+            ResolvedCompileRoute::RustExport if in_memory_available => {
+                load(self, CoremlLoadRoute::InMemoryAsset)
+            }
+            ResolvedCompileRoute::RustExport => self.prepare(CoremlLoadRoute::RustExport, || {
+                Err(GraphError::CoremlRuntimeFailed {
+                    reason: "CoremlCompileRoute::RustExport cannot load an input-free program \
+                             of constant copies: Core ML crashes on it from a URL, and this \
+                             target has no in-memory model loader"
+                        .to_string(),
+                })
+            }),
+            ResolvedCompileRoute::NativeThenRustExport => {
+                let native_error = match self.routes(use_memory, &mut load) {
+                    Ok(value) => return Ok(value),
+                    Err(error) => error,
+                };
+                if url_crashes {
+                    return Err(native_error);
+                }
+                load(self, CoremlLoadRoute::RustExport).map_err(|export_error| {
+                    GraphError::CoremlRuntimeFailed {
+                        reason: format!(
+                            "native CoreML compile failed ({native_error}); Rust export fallback failed ({export_error})"
+                        ),
+                    }
+                })
+            }
+        }
+    }
+
     pub(super) fn finish(
         &self,
         route: CoremlLoadRoute,
@@ -271,6 +330,186 @@ mod tests {
             })
             .unwrap();
         (diagnostics, attempts)
+    }
+
+    /// What `compile_routes` did when only `successful` loads.
+    struct Simulated {
+        result: Result<CoremlLoadDiagnostics, GraphError>,
+        attempts: Vec<(CoremlLoadRoute, i64)>,
+        failures: Vec<CoremlLoadFailure>,
+    }
+
+    fn simulate_compile(
+        resolved: ResolvedCompileRoute,
+        memory: bool,
+        url_crashes: bool,
+        in_memory_available: bool,
+        successful: Option<(CoremlLoadRoute, i64)>,
+    ) -> Simulated {
+        let mut trace = LoadTrace::new(DeviceType::Gpu);
+        let mut attempts = Vec::new();
+        let result = trace.compile_routes(
+            resolved,
+            memory,
+            url_crashes,
+            in_memory_available,
+            |trace, route| {
+                let (_, name) = trace.policies(route, |code| {
+                    attempts.push((route, code));
+                    if Some((route, code)) == successful {
+                        Ok(())
+                    } else {
+                        Err(format!("rejected {route:?}/{code}"))
+                    }
+                })?;
+                Ok(trace.finish(route, name))
+            },
+        );
+        Simulated {
+            result,
+            attempts,
+            failures: trace.failures,
+        }
+    }
+
+    const MEMORY: CoremlLoadRoute = CoremlLoadRoute::InMemoryAsset;
+    const URL: CoremlLoadRoute = CoremlLoadRoute::CompiledUrl;
+    const EXPORT: CoremlLoadRoute = CoremlLoadRoute::RustExport;
+
+    #[test]
+    fn native_compile_route_never_attempts_the_exporter() {
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(ResolvedCompileRoute::Native, true, false, true, None);
+        assert_eq!(attempts, [(MEMORY, 1), (MEMORY, 0), (URL, 1), (URL, 0)]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn export_follows_every_failed_native_attempt_and_keeps_their_failures() {
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::NativeThenRustExport,
+            true,
+            false,
+            true,
+            Some((EXPORT, 1)),
+        );
+        assert_eq!(
+            attempts,
+            [(MEMORY, 1), (MEMORY, 0), (URL, 1), (URL, 0), (EXPORT, 1)]
+        );
+        let result = result.unwrap();
+        assert_eq!(result.route, EXPORT);
+        assert_eq!(result.loaded_compute_units, "CPU_AND_GPU");
+        let failed: Vec<_> = result.failures.iter().map(|f| f.route).collect();
+        assert_eq!(failed, [MEMORY, MEMORY, URL, URL]);
+
+        // Without the in-memory attempt the order is URL, then the exporter.
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::NativeThenRustExport,
+            false,
+            false,
+            true,
+            Some((EXPORT, 0)),
+        );
+        assert_eq!(attempts, [(URL, 1), (URL, 0), (EXPORT, 1), (EXPORT, 0)]);
+        assert_eq!(result.unwrap().loaded_compute_units, "CPU_ONLY");
+    }
+
+    #[test]
+    fn native_success_does_not_reach_the_exporter() {
+        for successful in [(MEMORY, 1), (URL, 0)] {
+            let Simulated {
+                result, attempts, ..
+            } = simulate_compile(
+                ResolvedCompileRoute::NativeThenRustExport,
+                true,
+                false,
+                true,
+                Some(successful),
+            );
+            assert_eq!(result.unwrap().route, successful.0);
+            assert!(attempts.iter().all(|&(route, _)| route != EXPORT));
+        }
+    }
+
+    #[test]
+    fn failed_export_fallback_reports_both_errors() {
+        let Simulated {
+            result, failures, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::NativeThenRustExport,
+            false,
+            false,
+            true,
+            None,
+        );
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("rejected CompiledUrl/0"), "{error}");
+        assert!(error.contains("rejected RustExport/0"), "{error}");
+        assert_eq!(failures.len(), 4);
+    }
+
+    #[test]
+    fn explicit_export_attempts_only_the_exported_bundle() {
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::RustExport,
+            true,
+            false,
+            true,
+            Some((EXPORT, 0)),
+        );
+        assert_eq!(attempts, [(EXPORT, 1), (EXPORT, 0)]);
+        assert_eq!(result.unwrap().route, EXPORT);
+    }
+
+    #[test]
+    fn url_crashing_programs_never_reach_the_exported_bundle() {
+        // Explicit export: in memory where that loader exists.
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::RustExport,
+            false,
+            true,
+            true,
+            Some((MEMORY, 1)),
+        );
+        assert_eq!(attempts, [(MEMORY, 1)]);
+        assert_eq!(result.unwrap().route, MEMORY);
+
+        // watchOS: an error before any load, recorded as a preparation failure.
+        let Simulated {
+            result,
+            attempts,
+            failures,
+            ..
+        } = simulate_compile(ResolvedCompileRoute::RustExport, false, true, false, None);
+        assert!(attempts.is_empty());
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("no in-memory model loader"), "{error}");
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].route, EXPORT);
+        assert_eq!(failures[0].compute_units, None);
+
+        // Fallback: the native error is returned without an export attempt.
+        let Simulated {
+            result, attempts, ..
+        } = simulate_compile(
+            ResolvedCompileRoute::NativeThenRustExport,
+            true,
+            true,
+            true,
+            None,
+        );
+        assert!(attempts.iter().all(|&(route, _)| route != EXPORT));
+        assert!(!result.unwrap_err().to_string().contains("Rust export"));
     }
 
     #[test]

@@ -937,6 +937,7 @@ mod tests {
             converted.weights_data,
             DeviceType::Cpu,
             false,
+            false,
             crate::mlcontextoptions::CoremlCompileRoute::Native,
         )
         .unwrap();

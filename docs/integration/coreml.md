@@ -243,6 +243,24 @@ MLProgram becomes a loadable model. It changes the compile step only: the conver
 numerical lowering, the compute-unit policy and the public graph are the same on every route,
 and the successful route is reported as `CoremlLoadRoute` in `graph.rustnn_load_diagnostics()`.
 
+The values are not the same on every route. An exported bundle is always loaded from disk, so
+`RustExport` returns what the URL route (`CompiledUrl`) returns. For a graph that `Native`
+loads as an in-memory asset, that can differ from the `Native` result. The known cases are
+float16 graphs under the default `Native` float16 lowering: WPT's float16 `l2Pool2d` trial
+with `layout=nhwc` passes in memory and returns `inf` where 289 is expected from a URL, and
+on some hosts the float16 `gru` and `lstm` trials fail the same way. Use
+`float16_precision = Exact` for float16 graphs on this route; that lowering is qualified
+through URL compilation and passes the WPT corpus on it. The WPT harness selects the route
+with `WPT_COREML_COMPILE_ROUTE=auto|native|rust-export`.
+
+One class of program never goes through the exporter: an input-free program whose outputs
+are all copies of constants (for example `transpose` of a constant with default options).
+BNNS can crash on such a program when it is loaded from any URL, so `RustExport` loads it as
+an in-memory asset and reports `CoremlLoadRoute::InMemoryAsset`, and the `Auto` fallback does
+not retry it through the exporter. watchOS has no in-memory specification loader
+(`MLModelAsset` creation from specification data is unavailable there), so `build` fails for
+these programs on watchOS with a `CoremlRuntimeFailed` error instead of crashing the process.
+
 | `CoremlCompileRoute` | What happens | Where it applies |
 |---|---|---|
 | `Native` | Apple's compiler: an in-memory `MLModelAsset`, or `MLModel.compileModelAtURL:` from a temporary `.mlmodel`/`.mlpackage` (`CoremlLoadRoute::InMemoryAsset` / `CompiledUrl`, see [How a graph runs](#how-a-graph-runs)). The only route without the `coreml-export` feature. | macOS, iOS, tvOS, visionOS |
@@ -279,6 +297,8 @@ make test-coreml                  # unit and integration tests
 WPT_COREML_TENSOR_MODE=persistent make test-wpt-coreml
 WPT_COREML_TENSOR_MODE=backings make test-wpt-coreml
 WPT_COREML_FLOAT16=exact WPT_COREML_DEVICE=gpu make test-wpt-coreml   # Exact lowering, GPU request
+WPT_COREML_COMPILE_ROUTE=rust-export WPT_COREML_FLOAT16=exact \
+  make test-wpt-coreml WPT_COREML_FEATURES=coreml-runtime,coreml-export   # Rust export route
 ```
 
 CoreML has no PASS snapshots; failing trials are listed in

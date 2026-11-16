@@ -130,3 +130,40 @@ fn auto_route_keeps_the_native_compiler_where_it_exists() {
         assert_ne!(route, CoremlLoadRoute::RustExport);
     }
 }
+
+#[test]
+fn rust_export_route_keeps_constant_copies_off_the_url_loader() {
+    // BNNS crashes (SIGSEGV in `bnns::GraphCompile`) when this input-free program is loaded
+    // from a URL, which is how an exported bundle is loaded. The route must load it in
+    // memory instead and say so in the diagnostics.
+    let values: Vec<f32> = (0..24).map(|index| index as f32 * 0.5 - 3.0).collect();
+    for route in [CoremlCompileRoute::RustExport, CoremlCompileRoute::Auto] {
+        let mut context = context(route);
+        let mut builder = MLGraphBuilder::new(&mut context).unwrap();
+        let descriptor = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![24]);
+        let constant = builder.constant_from_slice(&descriptor, &values).unwrap();
+        let output = builder.transpose(constant).unwrap();
+        let mut graph = builder
+            .build(&MLNamedOperands::from([("output", output)]))
+            .unwrap();
+        let Some(LoadDiagnostics::Coreml(load)) = graph.rustnn_load_diagnostics() else {
+            panic!("CoreML graph did not report CoreML load diagnostics");
+        };
+        assert_eq!(load.route, CoremlLoadRoute::InMemoryAsset, "{route:?}");
+        let tensor = context
+            .create_tensor(
+                &MLTensorDescriptor::new(MLOperandDataType::Float32, vec![24]).to_readable(),
+            )
+            .unwrap();
+        context
+            .dispatch(
+                &mut graph,
+                &MLNamedTensors::new(),
+                &MLNamedTensors::from([("output", &tensor)]),
+            )
+            .unwrap();
+        let mut actual = [0f32; 24];
+        context.read_tensor(&tensor, &mut actual).unwrap();
+        assert_eq!(actual.to_vec(), values, "{route:?}");
+    }
+}
