@@ -156,13 +156,7 @@ pub unsafe extern "C" fn rustnn_coreml_predict(
 /// # Safety
 /// This stand-in does not dereference its pointer arguments. Its unsafe signature
 /// mirrors the native shim; no output pointers are initialized on failure.
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "watchos",
-    target_os = "visionos"
-)))]
+#[cfg(not(target_vendor = "apple"))]
 pub unsafe extern "C" fn rustnn_coreml_new_state(
     _model: *mut Object,
     _out_state: *mut *mut Object,
@@ -176,13 +170,7 @@ pub unsafe extern "C" fn rustnn_coreml_new_state(
 /// # Safety
 /// This stand-in does not dereference its pointer arguments. Its unsafe signature
 /// mirrors the native shim; no output pointers are initialized on failure.
-#[cfg(not(any(
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "watchos",
-    target_os = "visionos"
-)))]
+#[cfg(not(target_vendor = "apple"))]
 pub unsafe extern "C" fn rustnn_coreml_predict_stateful(
     _model: *mut Object,
     _features: *mut Object,
