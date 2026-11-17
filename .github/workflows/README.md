@@ -2,7 +2,7 @@
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (ONNX Runtime, TensorRT, LiteRT, CANN, CoreML on macOS, wasm32 with `webnn-runtime`), `cargo test --lib` on Linux and macOS plus the CANN mock, rustdoc with warnings denied (`make docs-api`), operator report drift check (`make docs-backend-ops-check`) with the generator's unit tests, MkDocs strict build |
+| `ci.yml` | push, pull request | Cargo.lock consistency, `cargo fmt --check`, `cargo check` per feature (ONNX Runtime, TensorRT, LiteRT, CANN, CoreML on macOS, wasm32 with `webnn-runtime`), library and CLI unit tests on Linux and macOS plus the CANN mock, rustdoc with warnings denied (`make docs-api`), operator report drift check (`make docs-backend-ops-check`) with the generator's unit tests, MkDocs strict build |
 | `wpt-conformance.yml` | push, pull request | WPT conformance suites: ONNX Runtime, Burn CPU and LiteRT on Linux (LiteRT non-blocking), CoreML on macOS; uploads JSON and HTML reports |
 | `wpt-conformance-nightly.yml` | schedule, manual | Full WPT run with reports, then builds the documentation site with rustdoc under `/api/` and the conformance dashboard under `/wpt-conformance/`, and deploys to GitHub Pages |
 | `wpt-sync.yml` | weekly (Monday 03:00 UTC), manual | Bumps `WPT_REVISION` to the current upstream WPT revision, regenerates the expected-failure lists for LiteRT, ONNX Runtime and CoreML against it and opens a pull request with the diff |
@@ -24,8 +24,7 @@
   `make test-coreml-tensor-reuse` also runs in both configurations to check retained
   storage ownership, conversion, aliasing and resizing.
   It also builds and tests CoreML with and without dynamic inputs using `make build-coreml`
-  and `make test-coreml`; both explicitly enable `cli` so CLI integration tests build and
-  execute the CoreML binary. CLI tests are excluded when `cli` is disabled.
+  and `make test-coreml`.
   `make test-coreml COREML_FEATURES=coreml-runtime,coreml-export,dynamic-inputs` adds the
   pure-Rust `.mlmodelc` exporter and runs the `RustExport` compile-route tests.
   `cargo check -p rustnn-cli --features coreml-export --all-targets` compiles the CLI's

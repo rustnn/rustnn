@@ -979,58 +979,57 @@ impl<'context> MLBackendContext<'context> for TrtxContext<'context> {
 
 impl ListDevices for TrtxContext<'_> {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
+        Self::try_list_devices().unwrap_or_default()
+    }
+
+    fn try_list_devices() -> crate::error::Result<Vec<crate::backend_selection::BackendDevice>> {
+        let failure = |message: String| crate::error::Error::ContextCreationError {
+            source: message.into(),
+        };
         trace!("Enumerating Trtx devices");
         // cudarc panics on a missing driver library before it can return a CUDA error.
         // SAFETY: Loads the system CUDA driver from trusted library search paths.
         if !unsafe { sys::is_culib_present() } {
-            trace!("CUDA driver library not found; skipping TensorRT RTX");
-            return Vec::new();
+            return Err(failure("CUDA driver library not found".into()));
         }
-        let Ok(()) = result::init() else {
-            warn!("Could not enumerate CUDA devices for TensorRT RTX");
-            return Vec::new();
-        };
-        let Ok(device_count) = result::device::get_count() else {
-            warn!("Could not get CUDA device count for TensorRT RTX");
-            return Vec::new();
-        };
+        result::init().map_err(|e| failure(format!("CUDA initialization failed: {e}")))?;
+        let device_count = result::device::get_count()
+            .map_err(|e| failure(format!("CUDA device enumeration failed: {e}")))?;
 
         let mut devices = Vec::new();
+        let mut device_errors = Vec::new();
         for cuda_device_idx in 0..device_count {
-            let Ok(device) = result::device::get(cuda_device_idx) else {
-                continue;
+            let inspect = || -> std::result::Result<_, DriverError> {
+                let device = result::device::get(cuda_device_idx)?;
+                // SAFETY: `device` is a valid handle returned by CUDA.
+                let major = unsafe {
+                    result::device::get_attribute(
+                        device,
+                        sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
+                    )?
+                };
+                Ok(major)
             };
-
-            // SAFETY: `device` is returned by `result::device::get`, so it is a valid CUdevice.
-            let Ok(major) = (unsafe {
-                result::device::get_attribute(
-                    device,
-                    sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                )
-            }) else {
-                continue;
-            };
-
-            // SAFETY: `device` is returned by `result::device::get`, so it is a valid CUdevice.
-            let Ok(minor) = (unsafe {
-                result::device::get_attribute(
-                    device,
-                    sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                )
-            }) else {
-                continue;
-            };
-
-            // Accept Ampere+ devices only (compute capability >= 8.0).
-            if major > 8 || (major == 8 && minor >= 0) {
-                devices.push(crate::backend_selection::BackendDevice::Trtx {
-                    cuda_device_idx: cuda_device_idx as u32,
-                });
+            match inspect() {
+                Ok(major) if major >= 8 => {
+                    devices.push(crate::backend_selection::BackendDevice::Trtx {
+                        cuda_device_idx: cuda_device_idx as u32,
+                    });
+                }
+                Ok(major) => device_errors.push(format!(
+                    "CUDA device {cuda_device_idx}: compute capability {major}.x requires >= 8.0"
+                )),
+                Err(error) => device_errors.push(format!(
+                    "CUDA device {cuda_device_idx}: discovery failed: {error}"
+                )),
             }
+        }
+        if devices.is_empty() && !device_errors.is_empty() {
+            return Err(failure(device_errors.join("; ")));
         }
 
         info!("Found Trtx devices {devices:?} from {device_count} CUDA devices");
-        devices
+        Ok(devices)
     }
 }
 

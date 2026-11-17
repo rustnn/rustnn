@@ -43,6 +43,8 @@ The Cargo workspace contains the `rustnn` library at the root and `rustnn-cli` i
 Both are default members. Use `-p rustnn` for library-only commands and `-p rustnn-cli` for
 the CLI. CLI backend features forward to the library with its defaults disabled.
 The CLI is disabled on wasm32: its entry point is empty and its dependencies are omitted.
+`cargo test -p rustnn-cli` runs CLI unit tests, also run by CI on Linux and macOS.
+There is no CLI integration-test suite.
 
 Use the Makefile targets; they set feature flags and environment variables consistently.
 `make help` prints the same list.
@@ -51,7 +53,6 @@ Use the Makefile targets; they set feature flags and environment variables consi
 |---|---|
 | `build` | `cargo build` with default features |
 | `check-converters` | Check each converter independently with defaults disabled |
-| `test-cli` | CLI default, no-default-feature and portable-converter integration tests |
 | `test` | `cargo fmt`, `clippy -D warnings`, `cargo test`, operator report drift check |
 | `fmt`, `fmt-check`, `lint` | rustfmt (apply / check), clippy only |
 | `clean`, `clean-all` | `cargo clean`; also the docs site and coverage output |
