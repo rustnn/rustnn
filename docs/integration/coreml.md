@@ -409,6 +409,15 @@ Rules and consequences:
   operands. CoreML stores every state as `float16`; a `float32` pair is cast after the read and
   before the write inside the model, so the carried value is rounded to `float16` once per step.
   Integer or dynamically shaped pairs are rejected (explicit) or skipped (automatic).
+- Two kinds of pairs are refused: an output that is a plain copy of a graph input
+  (`identity` or a view that keeps type and shape), which the executor returns from the
+  input's binding so the model holds nothing to store, and the pair that would leave the
+  graph without an output, since a Core ML model needs at least one. An explicit pair of
+  either kind is a build error that names the pair; the automatic mode skips it, so when
+  every output has a conventional partner the last one in graph input order stays an output.
+- A `float32` state that is also returned (for example `out = identity(h_out)` after a
+  `gruCell`) is stored from a separate copy. Core ML otherwise returns zeros for an `add`
+  result that is both a model output and narrowed for `write_state`.
 - The paired names are not dispatch bindings any more: `MLGraph::input_descriptors` and
   `output_descriptors` omit them and `dispatch` rejects tensors bound under those names.
 - Every state starts as zeros when the graph is built. `MLGraph::rustnn_reset_state` replaces

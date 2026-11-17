@@ -245,7 +245,11 @@ Rules that hold for every converter:
   stored with `write_state` (through a `cast` to `fp16`) and leaves the block outputs, and
   `ModelDescription.state` replaces the two features. Without pairs the lowering is unchanged;
   a test asserts the decoded models are equal. CoreML's validator accepts only `float16` state
-  storage. A conversion that ends in a Pipeline rejects pairs.
+  storage. A conversion that ends in a Pipeline rejects pairs. When the stored `float32`
+  value is also a block output (after proven copies are coalesced), the `cast` reads
+  `mul(value, 1.0)` instead of the value: Core ML returns zeros for an `add` result that is
+  both returned and narrowed for `write_state` (macOS 26.7 and 27.3, every compute unit),
+  and a runtime test covers `add`, `sub` and `gruCell`.
 - Every function uses the `CoreML8` opset (`MIL_OPSET`) with specification version 9.
 
 ### LiteRT

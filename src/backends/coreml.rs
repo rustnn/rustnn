@@ -1711,6 +1711,182 @@ mod carried_state_tests {
         assert_eq!(outcome(&build(&mut context)), CacheOutcome::Miss);
     }
 
+    /// `next_s = s (op) x`; `h = identity(next_s)`: the new state is also returned.
+    fn build_returned_state<'c>(context: &mut MLContext<'c>, op: &str) -> MLGraph<'c> {
+        let mut builder = MLGraphBuilder::new(context).unwrap();
+        let x = builder.input("x", &descriptor()).unwrap();
+        let s = builder.input("s", &descriptor()).unwrap();
+        let next = match op {
+            "add" => builder.add(s, x).unwrap(),
+            "sub" => builder.sub(s, x).unwrap(),
+            _ => {
+                let weights = MLOperandDescriptor::new(MLOperandDataType::Float32, vec![12, 4]);
+                let values = |scale: f32| -> Vec<f32> {
+                    (0..48).map(|i| ((i % 7) as f32 - 3.0) * scale).collect()
+                };
+                let weight = builder.constant_from_vec(&weights, values(0.125)).unwrap();
+                let recurrent = builder.constant_from_vec(&weights, values(0.0625)).unwrap();
+                builder
+                    .gru_cell_with_options(x, weight, recurrent, s, 4, Default::default())
+                    .unwrap()
+            }
+        };
+        let h = builder.identity(next).unwrap();
+        let mut outputs = MLNamedOperands::new();
+        outputs.insert("next_s", next);
+        outputs.insert("h", h);
+        builder.build(&outputs).unwrap()
+    }
+
+    /// A float32 state that is also a model output. Core ML returns zeros for the `add`
+    /// form unless the stored copy is kept apart from the returned value.
+    #[test]
+    fn a_returned_state_matches_the_host_round_trip() {
+        for op in ["add", "sub", "gruCell"] {
+            let Some(mut context) = coreml_context(CoremlOptions::default()) else {
+                return;
+            };
+            let mut graph = build_returned_state(&mut context, op);
+            let (x, s, next_s, h) = (
+                tensor(&mut context),
+                tensor(&mut context),
+                tensor(&mut context),
+                tensor(&mut context),
+            );
+            context.write_tensor(&x, &X).unwrap();
+            context.write_tensor(&s, &[0.0f32; 4]).unwrap();
+            let mut expected = Vec::new();
+            for _ in 0..STEPS {
+                let inputs = MLNamedTensors::from([("x", &x), ("s", &s)]);
+                let outputs = MLNamedTensors::from([("next_s", &next_s), ("h", &h)]);
+                context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+                let mut carried = [0.0f32; 4];
+                context.read_tensor(&next_s, &mut carried).unwrap();
+                context.write_tensor(&s, &carried).unwrap();
+                let mut out = [0.0f32; 4];
+                context.read_tensor(&h, &mut out).unwrap();
+                expected.push(out);
+            }
+            match op {
+                "add" => assert_eq!(expected[2], X.map(|value| 3.0 * value)),
+                "sub" => assert_eq!(expected[2], X.map(|value| -3.0 * value)),
+                // The hidden state moves on every step, so a zero output cannot pass.
+                _ => assert!(
+                    expected[2].iter().all(|value| *value != 0.0),
+                    "{expected:?}"
+                ),
+            }
+
+            for coreml in [
+                CoremlOptions {
+                    carried_state_pairs: vec![("s".into(), "next_s".into())],
+                    ..Default::default()
+                },
+                CoremlOptions {
+                    reuse_tensor_storage: true,
+                    carried_state_pairs: vec![("s".into(), "next_s".into())],
+                    ..Default::default()
+                },
+            ] {
+                let mut context = coreml_context(coreml).unwrap();
+                let mut graph = build_returned_state(&mut context, op);
+                assert_eq!(graph.output_descriptors.keys().collect::<Vec<_>>(), ["h"]);
+                let (x, h) = (tensor(&mut context), tensor(&mut context));
+                context.write_tensor(&x, &X).unwrap();
+                let actual: Vec<[f32; 4]> = (0..STEPS)
+                    .map(|_| {
+                        let inputs = MLNamedTensors::from([("x", &x)]);
+                        let outputs = MLNamedTensors::from([("h", &h)]);
+                        context.dispatch(&mut graph, &inputs, &outputs).unwrap();
+                        let mut out = [0.0f32; 4];
+                        context.read_tensor(&h, &mut out).unwrap();
+                        out
+                    })
+                    .collect();
+                // The carried value is rounded to float16 once per step; `add` and `sub`
+                // stay exact here, the gruCell state does not.
+                for (actual, expected) in actual.iter().flatten().zip(expected.iter().flatten()) {
+                    let tolerance = if op == "gruCell" { 1e-3 } else { 0.0 };
+                    assert!(
+                        (actual - expected).abs() <= tolerance,
+                        "{op}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Pairs the model cannot hold are build errors that name the pair, and the automatic
+    /// mode leaves them alone.
+    #[test]
+    fn unusable_pairs_are_rejected_by_name_and_skipped_automatically() {
+        // `next_prev` is a plain copy of the input `x`; `y` is computed.
+        fn copy_graph<'c>(context: &mut MLContext<'c>) -> crate::error::Result<MLGraph<'c>> {
+            let mut builder = MLGraphBuilder::new(context).unwrap();
+            let x = builder.input("x", &descriptor()).unwrap();
+            let prev = builder.input("prev", &descriptor()).unwrap();
+            let next_prev = builder.identity(x).unwrap();
+            let y = builder.add(prev, x).unwrap();
+            let mut outputs = MLNamedOperands::new();
+            outputs.insert("next_prev", next_prev);
+            outputs.insert("y", y);
+            builder.build(&outputs)
+        }
+        // Every output of this graph has a conventional partner.
+        fn all_paired_graph<'c>(context: &mut MLContext<'c>) -> crate::error::Result<MLGraph<'c>> {
+            let mut builder = MLGraphBuilder::new(context).unwrap();
+            let x = builder.input("x", &descriptor()).unwrap();
+            let a = builder.input("a", &descriptor()).unwrap();
+            let b = builder.input("b", &descriptor()).unwrap();
+            let next_a = builder.add(a, x).unwrap();
+            let next_b = builder.add(b, next_a).unwrap();
+            let mut outputs = MLNamedOperands::new();
+            outputs.insert("next_a", next_a);
+            outputs.insert("next_b", next_b);
+            builder.build(&outputs)
+        }
+        let explicit = |pairs: &[(&str, &str)]| CoremlOptions {
+            carried_state_pairs: pairs
+                .iter()
+                .map(|(input, output)| (input.to_string(), output.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        let automatic = CoremlOptions {
+            carry_state_automatically: true,
+            ..Default::default()
+        };
+        let carried = |graph: &MLGraph<'_>| match graph.rustnn_load_diagnostics() {
+            Some(LoadDiagnostics::Coreml(diagnostics)) => diagnostics.carried_state_pairs,
+            _ => panic!("CoreML load diagnostics"),
+        };
+
+        let Some(mut context) = coreml_context(explicit(&[("prev", "next_prev")])) else {
+            return;
+        };
+        let error = copy_graph(&mut context).unwrap_err().to_string();
+        assert!(
+            error.contains("(prev, next_prev)") && error.contains("plain copy of graph input 'x'"),
+            "{error}"
+        );
+        let mut context = coreml_context(automatic.clone()).unwrap();
+        assert!(carried(&copy_graph(&mut context).unwrap()).is_empty());
+
+        let mut context = coreml_context(explicit(&[("a", "next_a"), ("b", "next_b")])).unwrap();
+        let error = all_paired_graph(&mut context).unwrap_err().to_string();
+        assert!(
+            error.contains("(b, next_b)") && error.contains("at least one output"),
+            "{error}"
+        );
+        let mut context = coreml_context(automatic).unwrap();
+        let graph = all_paired_graph(&mut context).unwrap();
+        assert_eq!(carried(&graph), [("a".to_string(), "next_a".to_string())]);
+        assert_eq!(
+            graph.output_descriptors.keys().collect::<Vec<_>>(),
+            ["next_b"]
+        );
+    }
+
     #[test]
     fn reset_state_is_a_no_op_for_stateless_graphs() {
         let Some(mut context) = coreml_context(CoremlOptions::default()) else {
