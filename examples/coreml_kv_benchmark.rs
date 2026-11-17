@@ -835,6 +835,15 @@ fn storage_options(mode: &str) -> Result<RustNNOptions> {
             options.coreml.reuse_tensor_storage = true;
             options.coreml.output_backings = true;
         }
+        // The self-contained workload's cache pair, carried as an MLState.
+        "state" => {
+            options.coreml.reuse_tensor_storage = true;
+            options.coreml.output_backings = true;
+            options.coreml.carried_state_pairs = vec![
+                ("past_key".into(), "present_key".into()),
+                ("past_value".into(), "present_value".into()),
+            ];
+        }
         _ => anyhow::bail!("unknown storage mode {mode}"),
     }
     Ok(options)

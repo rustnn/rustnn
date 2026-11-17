@@ -62,7 +62,7 @@ fn block(graph: &GraphInfo) -> mil_spec::Block {
     let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
         panic!("expected MLProgram");
     };
-    program.functions["main"].block_specializations["CoreML7"].clone()
+    program.functions["main"].block_specializations["CoreML8"].clone()
 }
 
 fn tensor_type(value: &mil_spec::NamedValueType) -> &mil_spec::TensorType {

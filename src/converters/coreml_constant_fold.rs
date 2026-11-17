@@ -1260,7 +1260,7 @@ mod tests {
         let specification::model::Type::MlProgram(program) = model.r#type.unwrap() else {
             panic!("expected MLProgram")
         };
-        let operations = &program.functions["main"].block_specializations["CoreML7"].operations;
+        let operations = &program.functions["main"].block_specializations["CoreML8"].operations;
         assert!(
             operations.iter().all(|op| op.r#type != "transpose"),
             "no run-time transpose remains: {:?}",

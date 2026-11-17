@@ -249,6 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "src/converters/coreml_mlprogram/precision.rs",
             "src/converters/coreml_constant_fold.rs",
             "src/converters/coreml_names.rs",
+            "src/converters/coreml_state.rs",
             "src/executors/coreml_shim.mm",
         ],
         "coreml_source_hash.txt",

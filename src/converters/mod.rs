@@ -24,6 +24,8 @@ mod coreml_constant_fold;
 mod coreml_mlprogram;
 #[cfg(feature = "coreml-converter")]
 pub(crate) mod coreml_names;
+#[cfg(feature = "coreml-converter")]
+pub mod coreml_state;
 #[cfg(feature = "litert-converter")]
 pub mod litert;
 #[cfg(feature = "onnx-converter")]

@@ -73,7 +73,7 @@ fn block(model: &Model) -> &Block {
     let Some(model::Type::MlProgram(program)) = &model.r#type else {
         panic!("expected MLProgram");
     };
-    &program.functions["main"].block_specializations["CoreML7"]
+    &program.functions["main"].block_specializations["CoreML8"]
 }
 
 fn producer<'a>(block: &'a Block, name: &str) -> &'a MilOperation {

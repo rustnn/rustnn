@@ -13,6 +13,8 @@ exclude = [
     "rustnn_coreml_predict",
     "rustnn_coreml_array_view",
     "rustnn_coreml_predict_backed",
+    "rustnn_coreml_new_state",
+    "rustnn_coreml_predict_stateful",
 ]
 include = [
     "RustnnStatus",

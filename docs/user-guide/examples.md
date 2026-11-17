@@ -158,8 +158,10 @@ The selection order and the per-backend requirements are described in [Backends]
 ### CoreML KV-cache benchmark
 
 `examples/coreml_kv_benchmark.rs` compares the byte-buffer reference path (`baseline`),
-persistent native arrays (`persistent`), and optional output backings (`backings`). It uses
-real `MLContext` dispatch and distinct ping-pong cache tensors.
+persistent native arrays (`persistent`), optional output backings (`backings`) and the cache
+carried inside the model as an `MLState` (`state`, `CoremlOptions::carried_state_pairs`). It
+uses real `MLContext` dispatch; the first three modes bind distinct ping-pong cache tensors,
+and `state` binds no cache tensor at all.
 
 Run `make benchmark-coreml-kv` on macOS without downloading a model or applying
 other patches. The default workload builds fixed-window FP32 attention using
@@ -167,7 +169,10 @@ slice/concat, two matmuls and softmax. Each mode checks all 256 steps against an
 independent f64 attention oracle and exact cache contents, then measures a second
 pass without oracle computation or cache inspection. Every mode binds the previous
 KV outputs directly as the next inputs; the baseline reports its backend copies
-without adding an application-level read/write round trip. Regressions check that
+without adding an application-level read/write round trip. The `state` mode cannot read
+its cache back, so it is checked on the attention output alone; the workload's cache values
+are exact in the float16 state storage. `state` is a mode of the self-contained workload
+only. Regressions check that
 the measured pass reads only the attention output and writes only the new tokens.
 Its JSON includes per-mode timings and host/native copy counters. This is a storage
 benchmark, not language-model

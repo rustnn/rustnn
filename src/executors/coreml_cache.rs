@@ -52,6 +52,9 @@ pub(crate) struct BundleCacheRequest<'a> {
     pub(crate) graph_hash: String,
     /// The float16 lowering the program was emitted with, part of the key.
     pub(crate) float16_precision: CoremlFloat16Precision,
+    /// The `(input, output)` pairs kept inside the model as states, part of the key: the
+    /// same graph with other pairs is another program.
+    pub(crate) carried_state: &'a [(String, String)],
 }
 
 /// The inputs of a cache key, named so the manifest can record them and a hit can verify
@@ -64,10 +67,22 @@ pub(crate) struct CacheKeyInputs {
     weights_len: usize,
     compute_units: &'static str,
     float16_precision: String,
+    carried_state: String,
     route: String,
     crate_version: &'static str,
     converter_source_hash: &'static str,
     os_build: String,
+}
+
+/// The route as the key records it. An exported bundle is what the exporter wrote, so its
+/// route carries the `mlmodelc-export` version; a dependency update then misses instead of
+/// loading a bundle from the previous exporter.
+fn keyed_route(route: &str) -> String {
+    #[cfg(feature = "coreml-export")]
+    if route == "rust-export" {
+        return format!("{route} {}", mlmodelc_export::VERSION);
+    }
+    route.to_owned()
 }
 
 impl CacheKeyInputs {
@@ -83,7 +98,7 @@ impl CacheKeyInputs {
             weights_data,
             device_type,
             request,
-            route,
+            &keyed_route(route),
             env!("CARGO_PKG_VERSION"),
             CONVERTER_SOURCE_HASH,
             os_build_string(),
@@ -108,6 +123,7 @@ impl CacheKeyInputs {
             weights_len: weights_data.map_or(0, <[u8]>::len),
             compute_units: compute_unit_for_device(device_type).1,
             float16_precision: format!("{:?}", request.float16_precision),
+            carried_state: format!("{:?}", request.carried_state),
             route: route.to_owned(),
             crate_version,
             converter_source_hash,
@@ -129,6 +145,7 @@ impl CacheKeyInputs {
             ("weights_len".into(), text(&self.weights_len)),
             ("compute_units".into(), self.compute_units.to_owned()),
             ("float16_precision".into(), self.float16_precision.clone()),
+            ("carried_state".into(), self.carried_state.clone()),
             ("route".into(), self.route.clone()),
             ("crate_version".into(), self.crate_version.to_owned()),
             (
@@ -426,6 +443,7 @@ mod tests {
             directory,
             graph_hash: "graph-1".to_owned(),
             float16_precision: CoremlFloat16Precision::Native,
+            carried_state: &[],
         };
         (request, route)
     }
@@ -480,6 +498,19 @@ mod tests {
     }
 
     #[test]
+    fn exported_bundles_are_keyed_by_the_exporter_version() {
+        assert_eq!(keyed_route("native"), "native");
+        let exported = keyed_route("rust-export");
+        #[cfg(feature = "coreml-export")]
+        assert_eq!(
+            exported,
+            format!("rust-export {}", mlmodelc_export::VERSION)
+        );
+        #[cfg(not(feature = "coreml-export"))]
+        assert_eq!(exported, "rust-export");
+    }
+
+    #[test]
     fn every_input_changes_the_key() {
         let dir = Path::new("/cache");
         let baseline = inputs(
@@ -495,7 +526,22 @@ mod tests {
         exact.0.float16_precision = CoremlFloat16Precision::Exact;
         let mut other_graph = request(dir, "native");
         other_graph.0.graph_hash = "graph-2".to_owned();
+        let pairs = [("state_0".to_owned(), "next_state_0".to_owned())];
+        let mut stateful = request(dir, "native");
+        stateful.0.carried_state = &pairs;
         let variants = [
+            (
+                "carried state",
+                inputs(
+                    b"program",
+                    Some(b"weights"),
+                    DeviceType::Cpu,
+                    &stateful,
+                    "1.0.0",
+                    "abc",
+                    "Build 1",
+                ),
+            ),
             (
                 "graph hash",
                 inputs(

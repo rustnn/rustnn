@@ -89,6 +89,21 @@ unsafe extern "C" {
         error: *mut c_char,
         error_length: usize,
     ) -> i32;
+    fn rustnn_coreml_new_state(
+        model: *mut Object,
+        out_state: *mut *mut Object,
+        error: *mut c_char,
+        error_length: usize,
+    ) -> i32;
+    fn rustnn_coreml_predict_stateful(
+        model: *mut Object,
+        features: *mut Object,
+        state: *mut Object,
+        backings: *mut Object,
+        out_provider: *mut *mut Object,
+        error: *mut c_char,
+        error_length: usize,
+    ) -> i32;
 }
 
 // Shims to check compilation on Linux
@@ -135,6 +150,68 @@ pub unsafe extern "C" fn rustnn_coreml_predict(
     _error_length: usize,
 ) -> i32 {
     1
+}
+/// Always-failing stand-in for targets without the native CoreML shim.
+///
+/// # Safety
+/// This stand-in does not dereference its pointer arguments. Its unsafe signature
+/// mirrors the native shim; no output pointers are initialized on failure.
+#[cfg(not(target_vendor = "apple"))]
+pub unsafe extern "C" fn rustnn_coreml_new_state(
+    _model: *mut Object,
+    _out_state: *mut *mut Object,
+    _error: *mut c_char,
+    _error_length: usize,
+) -> i32 {
+    1
+}
+/// Always-failing stand-in for targets without the native CoreML shim.
+///
+/// # Safety
+/// This stand-in does not dereference its pointer arguments. Its unsafe signature
+/// mirrors the native shim; no output pointers are initialized on failure.
+#[cfg(not(target_vendor = "apple"))]
+pub unsafe extern "C" fn rustnn_coreml_predict_stateful(
+    _model: *mut Object,
+    _features: *mut Object,
+    _state: *mut Object,
+    _backings: *mut Object,
+    _out_provider: *mut *mut Object,
+    _error: *mut c_char,
+    _error_length: usize,
+) -> i32 {
+    1
+}
+
+/// A retained `MLState` holding the carried-state pairs of one compiled model
+/// (`read_state` / `write_state` inside the program). Created zero-initialized by
+/// [`CompiledCoremlModel::new_state`]; a prediction updates it in place.
+pub(crate) struct CoremlState(*mut Object);
+
+// SAFETY: exclusively owned, used only by synchronous calls on one thread at a time
+// (no Sync impl), like `CompiledCoremlModel`.
+unsafe impl Send for CoremlState {}
+
+impl CoremlState {
+    pub(crate) fn as_ptr(&self) -> *mut Object {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for CoremlState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CoremlState")
+    }
+}
+
+impl Drop for CoremlState {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe {
+                let _: () = msg_send![self.0, release];
+            }
+        }
+    }
 }
 
 /// Releases an owned (+1) Objective-C object when dropped (including on early
@@ -510,6 +587,35 @@ impl CompiledCoremlModel {
     pub(crate) fn load_diagnostics(&self) -> &CoremlLoadDiagnostics {
         &self.diagnostics
     }
+
+    /// Record the `(input, output)` pairs the converter kept inside this model as states.
+    pub(crate) fn record_carried_state_pairs(&mut self, pairs: Vec<(String, String)>) {
+        self.diagnostics.carried_state_pairs = pairs;
+    }
+
+    /// A fresh, zero-initialized `MLState` for this model (iOS 18 / macOS 15). Every
+    /// carried-state pair starts from zeros; call again to reset the carried values.
+    pub(crate) fn new_state(&self) -> Result<CoremlState, GraphError> {
+        let mut state: *mut Object = ptr::null_mut();
+        let mut error = [0u8; 1024];
+        let status = unsafe {
+            rustnn_coreml_new_state(
+                self.model,
+                &mut state,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            )
+        };
+        if status != 0 || state.is_null() {
+            return Err(GraphError::CoremlRuntimeFailed {
+                reason: format!(
+                    "creating the model state failed: {}",
+                    shim_error_to_string(&error)
+                ),
+            });
+        }
+        Ok(CoremlState(state))
+    }
 }
 
 fn has_single_program_output_scope(data: &[u8]) -> bool {
@@ -866,10 +972,12 @@ unsafe fn load_model_asset(
 }
 
 /// Run a compiled CoreML model with raw-byte inputs, returning raw-byte outputs by name.
+/// `state` carries the model's carried-state pairs between predictions.
 pub(crate) fn run_coreml_bytes(
     model: &CompiledCoremlModel,
     inputs: &HashMap<String, CoremlByteInput<'_>>,
     output_descriptors: &HashMap<String, OperandDescriptor>,
+    state: Option<&CoremlState>,
 ) -> Result<HashMap<String, Vec<u8>>, GraphError> {
     // Snapshot proven copies before CoreML sees an input. Every logical output
     // owns its own bytes; this is not a mutable alias of input tensor storage.
@@ -931,13 +1039,24 @@ pub(crate) fn run_coreml_bytes(
 
         let mut output_provider: *mut Object = ptr::null_mut();
         let mut error = [0u8; 1024];
-        let status = rustnn_coreml_predict(
-            model.model,
-            provider,
-            &mut output_provider,
-            error.as_mut_ptr().cast(),
-            error.len(),
-        );
+        let status = match state {
+            Some(state) => rustnn_coreml_predict_stateful(
+                model.model,
+                provider,
+                state.as_ptr(),
+                ptr::null_mut(),
+                &mut output_provider,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            ),
+            None => rustnn_coreml_predict(
+                model.model,
+                provider,
+                &mut output_provider,
+                error.as_mut_ptr().cast(),
+                error.len(),
+            ),
+        };
         if status != 0 || output_provider.is_null() {
             return Err(GraphError::CoremlRuntimeFailed {
                 reason: format!("prediction failed: {}", shim_error_to_string(&error)),
@@ -2841,7 +2960,8 @@ mod checked_attempt_tests {
                     ("second".into(), descriptor),
                 ]);
                 for _ in 0..2 {
-                    let mut actual = run_coreml_bytes(&model, &HashMap::new(), &outputs).unwrap();
+                    let mut actual =
+                        run_coreml_bytes(&model, &HashMap::new(), &outputs, None).unwrap();
                     assert_eq!(actual["first"], expected);
                     assert_eq!(actual["second"], expected);
                     actual.get_mut("first").unwrap()[0] ^= 0xff;
@@ -2849,9 +2969,9 @@ mod checked_attempt_tests {
                 }
                 let mut invalid_outputs = outputs.clone();
                 invalid_outputs.get_mut("second").unwrap().data_type = DataType::Int32;
-                assert!(run_coreml_bytes(&model, &HashMap::new(), &invalid_outputs).is_err());
+                assert!(run_coreml_bytes(&model, &HashMap::new(), &invalid_outputs, None).is_err());
                 assert_eq!(
-                    run_coreml_bytes(&model, &HashMap::new(), &outputs).unwrap()["second"],
+                    run_coreml_bytes(&model, &HashMap::new(), &outputs, None).unwrap()["second"],
                     expected
                 );
                 weak

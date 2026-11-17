@@ -1546,6 +1546,16 @@ impl CoremlMlProgramConverter {
         if cuts.is_empty() {
             return Ok(model);
         }
+        if !graph.carried.is_empty() {
+            // A state belongs to one MLProgram; Core ML has no state shared by the
+            // children of a Pipeline.
+            return Err(GraphError::ConversionFailed {
+                format: "coreml_mlprogram".to_string(),
+                reason: "carried state needs a graph that lowers to one MLProgram; this graph \
+                         needs float16 rounding boundaries, which lower to a Pipeline"
+                    .to_string(),
+            });
+        }
         let shapes = shape_bounds_seeded(graph, &types, &block.operations, &packed.shapes);
         let mut reserved: HashSet<_> = types.keys().cloned().collect();
         let original_inputs: HashMap<_, _> = function
