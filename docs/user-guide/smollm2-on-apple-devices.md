@@ -55,6 +55,7 @@ receipt is printed as JSON and, with `--receipt FILE`, written to a file:
 | `buildSeconds` | `MLContext::rustnn_build_graph`: conversion, compile or export, and load |
 | `tokensPerSecond` | Decode rate over the generated tokens, one dispatch per token |
 | `peakResidentBytes` | `ru_maxrss` of the process at the end of the run |
+| `footprintBytes`, `peakFootprintBytes` | Physical footprint now and its lifetime peak, the figure iOS and watchOS hold an app to; also recorded after the graph load and after the build |
 | `tokenHash` | FNV-1a over the prompt and generated token ids |
 | `text` | The decoded reply |
 
@@ -123,11 +124,25 @@ WATCHOS_DEPLOYMENT_TARGET=11.0 CFLAGS_aarch64_apple_watchos=-DCFG_TARGET_OS_ios 
 
 **The full model does not fit an Apple Watch yet.** On the Apple Watch Series 10 (watchOS
 27.2) the process is killed while the model loads. An app there was granted 299 MiB when
-measured on 2026-10-30, and the same run peaks near 640 MB of footprint on a Mac; no jetsam
-report was pulled to confirm the reason. A two-layer cut of the model (`--layers 2` when authoring)
-runs on the watch end to end and returns the Mac's tokens, which shows the build, the export
-route and the state carry work there. Fitting the whole model needs weights that stay
-file-backed through conversion and load, which is not in this repository yet.
+measured on 2026-10-30; no jetsam report was pulled to confirm the reason. The footprint on
+the Mac shows why:
+
+| Phase (M4 Max, state, auto) | Full model | `--layers 2` |
+|---|---|---|
+| After the graph is loaded | 304 MiB | 97 MiB |
+| Peak during the build | 626 MiB | 156 MiB |
+| While decoding | 319 MiB | 157 MiB |
+
+The bundle holds 142 MB of weights. Loading it keeps two copies on the heap for a moment
+(the file and the per-tensor constants), and the build adds a copy of the graph and the
+weights blob. Core ML itself maps its weights file and adds almost nothing: while decoding,
+9 MB of the heap is in use and the rest is freed memory the allocator has not returned. So
+the limit is rustnn's transient copies, not the model. Keeping the constants file-backed
+through load, conversion and export is the fix, and it is not in this repository yet.
+
+A two-layer cut of the model (`--layers 2` when authoring) runs on the watch end to end and
+returns the Mac's tokens, which shows the build, the export route and the state carry work
+there.
 
 ## Reference runs
 

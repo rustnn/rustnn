@@ -109,6 +109,24 @@ fn peak_resident_bytes() -> u64 {
         }
 }
 
+/// Current and lifetime-peak physical footprint, the figure the system holds an app to on
+/// iOS and watchOS. Zero where the counters do not exist.
+fn footprint_bytes() -> (u64, u64) {
+    #[cfg(target_vendor = "apple")]
+    unsafe {
+        // In libSystem on every Apple platform; the `libc` crate declares it for macOS only.
+        unsafe extern "C" {
+            fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut std::ffi::c_void) -> i32;
+        }
+        let mut info: libc::rusage_info_v4 = std::mem::zeroed();
+        let buffer = (&raw mut info).cast();
+        if proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V4, buffer) == 0 {
+            return (info.ri_phys_footprint, info.ri_lifetime_max_phys_footprint);
+        }
+    }
+    (0, 0)
+}
+
 fn elements(descriptor: &OperandDescriptor) -> Result<usize> {
     descriptor
         .shape
@@ -243,6 +261,7 @@ fn run(args: &Args) -> Result<Value> {
     let started = Instant::now();
     let graph_info = rustnn::load_graph_from_path(args.bundle.join("model.webnn"))?;
     let graph_load_seconds = started.elapsed().as_secs_f64();
+    let footprint_after_graph_load = footprint_bytes().0;
     let (inputs, outputs) = graph_info.io_binding_maps().context("graph I/O")?;
     let window = elements(inputs.get("mask").context("mask input")?)?;
     let mut pairs: Vec<(String, String)> = inputs
@@ -262,6 +281,7 @@ fn run(args: &Args) -> Result<Value> {
     let build_seconds = started.elapsed().as_secs_f64();
     let diagnostics = format!("{:?}", graph.rustnn_load_diagnostics());
     let peak_after_build = peak_resident_bytes();
+    let footprint_after_build = footprint_bytes();
 
     let stateful = args.carry == Carry::State;
     let mut fixed = BTreeMap::new();
@@ -341,6 +361,11 @@ fn run(args: &Args) -> Result<Value> {
         "tokensPerSecond": tokens_per_second,
         "peakResidentBytesAfterBuild": peak_after_build,
         "peakResidentBytes": peak_resident_bytes(),
+        "footprintBytesAfterGraphLoad": footprint_after_graph_load,
+        "footprintBytesAfterBuild": footprint_after_build.0,
+        "peakFootprintBytesAfterBuild": footprint_after_build.1,
+        "footprintBytes": footprint_bytes().0,
+        "peakFootprintBytes": footprint_bytes().1,
         "tokenHash": format!("{hash:016x}"),
         "tokens": tokens,
         "text": text,
