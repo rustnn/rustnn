@@ -76,7 +76,11 @@ pub(crate) struct CoremlConstantSource {
     pub(crate) checksum: u64,
 }
 
-fn proven_copy_input(graph: &GraphInfo, operation: &Operation, output: u32) -> Option<u32> {
+pub(super) fn proven_copy_input(
+    graph: &GraphInfo,
+    operation: &Operation,
+    output: u32,
+) -> Option<u32> {
     let input = match operation {
         Operation::Identity { input, .. }
         | Operation::Cast { input, .. }
@@ -336,6 +340,19 @@ impl CarriedStates {
                     ),
                 });
             }
+        }
+        if let Some(pair) = pairs.last()
+            && states.by_output.len() == graph.output_operands.len()
+        {
+            return Err(GraphError::ConversionFailed {
+                format: "coreml_mlprogram".to_string(),
+                reason: format!(
+                    "carried state pair ({}, {}): every graph output is paired, and a Core ML \
+                     model needs at least one output",
+                    pair.input_name(graph),
+                    pair.output_name(graph)
+                ),
+            });
         }
         Ok(states)
     }
@@ -12491,6 +12508,29 @@ impl CoremlMlProgramConverter {
             }
         }
 
+        // MIL names of the values the model returns, after proven copies are coalesced:
+        // a carried output whose value is among them is both returned and stored.
+        let returned_values: std::collections::HashSet<String> = {
+            let equivalent = equivalent_output_names(graph_info);
+            let canonical = |id: u32| {
+                let name = operand_name(graph_info, id);
+                equivalent.get(&name).cloned().unwrap_or(name)
+            };
+            let returned: std::collections::HashSet<String> = output_operands
+                .iter()
+                .filter(|id| !graph_info.carried.by_output.contains_key(id))
+                .map(|&id| canonical(id))
+                .collect();
+            graph_info
+                .carried
+                .by_output
+                .keys()
+                .map(|&id| (canonical(id), operand_name(graph_info, id)))
+                .filter(|(value, _)| returned.contains(value))
+                .map(|(_, name)| name)
+                .collect()
+        };
+
         // Add block outputs (output operand names)
         for &output_id in output_operands {
             let operand =
@@ -12510,6 +12550,34 @@ impl CoremlMlProgramConverter {
                 let data_name = if graph_mil_type == MilDt::Float16 as i32 {
                     graph_output_name
                 } else {
+                    // Core ML returns zeros for a float32 `add` result that is a model
+                    // output and is also narrowed for `write_state` (macOS 26.7 and 27.3,
+                    // every compute unit; `sub`, `maximum` and `tanh` are unaffected, and so
+                    // is a value with another consumer in between). Multiplying the stored
+                    // copy by one, which is exact, keeps the two uses apart.
+                    let source_name = if returned_values.contains(&output_name) {
+                        let copy_name = format!("{output_name}_state_copy");
+                        let copy_type = Self::create_value_with_mil_type(
+                            graph_info,
+                            output_id,
+                            copy_name.clone(),
+                            graph_mil_type,
+                        )?;
+                        let mut inputs = HashMap::new();
+                        inputs.insert(
+                            "x".to_string(),
+                            Self::create_name_argument(graph_output_name),
+                        );
+                        inputs.insert("y".to_string(), Self::create_immediate_float(1.0));
+                        main_block.operations.push(Self::create_mil_operation(
+                            mil_ops::MUL,
+                            inputs,
+                            vec![copy_type],
+                        ));
+                        copy_name
+                    } else {
+                        graph_output_name
+                    };
                     let stored_name = format!("{output_name}_state_value");
                     let stored_type = Self::create_value_with_mil_type(
                         graph_info,
@@ -12518,7 +12586,7 @@ impl CoremlMlProgramConverter {
                         MilDt::Float16 as i32,
                     )?;
                     main_block.operations.push(Self::create_cast_operation(
-                        graph_output_name,
+                        source_name,
                         stored_type,
                         "fp16",
                     ));
@@ -15869,5 +15937,92 @@ mod tests {
         CoremlMlProgramConverter
             .convert_with_carried_state(&graph, Exact, &[])
             .unwrap();
+    }
+
+    /// A float32 state that is also returned is stored from a separate copy; see the
+    /// comment at the `write_state` lowering.
+    #[test]
+    fn a_returned_float32_state_is_stored_from_its_own_copy() {
+        use crate::converters::coreml_state::CarriedStatePair;
+        use crate::graph::DataType;
+        use crate::protos::coreml::mil_spec::argument::binding::Binding;
+
+        let pair = [CarriedStatePair {
+            input: 1,
+            output: 2,
+        }];
+        let name = |op: &crate::protos::coreml::mil_spec::Operation, key: &str| match &op.inputs
+            [key]
+            .arguments[0]
+            .binding
+        {
+            Some(Binding::Name(name)) => name.clone(),
+            other => panic!("{key}: {other:?}"),
+        };
+        for (data_type, returned, copies) in [
+            (DataType::Float32, true, 1),
+            // Float16 is stored as it is, and a value with a consumer in between is safe.
+            (DataType::Float16, true, 0),
+            (DataType::Float32, false, 0),
+        ] {
+            let mut graph = recurrence_graph(data_type);
+            if returned {
+                // `y = identity(next_state_0)`: the stored value is the returned value.
+                graph.operations[1] = Operation::Identity {
+                    input: 2,
+                    options: None,
+                    outputs: vec![3],
+                };
+            }
+            let converted = CoremlMlProgramConverter
+                .convert_with_carried_state(&graph, Native, &pair)
+                .unwrap();
+            let model = Model::decode(converted.data.as_slice()).unwrap();
+            let block = &main_function(&model).block_specializations[MIL_OPSET];
+            let stored: Vec<_> = block
+                .operations
+                .iter()
+                .filter(|op| op.r#type == "mul")
+                .collect();
+            assert_eq!(stored.len(), copies, "{data_type:?} returned={returned}");
+            if copies == 1 {
+                assert_eq!(block.outputs, ["next_state_0"]);
+                assert_eq!(name(stored[0], "x"), "next_state_0");
+                assert_eq!(stored[0].outputs[0].name, "next_state_0_state_copy");
+                let cast = block
+                    .operations
+                    .iter()
+                    .find(|op| op.outputs[0].name == "next_state_0_state_value")
+                    .unwrap();
+                assert_eq!(name(cast, "x"), "next_state_0_state_copy");
+            }
+        }
+    }
+
+    #[test]
+    fn a_conversion_keeps_at_least_one_output() {
+        use crate::converters::coreml_state::CarriedStatePair;
+        use crate::graph::DataType;
+
+        // `y = next_state_0 + x` paired with `x` leaves no model output.
+        let graph = recurrence_graph(DataType::Float32);
+        let error = CoremlMlProgramConverter
+            .convert_with_carried_state(
+                &graph,
+                Native,
+                &[
+                    CarriedStatePair {
+                        input: 1,
+                        output: 2,
+                    },
+                    CarriedStatePair {
+                        input: 0,
+                        output: 3,
+                    },
+                ],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("(x, y)"), "{error}");
+        assert!(error.to_string().contains("at least one output"), "{error}");
     }
 }

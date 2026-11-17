@@ -35,6 +35,12 @@
 //! rounds the carried value once per step. Every state starts as zeros when the graph is built
 //! and after [`crate::mlcontext::MLGraph::rustnn_reset_state`]; an initial value cannot be
 //! supplied through the pair.
+//!
+//! Two kinds of pairs are refused, as errors when explicit and silently when automatic: an
+//! output that is a plain copy of a graph input (`identity` or a view that keeps type and
+//! shape), because the executor returns such an output from the input's binding and the model
+//! holds no value to store; and the pair that would leave the graph without an output, because
+//! a Core ML model needs at least one.
 
 use crate::converters::operand_name;
 use crate::error::GraphError;
@@ -116,10 +122,41 @@ fn incompatibility(graph: &GraphInfo, input: u32, output: u32) -> Option<String>
         ));
     }
     match (static_shape(graph, input), static_shape(graph, output)) {
-        (Some(a), Some(b)) if a == b => None,
-        (Some(a), Some(b)) => Some(format!("shapes differ ({a:?} vs {b:?})")),
-        _ => Some("state shapes must be static".to_string()),
+        (Some(a), Some(b)) if a == b => {}
+        (Some(a), Some(b)) => return Some(format!("shapes differ ({a:?} vs {b:?})")),
+        _ => return Some("state shapes must be static".to_string()),
     }
+    // The executor fulfils a proven copy of a graph input from that input's binding, not
+    // from the model, so such an output has no value inside the model to store.
+    copied_input(graph, output).map(|source| {
+        format!(
+            "'{}' is a plain copy of graph input '{}'; a carried state must be computed by \
+             the graph",
+            operand_name(graph, output),
+            operand_name(graph, source)
+        )
+    })
+}
+
+/// The graph input that `output` is a proven copy of (through `identity` and views that
+/// keep type and shape), if any.
+fn copied_input(graph: &GraphInfo, output: u32) -> Option<u32> {
+    let mut origins: HashMap<u32, u32> = graph.input_operands.iter().map(|&id| (id, id)).collect();
+    for operation in &graph.operations {
+        for &produced in operation.output_operands() {
+            if let Some(origin) =
+                super::coreml_mlprogram::proven_copy_input(graph, operation, produced)
+                    .and_then(|source| origins.get(&source).copied())
+            {
+                origins.insert(produced, origin);
+            }
+        }
+    }
+    origins.get(&output).copied()
+}
+
+fn every_output_paired(graph: &GraphInfo, paired: usize) -> bool {
+    paired >= graph.output_operands.len()
 }
 
 /// Validate one pair for the converter: both operands must exist as a graph input and a graph
@@ -156,9 +193,11 @@ fn named_operands(graph: &GraphInfo, ids: &[u32]) -> HashMap<String, u32> {
 /// Carried-state pairs of `graph` under `options`: the explicit pairs first, in option order,
 /// then the automatically detected pairs in graph input order.
 ///
-/// Explicit pairs that name unknown operands, duplicate an operand or combine incompatible
-/// operands are errors. Automatic candidates that are incompatible are skipped with a
-/// `debug` log record; accepted pairs are logged at `info`. Returns an empty vector when both
+/// Explicit pairs that name unknown operands, duplicate an operand, combine incompatible
+/// operands, store a plain copy of a graph input or pair the last graph output are errors
+/// that name the pair. Automatic candidates of those kinds are skipped with a `debug` log
+/// record, so automatic pairing in graph input order leaves the last candidate's output
+/// unpaired when every output has a partner; accepted pairs are logged at `info`. Returns an empty vector when both
 /// switches are off.
 pub fn carried_state_pairs(
     graph: &GraphInfo,
@@ -192,6 +231,12 @@ pub fn carried_state_pairs(
             )));
         }
         pairs.push(CarriedStatePair { input, output });
+        if every_output_paired(graph, used_outputs.len()) {
+            return Err(conversion_error(format!(
+                "carried state pair ({input_name}, {output_name}): every graph output is paired, \
+                 and a Core ML model needs at least one output"
+            )));
+        }
     }
 
     if options.carry_state_automatically {
@@ -210,6 +255,13 @@ pub fn carried_state_pairs(
                 if let Some(reason) = incompatibility(graph, input, output) {
                     log::debug!(
                         "CoreML carried state: not pairing '{input_name}' with '{output_name}': {reason}"
+                    );
+                    continue;
+                }
+                if every_output_paired(graph, used_outputs.len() + 1) {
+                    log::debug!(
+                        "CoreML carried state: not pairing '{input_name}' with '{output_name}': \
+                         it is the last unpaired graph output"
                     );
                     continue;
                 }
