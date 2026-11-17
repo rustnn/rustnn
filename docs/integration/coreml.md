@@ -12,9 +12,12 @@ dispatch. The Objective-C bridge lives in `src/executors/coreml.rs` and `src/exe
   generation that has `MLState` and the blockwise constant operations; older systems refuse to
   load it.
 - The source gates cover every Apple target (`target_vendor = "apple"`). CI builds and tests
-  macOS only. tvOS, watchOS and visionOS builds additionally depend on the `objc` 0.2 message
-  ABI, which the published crate selects correctly only for macOS and iOS; see
-  [Compile routes](#compile-routes) for the watchOS requirements.
+  macOS only. On tvOS, watchOS and visionOS the Objective-C++ shim supplies the two lookup
+  entry points the `objc` 0.2 crate calls outside macOS and iOS, and `build.rs` puts an empty
+  `BlocksRuntime` library on the link path for the `block` crate; see
+  [Compile routes](#compile-routes) for the watchOS requirements and
+  [SmolLM2 on Apple devices](../user-guide/smollm2-on-apple-devices.md) for a complete
+  iOS and watchOS build.
 - The `coreml-runtime` Cargo feature. On Linux and Windows the feature compiles to shims whose
   calls always fail, so `cargo check --features coreml-runtime` works everywhere but the backend
   is never selected on those platforms.
@@ -410,9 +413,14 @@ on Apple TV 4K and on iPhones; the exporter CLI produced 6 of 6 bundles
 from the same packages with byte-identical `weights/weights.bin`. The route does not by itself
 establish compute-unit placement or a memory bound; those remain separate measurements.
 
-watchOS, tvOS and visionOS also need the `objc` 0.2 message-send ABI fixed for their targets
-(the published crate uses the GNUstep lookup path there), for example with a `[patch.crates-io]`
-entry in the application's workspace. These targets are tier 3 in Rust and are not built in CI.
+On watchOS, tvOS and visionOS the published `objc` 0.2 crate uses its GNUstep lookup path
+(`objc_msg_lookup`, `objc_msg_lookup_super`), which Apple's runtime does not export. The shim
+(`src/executors/coreml_shim.mm`) defines both on those targets with
+`class_getMethodImplementation`, so no `[patch.crates-io]` entry is needed. Validated on
+2026-11-17 on an Apple Watch Series 10 (watchOS 27.2, `aarch64-apple-watchos`) with a
+two-layer cut of SmolLM2: state carry, the Rust export route and the Mac's tokens. The `psm`
+crate needs `CFLAGS_aarch64_apple_watchos=-DCFG_TARGET_OS_ios` to assemble for watchOS. These
+targets are not built in CI.
 
 ## Carrying recurrent state inside the model
 
