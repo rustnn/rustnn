@@ -703,10 +703,13 @@ impl fmt::Debug for OrtContext {
 
 impl ListDevices for OrtContext {
     fn list_devices() -> Vec<crate::backend_selection::BackendDevice> {
-        let Ok(env) = ensure_ort_initialized() else {
-            return vec![];
-        };
+        Self::try_list_devices().unwrap_or_default()
+    }
 
+    fn try_list_devices() -> crate::error::Result<Vec<BackendDevice>> {
+        let env = ensure_ort_initialized().map_err(|source| Error::ContextCreationError {
+            source: source.into(),
+        })?;
         let mut rtn = vec![];
         for (idx, d) in env.devices().enumerate() {
             let hardware = d.hardware_device();
@@ -717,7 +720,7 @@ impl ListDevices for OrtContext {
             })
         }
 
-        rtn
+        Ok(rtn)
     }
 }
 
